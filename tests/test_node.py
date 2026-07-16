@@ -782,6 +782,15 @@ class TestReadOnlyInspection:
         assert "parent_not_completed" in explanation["validation"]["blocking_codes"]
         assert explanation["missing_inputs"]
 
+    def test_explain_node_rejects_terminal_node(self, job_dir):
+        create_node(str(job_dir), "prep")
+        fail_node(str(job_dir), "prep_001", errors=["bad input"])
+
+        explanation = explain_node(str(job_dir), "prep_001")
+
+        assert explanation["ready_to_run"] is False
+        assert "node_terminal" in explanation["validation"]["blocking_codes"]
+
 
 # ── complete_node strict artifact validation ──────────────────────────────
 
@@ -1152,7 +1161,7 @@ class TestUpdateNodeStatusTool:
         )
 
         assert result["success"] is False
-        assert result["code"] == "node_completion_requires_artifacts"
+        assert result["code"] == "node_terminal_transition_reserved"
         node = read_node(str(job_dir), "prod_001")
         pj = json.loads((job_dir / "progress.json").read_text())
         assert node["status"] == "pending"
@@ -1385,6 +1394,26 @@ class TestStateTransitions:
         assert (manifest.parent / "tool_result.json").is_file()
         assert (manifest.parent / "stderr_tail.txt").read_text() == "constraint error tail"
 
+    def test_repeated_failure_observation_does_not_mutate_failed_node(self, job_dir):
+        create_node(str(job_dir), "eq")
+        record_node_failure(
+            str(job_dir),
+            "eq_001",
+            {"success": False, "code": "first", "errors": ["first failure"]},
+        )
+        sealed = read_node(str(job_dir), "eq_001")
+
+        observation = record_node_failure(
+            str(job_dir),
+            "eq_001",
+            {"success": False, "code": "later", "errors": ["later observation"]},
+            stderr_tail="late stderr",
+        )
+
+        assert read_node(str(job_dir), "eq_001") == sealed
+        assert "/observations/" in observation["failure_artifact"]
+        assert (job_dir / "nodes" / "eq_001" / observation["failure_artifact"]).is_file()
+
     def test_trace_failure_returns_evidence_and_branch_option(self, job_dir):
         create_node(str(job_dir), "topo")
         complete_node(
@@ -1438,58 +1467,61 @@ class TestStateTransitions:
         node = read_node(str(job_dir), "prod_001")
         assert node["status"] == "completed"
 
-    def test_retry_after_failure_clears_stale_errors(self, job_dir):
-        """failed → begin_node → complete_node must NOT carry the
-        previous attempt's metadata.errors. Without the explicit clear
-        in begin_node, _apply_status's dict-merge semantics would leave
-        the stale errors keyed under metadata, making a successful node
-        look like it had failed."""
+    def test_failed_node_is_terminal(self, job_dir):
         create_node(str(job_dir), "prod")
-
-        # First attempt fails.
         begin_node(str(job_dir), "prod_001")
         fail_node(str(job_dir), "prod_001",
                   errors=["transient OpenMM crash"])
-        node = read_node(str(job_dir), "prod_001")
-        assert node["status"] == "failed"
-        assert node["metadata"]["errors"] == ["transient OpenMM crash"]
+        sealed = read_node(str(job_dir), "prod_001")
 
-        # Retry: a fresh begin_node must wipe the stale errors before
-        # complete_node lands.
-        begin_node(str(job_dir), "prod_001")
-        node = read_node(str(job_dir), "prod_001")
-        assert node["status"] == "running"
-        assert "errors" not in node.get("metadata", {}), (
-            "begin_node did not clear stale metadata.errors from prior failure"
+        with pytest.raises(ValueError, match="terminal"):
+            begin_node(str(job_dir), "prod_001")
+        with pytest.raises(ValueError, match="terminal"):
+            complete_node(
+                str(job_dir),
+                "prod_001",
+                artifacts={"trajectory": "artifacts/trajectory.dcd"},
+            )
+
+        assert read_node(str(job_dir), "prod_001") == sealed
+
+    def test_failure_clears_operational_metadata_before_sealing(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "eq")
+        claim_node(jd, "eq_001", "agent-a", lease_seconds=60)
+        add_node_need(
+            jd,
+            "eq_001",
+            {
+                "need_type": "repair",
+                "query": "repair the failed setup",
+                "rationale": "The current attempt cannot continue.",
+            },
         )
 
-        complete_node(str(job_dir), "prod_001",
-                      artifacts={"trajectory": "artifacts/trajectory.dcd"},
-                      metadata={"platform": "CUDA"})
-        node = read_node(str(job_dir), "prod_001")
-        assert node["status"] == "completed"
-        # metadata is fresh: explicit key present, no leftover errors.
-        # (artifact_sha256 may also be auto-recorded by complete_node.)
-        assert node["metadata"]["platform"] == "CUDA"
-        assert "errors" not in node["metadata"]
+        fail_node(jd, "eq_001", errors=["runtime failed"])
 
-    def test_retry_after_failure_with_no_metadata_errors_is_noop(
-        self, job_dir
-    ):
-        """First-time begin_node and re-runs of nodes that failed
-        without recording errors must not crash on the clear step."""
-        create_node(str(job_dir), "prod")
-        # First begin_node: there is no prior metadata.errors.
-        begin_node(str(job_dir), "prod_001")  # must not raise
-        node = read_node(str(job_dir), "prod_001")
-        assert node["status"] == "running"
-        assert "metadata" not in node or "errors" not in node.get("metadata", {})
+        metadata = read_node(jd, "eq_001").get("metadata", {})
+        assert "claimed_by" not in metadata
+        assert "claim_expires_at" not in metadata
+        assert "open_needs" not in metadata
 
 
 # ── update_node / update_node_status ───────────────────────────────────────
 
 
 class TestUpdateNode:
+
+    def test_update_node_status_reserves_failed_transition_for_failure_recorder(
+        self, job_dir
+    ):
+        create_node(str(job_dir), "prep")
+
+        result = update_node_status(str(job_dir), "prep_001", "failed")
+
+        assert result["success"] is False
+        assert result["code"] == "node_terminal_transition_reserved"
+        assert read_node(str(job_dir), "prep_001")["status"] == "pending"
 
     def test_merge_dict(self, job_dir):
         create_node(str(job_dir), "prep")
@@ -1556,8 +1588,19 @@ class TestUpdateNode:
         result = update_node_status(str(job_dir), "prep_001", "failed")
 
         assert result["success"] is False
-        assert result["code"] == "completed_node_sealed"
+        assert result["code"] == "node_terminal"
         assert read_node(str(job_dir), "prep_001")["status"] == "completed"
+
+    def test_update_node_refuses_failed_node_edits(self, job_dir):
+        create_node(str(job_dir), "prep")
+        fail_node(str(job_dir), "prep_001", errors=["bad input"])
+
+        with pytest.raises(ValueError, match="terminal"):
+            update_node(str(job_dir), "prep_001", {"metadata": {"late": True}})
+
+        result = update_node_status(str(job_dir), "prep_001", "running")
+        assert result["success"] is False
+        assert result["code"] == "node_terminal"
 
 
 class TestWaitNode:
@@ -1843,7 +1886,17 @@ class TestNodeClaim:
         result = claim_node(jd, "prod_001", "agent-a", lease_seconds=60)
 
         assert result["success"] is False
-        assert result["code"] == "completed_node_sealed"
+        assert result["code"] == "node_terminal"
+
+    def test_claim_node_rejects_failed_node(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prod")
+        fail_node(jd, "prod_001", errors=["runtime failed"])
+
+        result = claim_node(jd, "prod_001", "agent-a", lease_seconds=60)
+
+        assert result["success"] is False
+        assert result["code"] == "node_terminal"
 
 
 class TestNodeNeeds:
@@ -1978,7 +2031,25 @@ class TestNodeNeeds:
         )
 
         assert result["success"] is False
-        assert result["code"] == "completed_node_sealed"
+        assert result["code"] == "node_terminal"
+
+    def test_add_node_need_rejects_failed_node(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "eq")
+        fail_node(jd, "eq_001", errors=["runtime failed"])
+
+        result = add_node_need(
+            jd,
+            "eq_001",
+            {
+                "need_type": "prod_extension",
+                "query": "extend production",
+                "rationale": "Additional sampling would improve confidence.",
+            },
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "node_terminal"
 
 
 # ── DAG auto-resolve ──────────────────────────────────────────────────────

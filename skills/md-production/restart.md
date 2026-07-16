@@ -54,13 +54,3 @@ into an NVT prod (and vice versa) without rebuilding the topology — just
 set `--pressure-bar 0` (NVT) or `--pressure-bar 1.0` (NPT) on the new
 node. A short volume re-equilibration is expected when starting NPT
 from an NVT state.
-
-## Same-Node Retry
-
-Re-running the same `prod` node can resume and append to existing artifacts,
-but this is an advanced retry path. Prefer creating a new extension node for
-planned continuation because it leaves a clearer DAG audit trail.
-
-If a failed retry left an invalid or empty `trajectory.dcd`, `run_production`
-may discard stale trajectory/energy artifacts and restart those output files
-while still loading the restart state. Check `warnings[]` in the tool result.

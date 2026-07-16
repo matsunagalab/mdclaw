@@ -179,7 +179,8 @@ def input_resolution_recovery(job_dir: str, node_id: str) -> Optional[dict]:
                     f"{status!r}, not 'completed'. Re-running '{node_id}' will keep "
                     f"failing — create a NEW '{ref_type}' node from "
                     f"{grandparents or 'an earlier completed ancestor'}, run it, "
-                    f"then retry '{node_id}'."
+                    f"then create a NEW '{node_entry.get('type')}' "
+                    f"node instead of rerunning '{node_id}'."
                 ),
             }
         return None

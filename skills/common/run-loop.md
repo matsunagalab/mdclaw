@@ -102,8 +102,8 @@ DAG handoff instead of claiming a scientific answer.
    mdclaw trace_failure --job-dir <job_dir> --node-id <failed_node_id>
    ```
 
-   Follow its `next_commands`. Never retry identical parameters, mutate a
-   completed node, or replace an MDClaw stage with a hand-written workflow.
+   Follow its `next_commands`. Never rerun a terminal node or replace an MDClaw
+   stage with a hand-written workflow.
 
 ## Node CLI Invariants
 
@@ -115,9 +115,9 @@ DAG handoff instead of claiming a scientific answer.
   hold a bundle with multiple candidate structures under `artifacts/candidates/`.
   Use `list_source_candidates` before asking the user to choose, and pass an
   explicit `prepare_complex` selector when the bundle has more than one candidate.
-- Treat completed node artifacts as immutable evidence for one attempted
-  parameter set. If a chain/ligand/solvent choice was wrong, create a new
-  node/branch instead of rerunning the same node with changed inputs.
+- Treat terminal node artifacts as immutable evidence for one attempted
+  parameter set. Continue from completed nodes; branch from the same completed
+  parent after failed nodes.
 - Never remove node directories with `rm -rf` as normal recovery. Preserve
   `node.json`, artifacts, and events; use `inspect_job` / `explain_node` to pick
   the next valid branch.
@@ -143,8 +143,7 @@ running a node now, or may resume it later. `inspect_job` gives the shared state
 snapshot but does not take or check a lease.
 
 - Before working a node in a shared job, take a lease with `claim_node`, and
-  `release_node_claim` when done. Sealed (completed) nodes are immutable: branch a
-  new node rather than mutating one.
+  `release_node_claim` when done. Terminal nodes are immutable; create a new node.
 - For the full collaboration picture (claims, open needs, attempted nodes), use
   `mdclaw inspect_job --job-dir <job_dir>`.
 

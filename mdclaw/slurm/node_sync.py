@@ -25,9 +25,9 @@ from mdclaw._node import (
     _sync_progress_node_entry,
     read_node,
     record_node_failure,
-    update_node,
     update_node_status,
 )
+from mdclaw.node.validation import _node_is_terminal, _terminal_node_sealed_response
 
 from mdclaw.slurm import _base
 from mdclaw.slurm._base import _SLURM_SUBMISSION_INTENT_KEYS, _SLURM_SUBMISSION_METADATA_KEYS, logger
@@ -76,6 +76,8 @@ def _validate_node_ready_for_slurm_submit(job_dir: str, node_id: str) -> Optiona
             code="slurm_node_unavailable",
         )
     existing = (node.get("metadata") or {}).get("slurm_job_id")
+    if _node_is_terminal(node):
+        return _terminal_node_sealed_response(node_id, node.get("status"))
     if existing:
         return create_validation_error(
             "node_id",
@@ -126,6 +128,10 @@ def _reserve_slurm_submission_on_node(
     try:
         with file_lock(node_dir / "node.lock"):
             data = json.loads(node_json.read_text())
+            if _node_is_terminal(data):
+                return _terminal_node_sealed_response(
+                    node_id, data.get("status")
+                ), None
             prior_status = str(data.get("status") or "pending")
             metadata = data.setdefault("metadata", {})
             existing = metadata.get("slurm_job_id")
@@ -185,6 +191,8 @@ def _clear_slurm_submission_intent(
         return
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
+        if _node_is_terminal(data):
+            return
         metadata = data.setdefault("metadata", {})
         if metadata.get("slurm_submission_intent_id") != submission_intent_id:
             return
@@ -248,6 +256,11 @@ def _stamp_slurm_on_node(
         with file_lock(node_dir / "node.lock"):
             node_json = node_dir / "node.json"
             data = json.loads(node_json.read_text())
+            if _node_is_terminal(data):
+                return (
+                    f"could not stamp node {node_id}: terminal node "
+                    f"(status={data.get('status')!r})"
+                )
             metadata = data.setdefault("metadata", {})
             if submission_intent_id is not None:
                 actual = metadata.get("slurm_submission_intent_id")
@@ -316,6 +329,11 @@ def _rollback_slurm_stamp_on_node(
     try:
         with file_lock(node_dir / "node.lock"):
             data = json.loads(node_json.read_text())
+            if _node_is_terminal(data):
+                return (
+                    f"could not rollback node {node_id}: terminal node "
+                    f"(status={data.get('status')!r})"
+                )
             metadata = data.setdefault("metadata", {})
             current_job_id = metadata.get("slurm_job_id")
             if current_job_id not in (None, slurm_job_id):
@@ -415,11 +433,6 @@ def _sync_slurm_state_to_node(
                 errors.append(f"exit_code={exit_code}")
             if elapsed:
                 errors.append(f"elapsed={elapsed}")
-            meta: dict = {"slurm_state": state}
-            if exit_code:
-                meta["slurm_exit_code"] = exit_code
-            if elapsed:
-                meta["slurm_elapsed"] = elapsed
             record_node_failure(
                 str(job_dir),
                 node_id,
@@ -441,7 +454,6 @@ def _sync_slurm_state_to_node(
                 stderr_tail=stderr_tail,
                 exit_code=exit_code,
             )
-            update_node(str(job_dir), node_id, {"metadata": meta})
         except Exception as e:
             return f"could not fail node {node_id}: {e}"
         return None
@@ -456,12 +468,6 @@ def _sync_slurm_state_to_node(
             elapsed=elapsed,
             exit_code=exit_code,
         )
-        meta: dict = {"slurm_state": state}
-        if exit_code:
-            meta["slurm_exit_code"] = exit_code
-        if elapsed:
-            meta["slurm_elapsed"] = elapsed
-
         if current == "completed":
             return None
         if current == "failed":
@@ -497,10 +503,6 @@ def _sync_slurm_state_to_node(
                 stderr_tail=stderr_tail,
                 exit_code=exit_code,
             )
-            meta["slurm_zombie_detected"] = True
-            update_node(str(job_dir), node_id, {
-                "metadata": meta
-            })
         except Exception as e:
             return f"could not fail zombie node {node_id}: {e}"
         return (

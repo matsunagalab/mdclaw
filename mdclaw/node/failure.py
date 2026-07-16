@@ -12,8 +12,8 @@ from typing import Any, Optional
 
 from mdclaw._event import read_events, write_event
 from mdclaw.node.io import _atomic_write_json
-from mdclaw.node.lifecycle import fail_node, read_node, update_node
-from mdclaw.node.progress import _load_progress_v3, _sync_progress_node_entry
+from mdclaw.node.lifecycle import _finalize_failed_node, read_node
+from mdclaw.node.progress import _load_progress_v3
 
 
 def _now_iso() -> str:
@@ -50,6 +50,14 @@ def _relative_to_node(node_dir: Path, path: Path) -> str:
     return str(path.relative_to(node_dir))
 
 
+def _failure_bundle_dir(node_dir: Path, *, observation: bool) -> Path:
+    root = node_dir / "artifacts" / "failure"
+    if not observation:
+        return root / "latest"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    return root / "observations" / stamp
+
+
 def record_node_failure(
     job_dir: str,
     node_id: str,
@@ -79,7 +87,9 @@ def record_node_failure(
 
     jd = Path(job_dir).resolve()
     node_dir = jd / "nodes" / node_id
-    failure_dir = node_dir / "artifacts" / "failure" / "latest"
+    node = read_node(str(jd), node_id)
+    terminal_status = node.get("status") if node.get("status") in {"completed", "failed"} else None
+    failure_dir = _failure_bundle_dir(node_dir, observation=terminal_status is not None)
     failure_dir.mkdir(parents=True, exist_ok=True)
 
     tool_result_path = failure_dir / "tool_result.json"
@@ -120,36 +130,21 @@ def record_node_failure(
     files["failure_manifest"] = manifest_rel
     _atomic_write_json(manifest_path, manifest)
 
-    metadata: dict[str, Any] = {"errors": errors}
-    if code:
-        metadata["failure_code"] = code
-    artifact_update = {"failure": manifest_rel}
-
     try:
-        node = read_node(str(jd), node_id)
-        if node.get("status") == "completed":
+        if terminal_status is not None:
             write_event(
                 str(jd),
                 node_id,
-                "node_failure_evidence_recorded",
+                "terminal_node_failure_observed",
                 success=False,
-                details={"failure_artifact": manifest_rel, "code": code, "node_completed": True},
-            )
-        elif node.get("status") == "failed":
-            update: dict[str, Any] = {"artifacts": artifact_update}
-            if metadata:
-                update["metadata"] = metadata
-            update_node(str(jd), node_id, update)
-            _sync_progress_node_entry(str(jd), node_id, node)
-            write_event(
-                str(jd),
-                node_id,
-                "node_failure_evidence_recorded",
-                success=False,
-                details={"failure_artifact": manifest_rel, "code": code},
+                details={
+                    "observation_artifact": manifest_rel,
+                    "code": code,
+                    "terminal_status": terminal_status,
+                },
             )
         else:
-            fail_node(
+            _finalize_failed_node(
                 str(jd),
                 node_id,
                 errors=errors,

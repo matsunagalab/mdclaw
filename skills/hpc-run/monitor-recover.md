@@ -16,6 +16,5 @@ State mapping:
 - `COMPLETED`: the tool running inside the job owns the transition to
   `completed`; `check_job` does not mark completion by itself.
 
-If a node failed before the MDClaw tool started, inspect the SLURM stderr and
-either resubmit the same node after fixing cluster/runtime issues or create a
-new branch when scientific parameters changed.
+If a node failed before the MDClaw tool started, inspect the SLURM stderr, fix
+the cluster/runtime issue, and create a new node from the same completed parent.

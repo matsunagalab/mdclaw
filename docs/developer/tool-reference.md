@@ -353,8 +353,8 @@ signature, update the relevant section here and the matching skill examples.
   `--status`) and/or job-level params (`--params`, e.g. `execution_mode`). Merges
   the former `update_node_status` and `update_job_params` tools; the underlying
   `update_node_status` / `update_job_params` functions remain importable. Direct
-  `completed` updates are rejected; producer tools complete nodes through
-  `complete_node(...)` so artifacts are validated and hashed.
+  terminal updates are rejected; producer/failure helpers seal nodes only after
+  recording their evidence.
 - `manage_node_need(...)`: manage a node's open needs behind an `--action`
   selector (`add` / `clear` / `record_attempt`). Merges the former
   `add_node_need` / `clear_node_need` / `record_node_need_attempt` tools.

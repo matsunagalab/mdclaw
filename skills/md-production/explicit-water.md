@@ -88,8 +88,7 @@ are logged to `artifacts/collective_variables.csv`. Read and follow
 ## Restart / Extension
 
 For planned extensions, create a new prod node with `--continue-from`. For
-state-vs-checkpoint behavior, same-node retries, and stale-artifact handling,
-read `skills/md-production/restart.md`.
+state-vs-checkpoint behavior, read `skills/md-production/restart.md`.
 
 ---
 

@@ -27,7 +27,7 @@ same parent just because the CLI has been quiet. Read
 These fields are best-effort breadcrumbs from `build_amber_system` around
 long-running phases such as `pablo_load`, `system_generator_create_system`,
 `initial_minimization`, and `serialization`. Report the current stage to the
-user and only retry or branch after the node has failed, completed, or the user
+user and only continue or branch after the node is terminal, or the user
 explicitly decides to abandon the running node. `MDCLAW_AMBER_TIMEOUT` is a
 build-time budget hint, not a substitute for the local explicit-water
 feasibility preflight.

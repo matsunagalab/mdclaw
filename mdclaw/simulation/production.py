@@ -35,7 +35,7 @@ ensure_directory(WORKING_DIR)
 from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fail_node_if_running, _resolve_implicit_solvent_model  # noqa: E402
 from mdclaw.simulation.custom_forces import CUSTOM_FORCE_GROUP, CustomForceError, CustomForceReporter, custom_force_signature, load_custom_forces, write_cv_metadata  # noqa: E402
 from mdclaw.simulation.integrator_plan import _compute_step_plan, _record_production_node_result  # noqa: E402
-from mdclaw.simulation.restart import _close_reporter_stream, _count_state_data_rows, _detect_ensemble_mismatch, _flush_reporter_stream, _load_state_into_simulation, _node_previously_failed, _resolve_dcd_append_mode, _resolve_restart_node_id_for_run, _restart_random_seed, _restart_source_metadata, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
+from mdclaw.simulation.restart import _close_reporter_stream, _count_state_data_rows, _detect_ensemble_mismatch, _flush_reporter_stream, _load_state_into_simulation, _resolve_dcd_append_mode, _resolve_restart_node_id_for_run, _restart_random_seed, _restart_source_metadata, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _effective_pressure_bar, _integrator_signature, _load_xml_topology_inputs, _signature_mismatches, _system_signature, _validate_xml_system_contract  # noqa: E402
 
 
@@ -372,14 +372,8 @@ def run_production(
         "warnings": []
     }
 
-    # Setup output directory. Capture the prior node status *before*
-    # begin_node() flips it to "running" — the sentinel drives the
-    # append-mode guard further down (stale artifacts from a previously-
-    # failed retry must be discarded rather than silently appended to).
+    # Setup output directory.
     _node_mode = job_dir and node_id
-    _prior_failed = (
-        _node_previously_failed(job_dir, node_id) if _node_mode else False
-    )
     if _node_mode:
         from mdclaw._node import begin_node
         out_dir = Path(job_dir) / "nodes" / node_id / "artifacts"
@@ -841,7 +835,7 @@ def run_production(
         # would otherwise silently diverge the `append=` argument).
         report_interval = int(output_frequency_ps / timestep_fs * 1000)
         do_append, _stale_warning, _ = _resolve_dcd_append_mode(
-            trajectory_file, energy_file, append_dcd, _prior_failed
+            trajectory_file, energy_file, append_dcd
         )
         if _stale_warning:
             result["warnings"].append(_stale_warning)

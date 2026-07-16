@@ -292,6 +292,43 @@ class TestArgparseConstruction:
         assert "fake_failure" in (manifest.parent / "stdout_tail.txt").read_text()
         assert "tool stderr line" in (manifest.parent / "stderr_tail.txt").read_text()
 
+    def test_cli_rejects_terminal_node_before_tool_call(self, tmp_path, monkeypatch, capsys):
+        from mdclaw import _cli
+        from mdclaw._node import create_node, fail_node
+
+        job_dir = tmp_path / "job_terminal"
+        job_dir.mkdir()
+        node = create_node(str(job_dir), "eq")
+        fail_node(str(job_dir), node["node_id"], errors=["first failure"])
+        called = False
+
+        def should_not_run(job_dir: str, node_id: str) -> dict:
+            nonlocal called
+            called = True
+            return {"success": True}
+
+        monkeypatch.setattr(_cli, "_discover_tools", lambda: {
+            "fake_eq": {
+                "fn": should_not_run,
+                "is_async": False,
+                "server": "fake",
+                "description": "Fake eq tool.",
+                "requires_node": True,
+                "node_type": "eq",
+            }
+        })
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cli.main([
+                "--job-dir", str(job_dir),
+                "--node-id", node["node_id"],
+                "fake_eq",
+            ])
+
+        assert exc_info.value.code == 1
+        assert called is False
+        assert json.loads(capsys.readouterr().out)["code"] == "node_terminal"
+
     def test_cli_unhandled_exception_records_traceback_artifact(self, tmp_path, monkeypatch):
         from mdclaw import _cli
         from mdclaw._node import create_node, read_node
@@ -364,7 +401,7 @@ class TestArgparseConstruction:
 
         assert exc_info.value.code == 1
         payload = json.loads(capsys.readouterr().out)
-        assert payload["code"] == "node_completion_requires_artifacts"
+        assert payload["code"] == "node_terminal_transition_reserved"
         latest = read_node(str(job_dir), node["node_id"])
         assert latest["status"] == "pending"
         assert latest["artifacts"] == {}

@@ -179,8 +179,7 @@ mdclaw --job-dir <job_dir> --node-id <extension_prod_node_id> run_production \
   --pressure-bar 0 --implicit-solvent GBn2
 ```
 
-For state-vs-checkpoint behavior, same-node retries, and stale-artifact
-handling, read `skills/md-production/restart.md`.
+For state-vs-checkpoint behavior, read `skills/md-production/restart.md`.
 
 ---
 

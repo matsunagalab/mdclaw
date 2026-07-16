@@ -24,13 +24,10 @@ from mdclaw.simulation.restart import (
     _DCD_MAGIC,
     _dcd_has_valid_header,
     _detect_ensemble_mismatch,
-    _node_previously_failed,
     _resolve_dcd_append_mode,
 )
 from mdclaw._node import (
-    begin_node,
     create_node,
-    fail_node,
     init_progress_v3,
 )
 from tests.pipeline_helpers import complete_node_with_placeholders as complete_node
@@ -286,52 +283,13 @@ def guard_job_dir(tmp_path):
     return jd
 
 
-class TestNodePreviouslyFailed:
-    """Captures node-status sentinel ONLY when it is currently `failed`.
-
-    Contract: must be called *before* begin_node() otherwise the failure
-    is invisible — the guard documented this explicitly.
-    """
-
-    def test_returns_false_when_job_dir_missing(self):
-        assert _node_previously_failed(None, None) is False
-        assert _node_previously_failed(None, "prod_001") is False
-        assert _node_previously_failed("/tmp/does_not_exist", None) is False
-
-    def test_returns_false_for_nonexistent_node(self, guard_job_dir):
-        # node_id was never created
-        assert _node_previously_failed(str(guard_job_dir), "prod_999") is False
-
-    def test_returns_false_when_pending(self, guard_job_dir):
-        r = create_node(str(guard_job_dir), "prod")
-        assert _node_previously_failed(str(guard_job_dir), r["node_id"]) is False
-
-    def test_returns_false_when_running(self, guard_job_dir):
-        r = create_node(str(guard_job_dir), "prod")
-        begin_node(str(guard_job_dir), r["node_id"])
-        assert _node_previously_failed(str(guard_job_dir), r["node_id"]) is False
-
-    def test_returns_false_when_completed(self, guard_job_dir):
-        r = create_node(str(guard_job_dir), "prod")
-        complete_node(str(guard_job_dir), r["node_id"], artifacts={})
-        assert _node_previously_failed(str(guard_job_dir), r["node_id"]) is False
-
-    def test_returns_true_when_failed(self, guard_job_dir):
-        r = create_node(str(guard_job_dir), "prod")
-        begin_node(str(guard_job_dir), r["node_id"])
-        fail_node(str(guard_job_dir), r["node_id"], errors=["boom"])
-        assert _node_previously_failed(str(guard_job_dir), r["node_id"]) is True
-
-
 class TestResolveDcdAppendMode:
     """Append decision + stale-artifact cleanup logic.
 
     Covers the three cases the guard is designed to handle:
     1. Fresh run (no trajectory yet) — never append, never touch files.
-    2. Valid partial DCD + running/completed node — legacy mid-run
-       restart path, append preserved.
-    3. Invalid DCD OR failed status — delete stale artifacts, fall back
-       to fresh write, emit a warning string the caller can surface.
+    2. Valid partial DCD — legacy mid-run restart path, append preserved.
+    3. Invalid DCD — delete stale artifacts and fall back to a fresh write.
     """
 
     def _write_valid_dcd(self, p: Path, extra_bytes: int = 100) -> None:
@@ -342,7 +300,7 @@ class TestResolveDcdAppendMode:
         traj = tmp_path / "trajectory.dcd"
         en = tmp_path / "energy.dat"
         do_append, warning, removed = _resolve_dcd_append_mode(
-            traj, en, append_requested=False, prior_failed=False
+            traj, en, append_requested=False
         )
         assert do_append is False
         assert warning is None
@@ -353,7 +311,7 @@ class TestResolveDcdAppendMode:
         traj = tmp_path / "trajectory.dcd"
         en = tmp_path / "energy.dat"
         do_append, warning, removed = _resolve_dcd_append_mode(
-            traj, en, append_requested=True, prior_failed=False
+            traj, en, append_requested=True
         )
         assert do_append is False
         assert warning is None
@@ -367,7 +325,7 @@ class TestResolveDcdAppendMode:
         en.write_text("step kJ/mol\n0 -100\n")
 
         do_append, warning, removed = _resolve_dcd_append_mode(
-            traj, en, append_requested=True, prior_failed=False
+            traj, en, append_requested=True
         )
         assert do_append is True
         assert warning is None
@@ -375,25 +333,6 @@ class TestResolveDcdAppendMode:
         # Files are NOT touched
         assert traj.exists() and traj.stat().st_size > 0
         assert en.exists() and en.stat().st_size > 0
-
-    def test_failed_status_discards_even_valid_dcd(self, tmp_path):
-        """A failed retry must not silently append, even if the DCD is
-        syntactically valid — we can't guarantee step/frame alignment
-        with the checkpoint that was written independently."""
-        traj = tmp_path / "trajectory.dcd"
-        en = tmp_path / "energy.dat"
-        self._write_valid_dcd(traj)
-        en.write_text("step kJ/mol\n0 -100\n")
-
-        do_append, warning, removed = _resolve_dcd_append_mode(
-            traj, en, append_requested=True, prior_failed=True
-        )
-        assert do_append is False
-        assert warning is not None
-        assert "failed status" in warning
-        assert removed == [traj, en]
-        assert not traj.exists()
-        assert not en.exists()
 
     def test_zero_byte_dcd_is_discarded(self, tmp_path):
         """The actual Google-Drive-sync reproducer: running status (or
@@ -404,7 +343,7 @@ class TestResolveDcdAppendMode:
         en.write_bytes(b"")
 
         do_append, warning, removed = _resolve_dcd_append_mode(
-            traj, en, append_requested=True, prior_failed=False
+            traj, en, append_requested=True
         )
         assert do_append is False
         assert warning is not None
@@ -421,7 +360,7 @@ class TestResolveDcdAppendMode:
         traj.write_bytes(b"")  # invalid
 
         do_append, warning, removed = _resolve_dcd_append_mode(
-            traj, en, append_requested=True, prior_failed=False
+            traj, en, append_requested=True
         )
         assert do_append is False
         assert warning is not None
@@ -430,27 +369,16 @@ class TestResolveDcdAppendMode:
         assert removed == [traj, en]  # returned even when energy was absent
 
     def test_warning_message_names_the_reason(self, tmp_path):
-        """The warning text differentiates failed-status from invalid-header
-        so users can tell which sentinel fired."""
+        """The warning identifies an invalid DCD header."""
         traj = tmp_path / "trajectory.dcd"
         en = tmp_path / "energy.dat"
-        self._write_valid_dcd(traj)
-
-        _, w_failed, _ = _resolve_dcd_append_mode(
-            traj, en, append_requested=True, prior_failed=True
-        )
-        assert "failed status" in w_failed
-        assert "invalid/empty DCD header" not in w_failed
-
-        # Re-create the files after the prior test cleaned them up
         traj.write_bytes(b"")
         en.write_bytes(b"")
 
         _, w_invalid, _ = _resolve_dcd_append_mode(
-            traj, en, append_requested=True, prior_failed=False
+            traj, en, append_requested=True
         )
         assert "invalid/empty DCD header" in w_invalid
-        assert "failed status" not in w_invalid
 
 
 class TestEnsembleMismatchDetection:

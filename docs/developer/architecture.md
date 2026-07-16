@@ -252,11 +252,10 @@ DAG invariants:
   tools do not fall back to legacy Amber `parm7/rst7`.
 - New equilibration DAGs should use `topo -> min -> eq`; `eq` can still accept
   `topo` directly for legacy records, but skills should not create that shape.
-- Completed node.json records are sealed scientific records. Create a new node
-  for changed conditions, parents, artifacts, or scientific metadata.
-  Post-completion scheduler observations belong in append-only events.
-- Agent claims and open needs are work-routing hints for unfinished or retryable
-  nodes. Completion clears those operational hints before sealing the node.
+- Terminal (`completed` or `failed`) node.json records are sealed. Create a new
+  node for further work; later scheduler observations belong in events.
+- Agent claims and open needs are work-routing hints for unfinished nodes.
+  Completion clears those operational hints before sealing the node.
 - Events are append-only files, not a shared JSON array.
 - Broken or unsupported chemistry should surface as structured errors rather
   than silent best-effort topology builds.

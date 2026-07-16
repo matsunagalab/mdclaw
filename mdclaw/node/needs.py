@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 from mdclaw.node.io import _atomic_write_json  # noqa: E402
 from mdclaw.node.progress import _sync_progress_node_entry  # noqa: E402
-from mdclaw.node.validation import _completed_node_sealed_response, _node_is_completed  # noqa: E402
+from mdclaw.node.validation import _node_is_terminal, _terminal_node_sealed_response  # noqa: E402
 
 
 def _normalize_need(need: dict) -> dict:
@@ -84,8 +84,8 @@ def add_node_need(job_dir: str, node_id: str, need: dict) -> dict:
 
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
-        if _node_is_completed(data):
-            return _completed_node_sealed_response(node_id)
+        if _node_is_terminal(data):
+            return _terminal_node_sealed_response(node_id, data.get("status"))
         metadata = data.setdefault("metadata", {})
         open_needs = metadata.setdefault("open_needs", [])
         if not isinstance(open_needs, list):
@@ -134,8 +134,8 @@ def clear_node_need(
 
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
-        if _node_is_completed(data):
-            return _completed_node_sealed_response(node_id)
+        if _node_is_terminal(data):
+            return _terminal_node_sealed_response(node_id, data.get("status"))
         metadata = data.setdefault("metadata", {})
         open_needs = metadata.get("open_needs", [])
         if not isinstance(open_needs, list):
@@ -207,8 +207,8 @@ def record_node_need_attempt(
 
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
-        if _node_is_completed(data):
-            return _completed_node_sealed_response(node_id)
+        if _node_is_terminal(data):
+            return _terminal_node_sealed_response(node_id, data.get("status"))
         metadata = data.setdefault("metadata", {})
         open_needs = metadata.get("open_needs", [])
         if not isinstance(open_needs, list):

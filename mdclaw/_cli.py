@@ -694,13 +694,15 @@ def _node_type_preflight_error(
     node_id: str,
     expected_node_type: str,
 ) -> dict | None:
-    """Return a structured error when a tool is pointed at the wrong node type."""
+    """Return a structured error for a wrong-type or terminal workflow node."""
     actual_node_type = None
+    actual_status = None
     try:
         from mdclaw._node import read_node
 
         node = read_node(job_dir, node_id)
         actual_node_type = node.get("node_type")
+        actual_status = node.get("status")
     except FileNotFoundError:
         code = "node_missing"
         message = f"Node '{node_id}' does not exist under {job_dir}"
@@ -708,13 +710,20 @@ def _node_type_preflight_error(
         code = "node_json_invalid"
         message = f"Cannot read node '{node_id}': {exc}"
     else:
-        if actual_node_type == expected_node_type:
+        if actual_node_type != expected_node_type:
+            code = "node_type_mismatch"
+            message = (
+                f"Tool '{tool_name}' requires a '{expected_node_type}' node, but "
+                f"'{node_id}' has type '{actual_node_type}'"
+            )
+        elif actual_status in {"completed", "failed"}:
+            code = "node_terminal"
+            message = (
+                f"Node '{node_id}' is terminal (status={actual_status!r}); "
+                "create a new node instead"
+            )
+        else:
             return None
-        code = "node_type_mismatch"
-        message = (
-            f"Tool '{tool_name}' requires a '{expected_node_type}' node, but "
-            f"'{node_id}' has type '{actual_node_type}'"
-        )
 
     error = _cli_validation_error(
         "node_id",
@@ -729,6 +738,7 @@ def _node_type_preflight_error(
         "node_id": node_id,
         "expected_node_type": expected_node_type,
         "actual_node_type": actual_node_type,
+        "actual_status": actual_status,
     })
     return error
 

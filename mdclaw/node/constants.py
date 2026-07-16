@@ -23,6 +23,9 @@ NODE_TYPES = frozenset({
 NODE_STATUSES = frozenset({"pending", "queued", "running", "completed", "failed"})
 
 
+TERMINAL_NODE_STATUSES = frozenset({"completed", "failed"})
+
+
 NODE_STATUS_ALIASES = {
     "submitted": "queued",
 }

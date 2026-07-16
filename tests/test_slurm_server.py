@@ -1547,6 +1547,29 @@ class TestSubmitJobNodeIntegration:
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
     @patch("mdclaw.slurm._base.run_command")
+    def test_terminal_node_rejected_before_submission(
+        self, mock_run, mock_check, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        jd = _make_job_with_nodes(tmp_path, "job_terminal", ["prod_001"])
+        node_file = jd / "nodes" / "prod_001" / "node.json"
+        node = json.loads(node_file.read_text())
+        node["status"] = "failed"
+        node_file.write_text(json.dumps(node))
+
+        result = submit_job(
+            script="echo test",
+            job_dir=str(jd),
+            node_id="prod_001",
+            output_dir=str(tmp_path),
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "node_terminal"
+        mock_run.assert_not_called()
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_existing_slurm_job_id_rejected_before_submission(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         jd = _make_job_with_nodes(tmp_path, "job_duplicate", ["prod_001"])
@@ -1720,7 +1743,6 @@ class TestCheckJobNodeSync:
         node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
         assert node["status"] == "failed"
         assert node["metadata"].get("failure_code") == "slurm_failed"
-        assert node["metadata"].get("slurm_state") == "FAILED"
         manifest = jd / "nodes" / "prod_001" / node["artifacts"]["failure"]
         manifest_data = json.loads(manifest.read_text())
         assert manifest_data["tool"] == "slurm"
@@ -1819,12 +1841,12 @@ class TestCheckJobNodeSync:
         node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
         assert node["status"] == "failed"
         assert node["metadata"]["failure_code"] == "slurm_completed_without_node_completion"
-        assert node["metadata"]["slurm_state"] == "COMPLETED"
-        assert node["metadata"]["slurm_zombie_detected"] is True
         manifest = jd / "nodes" / "prod_001" / node["artifacts"]["failure"]
         manifest_data = json.loads(manifest.read_text())
         assert manifest_data["tool"] == "slurm"
         assert manifest_data["code"] == "slurm_completed_without_node_completion"
+        tool_result = json.loads((manifest.parent / "tool_result.json").read_text())
+        assert tool_result["context"]["slurm_state"] == "COMPLETED"
         assert "wrapper exited" in (manifest.parent / "stdout_tail.txt").read_text()
         assert "node stayed running" in (manifest.parent / "stderr_tail.txt").read_text()
         assert any("marked failed" in w for w in result["warnings"])

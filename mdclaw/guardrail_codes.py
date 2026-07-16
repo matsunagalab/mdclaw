@@ -45,10 +45,9 @@ GUARDRAIL_CODES: dict[str, str] = {
     "invalid_node_type": "Use one of: source, prep, solv, topo, min, eq, prod, analyze.",
     "node_type_mismatch": "Select or create a node whose type matches the requested tool.",
     "invalid_node_status": "Use a valid node status value.",
-    "node_completion_requires_artifacts": "Run the node's producer tool so completion validates and hashes its artifacts.",
+    "node_terminal_transition_reserved": "Let the producer or failure recorder seal terminal nodes with evidence.",
     "update_state_no_target": "Provide status (with node_id) and/or params to update_workflow_state.",
     "update_state_status_requires_node_id": "Pass node_id together with status to update_workflow_state.",
-    "completed_node_sealed": "Completed nodes are immutable; branch a new node to change anything.",
     "parent_node_not_completed": "Complete or repair the parent node before running this node.",
     "referenced_node_missing": "A parent/dependency id does not exist; use IDs from inspect_job.",
     "study_context_missing": "Job is not under a study; run bootstrap_md_workflow and create the source node in the returned job_dir.",
@@ -215,7 +214,6 @@ GUARDRAIL_CODES: dict[str, str] = {
     "missing_xml_topology_inputs": "Run or repair the topo node that emits the XML triple.",
     "topology_pdb_not_found": "topology.pdb not found; rebuild the topo node.",
     "topology_validation_failed": "Topology validation failed; inspect the structured error.",
-    "invalid_openmm_bundle": "OpenMM bundle is invalid; rebuild the system triple.",
     "missing_forcefield_xml": "Supply at least one OpenMM ForceField XML in forcefield_xml.",
     "invalid_nonbonded_method": "Use a supported nonbonded_method (e.g. PME, NoCutoff, CutoffPeriodic).",
     "invalid_constraints": "Use a supported constraints value: HBonds, AllBonds, or None.",
@@ -249,7 +247,6 @@ GUARDRAIL_CODES: dict[str, str] = {
     "continue_from_invalid_node_type": "continue-from must reference a valid node type.",
     "continue_from_not_prod": "continue-from must reference a prod node.",
     "continue_from_parents_conflict": "continue-from conflicts with the given parents; resolve one.",
-    "inconsistent_minimized_artifacts": "Minimized artifacts are inconsistent; rerun minimization.",
 
     # --- minimization / equilibration / timestep ---
     "minimization_iterations_invalid": "Use a valid (non-negative) minimization iteration count.",

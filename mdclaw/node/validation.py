@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-from mdclaw.node.constants import ANALYSIS_DATA_SCOPES, COMPARISON_MAPPING_TYPES, NODE_STATUSES, NODE_STATUS_ALIASES  # noqa: E402
+from mdclaw.node.constants import ANALYSIS_DATA_SCOPES, COMPARISON_MAPPING_TYPES, NODE_STATUSES, NODE_STATUS_ALIASES, TERMINAL_NODE_STATUSES  # noqa: E402
 
 
 def _validate_analysis_subjects(value: Any, *, required: bool) -> tuple[bool, set[str], str]:
@@ -164,13 +164,20 @@ def _node_is_completed(data: dict) -> bool:
     return _normalize_node_status(data.get("status")) == "completed"
 
 
-def _completed_node_sealed_response(node_id: str) -> dict:
+def _node_is_terminal(data: dict) -> bool:
+    return _normalize_node_status(data.get("status")) in TERMINAL_NODE_STATUSES
+
+
+def _terminal_node_sealed_response(node_id: str, status: Optional[str] = None) -> dict:
+    status = _normalize_node_status(status) if status is not None else None
+    label = f"{status.capitalize()} node" if status else "Terminal node"
     return {
         "success": False,
-        "code": "completed_node_sealed",
+        "code": "node_terminal",
         "node_id": node_id,
+        "status": status,
         "error": (
-            f"Completed node record '{node_id}' is sealed; write a post-completion "
-            "event or create a new node instead of mutating node.json."
+            f"{label} record '{node_id}' is sealed; write an event or create "
+            "a new node instead of mutating node.json."
         ),
     }

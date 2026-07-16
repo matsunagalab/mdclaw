@@ -21,10 +21,18 @@ from mdclaw._lock import file_lock
 
 logger = logging.getLogger(__name__)
 
-from mdclaw.node.constants import DAG_GUIDANCE, IMMUTABLE_NODE_UPDATE_KEYS, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPES, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, _ALLOWED_PARENT_TYPES, _AUTO_PARENT_PREFERENCE  # noqa: E402
+from mdclaw.node.constants import DAG_GUIDANCE, IMMUTABLE_NODE_UPDATE_KEYS, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPES, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, TERMINAL_NODE_STATUSES, _ALLOWED_PARENT_TYPES, _AUTO_PARENT_PREFERENCE  # noqa: E402
 from mdclaw.node.io import _atomic_write_json, _parse_iso_datetime, _sha256_path, _values_match, normalize_artifact_paths  # noqa: E402
 from mdclaw.node.progress import _load_progress_v3, _next_node_id, _node_progress_summary, _sync_progress_node_entry  # noqa: E402
-from mdclaw.node.validation import _completed_node_sealed_response, _node_is_completed, _normalize_node_status, _validate_analyze_conditions  # noqa: E402
+from mdclaw.node.validation import _node_is_terminal, _normalize_node_status, _terminal_node_sealed_response, _validate_analyze_conditions  # noqa: E402
+
+
+def _sealed_node_error(data: dict) -> ValueError:
+    status = _normalize_node_status(data.get("status"))
+    return ValueError(
+        f"terminal node.json record is sealed (status={status!r}); "
+        "write an event or create a new node instead"
+    )
 
 
 def _seq_of(node_id: str) -> int:
@@ -457,11 +465,8 @@ def update_node(job_dir: str, node_id: str, updates: dict) -> None:
 
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
-        if _node_is_completed(data):
-            raise ValueError(
-                "completed node.json records are sealed; write a post-completion "
-                "event instead of mutating node.json"
-            )
+        if _node_is_terminal(data):
+            raise _sealed_node_error(data)
         for key, value in updates.items():
             if isinstance(value, dict) and isinstance(data.get(key), dict):
                 data[key].update(value)
@@ -514,11 +519,8 @@ def _apply_status(
     node_json = node_dir / "node.json"
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
-        if _node_is_completed(data):
-            raise ValueError(
-                "completed node.json records are sealed; write a post-completion "
-                "event instead of mutating node.json"
-            )
+        if _node_is_terminal(data):
+            raise _sealed_node_error(data)
         if artifact_paths_for_hash:
             artifact_hashes = {}
             for key, rel_path in artifact_paths_for_hash.items():
@@ -572,8 +574,8 @@ def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
     Delegates to :func:`_apply_status` so that every status edit in the
     system flows through the same single path. Returns
     ``{"success": True, "node_id", "status"}`` so it can be exposed as
-    a CLI tool. Direct completion is rejected because only
-    :func:`complete_node` validates and hashes artifacts.
+    a CLI tool. Direct terminal transitions are rejected because their
+    evidence must be finalized before the node is sealed.
     """
     canonical_status = _normalize_node_status(status)
     if canonical_status is None:
@@ -603,26 +605,30 @@ def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
             },
             "recoverable": True,
         }
-    if canonical_status == "completed":
+    current = read_node(job_dir, node_id)
+    if _node_is_terminal(current):
+        return _terminal_node_sealed_response(node_id, current.get("status"))
+    if canonical_status in TERMINAL_NODE_STATUSES:
         message = (
-            "Cannot set status to 'completed' directly. Node completion must "
-            "go through complete_node() so artifacts are validated and hashed."
+            f"Cannot set status to {canonical_status!r} directly. Terminal "
+            "transitions must go through complete_node() or fail_node() so "
+            "evidence is recorded before the node is sealed."
         )
         return {
             "success": False,
             "error_type": "ValidationError",
-            "code": "node_completion_requires_artifacts",
+            "code": "node_terminal_transition_reserved",
             "message": message,
             "errors": [message],
             "warnings": [],
             "hints": [
-                "Run the node's producer tool to complete it with artifacts.",
+                "Run the node's producer tool and let it finalize the node.",
                 "Use update_workflow_state only for operational status changes.",
             ],
             "context": {
                 "node_id": node_id,
                 "requested_status": canonical_status,
-                "code": "node_completion_requires_artifacts",
+                "code": "node_terminal_transition_reserved",
             },
             "recoverable": True,
         }
@@ -630,22 +636,22 @@ def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
         _apply_status(job_dir, node_id, canonical_status)
     except ValueError as exc:
         message = str(exc)
-        if "completed node.json records are sealed" in message:
+        if "terminal node.json record is sealed" in message:
             return {
                 "success": False,
                 "error_type": "ValidationError",
-                "code": "completed_node_sealed",
+                "code": "node_terminal",
                 "message": message,
                 "errors": [message],
                 "warnings": [],
                 "hints": [
                     "Create a new node for changed scientific state.",
-                    "Write operational observations as events instead of mutating completed node.json records.",
+                    "Write operational observations as events instead of mutating terminal node.json records.",
                 ],
                 "context": {
                     "node_id": node_id,
                     "requested_status": canonical_status,
-                    "code": "completed_node_sealed",
+                    "code": "node_terminal",
                 },
                 "recoverable": True,
             }
@@ -737,8 +743,8 @@ def claim_node(
     expires_at = (now + timedelta(seconds=int(lease_seconds))).isoformat()
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
-        if _node_is_completed(data):
-            return _completed_node_sealed_response(node_id)
+        if _node_is_terminal(data):
+            return _terminal_node_sealed_response(node_id, data.get("status"))
         metadata = data.setdefault("metadata", {})
         claimed_by = metadata.get("claimed_by")
         claim_expires_at = metadata.get("claim_expires_at")
@@ -811,8 +817,8 @@ def release_node_claim(
 
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
-        if _node_is_completed(data):
-            return _completed_node_sealed_response(node_id)
+        if _node_is_terminal(data):
+            return _terminal_node_sealed_response(node_id, data.get("status"))
         metadata = data.setdefault("metadata", {})
         claimed_by = metadata.get("claimed_by")
         if agent_id and claimed_by and claimed_by != agent_id:
@@ -851,20 +857,8 @@ def release_node_claim(
 
 
 def begin_node(job_dir: str, node_id: str) -> None:
-    """Mark a node as ``running``. Called by tools at the start of execution.
-
-    On re-attempts (a node that was previously marked ``failed`` and is
-    now being retried), ``metadata.errors`` from the prior attempt is
-    cleared. Without this the next ``complete_node`` would leave the
-    successful node carrying stale failure strings — anyone reading the
-    completed node's metadata would think it had failed. Authoritative
-    history of every attempt lives in ``events/`` (one file per
-    ``tool_started`` / ``tool_failed`` / ``tool_completed`` event).
-    """
-    _apply_status(
-        job_dir, node_id, "running",
-        clear_metadata_keys=["errors"],
-    )
+    """Mark a mutable node as ``running`` at the start of execution."""
+    _apply_status(job_dir, node_id, "running")
     write_event(job_dir, node_id, "tool_started")
 
 
@@ -910,7 +904,7 @@ def complete_node(
     write_event(job_dir, node_id, "tool_completed", success=True)
 
 
-def fail_node(
+def _finalize_failed_node(
     job_dir: str,
     node_id: str,
     *,
@@ -919,7 +913,7 @@ def fail_node(
     code: Optional[str] = None,
     failure_artifact: Optional[str] = None,
 ) -> None:
-    """Mark a node as ``failed`` and record errors."""
+    """Seal a node as failed after its failure evidence has been written."""
     payload: dict = {}
     if warnings:
         payload["warnings"] = warnings
@@ -934,13 +928,54 @@ def fail_node(
     if failure_artifact:
         payload["artifacts"] = {"failure": failure_artifact}
 
-    _apply_status(job_dir, node_id, "failed", payload=payload)
+    _apply_status(
+        job_dir,
+        node_id,
+        "failed",
+        payload=payload,
+        clear_metadata_keys=list(OPERATIONAL_METADATA_KEYS),
+    )
     write_event(job_dir, node_id, "tool_failed", success=False,
                 details={
                     "errors": errors or [],
                     "code": code,
                     "failure_artifact": failure_artifact,
                 })
+
+
+def fail_node(
+    job_dir: str,
+    node_id: str,
+    *,
+    errors: Optional[list[str]] = None,
+    warnings: Optional[list[str]] = None,
+    code: Optional[str] = None,
+    failure_artifact: Optional[str] = None,
+) -> None:
+    """Record failure evidence and seal a node as ``failed``."""
+    if failure_artifact:
+        _finalize_failed_node(
+            job_dir,
+            node_id,
+            errors=errors,
+            warnings=warnings,
+            code=code,
+            failure_artifact=failure_artifact,
+        )
+        return
+
+    from mdclaw.node.failure import record_node_failure
+
+    record_node_failure(
+        job_dir,
+        node_id,
+        {
+            "success": False,
+            "code": code,
+            "errors": errors or ["tool failed"],
+            "warnings": warnings or [],
+        },
+    )
 
 
 def fail_node_from_result(
@@ -952,16 +987,15 @@ def fail_node_from_result(
 ) -> dict:
     """Mark ``node_id`` failed from a structured tool result and return it."""
     if job_dir and node_id:
-        errors = result.get("errors") or []
-        if not errors:
-            errors = [result.get("message") or result.get("error") or default_error]
-        fail_node(
-            job_dir,
-            node_id,
-            errors=[str(error) for error in errors],
-            warnings=result.get("warnings") or None,
-            code=result.get("code"),
-        )
+        if not result.get("errors"):
+            result = {
+                **result,
+                "errors": [
+                    result.get("message") or result.get("error") or default_error
+                ],
+            }
+        from mdclaw.node.failure import record_node_failure
+        record_node_failure(job_dir, node_id, result)
     return result
 
 
@@ -1013,6 +1047,12 @@ def validate_node_execution_context(
 
     node = read_node(job_dir, node_id)
     node_type = node.get("node_type")
+    if _node_is_terminal(node):
+        status = _normalize_node_status(node.get("status"))
+        add_error(
+            "node_terminal",
+            f"Node '{node_id}' is terminal (status={status!r}); create a new node instead",
+        )
     if node_type != expected_node_type:
         add_error(
             "node_type_mismatch",

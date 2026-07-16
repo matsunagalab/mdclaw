@@ -332,34 +332,16 @@ def _dcd_has_valid_header(path: Path) -> bool:
         return False
 
 
-def _node_previously_failed(
-    job_dir: Optional[str], node_id: Optional[str]
-) -> bool:
-    """Return True iff ``node.json`` exists and records ``status ==
-    "failed"``. **Must be called before** :func:`begin_node` flips the
-    sentinel to ``running`` — otherwise the prior failure is invisible."""
-    if not (job_dir and node_id):
-        return False
-    from mdclaw._node import read_node
-    try:
-        return read_node(job_dir, node_id).get("status") == "failed"
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return False
-
-
 def _resolve_dcd_append_mode(
     trajectory_file: Path,
     energy_file: Path,
     append_requested: bool,
-    prior_failed: bool,
 ) -> tuple:
     """Decide whether DCD + energy reporters should open in append mode.
 
     Legacy mid-run restart into the same prod node requires a valid
-    partial DCD; 0-byte / header-less files (e.g. reporter flush
-    interrupted by synced-filesystem lag) and the ``failed``-status
-    sentinel both mean the stale artifacts must be discarded before the
-    reporters are constructed.
+    partial DCD. A 0-byte or header-less file (e.g. reporter flushes delayed
+    by a synced filesystem) is discarded before reporters are constructed.
 
     Returns ``(do_append, warning_message, removed)`` where:
 
@@ -374,10 +356,9 @@ def _resolve_dcd_append_mode(
     do_append = append_requested and trajectory_file.exists()
     if not do_append:
         return False, None, []
-    if not (prior_failed or not _dcd_has_valid_header(trajectory_file)):
+    if _dcd_has_valid_header(trajectory_file):
         return True, None, []
 
-    reason = "failed status" if prior_failed else "invalid/empty DCD header"
     removed = []
     for stale in (trajectory_file, energy_file):
         removed.append(stale)
@@ -387,9 +368,9 @@ def _resolve_dcd_append_mode(
         except OSError as e:
             logger.warning(f"Could not remove stale artifact {stale}: {e}")
     warning = (
-        f"Discarded stale artifacts from previous run "
-        f"({reason}); starting trajectory/energy fresh while "
-        f"resuming from checkpoint."
+        "Discarded stale artifacts from previous run "
+        "(invalid/empty DCD header); starting trajectory/energy fresh while "
+        "resuming from checkpoint."
     )
     return False, warning, removed
 

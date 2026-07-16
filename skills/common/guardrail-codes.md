@@ -30,7 +30,6 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `boltz_source_attach_failed` | Preserve Boltz outputs and repair source-bundle registration. |
 | `claim_owner_mismatch` | Claim is owned by another agent; do not force-release without cause. |
 | `comparison_requires_two_analyze` | Comparison needs exactly two analyze nodes. |
-| `completed_node_sealed` | Completed nodes are immutable; branch a new node to change anything. |
 | `continue_from_invalid_node_type` | continue-from must reference a valid node type. |
 | `continue_from_not_prod` | continue-from must reference a prod node. |
 | `continue_from_parents_conflict` | continue-from conflicts with the given parents; resolve one. |
@@ -67,7 +66,6 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `implicit_solvent_topology_mismatch` | Match the run-time implicit solvent to the topology build. |
 | `implicit_solvent_xml_ambiguous` | Implicit-solvent XML is ambiguous; disambiguate the inputs. |
 | `implicit_solvent_xml_missing` | Provide the implicit-solvent XML input. |
-| `inconsistent_minimized_artifacts` | Minimized artifacts are inconsistent; rerun minimization. |
 | `input_resolution_blocked` | Resolve inputs via the DAG or provide explicit paths. |
 | `invalid_agent_skills_dir` | Point to a valid agent skills directory. |
 | `invalid_assembly_chain_naming` | Use assembly_chain_naming one of: short, add_number, dup. |
@@ -90,7 +88,6 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `invalid_node_status` | Use a valid node status value. |
 | `invalid_node_type` | Use one of: source, prep, solv, topo, min, eq, prod, analyze. |
 | `invalid_nonbonded_method` | Use a supported nonbonded_method (e.g. PME, NoCutoff, CutoffPeriodic). |
-| `invalid_openmm_bundle` | OpenMM bundle is invalid; rebuild the system triple. |
 | `invalid_prep_solvent_type` | Use a supported solvent type for prep. |
 | `invalid_protonation_state` | Use a valid protonation state specification. |
 | `invalid_slurm_job_id` | Provide a valid SLURM job id. |
@@ -164,7 +161,6 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `need_index_out_of_range` | Use a need index that exists on the node. |
 | `net_charge_exception` | Exact net-charge evaluation raised; membrane written without protein-charge neutralization. |
 | `node_already_claimed` | Another worker holds the claim; wait, or override only if stale. |
-| `node_completion_requires_artifacts` | Run the node's producer tool so completion validates and hashes its artifacts. |
 | `node_context_required` | Create the node, then run it with both --job-dir and --node-id. |
 | `node_execution_context_invalid` | Node context is invalid; fix node type/conditions or branch a new node. |
 | `node_id_requires_job_dir` | --node-id was passed without --job-dir; pass both together. |
@@ -172,6 +168,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `node_missing` | Node id does not exist; use IDs from inspect_job/explain_node. |
 | `node_mode_required` | Specify the node mode required by this tool. |
 | `node_terminal` | Node is terminal (completed/failed); branch a new node instead. |
+| `node_terminal_transition_reserved` | Let the producer or failure recorder seal terminal nodes with evidence. |
 | `node_type_mismatch` | Select or create a node whose type matches the requested tool. |
 | `node_wait_timeout` | Waiting on the node timed out; check the running job or lease. |
 | `nucleic_hydrogen_rebuild_failed` | Nucleic hydrogen rebuild failed; inspect residues. |
