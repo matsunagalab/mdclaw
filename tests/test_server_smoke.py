@@ -52,6 +52,28 @@ class TestResearchServer:
         assert result["success"] is True
         assert "chains" in result
 
+    def test_inspect_molecules_distinguishes_ions_from_ligand_flags(self, tmp_path):
+        from mdclaw.research.inspection import inspect_molecules
+
+        ion_pdb = tmp_path / "zinc.pdb"
+        ion_pdb.write_text(
+            "HETATM    1 ZN    ZN A   1      11.000  12.000  13.000  1.00 20.00          ZN\n"
+            "END\n"
+        )
+
+        result = inspect_molecules(structure_file=str(ion_pdb))
+
+        assert result["success"] is True
+        assert result["preparation_guidance"]["ions"] == {
+            "residue_names": ["ZN"],
+            "classification": "ion_not_ligand",
+            "explicit_solvent_action": "kept_by_default",
+            "do_not_select_ions_with": [
+                "--include-ligand-ids",
+                "--include-ligand-resnames",
+            ],
+        }
+
     @pytest.mark.asyncio
     async def test_download_structure(self, tmp_path):
         from mdclaw.research.fetch import download_structure

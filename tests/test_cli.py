@@ -26,6 +26,29 @@ def _dependency_available(module_name):
     return find_spec(module_name) is not None
 
 
+def test_attach_dag_handoff_reports_registered_artifacts(tmp_path):
+    from mdclaw._cli import _attach_dag_handoff
+
+    node_dir = tmp_path / "nodes" / "prep_001"
+    node_dir.mkdir(parents=True)
+    (node_dir / "node.json").write_text(json.dumps({
+        "status": "completed",
+        "artifacts": {"merged_pdb": "artifacts/merged.pdb"},
+    }))
+
+    result = _attach_dag_handoff(
+        {"success": True}, str(tmp_path), "prep_001"
+    )
+
+    assert "resolves artifacts between nodes" in result["dag_guidance"]
+    assert result["dag_handoff"] == {
+        "node_id": "prep_001",
+        "status": "completed",
+        "artifact_keys": ["merged_pdb"],
+        "next_node_inputs": "auto_resolved",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Tool Discovery
 # ---------------------------------------------------------------------------

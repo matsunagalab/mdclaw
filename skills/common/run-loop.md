@@ -1,10 +1,9 @@
 # Run Loop
 
-This is the single canonical loop every stage skill follows to advance a job.
-The source of truth is the study plan plus the per-job DAG evidence, not a
-separate next-step planner. Inspect once when entering work that needs a state
-snapshot, then use tool JSON to create and validate each candidate node before
-running it.
+MDClaw CLI manages each job as a DAG: it records node state and resolves parent
+artifacts automatically. The agent does not move files between workflow nodes.
+Inspect once on entry, then use `create -> explain -> run` for each stage. Copy
+files only when the user or an external submission contract requires an export.
 
 ## Decide How Far To Go
 
@@ -93,42 +92,24 @@ DAG handoff instead of claiming a scientific answer.
    auto-resolve ancestor artifacts (topology XML triple, restart state,
    trajectories); do not wire those paths by hand.
 
-5. **On failure, branch on `code`.**
+5. **On failure, follow the structured result.**
 
-   Use the stable `code` field (see `skills/common/guardrail-codes.md`). Never
-   parse stderr or human messages. Do not rerun a completed or partially run node
-   with different settings — create a new node/branch so stale artifacts cannot
-   mix with the new result. Preserve scientific invariants from the user request
-   or study plan when branching: target molecules, chain/ligand selections,
-   stoichiometry or ratios, solvent regime, and force-field intent. Retry
-   branches may change search or packing controls such as random seed, packing
-   budget, or recommended buffer/box expansion; do not silently simplify the
-   scientific target. If the tool output does not make the next action clear:
+   Follow `code` and `next_action` as described in
+   `skills/common/tool-output.md`. If a failed node has no clear recovery action,
+   run:
 
    ```bash
    mdclaw trace_failure --job-dir <job_dir> --node-id <failed_node_id>
    ```
 
-   Follow `recovery_options` / `next_commands` from that read-only trace; it
-   explains which completed ancestor should be used for an explicit branch.
-
-   A recoverable CLI usage error changes the invocation, not the
-   implementation. Stay on the MDClaw DAG: correct and retry the same node only
-   while it remains `pending`; if it is `failed`, use `trace_failure` and its
-   recovery options. Do not replace a failed MDClaw step with a hand-written
-   OpenMM script.
+   Follow its `next_commands`. Never retry identical parameters, mutate a
+   completed node, or replace an MDClaw stage with a hand-written workflow.
 
 ## Node CLI Invariants
 
-- Create the workflow node first, then run the mutating tool with both
-  `--job-dir` and `--node-id`. Do not try a bare workflow command and add node
-  context after it fails; a bare call returns `code=node_context_required`.
 - Never pass `--node-id` without `--job-dir`.
-- Let workflow tools auto-resolve ancestor artifacts. For topology tools this is
-  mandatory in normal workflows: build from the completed `solv` parent for
-  explicit/membrane systems or the completed `prep` parent for implicit/vacuum
-  systems. Do not pass a raw/manual PDB into topology generation, and do not hand
-  wire restart state or trajectory paths.
+- Do not pass artifact paths between nodes. Workflow tools resolve inputs from
+  completed DAG ancestors.
 - Start new scientific work from a `study_dir`; a simple run can use one job such
   as `jobs/main`. One job DAG has exactly one `source` node, but that node may
   hold a bundle with multiple candidate structures under `artifacts/candidates/`.
@@ -152,11 +133,8 @@ and production do not read it; they apply the loop above directly.
 
 ## Re-entry And Resume
 
-Coming back to an existing job is the same loop: start with `inspect_job`, then
-`explain_node` on any candidate node before running it. Continue only when
-`ready_to_run=true` or the reported `validation.blocking_codes` have been
-resolved. Do not rerun a completed/partial node with different settings and do
-not delete node directories; branch from a valid ancestor instead.
+On re-entry, start with `inspect_job`, then resume the loop from the relevant
+node. Run a candidate only when `explain_node` reports `ready_to_run=true`.
 
 ## Working A Shared Job (Multiple Agents)
 

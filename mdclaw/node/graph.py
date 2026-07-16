@@ -18,7 +18,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-from mdclaw.node.constants import NODE_STATUSES  # noqa: E402
+from mdclaw.node.constants import DAG_GUIDANCE, NODE_STATUSES  # noqa: E402
 from mdclaw.node.io import _resolve_structured_artifact_paths  # noqa: E402
 from mdclaw.node.progress import _load_progress_v3  # noqa: E402
 
@@ -100,6 +100,7 @@ def inspect_job(job_dir: str) -> dict:
     return {
         "success": True,
         "code": "ok",
+        "dag_guidance": DAG_GUIDANCE,
         "job_dir": str(jd),
         "job_id": progress.get("job_id"),
         "schema_version": progress.get("schema_version"),

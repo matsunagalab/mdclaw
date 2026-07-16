@@ -54,6 +54,12 @@ OPERATIONAL_METADATA_KEYS = ("claimed_by", "claim_expires_at", "open_needs")
 SCHEMA_VERSION = 3
 
 
+DAG_GUIDANCE = (
+    "MDClaw CLI manages the job DAG and resolves artifacts between nodes; "
+    "do not copy artifacts or pass artifact paths between workflow nodes."
+)
+
+
 _STRUCTURED_ARTIFACT_PATH_KEYS = frozenset({
     "path",
     "raw_file",

@@ -125,6 +125,7 @@ class TestCreateNode:
     def test_basic_creation(self, job_dir):
         result = create_node(str(job_dir), "prep")
         assert result["success"] is True
+        assert "resolves artifacts between nodes" in result["dag_guidance"]
         assert result["node_id"] == "prep_001"
         assert Path(result["node_dir"]).exists()
         assert Path(result["artifacts_dir"]).exists()
@@ -743,6 +744,7 @@ class TestReadOnlyInspection:
 
         assert summary["success"] is True
         assert summary["code"] == "ok"
+        assert "resolves artifacts between nodes" in summary["dag_guidance"]
         assert summary["node_count"] == 2
         assert summary["status_counts"]["completed"] == 1
         assert summary["status_counts"]["running"] == 1
@@ -759,6 +761,7 @@ class TestReadOnlyInspection:
         explanation = explain_node(str(job_dir), "solv_001")
 
         assert explanation["success"] is True
+        assert "resolves artifacts between nodes" in explanation["dag_guidance"]
         assert explanation["node_type"] == "solv"
         assert explanation["parents"] == ["prep_001"]
         assert explanation["parent_statuses"] == {"prep_001": "completed"}

@@ -9,6 +9,9 @@ You are a computational biophysics expert helping users prepare MD simulations
 with the MDClaw CLI. This page is the complete normal-path spine; linked pages
 provide conditional detail and do not need to be read in a fixed order.
 
+**MDClaw CLI manages node state and artifact handoff.** Do not manage files
+between workflow nodes; follow `skills/common/run-loop.md`.
+
 ## Pre-command Gate
 
 Before the first state-changing command:
@@ -31,10 +34,6 @@ Before the first state-changing command:
    use `mdclaw --list-json <tool>`. Only if that is insufficient, read the
    complete `mdclaw <tool> --help`. Never pipe CLI discovery or help through
    `head`, `tail`, or `grep`.
-6. On `success: false`, branch on the structured `code`. Correct a recoverable
-   CLI usage error on the same node only while it remains `pending`; otherwise
-   trace the failure and create an explicit branch.
-
 Use IDs returned by tools, never literal example IDs. Read
 `skills/common/run-loop.md` for re-entry, shared-job, and failure detail;
 `skills/common/tool-output.md` for unfamiliar responses; and
@@ -223,28 +222,3 @@ candidate should be included.
 - **`human_in_the_loop`**: Pause at every decision checkpoint and confirm the
   next action with the user. The full checkpoint list and the confirmation
   loop is summarized in `skills/md-prepare/checkpoints.md`.
-
-## Error Handling
-
-Use structured JSON fields from tool output to decide next steps. **Never parse stderr or warning strings to make decisions.**
-
-Key fields to check:
-- `overall_status` — `success`, `completed_with_blocking_ligand_failure`, or `failed`
-- `ligand_chemistry` — ligand SDF/SMILES/provenance for topology
-- `workflow_recommendation` — contains `options` (list of valid next actions)
-- `recommended_next_action` — per-ligand: `provide_smiles_or_exclude_ligand`, `hard_fail`
-- `failure_class` — what went wrong. Common classes include `input_error`,
-  `metal_atoms`, `ligand_chemistry_failed`, and `unexpected_error`.
-
-Rules:
-- Ligand charge comes from charged SMILES/SDF, not an integer note. Use
-  explicit formal charges such as `[O-]` or `[NH3+]`.
-- If `recommended_next_action = provide_smiles_or_exclude_ligand`: ask for a
-  chemistry source or exclude the ligand; do not continue with an untyped PDB
-  ligand.
-- If `recommended_next_action = hard_fail`: stop immediately. Do not attempt workarounds.
-- Retrying the same command with identical parameters will produce the same error.
-- If stuck, report the structured error fields and ask the user for guidance.
-- The full HITL interaction loop (check `confirmation_needed`, respect
-  `source`, re-run with overrides if needed) is documented in
-  `skills/md-prepare/checkpoints.md`.

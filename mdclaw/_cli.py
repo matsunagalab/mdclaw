@@ -29,6 +29,7 @@ from typing import TextIO, Union, get_args, get_origin
 from mdclaw import __version__
 from mdclaw._common import finalize_error
 from mdclaw._registry import SERVER_REGISTRY
+from mdclaw.node.constants import DAG_GUIDANCE
 from mdclaw._tool_meta import tool_job_dir_is_data, tool_node_type, tool_requires_node
 
 # Tools consolidated during the schema-v3 refactor. Old names are no longer
@@ -50,6 +51,26 @@ _RENAMED_TOOLS = {
 # Global options that consume a following value, used to locate the subcommand
 # token when scanning argv for a renamed tool.
 _GLOBAL_VALUE_OPTIONS = {"--job-dir", "--node-id", "--list-json"}
+
+
+def _attach_dag_handoff(result, job_dir, node_id):
+    """Add the completed node contract to a workflow tool result."""
+    if not isinstance(result, dict) or not job_dir or not node_id:
+        return result
+    result.setdefault("dag_guidance", DAG_GUIDANCE)
+    try:
+        node = json.loads(
+            (Path(job_dir) / "nodes" / node_id / "node.json").read_text()
+        )
+    except (OSError, json.JSONDecodeError):
+        return result
+    result["dag_handoff"] = {
+        "node_id": node_id,
+        "status": node.get("status"),
+        "artifact_keys": sorted((node.get("artifacts") or {}).keys()),
+        "next_node_inputs": "auto_resolved",
+    }
+    return result
 
 
 def _detect_subcommand(argv: list[str]) -> str | None:
@@ -1238,6 +1259,12 @@ def main(argv: list[str] | None = None) -> None:
                     else _json_stdout_tail(result)
                 ),
                 stderr_tail=tool_stderr_tail or None,
+            )
+        if not exit_code and requires_node:
+            result = _attach_dag_handoff(
+                result,
+                effective_job_dir,
+                effective_node_id,
             )
         _write_benchmark_harness_record(
             tool_name=tool_name,

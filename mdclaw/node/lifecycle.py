@@ -21,7 +21,7 @@ from mdclaw._lock import file_lock
 
 logger = logging.getLogger(__name__)
 
-from mdclaw.node.constants import IMMUTABLE_NODE_UPDATE_KEYS, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPES, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, _ALLOWED_PARENT_TYPES, _AUTO_PARENT_PREFERENCE  # noqa: E402
+from mdclaw.node.constants import DAG_GUIDANCE, IMMUTABLE_NODE_UPDATE_KEYS, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPES, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, _ALLOWED_PARENT_TYPES, _AUTO_PARENT_PREFERENCE  # noqa: E402
 from mdclaw.node.io import _atomic_write_json, _parse_iso_datetime, _sha256_path, _values_match, normalize_artifact_paths  # noqa: E402
 from mdclaw.node.progress import _load_progress_v3, _next_node_id, _node_progress_summary, _sync_progress_node_entry  # noqa: E402
 from mdclaw.node.validation import _completed_node_sealed_response, _node_is_completed, _normalize_node_status, _validate_analyze_conditions  # noqa: E402
@@ -399,6 +399,7 @@ def create_node(
     logger.info(f"Node created: {node_id} (type={node_type}, parents={parents})")
     result = {
         "success": True,
+        "dag_guidance": DAG_GUIDANCE,
         "node_id": node_id,
         "node_dir": str(node_dir),
         "artifacts_dir": str(artifacts_dir),

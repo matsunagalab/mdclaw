@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+from mdclaw.node.constants import DAG_GUIDANCE  # noqa: E402
 from mdclaw.node.graph import find_ancestor_artifact, get_ancestors  # noqa: E402
 from mdclaw.node.io import _load_json_artifact, _read_artifact_from_node, _read_continued_from, _read_metadata_field, _read_node_metadata, _sanitize_label  # noqa: E402
 from mdclaw.node.lifecycle import read_node, validate_node_execution_context  # noqa: E402
@@ -69,6 +70,7 @@ def explain_node(
     return {
         "success": True,
         "code": "ok",
+        "dag_guidance": DAG_GUIDANCE,
         "job_dir": str(jd),
         "node_id": node_id,
         "node_type": node_type,

@@ -287,6 +287,7 @@ def inspect_molecules(
         "entities": [],
         "num_models": 0,
         "chains": [],
+        "preparation_guidance": {},
         "summary": {
             "num_protein_chains": 0,
             "num_nucleic_chains": 0,
@@ -605,6 +606,36 @@ def inspect_molecules(
             chains_info.append(chain_info)
 
         result["chains"] = chains_info
+        ion_residue_names = sorted({
+            name
+            for chain in chains_info
+            if chain["chain_type"] == "ion"
+            for name in chain["residue_names"]
+        })
+        ligand_residue_names = sorted({
+            name
+            for chain in chains_info
+            if chain["chain_type"] == "ligand"
+            for name in chain["residue_names"]
+        })
+        result["preparation_guidance"] = {
+            "ions": {
+                "residue_names": ion_residue_names,
+                "classification": "ion_not_ligand",
+                "explicit_solvent_action": "kept_by_default",
+                "do_not_select_ions_with": [
+                    "--include-ligand-ids",
+                    "--include-ligand-resnames",
+                ],
+            },
+            "ligands": {
+                "residue_names": ligand_residue_names,
+                "selection_flags": [
+                    "--include-ligand-ids",
+                    "--include-ligand-resnames",
+                ],
+            },
+        }
         # Build label -> author mapping from per-chain records. gemmi reports
         # chain_id=label_asym_id and author_chain=auth_asym_id; surfacing the
         # mapping in summary lets callers disambiguate mmCIF entries where
