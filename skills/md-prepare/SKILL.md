@@ -20,8 +20,8 @@ Before the first state-changing command:
    stopping stage, `solvent_regime`, and interaction mode, and prepare the Step
    0 summary below. Explicit solvent and `autonomous` are the defaults unless
    the user says otherwise.
-2. Use the MDClaw CLI and DAG. Do not replace a stage with a hand-written OpenMM
-   workflow or search for force-field XML files.
+2. Try the canonical MDClaw stage before custom MD code; bare `mdclaw` uses the
+   configured dependency-complete runtime; unsupported results permit another toolchain.
 3. Start new work with `bootstrap_md_workflow`; broader comparisons use
    `md-study`. Immediately inspect the returned job once. Also run `inspect_job`
    on re-entry, before shared-job work, or when branch parents are ambiguous.
