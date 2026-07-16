@@ -500,6 +500,20 @@ class TestArgparseConstruction:
         ])
         assert args.salt is False
 
+        args = parser.parse_args([
+            "solvate_structure",
+            "--pdb-file", "test.pdb",
+            "--salt", "true",
+        ])
+        assert args.salt is True
+
+        args = parser.parse_args([
+            "solvate_structure",
+            "--pdb-file", "test.pdb",
+            "--salt", "false",
+        ])
+        assert args.salt is False
+
     def test_list_params(self):
         from mdclaw._cli import _build_parser, _discover_tools
 
@@ -660,6 +674,12 @@ class TestArgparseConstruction:
         assert params["pdb_file"]["cli_flag"] == "--pdb-file"
         assert params["water_model"]["default"] == "opc"
         assert params["salt"]["cli_action"] == "boolean_optional"
+        assert params["salt"]["accepted_cli_forms"] == [
+            "--salt",
+            "--no-salt",
+            "--salt true",
+            "--salt false",
+        ]
         assert params["job_dir"]["required"] is True
         assert params["job_dir"]["has_default"] is False
         assert params["node_id"]["required"] is True

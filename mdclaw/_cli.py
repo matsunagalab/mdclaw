@@ -303,7 +303,7 @@ def _coerce_value(value, hint):
     inner, _ = _unwrap_optional(hint)
 
     if inner is bool:
-        # Handled by BooleanOptionalAction, value is already bool
+        # Parsed by the boolean CLI arguments, so the value is already bool.
         return value
     if inner is int:
         return int(value)
@@ -326,6 +326,16 @@ def _coerce_value(value, hint):
             return json.loads(value)
         return value
     return value
+
+
+def _parse_cli_bool(value: str) -> bool:
+    """Parse an explicit boolean value while keeping flag-only CLI support."""
+    normalized = value.lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise argparse.ArgumentTypeError("expected 'true' or 'false'")
 
 
 # ---------------------------------------------------------------------------
@@ -414,9 +424,18 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
                 default_val = param.default if param.default is not inspect.Parameter.empty else False
                 sub.add_argument(
                     cli_name,
-                    action=argparse.BooleanOptionalAction,
+                    nargs="?",
+                    const=True,
+                    type=_parse_cli_bool,
                     default=default_val,
-                    help=f"(bool, default: {default_val})",
+                    help=f"(bool: true/false, default: {default_val})",
+                )
+                sub.add_argument(
+                    f"--no-{pname.replace('_', '-')}",
+                    dest=pname,
+                    action="store_false",
+                    default=argparse.SUPPRESS,
+                    help=f"(set {pname}=false)",
                 )
             elif _is_list_of_str(inner):
                 sub.add_argument(
@@ -853,6 +872,12 @@ def _tool_parameter_schemas(tool_name: str, fn) -> list[dict]:
         }
         if inner is bool:
             entry["cli_action"] = "boolean_optional"
+            entry["accepted_cli_forms"] = [
+                cli_flag,
+                f"--no-{pname.replace('_', '-')}",
+                f"{cli_flag} true",
+                f"{cli_flag} false",
+            ]
         elif _is_cli_repeated_string_param(tool_name, pname):
             entry["nargs"] = "+"
             entry["join_repeated_values_with"] = ":"
