@@ -297,15 +297,19 @@ def build_openmm_system(
                 **_ctx,
             })
 
-        if not pdb_file:
-            _inputs = resolve_node_inputs(job_dir, node_id, "topo")
-            if "input_resolution_error" in _inputs:
-                return _emit_failure({
-                    **result,
-                    "errors": result["errors"] + [_inputs["input_resolution_error"]],
-                    "code": "input_resolution_blocked",
-                })
-            pdb_file = _inputs.get("pdb_file")
+        _inputs = resolve_node_inputs(
+            job_dir,
+            node_id,
+            "topo",
+            explicit_paths={"pdb_file": pdb_file} if pdb_file else None,
+        )
+        if "input_resolution_error" in _inputs:
+            return _emit_failure({
+                **result,
+                "errors": result["errors"] + [_inputs["input_resolution_error"]],
+                "code": "input_resolution_blocked",
+            })
+        pdb_file = _inputs.get("pdb_file")
 
         out_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
         out_dir.mkdir(parents=True, exist_ok=True)

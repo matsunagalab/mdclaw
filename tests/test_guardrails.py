@@ -57,6 +57,20 @@ def _write_minimal_box_pdb(path: Path) -> None:
     )
 
 
+def _create_completed_prep(job_dir: Path, pdb_file: Path) -> str:
+    prep = create_node(str(job_dir), "prep")
+    assert prep["success"] is True
+    merged = job_dir / "nodes" / prep["node_id"] / "artifacts" / "merge" / "merged.pdb"
+    merged.parent.mkdir(parents=True, exist_ok=True)
+    merged.write_text(pdb_file.read_text())
+    complete_node(
+        str(job_dir),
+        prep["node_id"],
+        artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+    )
+    return str(merged)
+
+
 def test_common_file_and_tool_errors_have_stable_codes():
     missing = create_file_not_found_error("missing.pdb", "structure file")
     assert missing["success"] is False
@@ -342,7 +356,8 @@ def test_build_amber_system_marks_water_model_unused_for_vacuum_topology(tmp_pat
     _write_minimal_pdb(pdb_file)
     job_dir = tmp_path / "job_implicit"
     update_job_params(str(job_dir), {"water_model": "opc"})
-    node = create_node(str(job_dir), "topo")
+    merged_pdb = _create_completed_prep(job_dir, pdb_file)
+    node = create_node(str(job_dir), "topo", parent_node_ids=["prep_001"])
     assert node["success"] is True
 
     # Mock the openmmforcefields build helper rather than tleap; PR3 retires
@@ -372,7 +387,7 @@ def test_build_amber_system_marks_water_model_unused_for_vacuum_topology(tmp_pat
         side_effect=_fake_om_build,
     ):
         result = build_amber_system(
-            pdb_file=str(pdb_file),
+            pdb_file=merged_pdb,
             job_dir=str(job_dir),
             node_id=node["node_id"],
             forcefield="ff14SB",
@@ -415,6 +430,36 @@ def test_build_amber_system_explicit_false_overrides_membrane_dag_metadata():
 
     assert result["success"] is True
     assert result["is_membrane"] is False
+
+
+def test_build_amber_system_rejects_explicit_pdb_outside_dag(tmp_path):
+    job_dir = tmp_path / "job"
+    source_pdb = tmp_path / "input.pdb"
+    _write_minimal_pdb(source_pdb)
+    _create_completed_prep(job_dir, source_pdb)
+    node = create_node(str(job_dir), "topo", parent_node_ids=["prep_001"])
+    partial = job_dir / "nodes" / "topo_failed" / "artifacts" / "partial.pdb"
+    partial.parent.mkdir(parents=True, exist_ok=True)
+    _write_minimal_pdb(partial)
+
+    result = _resolve_build_amber_node_inputs(
+        job_dir=str(job_dir),
+        node_id=node["node_id"],
+        actual_conditions={},
+        pdb_file=str(partial),
+        ligand_chemistry=None,
+        modxna_params=None,
+        disulfide_bonds=None,
+        glycan_metadata=None,
+        glycan_linkages=None,
+        box_dimensions=None,
+        is_membrane=None,
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "input_resolution_blocked"
+    assert "conflicts with DAG-resolved artifact" in result["errors"][0]
+    assert read_node(str(job_dir), node["node_id"])["status"] == "failed"
 
 
 def test_build_amber_system_unspecified_membrane_uses_dag_metadata():
@@ -485,7 +530,8 @@ def test_solvate_structure_node_mode_openmm_fallback_writes_artifacts_directly(t
     pdb_file = tmp_path / "input.pdb"
     _write_minimal_pdb(pdb_file)
     job_dir = tmp_path / "job"
-    create_node(str(job_dir), "solv")
+    merged_pdb = _create_completed_prep(job_dir, pdb_file)
+    create_node(str(job_dir), "solv", parent_node_ids=["prep_001"])
     node_id = "solv_001"
 
     def _fake_openmm(*, pdb_path, result, output_dir, output_name, dist,
@@ -517,7 +563,7 @@ def test_solvate_structure_node_mode_openmm_fallback_writes_artifacts_directly(t
          patch("mdclaw.solvation.water._solvate_with_openmm",
                side_effect=_fake_openmm):
         result = solvate_structure(
-            pdb_file=str(pdb_file),
+            pdb_file=merged_pdb,
             water_model="tip3p",
             job_dir=str(job_dir),
             node_id=node_id,
@@ -733,9 +779,11 @@ def test_build_amber_system_passes_hmr_and_implicit_into_node_conditions(tmp_pat
     _write_minimal_pdb(pdb)
     job_dir = tmp_path / "job_hmr_condition_match"
     update_job_params(str(job_dir), {"water_model": "opc"})
+    merged_pdb = _create_completed_prep(job_dir, pdb)
     node = create_node(
         str(job_dir),
         "topo",
+        parent_node_ids=["prep_001"],
         conditions={"hmr": True},
     )
     assert node["success"] is True
@@ -766,7 +814,7 @@ def test_build_amber_system_passes_hmr_and_implicit_into_node_conditions(tmp_pat
     ):
         # Matching hmr=True against the declared condition succeeds.
         ok = build_amber_system(
-            pdb_file=str(pdb),
+            pdb_file=merged_pdb,
             job_dir=str(job_dir),
             node_id=node["node_id"],
             forcefield="ff14SB",
@@ -786,9 +834,11 @@ def test_build_amber_system_blocks_hmr_condition_mismatch(tmp_path):
     _write_minimal_pdb(pdb)
     job_dir = tmp_path / "job_hmr_condition_mismatch"
     update_job_params(str(job_dir), {"water_model": "opc"})
+    merged_pdb = _create_completed_prep(job_dir, pdb)
     node = create_node(
         str(job_dir),
         "topo",
+        parent_node_ids=["prep_001"],
         conditions={"hmr": True},
     )
     assert node["success"] is True
@@ -805,7 +855,7 @@ def test_build_amber_system_blocks_hmr_condition_mismatch(tmp_path):
         side_effect=_fake_om_build,
     ):
         result = build_amber_system(
-            pdb_file=str(pdb),
+            pdb_file=merged_pdb,
             job_dir=str(job_dir),
             node_id=node["node_id"],
             forcefield="ff14SB",
@@ -832,7 +882,8 @@ def test_build_amber_system_node_missing_pdb_marks_failed(tmp_path):
     result = build_amber_system(job_dir=str(job_dir), node_id=node["node_id"])
 
     assert result["success"] is False
-    assert result["code"] in {"input_resolution_blocked", "missing_pdb_file"}
+    assert result["code"] == "node_execution_context_invalid"
+    assert "parent_required" in result["blocking_codes"]
     assert read_node(str(job_dir), node["node_id"])["status"] == "failed"
 
 
@@ -846,7 +897,8 @@ def test_prepare_complex_node_input_resolution_marks_failed(tmp_path):
     result = prepare_complex(job_dir=str(job_dir), node_id=node["node_id"])
 
     assert result["success"] is False
-    assert result["code"] in {"input_resolution_blocked", "missing_structure_file"}
+    assert result["code"] == "node_execution_context_invalid"
+    assert "parent_required" in result["blocking_codes"]
     assert read_node(str(job_dir), node["node_id"])["status"] == "failed"
 
 

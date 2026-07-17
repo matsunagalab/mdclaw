@@ -444,11 +444,14 @@ def resolve_node_inputs(
     job_dir: str,
     node_id: str,
     node_type: str,
+    *,
+    explicit_paths: Optional[dict[str, str]] = None,
 ) -> dict:
     """Auto-resolve standard input files for a node from its DAG ancestors.
 
-    Returns a dict of resolved absolute paths.  Missing artifacts are
-    omitted (the caller should fall back to explicit parameters).
+    Returns a dict of resolved absolute paths. In node mode, ``explicit_paths``
+    may name caller-supplied file inputs; a value that differs from the
+    canonical DAG artifact is rejected instead of overriding provenance.
 
     Mappings:
 
@@ -766,5 +769,23 @@ def resolve_node_inputs(
             if ref_pdb is not None:
                 result["reference_pdb"] = ref_pdb
         # Other shapes were rejected at create_node time.
+
+    for key, explicit in (explicit_paths or {}).items():
+        if not explicit:
+            continue
+        resolved = result.get(key)
+        if not isinstance(resolved, str):
+            _record_input_resolution_error(
+                result,
+                f"DAG did not resolve canonical input '{key}' for '{node_id}'; "
+                f"explicit path overrides are not allowed in node mode",
+            )
+            continue
+        if Path(explicit).resolve() != Path(resolved).resolve():
+            _record_input_resolution_error(
+                result,
+                f"Explicit {key} '{Path(explicit).resolve()}' conflicts with "
+                f"DAG-resolved artifact '{Path(resolved).resolve()}' for '{node_id}'",
+            )
 
     return result

@@ -333,10 +333,16 @@ def solvate_structure(
                 default_error="solvate_structure node execution context invalid",
             )
     
-    # Auto-resolve inputs from DAG when in node mode.
-    if job_dir and node_id and (not pdb_file or ligand_chemistry is None):
+    # Node mode always uses the canonical DAG input. An explicit path may only
+    # repeat that same artifact; it cannot replace the parent provenance.
+    if job_dir and node_id:
         from mdclaw._node import resolve_node_inputs
-        _inputs = resolve_node_inputs(job_dir, node_id, "solv")
+        _inputs = resolve_node_inputs(
+            job_dir,
+            node_id,
+            "solv",
+            explicit_paths={"pdb_file": pdb_file} if pdb_file else None,
+        )
         if "input_resolution_error" in _inputs:
             blocked = create_validation_error(
                 "job_dir/node_id",
@@ -348,9 +354,8 @@ def solvate_structure(
                 },
                 code="input_resolution_blocked",
             )
-            from mdclaw._node import fail_node
-            fail_node(job_dir, node_id, errors=blocked.get("errors", []))
-            return blocked
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(job_dir, node_id, blocked)
         if "pdb_file" in _inputs:
             pdb_file = _inputs["pdb_file"]
         if ligand_chemistry is None and "ligand_chemistry" in _inputs:

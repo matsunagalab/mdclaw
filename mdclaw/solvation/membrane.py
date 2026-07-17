@@ -1801,16 +1801,30 @@ def embed_in_membrane(
                 default_error="embed_in_membrane node execution context invalid",
             )
 
-    # Auto-resolve input from DAG when in node mode and pdb_file not provided
-    if job_dir and node_id and not pdb_file:
+    # Node mode always uses the canonical DAG input. An explicit path may only
+    # repeat that same artifact; it cannot replace the parent provenance.
+    if job_dir and node_id:
         from mdclaw._node import resolve_node_inputs
-        _inputs = resolve_node_inputs(job_dir, node_id, "solv")
-        if "pdb_file" in _inputs:
-            pdb_file = _inputs["pdb_file"]
-        elif "input_resolution_errors" in _inputs:
-            result["errors"].extend(_inputs["input_resolution_errors"])
-        elif "input_resolution_error" in _inputs:
-            result["errors"].append(_inputs["input_resolution_error"])
+        _inputs = resolve_node_inputs(
+            job_dir,
+            node_id,
+            "solv",
+            explicit_paths={"pdb_file": pdb_file} if pdb_file else None,
+        )
+        if "input_resolution_error" in _inputs:
+            blocked = create_validation_error(
+                "job_dir/node_id",
+                _inputs["input_resolution_error"],
+                expected="Completed prep ancestor with merged_pdb artifact",
+                actual=f"job_dir={job_dir}, node_id={node_id}",
+                context_extra={
+                    "input_resolution_errors": _inputs.get("input_resolution_errors", []),
+                },
+                code="input_resolution_blocked",
+            )
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(job_dir, node_id, blocked)
+        pdb_file = _inputs.get("pdb_file")
 
     if not pdb_file:
         result["errors"].append(

@@ -576,6 +576,25 @@ class TestCreateNode:
 
 class TestValidateNodeExecutionContext:
 
+    def test_rejects_parentless_non_source_node(self, job_dir):
+        result = create_node(str(job_dir), "solv")
+        assert result["success"]
+
+        ctx = validate_node_execution_context(str(job_dir), "solv_001", "solv")
+
+        assert ctx["success"] is False
+        assert "parent_required" in ctx["blocking_codes"]
+        assert any("requires a parent" in error for error in ctx["errors"])
+
+    def test_parentless_node_can_still_be_inspected(self, job_dir):
+        result = create_node(str(job_dir), "solv")
+        assert result["success"]
+
+        explanation = explain_node(str(job_dir), "solv_001")
+
+        assert explanation["ready_to_run"] is False
+        assert "parent_required" in explanation["validation"]["blocking_codes"]
+
     def test_rejects_unfinished_parent(self, job_dir):
         create_node(str(job_dir), "prep")
         result = create_node(str(job_dir), "solv", parent_node_ids=["prep_001"])
@@ -2102,6 +2121,36 @@ class TestDAGAutoResolve:
         assert result is not None
         assert result.endswith("prep_001/artifacts/merge/merged.pdb")
 
+    def test_explicit_path_cannot_override_dag_input(self, full_dag):
+        jd = str(full_dag)
+        failed_partial = (
+            full_dag / "nodes" / "topo_999" / "artifacts" / "partial.pdb"
+        )
+
+        inputs = resolve_node_inputs(
+            jd,
+            "topo_001",
+            "topo",
+            explicit_paths={"pdb_file": str(failed_partial)},
+        )
+
+        assert "input_resolution_error" in inputs
+        assert "conflicts with DAG-resolved artifact" in inputs["input_resolution_error"]
+
+    def test_explicit_canonical_path_is_accepted(self, full_dag):
+        jd = str(full_dag)
+        canonical = resolve_node_inputs(jd, "topo_001", "topo")["pdb_file"]
+
+        inputs = resolve_node_inputs(
+            jd,
+            "topo_001",
+            "topo",
+            explicit_paths={"pdb_file": canonical},
+        )
+
+        assert "input_resolution_error" not in inputs
+        assert inputs["pdb_file"] == canonical
+
     def test_find_ancestor_skips_intermediate(self, full_dag):
         """prod_001 -> eq_001 -> topo_001: the topo's system_xml is 2 hops away."""
         jd = str(full_dag)
@@ -3443,6 +3492,36 @@ class TestStructuredArtifactPropagation:
         # box_dimensions loaded inline from solv's JSON file
         assert "box_dimensions" in inputs
         assert inputs["box_dimensions"] == box
+
+    def test_resolve_topo_preserves_glycan_linkages_through_solv(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        prep_artifacts = job_dir / "nodes" / "prep_001" / "artifacts"
+        prep_artifacts.mkdir(parents=True, exist_ok=True)
+        linkages = [{
+            "protein": {"chain": "A", "resnum": 116, "atom": "ND2"},
+            "glycan": {"chain": "D", "resnum": 1, "atom": "C1"},
+        }]
+        (prep_artifacts / "glycan_linkages.json").write_text(json.dumps(linkages))
+        complete_node(
+            jd,
+            "prep_001",
+            artifacts={
+                "merged_pdb": "artifacts/merge/merged.pdb",
+                "glycan_linkages": "artifacts/glycan_linkages.json",
+            },
+        )
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(
+            jd,
+            "solv_001",
+            artifacts={"solvated_pdb": "artifacts/solvated.pdb"},
+        )
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+
+        inputs = resolve_node_inputs(jd, "topo_001", "topo")
+
+        assert inputs["glycan_linkages"] == linkages
 
     def test_resolve_solv_inputs_includes_ligand_chemistry(self, dag_with_ligand):
         """prep -> solv must carry ligand charge metadata before ionization."""

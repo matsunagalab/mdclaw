@@ -111,7 +111,12 @@ def _resolve_build_amber_node_inputs(
             default_error="build_amber_system node execution context invalid",
         )
 
-    inputs = resolve_node_inputs(job_dir, node_id, "topo")
+    inputs = resolve_node_inputs(
+        job_dir,
+        node_id,
+        "topo",
+        explicit_paths={"pdb_file": pdb_file} if pdb_file else None,
+    )
     if "input_resolution_error" in inputs:
         return fail_node_from_result(
             job_dir,
@@ -130,7 +135,7 @@ def _resolve_build_amber_node_inputs(
         )
     return {
         "success": True,
-        "pdb_file": pdb_file or inputs.get("pdb_file"),
+        "pdb_file": inputs.get("pdb_file"),
         "ligand_chemistry": (
             ligand_chemistry
             if ligand_chemistry is not None

@@ -1065,6 +1065,12 @@ def validate_node_execution_context(
         add_error("node_missing_from_progress", f"Node '{node_id}' is missing from progress.json")
 
     allowed_parent_types = _ALLOWED_PARENT_TYPES.get(expected_node_type, frozenset())
+    if expected_node_type != "source" and not node.get("parent_node_ids"):
+        add_error(
+            "parent_required",
+            f"Node '{node_id}' of type '{expected_node_type}' requires a parent; "
+            "create a new node with --parent-node-ids",
+        )
     for parent_id in node.get("parent_node_ids", []):
         parent_entry = index.get(parent_id)
         parent_type = parent_entry.get("type") if parent_entry else None
