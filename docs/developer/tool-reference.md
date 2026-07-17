@@ -333,10 +333,12 @@ signature, update the relevant section here and the matching skill examples.
   explicit subjects and mapping. When `parent_node_ids` is omitted, the
   canonical forward parent auto-resolves from the current completed frontier
   (the single completed leaf of the preferred parent type) and is reported as
-  `auto_resolved_parent`; ambiguous or empty frontiers stay parent-less so
-  branching/sketching is unaffected. Failure returns carry a stable `code`
-  (e.g. `invalid_node_type`, `source_already_exists`, `analyze_parents_mixed`,
-  `referenced_node_missing`). Successful creation returns a `next_command`
+  `auto_resolved_parent`. In canonical study jobs, ambiguous or empty frontiers
+  return `node_context_required` plus candidate parents without creating a
+  node; bare repair job directories keep the legacy parent-less behavior.
+  Failure returns carry a stable `code` (e.g. `invalid_node_type`,
+  `source_already_exists`, `analyze_parents_mixed`, `referenced_node_missing`).
+  Successful creation returns a `next_command`
   pointing to the read-only `explain_node` preflight for the new node.
 - `inspect_job(...)`: read-only summary of node statuses, leaves, unfinished-node
   claims/open needs, warnings, and the progress index for weak-agent re-entry.

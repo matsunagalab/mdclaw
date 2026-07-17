@@ -238,6 +238,16 @@ def score_benchmark_submission(
     agents are not required to self-report metrics, hashes, or minimized PDBs.
     Returns a dict with the score payload and the path to score.json.
     """
+    missing_dependencies = scoring.missing_scorer_dependencies()
+    if missing_dependencies:
+        return {
+            "success": False,
+            "failure_class": "scorer_dependency_missing",
+            "errors": [
+                "Scorer runtime is missing required dependencies: "
+                + ", ".join(missing_dependencies)
+            ],
+        }
     task_path = Path(task_file)
     sub_dir = Path(submission_dir)
 
@@ -355,6 +365,16 @@ def validate_and_score_benchmark_submission(
     exposes the canonical pass/fail fields so callers do not need to know the
     internal shape returned by :func:`score_benchmark_submission`.
     """
+    missing_dependencies = scoring.missing_scorer_dependencies()
+    if missing_dependencies:
+        return {
+            "success": False,
+            "failure_class": "scorer_dependency_missing",
+            "errors": [
+                "Scorer runtime is missing required dependencies: "
+                + ", ".join(missing_dependencies)
+            ],
+        }
     sub_dir = Path(submission_dir)
     try:
         task = validation.load_task(task_file)

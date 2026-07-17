@@ -376,10 +376,20 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
         fn = info["fn"]
         desc_first_line = (info["description"].split("\n")[0].strip()
                           if info["description"] else "")
+        if info.get("requires_node"):
+            description = (
+                f"{desc_first_line}\n\n"
+                "CLI workflow contract: DAG-only. Pass --job-dir and --node-id "
+                "after create_node and explain_node. Input artifacts are resolved "
+                "from the DAG; file arguments cannot override DAG inputs. Use "
+                f"'mdclaw --list-json {tool_name}' for the complete parameter schema."
+            )
+        else:
+            description = info["description"]
         sub = subparsers.add_parser(
             tool_name,
             help=desc_first_line,
-            description=info["description"],
+            description=description,
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
         sub.add_argument(
@@ -407,7 +417,11 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
 
             inner, is_optional = _unwrap_optional(hint)
             cli_name = "--" + pname.replace("_", "-")
-            required = param.default is inspect.Parameter.empty and not is_optional
+            required = (
+                param.default is inspect.Parameter.empty and not is_optional
+            ) or (
+                info.get("requires_node") and pname in {"job_dir", "node_id"}
+            )
 
             if _is_cli_repeated_string_param(tool_name, pname):
                 sub.add_argument(
@@ -464,7 +478,10 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
                     type=int,
                     default=param.default if param.default is not inspect.Parameter.empty else None,
                     required=False,
-                    help=f"(int, default: {param.default if param.default is not inspect.Parameter.empty else 'required'})",
+                    help=(
+                        "(int, default: required)" if required else
+                        f"(int, default: {param.default})"
+                    ),
                 )
             elif inner is float:
                 sub.add_argument(
@@ -472,7 +489,10 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
                     type=float,
                     default=param.default if param.default is not inspect.Parameter.empty else None,
                     required=False,
-                    help=f"(float, default: {param.default if param.default is not inspect.Parameter.empty else 'required'})",
+                    help=(
+                        "(float, default: required)" if required else
+                        f"(float, default: {param.default})"
+                    ),
                 )
             elif _is_path_type(inner):
                 sub.add_argument(
@@ -480,7 +500,10 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
                     type=Path,
                     default=param.default if param.default is not inspect.Parameter.empty else None,
                     required=False,
-                    help=f"(Path, default: {param.default if param.default is not inspect.Parameter.empty else 'required'})",
+                    help=(
+                        "(Path, default: required)" if required else
+                        f"(Path, default: {param.default})"
+                    ),
                 )
             else:
                 # Default: str
@@ -489,7 +512,10 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
                     type=str,
                     default=param.default if param.default is not inspect.Parameter.empty else None,
                     required=False,
-                    help=f"(str, default: {param.default if param.default is not inspect.Parameter.empty else 'required'})",
+                    help=(
+                        "(str, default: required)" if required else
+                        f"(str, default: {param.default})"
+                    ),
                 )
 
     return parser

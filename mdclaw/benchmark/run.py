@@ -1075,6 +1075,11 @@ def _openmm_available() -> bool:
         return False
 
 
+def _missing_scorer_dependencies() -> list[str]:
+    """Return missing modules from the deterministic scorer runtime."""
+    return scoring.missing_scorer_dependencies()
+
+
 def _resolve_sif_path() -> Optional[str]:
     """Locate an MDClaw SIF (``MDCLAW_SIF`` or a repo-root ``mdclaw.sif``)."""
     sif = os.environ.get("MDCLAW_SIF")
@@ -1096,7 +1101,7 @@ def _scorer_delegate_argv() -> Optional[list[str]]:
     deterministic prep checks deserialize an OpenMM topology bundle, so scoring
     in a bare venv would spuriously fail every OpenMM-dependent check.
     """
-    if _openmm_available():
+    if not _missing_scorer_dependencies():
         return None
     sif = _resolve_sif_path()
     if sif:
@@ -3093,6 +3098,17 @@ def score_benchmark_run(
                 run_judge=run_judge,
                 judge_model=judge_model,
             )
+
+    missing_dependencies = _missing_scorer_dependencies()
+    if missing_dependencies:
+        return {
+            "success": False,
+            "failure_class": "scorer_dependency_missing",
+            "errors": [
+                "Scorer runtime is missing required dependencies: "
+                + ", ".join(missing_dependencies)
+            ],
+        }
 
     rd = Path(run_dir)
     cfg_path = rd / "run_config.json"

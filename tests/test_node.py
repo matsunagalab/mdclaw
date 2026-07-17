@@ -175,6 +175,52 @@ class TestCreateNode:
         pj = json.loads((job_dir / "progress.json").read_text())
         assert pj["nodes"][result["node_id"]]["parents"] == [prep_id]
 
+    def test_study_job_rejects_unresolved_parent_before_creation(self, tmp_path):
+        study_dir = tmp_path / "study"
+        job_dir = study_dir / "jobs" / "main"
+        job_dir.mkdir(parents=True)
+        (study_dir / "study.json").write_text("{}")
+
+        result = create_node(str(job_dir), "topo")
+
+        assert result["success"] is False
+        assert result["code"] == "node_context_required"
+        assert result["candidate_parent_node_ids"] == []
+        assert not (job_dir / "nodes").exists()
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert progress["nodes"] == {}
+
+    def test_study_job_reports_ambiguous_parent_candidates(self, tmp_path):
+        study_dir = tmp_path / "study"
+        job_dir = study_dir / "jobs" / "main"
+        job_dir.mkdir(parents=True)
+        (study_dir / "study.json").write_text("{}")
+        source = create_node(str(job_dir), "source")
+        complete_node(str(job_dir), source["node_id"], artifacts={
+            "source_bundle": "artifacts/source_bundle.json",
+        })
+        for _ in range(2):
+            prep = create_node(
+                str(job_dir), "prep", parent_node_ids=[source["node_id"]]
+            )
+            complete_node(str(job_dir), prep["node_id"], artifacts={
+                "merged_pdb": "artifacts/merged.pdb",
+            })
+
+        result = create_node(str(job_dir), "solv")
+
+        assert result["success"] is False
+        assert result["code"] == "node_context_required"
+        assert result["candidate_parent_node_ids"] == ["prep_001", "prep_002"]
+        assert result["candidate_commands"] == [
+            f"mdclaw create_node --job-dir {job_dir} --node-type solv "
+            "--parent-node-ids prep_001",
+            f"mdclaw create_node --job-dir {job_dir} --node-type solv "
+            "--parent-node-ids prep_002",
+        ]
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert not any(info["type"] == "solv" for info in progress["nodes"].values())
+
     def test_multi_parent(self, job_dir):
         r1 = create_node(str(job_dir), "prep")
         r2 = create_node(str(job_dir), "prep")
@@ -751,6 +797,26 @@ class TestValidateNodeExecutionContext:
 
 
 class TestReadOnlyInspection:
+
+    def test_explain_node_does_not_require_runtime_conditions(self, job_dir):
+        create_node(str(job_dir), "topo")
+        complete_node(str(job_dir), "topo_001", artifacts={
+            "system_xml": "artifacts/system.xml",
+            "topology_pdb": "artifacts/topology.pdb",
+            "state_xml": "artifacts/state.xml",
+        })
+        node = create_node(
+            str(job_dir),
+            "min",
+            parent_node_ids=["topo_001"],
+            conditions={"max_iterations": 5000},
+        )
+
+        explanation = explain_node(str(job_dir), node["node_id"])
+
+        assert explanation["ready_to_run"] is True
+        assert explanation["conditions"] == {"max_iterations": 5000}
+        assert "condition_missing" not in explanation["validation"]["blocking_codes"]
 
     def test_inspect_job_summarizes_statuses_and_leaves(self, job_dir):
         create_node(str(job_dir), "prep")

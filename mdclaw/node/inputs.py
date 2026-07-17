@@ -63,6 +63,7 @@ def explain_node(
         node_id,
         expected,
         actual_conditions=actual_conditions,
+        validate_conditions=actual_conditions is not None,
     )
     resolved_inputs = resolve_node_inputs(str(jd), node_id, node_type)
     input_errors = resolved_inputs.get("input_resolution_errors", [])

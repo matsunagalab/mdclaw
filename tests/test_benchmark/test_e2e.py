@@ -32,6 +32,28 @@ def test_prep_score_api_has_no_normalization_bypass():
     assert "normalize_preparation" not in signature.parameters
 
 
+def test_direct_scorer_reports_missing_dependency_before_scoring(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        cli.scoring,
+        "missing_scorer_dependencies",
+        lambda: ["mdtraj"],
+    )
+
+    result = cli.validate_and_score_benchmark_submission(
+        task_file=str(tmp_path / "task.json"),
+        submission_dir=str(tmp_path / "submission"),
+    )
+
+    assert result == {
+        "success": False,
+        "failure_class": "scorer_dependency_missing",
+        "errors": ["Scorer runtime is missing required dependencies: mdtraj"],
+    }
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (("task_id", "P_wrong"), ("run_id", "wrong_run")),
@@ -1400,7 +1422,11 @@ def test_scorer_delegate_uses_sif_overlay(
     sif = tmp_path / "mdclaw.sif"
     sif.write_text("fake sif")
 
-    monkeypatch.setattr(benchmark_run, "_openmm_available", lambda: False)
+    monkeypatch.setattr(
+        benchmark_run,
+        "_missing_scorer_dependencies",
+        lambda: ["openmm", "mdtraj"],
+    )
     monkeypatch.setattr(benchmark_run, "_resolve_sif_path", lambda: str(sif))
     monkeypatch.setenv("PYTHONPATH", "existing")
 
@@ -1423,6 +1449,26 @@ def test_scorer_delegate_uses_sif_overlay(
     assert str(sif) in argv
     assert f"PYTHONPATH={REPO_ROOT}{os.pathsep}existing" in argv
     assert argv[-3:] == ["python", "-m", "mdclaw._cli"]
+
+
+def test_scorer_reports_missing_runtime_dependency_as_infrastructure_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("MDCLAW_SCORE_INPROCESS", "1")
+    monkeypatch.setattr(
+        benchmark_run,
+        "_missing_scorer_dependencies",
+        lambda: ["mdtraj"],
+    )
+
+    result = benchmark_run.score_benchmark_run(str(tmp_path))
+
+    assert result["success"] is False
+    assert result["failure_class"] == "scorer_dependency_missing"
+    assert result["errors"] == [
+        "Scorer runtime is missing required dependencies: mdtraj"
+    ]
 
 
 def _agent_run_record(task_run_dir: Path) -> dict:

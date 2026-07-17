@@ -276,8 +276,10 @@ separate next-step planner. Five additive helpers carry that load:
   blocking codes.
 - `create_node` auto-resolves the canonical forward parent when
   `parent_node_ids` is omitted (single completed leaf of the preferred parent
-  type), so example ids never need to be copied. Ambiguous or empty frontiers
-  stay parent-less, preserving branch/sketch/repair flows.
+  type), so example ids never need to be copied. In canonical study jobs,
+  ambiguous or empty frontiers return `node_context_required` with parent
+  candidates before creating a node. Bare job directories retain parent-less
+  creation for low-level repair and tests.
 - `trace_failure(job_dir, node_id)` / `explain_failure(job_dir, node_id)` reads
   a failed node, failure artifacts, events, parent/dependency status, and
   existing workflow recommendations. It returns read-only `recovery_options`

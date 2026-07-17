@@ -217,6 +217,37 @@ class TestArgparseConstruction:
             main(["fetch_structure", "--source", "pdb", "--pdb-id", "1AKE"])
         assert exc_info.value.code != 0
 
+    def test_workflow_help_is_short_and_dag_first(self, capsys):
+        from mdclaw._cli import _build_parser
+
+        def fake_workflow(
+            structure_file: str | None = None,
+            job_dir: str | None = None,
+            node_id: str | None = None,
+        ) -> dict:
+            """Prepare a structure.\n\nLong implementation details should be omitted."""
+            return {"success": True}
+
+        parser = _build_parser({
+            "fake_workflow": {
+                "fn": fake_workflow,
+                "is_async": False,
+                "server": "fake",
+                "description": fake_workflow.__doc__,
+                "requires_node": True,
+            }
+        })
+
+        with pytest.raises(SystemExit) as exc_info:
+            parser.parse_args(["fake_workflow", "--help"])
+
+        assert exc_info.value.code == 0
+        output = capsys.readouterr().out
+        assert "CLI workflow contract: DAG-only" in output
+        assert "Long implementation details" not in output
+        assert "--job-dir JOB_DIR" in output
+        assert "(str, default: required)" in output
+
     def test_fetch_structure_infers_pdb_source_before_node_context_gate(self, capsys):
         """Weak agents often call ``fetch_structure --pdb-id``; infer source=pdb."""
         from mdclaw._cli import main

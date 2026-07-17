@@ -517,8 +517,8 @@ def prepare_complex(
     7. Merge all prepared structures into a single PDB file
 
     This is the recommended one-step workflow for preparing structures from
-    PDB or Boltz-2 predictions for MD simulation. The output merged_pdb can be
-    directly passed to solvate_structure or build_amber_system.
+    PDB or Boltz-2 predictions for MD simulation. In CLI workflows, the DAG
+    records ``merged_pdb`` and resolves it for the next node automatically.
 
     Args:
         structure_file: Path to mmCIF (.cif) or PDB (.pdb/.ent) file

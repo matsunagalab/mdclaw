@@ -11,6 +11,7 @@ Public entry points:
 
 from __future__ import annotations
 
+import importlib
 import json
 import math
 import re
@@ -61,6 +62,17 @@ _DEUTERIUM_FALLBACK_ATOM_NAME_RE = re.compile(r"^D[0-9]*$")
 # like Packmol-forced membrane outputs that produce 1e20 kJ/mol energies.
 _MAX_ABS_PREP_ENERGY_PER_PARTICLE_KJ_MOL = 1.0e6
 _MAX_ABS_PREP_TOTAL_ENERGY_KJ_MOL = 1.0e12
+
+
+def missing_scorer_dependencies() -> list[str]:
+    """Return unavailable modules required by the deterministic scorer."""
+    missing: list[str] = []
+    for module_name in ("openmm", "mdtraj", "numpy"):
+        try:
+            importlib.import_module(module_name)
+        except Exception:  # noqa: BLE001 -- broken binary imports also count
+            missing.append(module_name)
+    return missing
 
 
 # ---------------------------------------------------------------------------

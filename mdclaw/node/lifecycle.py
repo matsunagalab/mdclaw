@@ -76,12 +76,12 @@ def _auto_resolve_parent(node_type: str, nodes_index: dict) -> Optional[str]:
 
     Returns the resolved parent ``node_id`` only when the choice is
     *unambiguous* — exactly one completed leaf node of the preferred forward
-    type exists. Returns ``None`` (leaving the node parent-less, the legacy
-    behavior) when there is no candidate or more than one, so that DAG
-    sketching, repair, and branching stay possible and no existing call site
-    changes shape. Only the preferred forward edge is considered, and only
-    completed *leaf* nodes (not already a parent of another node) are
-    eligible so the new node attaches to the current frontier.
+    type exists. Returns ``None`` when there is no candidate or more than one;
+    ``create_node`` then rejects unresolved parents in canonical study jobs but
+    preserves the legacy parent-less behavior for bare repair job directories.
+    Only the preferred forward edge is considered, and only completed *leaf*
+    nodes (not already a parent of another node) are eligible so the new node
+    attaches to the current frontier.
     """
     referenced: set[str] = set()
     for info in nodes_index.values():
@@ -97,10 +97,22 @@ def _auto_resolve_parent(node_type: str, nodes_index: dict) -> Optional[str]:
         leaves = [nid for nid in completed if nid not in referenced] or completed
         if len(leaves) == 1:
             return leaves[0]
-        # Ambiguous frontier (a branch point): stay parent-less and let the
-        # caller pass --parent-node-ids explicitly. Do not guess.
+        # Ambiguous frontier (a branch point): let create_node require an
+        # explicit --parent-node-ids choice for canonical study jobs.
         return None
     return None
+
+
+def _auto_parent_candidates(node_type: str, nodes_index: dict) -> list[str]:
+    """Return completed candidates from the first usable parent stage."""
+    for parent_type in _AUTO_PARENT_PREFERENCE.get(node_type, ()):
+        candidates = sorted(
+            nid for nid, info in nodes_index.items()
+            if info.get("type") == parent_type and info.get("status") == "completed"
+        )
+        if candidates:
+            return candidates
+    return []
 
 
 def create_node(
@@ -218,6 +230,33 @@ def create_node(
             if resolved is not None:
                 parents = [resolved]
                 auto_parent_node_id = resolved
+
+        # Canonical study jobs must not accumulate non-runnable parentless
+        # nodes. Bare job directories remain available to low-level repair and
+        # tests, but normal CLI workflows get an actionable error before any
+        # node directory or progress entry is written.
+        if (
+            node_type != "source"
+            and not parents
+            and _job_has_study_context(jd, progress.get("params", {}) or {})
+        ):
+            candidates = _auto_parent_candidates(node_type, nodes_index)
+            command_prefix = (
+                f"mdclaw create_node --job-dir {jd} --node-type {node_type} "
+                "--parent-node-ids"
+            )
+            return {
+                "success": False,
+                "code": "node_context_required",
+                "error": (
+                    f"Cannot choose a parent for node type '{node_type}'. "
+                    "Pass --parent-node-ids explicitly."
+                ),
+                "candidate_parent_node_ids": candidates,
+                "candidate_commands": [
+                    f"{command_prefix} {candidate}" for candidate in candidates
+                ],
+            }
 
         # Validate parent/dependency references
         for ref in parents + deps:
@@ -1014,6 +1053,7 @@ def validate_node_execution_context(
     expected_node_type: str,
     *,
     actual_conditions: Optional[dict] = None,
+    validate_conditions: bool = True,
 ) -> dict:
     """Validate that a workflow node is ready to run.
 
@@ -1111,7 +1151,8 @@ def validate_node_execution_context(
 
     actual_conditions = actual_conditions or {}
     declared_conditions = node.get("conditions", {}) or {}
-    for key, expected in declared_conditions.items():
+    condition_items = declared_conditions.items() if validate_conditions else ()
+    for key, expected in condition_items:
         if key not in actual_conditions:
             # Strict: a declared condition is a contract the tool must
             # cross-check. Silently skipping keys absent from
