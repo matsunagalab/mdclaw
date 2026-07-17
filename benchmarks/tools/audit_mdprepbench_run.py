@@ -154,6 +154,13 @@ def _mdclaw_invocations(call: dict[str, Any]) -> list[dict[str, Any]]:
     for index, token in enumerate(tokens):
         if Path(token).name != "mdclaw":
             continue
+        segment_start = max(
+            (position + 1 for position in range(index) if tokens[position] in _SHELL_OPERATORS),
+            default=0,
+        )
+        segment_command = Path(tokens[segment_start]).name
+        if segment_command in {"command", "ls", "stat", "test", "type", "which"}:
+            continue
         end = index + 1
         while end < len(tokens) and tokens[end] not in _SHELL_OPERATORS:
             end += 1
@@ -161,13 +168,16 @@ def _mdclaw_invocations(call: dict[str, Any]) -> list[dict[str, Any]]:
         tool, target = _mdclaw_tool(argv)
         truncated = bool(
             re.search(
-                r"mdclaw\b[^\n]*(?:--help|--list(?:\s|$))[^\n]*\|\s*(?:head|tail|grep)\b",
+                r"mdclaw\b[^\n]*(?:--help|--list(?:\s|$))[^\n]*\|\s*(?:head|tail)\b",
                 command,
             )
         )
         result_text = str(call.get("result_text") or "")
         failed = bool(call.get("result_is_error")) or bool(
-            re.search(r"(?m)^usage:\s+mdclaw\b", result_text)
+            (
+                "--help" not in argv
+                and re.search(r"(?m)^usage:\s+mdclaw\b", result_text)
+            )
             or re.search(r'"success"\s*:\s*false', result_text, re.IGNORECASE)
         )
         invocations.append({
@@ -433,9 +443,8 @@ def _tool_call_audit(calls: list[dict[str, Any]]) -> dict[str, Any]:
     bare_lists = [item for item in invocations if item["tool"] == "--list"]
     for item in bare_lists[1:]:
         extra_call_reasons[item["call_id"]].add("repeated_global_tool_list")
+
     for item in invocations:
-        if item["truncated_discovery"]:
-            extra_call_reasons[item["call_id"]].add("truncated_cli_discovery")
         if item["failed"]:
             extra_call_reasons[item["call_id"]].add("failed_mdclaw_invocation")
 

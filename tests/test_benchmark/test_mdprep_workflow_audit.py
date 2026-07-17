@@ -29,6 +29,28 @@ def _session_event(role: str, content: list[dict], **message_fields) -> dict:
     }
 
 
+def test_discovery_preview_is_not_failed_or_extra():
+    call = {
+        "call_id": "call",
+        "index": 0,
+        "tool_name": "bash",
+        "arguments": {
+            "command": "which mdclaw && mdclaw build_amber_system --help | head -5"
+        },
+        "result_is_error": False,
+        "result_text": "usage: mdclaw build_amber_system\none\ntwo\nthree\nfour",
+    }
+    invocations = AUDIT_MODULE._mdclaw_invocations(call)
+    audit = AUDIT_MODULE._tool_call_audit([call])
+
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation["truncated_discovery"] is True
+    assert invocation["failed"] is False
+    assert audit["truncated_discovery_count"] == 1
+    assert audit["estimated_extra_tool_call_count"] == 0
+
+
 def _build_task(run_dir: Path, task_id: str, *, successful: bool) -> None:
     task_dir = run_dir / "tasks" / task_id
     submission = task_dir / "submission"

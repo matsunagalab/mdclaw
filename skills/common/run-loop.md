@@ -124,8 +124,9 @@ DAG handoff instead of claiming a scientific answer.
 - Do not scan the global registry with bare `mdclaw --list`; the active skill
   names the normal-path tools. Check a tool's signature with targeted
   `mdclaw --list-json <tool>`. Only if it is insufficient, read the full
-  `mdclaw <tool> --help` before running the node. Never pipe CLI discovery or
-  help through `head`, `tail`, or `grep`.
+  `mdclaw <tool> --help` before running the node. Previewing output is fine;
+  before concluding that a tool or parameter is unavailable, confirm with
+  `mdclaw --list-json <tool>`.
 
 The prepare-stage specialization of this loop (the compact source -> prep ->
 solv -> topo checklist) lives in `skills/md-prepare/happy-path.md`. Equilibration

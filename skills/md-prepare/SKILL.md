@@ -32,8 +32,9 @@ Before the first state-changing command:
 5. The workflow below already names the normal-path tools; do not scan the
    global registry with bare `mdclaw --list`. To check one tool's signature,
    use `mdclaw --list-json <tool>`. Only if that is insufficient, read the
-   complete `mdclaw <tool> --help`. Never pipe CLI discovery or help through
-   `head`, `tail`, or `grep`.
+   complete `mdclaw <tool> --help`. Previewing output with `head`, `tail`, or
+   `grep` is fine; before concluding that a tool or parameter is unavailable,
+   confirm with `mdclaw --list-json <tool>`.
 Use IDs returned by tools, never literal example IDs. Read
 `skills/common/run-loop.md` for re-entry, shared-job, and failure detail;
 `skills/common/tool-output.md` for unfamiliar responses; and
