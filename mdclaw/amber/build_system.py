@@ -76,6 +76,17 @@ from mdclaw.amber.topology_bonds import _plan_disulfide_topology_bonds, _plan_gl
 from mdclaw.amber.water_utils import _canonical_forcefield_name, _canonical_water_model_name, _evaluate_forcefield_water_guardrails, fix_histidine_protonation_consistency, fix_ligand_residue_names, strip_crystal_waters  # noqa: E402
 
 
+_NUCLEIC_FORCEFIELD_ALIASES = {
+    "rna.ol3": "rna",
+    "dna.ol15": "dna",
+}
+
+
+def _normalize_nucleic_forcefield(value: Optional[str]) -> str:
+    mode = (value or "auto").strip().lower()
+    return _NUCLEIC_FORCEFIELD_ALIASES.get(mode, mode)
+
+
 def _resolve_build_amber_node_inputs(
     *,
     job_dir: str,
@@ -578,6 +589,7 @@ def build_amber_system(
         if box_dimensions is not None
         else ("implicit" if canonical_implicit_solvent else "vacuum")
     )
+    nucleic_mode = _normalize_nucleic_forcefield(nucleic_forcefield)
     result = {
         "success": False,
         "job_id": job_id,
@@ -586,6 +598,7 @@ def build_amber_system(
         "parameters": {
             "forcefield": forcefield,
             "nucleic_forcefield": nucleic_forcefield,
+            "nucleic_forcefield_normalized": nucleic_mode,
             "glycan_forcefield": glycan_forcefield,
             "water_model": water_model if solvent_type == "explicit" else None,
             "water_model_status": (
@@ -958,7 +971,6 @@ def build_amber_system(
                 )
             return blocked
 
-    nucleic_mode = (nucleic_forcefield or "auto").lower()
     nucleic_libraries = []
     if nucleic_mode in {"none", "off", "false", "no"}:
         nucleic_libraries = []

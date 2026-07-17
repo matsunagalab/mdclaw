@@ -38,6 +38,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "node_id_requires_job_dir": "--node-id was passed without --job-dir; pass both together.",
     "node_mode_required": "Specify the node mode required by this tool.",
     "node_missing": "Node id does not exist; use IDs from inspect_job/explain_node.",
+    "node_not_started": "Execute the pending node before waiting on it.",
     "node_json_invalid": "node.json is corrupt; inspect the node directory and repair or recreate.",
     "node_terminal": "Node is terminal (completed/failed); branch a new node instead.",
     "node_wait_timeout": "Waiting on the node timed out; check the running job or lease.",

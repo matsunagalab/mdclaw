@@ -157,6 +157,7 @@
   "node_id_requires_job_dir",
   "node_json_invalid",
   "node_missing",
+  "node_not_started",
   "node_mode_required",
   "node_terminal",
   "node_terminal_transition_reserved",

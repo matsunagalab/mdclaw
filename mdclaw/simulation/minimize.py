@@ -190,6 +190,21 @@ def run_minimization(
         result["errors"].append(f"state.xml not found: {state_xml_file}")
         return _fail_node_if_running(job_dir, node_id, result)
 
+    RESTRAINT_SELECTIONS = {
+        "CA": {"CA"},
+        "backbone": {"N", "CA", "C", "O"},
+        "heavy": None,
+    }
+    if restraint_atoms not in RESTRAINT_SELECTIONS:
+        result["errors"].append(
+            "restraint_atoms must be one of: CA, backbone, heavy"
+        )
+        result["code"] = "minimization_restraint_atoms_invalid"
+        result["allowed_values"] = list(RESTRAINT_SELECTIONS)
+        if restraint_atoms == "P":
+            result["recommended_value"] = "backbone"
+        return _fail_node_if_running(job_dir, node_id, result)
+
     try:
         from openmm.app import HCT, OBC1, OBC2, GBn, GBn2, Simulation
         from openmm import CustomExternalForce, Platform, VerletIntegrator
@@ -201,17 +216,6 @@ def run_minimization(
     IMPLICIT_MODELS = {
         "HCT": HCT, "OBC1": OBC1, "OBC2": OBC2, "GBn": GBn, "GBn2": GBn2,
     }
-    RESTRAINT_SELECTIONS = {
-        "CA": {"CA"},
-        "backbone": {"N", "CA", "C", "O"},
-        "heavy": None,
-    }
-    if restraint_atoms not in RESTRAINT_SELECTIONS:
-        result["errors"].append(
-            "restraint_atoms must be one of: CA, backbone, heavy"
-        )
-        result["code"] = "minimization_restraint_atoms_invalid"
-        return _fail_node_if_running(job_dir, node_id, result)
 
     from mdclaw.chemistry_constants import (
         WATER_NAMES,

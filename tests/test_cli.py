@@ -32,6 +32,7 @@ def test_attach_dag_handoff_reports_registered_artifacts(tmp_path):
     node_dir = tmp_path / "nodes" / "prep_001"
     node_dir.mkdir(parents=True)
     (node_dir / "node.json").write_text(json.dumps({
+        "node_type": "prep",
         "status": "completed",
         "artifacts": {"merged_pdb": "artifacts/merged.pdb"},
     }))
@@ -46,6 +47,14 @@ def test_attach_dag_handoff_reports_registered_artifacts(tmp_path):
         "status": "completed",
         "artifact_keys": ["merged_pdb"],
         "next_node_inputs": "auto_resolved",
+        "default_forward_branch": {
+            "optional": True,
+            "node_type": "solv",
+            "create_command": (
+                f"mdclaw create_node --job-dir {tmp_path.resolve()} "
+                "--node-type solv --parent-node-ids prep_001"
+            ),
+        },
     }
 
 

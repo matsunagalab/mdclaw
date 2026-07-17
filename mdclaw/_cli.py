@@ -29,7 +29,7 @@ from typing import TextIO, Union, get_args, get_origin
 from mdclaw import __version__
 from mdclaw._common import finalize_error
 from mdclaw._registry import SERVER_REGISTRY
-from mdclaw.node.constants import DAG_GUIDANCE
+from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE
 from mdclaw._tool_meta import tool_job_dir_is_data, tool_node_type, tool_requires_node
 
 # Tools consolidated during the schema-v3 refactor. Old names are no longer
@@ -64,12 +64,24 @@ def _attach_dag_handoff(result, job_dir, node_id):
         )
     except (OSError, json.JSONDecodeError):
         return result
-    result["dag_handoff"] = {
+    handoff = {
         "node_id": node_id,
         "status": node.get("status"),
         "artifact_keys": sorted((node.get("artifacts") or {}).keys()),
         "next_node_inputs": "auto_resolved",
     }
+    node_type = node.get("node_type") or node.get("type")
+    next_node_type = CANONICAL_FORWARD_NODE_TYPE.get(node_type)
+    if node.get("status") == "completed" and next_node_type:
+        handoff["default_forward_branch"] = {
+            "optional": True,
+            "node_type": next_node_type,
+            "create_command": (
+                f"mdclaw create_node --job-dir {Path(job_dir).resolve()} "
+                f"--node-type {next_node_type} --parent-node-ids {node_id}"
+            ),
+        }
+    result["dag_handoff"] = handoff
     return result
 
 

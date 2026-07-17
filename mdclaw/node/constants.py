@@ -162,6 +162,17 @@ _AUTO_PARENT_PREFERENCE = {
 }
 
 
+CANONICAL_FORWARD_NODE_TYPE = {
+    "source": "prep",
+    "prep": "solv",
+    "solv": "topo",
+    "topo": "min",
+    "min": "eq",
+    "eq": "prod",
+    "prod": "analyze",
+}
+
+
 _LABEL_SAFE_CHARS = set(
     "abcdefghijklmnopqrstuvwxyz"
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"

@@ -167,6 +167,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `node_json_invalid` | node.json is corrupt; inspect the node directory and repair or recreate. |
 | `node_missing` | Node id does not exist; use IDs from inspect_job/explain_node. |
 | `node_mode_required` | Specify the node mode required by this tool. |
+| `node_not_started` | Execute the pending node before waiting on it. |
 | `node_terminal` | Node is terminal (completed/failed); branch a new node instead. |
 | `node_terminal_transition_reserved` | Let the producer or failure recorder seal terminal nodes with evidence. |
 | `node_type_mismatch` | Select or create a node whose type matches the requested tool. |

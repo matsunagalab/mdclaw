@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from mdclaw.structure.prepare_complex import prepare_complex
+from mdclaw.structure.prepare_complex import _validate_prepare_node_context
 from mdclaw.structure.pdb_utils import (
     _exclude_deuterium_atoms_from_pdb,
     _pdb_noncap_protein_hydrogen_signature,
@@ -43,6 +44,43 @@ ATOM     12  SG  CYS A  20       2.040  -1.500   0.000  1.00  0.00           S
 TER
 END
 """)
+
+
+def test_prepare_node_context_includes_protonation_overrides(monkeypatch):
+    captured = {}
+
+    def fake_validate(job_dir, node_id, node_type, *, actual_conditions):
+        captured.update(actual_conditions)
+        return {"success": True, "code": "ok", "blocking_codes": [], "errors": []}
+
+    monkeypatch.setattr(
+        "mdclaw._node.validate_node_execution_context",
+        fake_validate,
+    )
+    result = _validate_prepare_node_context(
+        job_dir="job",
+        node_id="prep_001",
+        select_chains=["A"],
+        ph=7.4,
+        cap_termini=False,
+        n_terminal_cap=None,
+        c_terminal_cap=None,
+        terminal_cap_forcefield=None,
+        process_proteins=True,
+        process_ligands=True,
+        histidine_states={"A:10": "HIE"},
+        protonation_states={"A:11": "GLH"},
+        include_types=["protein"],
+        include_ligand_ids=None,
+        include_ligand_resnames=None,
+        exclude_ligand_ids=None,
+        include_associated_ligands=False,
+        keep_crystal_waters=False,
+    )
+
+    assert result["success"] is True
+    assert captured["histidine_states"] == {"A:10": "HIE"}
+    assert captured["protonation_states"] == {"A:11": "GLH"}
 
 
 @pytest.fixture

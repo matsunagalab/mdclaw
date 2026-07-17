@@ -95,6 +95,15 @@ def test_inspect_molecules_exposes_label_and_author_ids(cif_label_ne_auth):
     # Explicit mapping for surprising pairings (e.g. swaps).
     assert s["chain_id_map"] == {"A": "AAA", "B": "BBB"}
 
+    contract = r["action_contract"]
+    assert contract["chain_id_namespace"] == "label_asym_id"
+    assert contract["chains_by_type"]["protein"] == ["A", "B"]
+    assert contract["default_include_types"] == [
+        "protein", "nucleic", "glycan", "ligand", "ion",
+    ]
+    assert contract["standard_cleanup_tool"] == "prepare_complex"
+    assert "altloc" in contract["standard_cleanup_handles"]
+
 
 def test_split_molecules_matches_label_asym_id(cif_label_ne_auth, tmp_path):
     """Primary contract: select_chains=['B'] picks label 'B' even though auth is 'BBB'."""

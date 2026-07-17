@@ -174,6 +174,26 @@ def wait_node(
             }
 
         last_status = node.get("status")
+        if last_status == "pending" and last_status not in terminal:
+            return {
+                "success": False,
+                "code": "node_not_started",
+                "message": f"Node '{node_id}' is pending and has not started",
+                "job_dir": str(jd),
+                "node_id": node_id,
+                "node_type": node.get("node_type"),
+                "status": last_status,
+                "node_completed": False,
+                "node_failed": False,
+                "terminal_statuses": sorted(terminal),
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "polls": polls,
+                "next_command": (
+                    f"mdclaw explain_node --job-dir {jd} --node-id {node_id}"
+                ),
+                "errors": ["pending nodes must be executed before they can be waited on"],
+                "warnings": [],
+            }
         if last_status in terminal:
             return {
                 "success": True,

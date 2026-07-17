@@ -545,6 +545,27 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
             "modified_nucleic_residues": modified_nucleic_residues,
             "glycan_residues": glycan_residues,
         }
+        use_label_ids = result["file_format"] == "cif"
+        result["action_contract"] = {
+            "chain_id_namespace": (
+                "label_asym_id" if use_label_ids else "auth_asym_id"
+            ),
+            "chains_by_type": {
+                "protein": protein_label_ids if use_label_ids else protein_chain_ids,
+                "nucleic": nucleic_label_ids if use_label_ids else nucleic_chain_ids,
+                "glycan": glycan_label_ids if use_label_ids else glycan_chain_ids,
+                "ligand": ligand_label_ids if use_label_ids else ligand_chain_ids,
+                "water": water_label_ids if use_label_ids else water_chain_ids,
+                "ion": ion_label_ids if use_label_ids else ion_chain_ids,
+            },
+            "default_include_types": [
+                "protein", "nucleic", "glycan", "ligand", "ion",
+            ],
+            "standard_cleanup_tool": "prepare_complex",
+            "standard_cleanup_handles": [
+                "altloc", "MSE", "residue_numbering", "missing_sidechains",
+            ],
+        }
         modified_support = modified_nucleic_support_report(modified_nucleic_residues)
         result["summary"]["modified_nucleic_support_status"] = modified_support["status"]
         result["summary"]["modified_nucleic_support"] = modified_support

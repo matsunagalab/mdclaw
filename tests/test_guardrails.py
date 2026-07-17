@@ -25,6 +25,7 @@ from mdclaw.amber.water_utils import (
 )
 from mdclaw._node import complete_node, create_node, read_node, update_job_params
 from mdclaw.simulation.equilibrate import run_equilibration
+from mdclaw.simulation.minimize import run_minimization
 from mdclaw.simulation.xml_contract import (
     _effective_pressure_bar,
     _signature_mismatches,
@@ -121,6 +122,23 @@ def test_workflow_missing_inputs_are_structured():
     assert eq["success"] is False
     assert eq["error_type"] == "ValidationError"
     assert eq["code"] == "missing_xml_topology_inputs"
+
+
+def test_minimization_invalid_phosphate_selection_is_actionable(tmp_path):
+    system_xml = tmp_path / "system.xml"
+    topology_pdb = tmp_path / "topology.pdb"
+    system_xml.write_text("<System/>")
+    topology_pdb.write_text("END\n")
+
+    result = run_minimization(
+        system_xml_file=str(system_xml),
+        topology_pdb_file=str(topology_pdb),
+        restraint_atoms="P",
+    )
+
+    assert result["code"] == "minimization_restraint_atoms_invalid"
+    assert result["allowed_values"] == ["CA", "backbone", "heavy"]
+    assert result["recommended_value"] == "backbone"
 
 
 def test_build_amber_system_blocks_missing_box_for_explicit_job(tmp_path):

@@ -84,6 +84,7 @@ def test_inspect_molecules_classifies_standard_dna_rna(tmp_path):
     result = _inspect_molecules_impl(_write_pdb(tmp_path))
 
     assert result["success"], result.get("errors")
+    assert result["action_contract"]["chain_id_namespace"] == "auth_asym_id"
     summary = result["summary"]
     assert summary["num_nucleic_chains"] == 2
     assert set(summary["nucleic_chain_ids"]) == {"A", "B"}
@@ -339,3 +340,12 @@ def test_build_amber_system_blocks_modified_nucleic_like_residue(tmp_path):
 
     assert result["success"] is False
     assert result["code"] == "unsupported_modified_nucleic_residue"
+
+
+def test_nucleic_forcefield_accepts_common_amber_aliases():
+    from mdclaw.amber.build_system import _normalize_nucleic_forcefield
+
+    assert _normalize_nucleic_forcefield("rna.ol3") == "rna"
+    assert _normalize_nucleic_forcefield("RNA.OL3") == "rna"
+    assert _normalize_nucleic_forcefield("dna.ol15") == "dna"
+    assert _normalize_nucleic_forcefield("auto") == "auto"

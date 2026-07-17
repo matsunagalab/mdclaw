@@ -1690,6 +1690,17 @@ class TestUpdateNode:
 
 class TestWaitNode:
 
+    def test_wait_node_rejects_pending_node_immediately(self, job_dir):
+        create_node(str(job_dir), "solv")
+
+        result = wait_node(str(job_dir), "solv_001", timeout_seconds=30)
+
+        assert result["success"] is False
+        assert result["code"] == "node_not_started"
+        assert result["status"] == "pending"
+        assert result["polls"] == 1
+        assert "explain_node" in result["next_command"]
+
     def test_wait_node_returns_completed_terminal_status(self, job_dir):
         create_node(str(job_dir), "solv")
         complete_node(
