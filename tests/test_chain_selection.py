@@ -116,6 +116,15 @@ def test_public_inspection_places_action_contract_before_large_details(
     keys = list(result)
     assert keys.index("action_contract") < keys.index("entities")
     assert keys.index("summary") < keys.index("chains")
+    contract = result["action_contract"]
+    assert contract["chain_id_namespace"] == "label_asym_id"
+    assert contract["chains_by_type"]["protein"] == result["summary"][
+        "protein_label_ids"
+    ]
+    assert contract["chains_by_type"]["ligand"] == result["summary"][
+        "ligand_label_ids"
+    ]
+    assert contract["standard_cleanup_tool"] == "prepare_complex"
 
 
 def test_split_molecules_matches_label_asym_id(cif_label_ne_auth, tmp_path):

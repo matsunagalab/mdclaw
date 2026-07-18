@@ -690,6 +690,29 @@ def inspect_molecules(
             "modified_nucleic_residues": modified_nucleic_residues,
             "glycan_residues": glycan_residues,
         }
+        use_label_ids = result["file_format"] == "cif"
+        result["action_contract"] = {
+            "chain_id_namespace": (
+                "label_asym_id" if use_label_ids else "auth_asym_id"
+            ),
+            "chains_by_type": {
+                "protein": (
+                    protein_chain_ids if use_label_ids else protein_author_chains
+                ),
+                "nucleic": (
+                    nucleic_chain_ids if use_label_ids else nucleic_author_chains
+                ),
+                "glycan": (
+                    glycan_chain_ids if use_label_ids else glycan_author_chains
+                ),
+                "ligand": (
+                    ligand_chain_ids if use_label_ids else ligand_author_chains
+                ),
+                "water": water_chain_ids,
+                "ion": ion_chain_ids,
+            },
+            "standard_cleanup_tool": "prepare_complex",
+        }
         modified_support = modified_nucleic_support_report(modified_nucleic_residues)
         result["summary"]["modified_nucleic_support_status"] = modified_support["status"]
         result["summary"]["modified_nucleic_support"] = modified_support
