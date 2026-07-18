@@ -228,6 +228,7 @@
   "state_xml_missing_positions",
   "state_xml_not_found",
   "study_context_missing",
+  "study_dir_required",
   "study_record_fields_missing",
   "terminal_cap_hydrogen_completion_changed_noncap_hydrogens",
   "terminal_cap_hydrogen_completion_failed",

@@ -30,7 +30,12 @@ from mdclaw import __version__
 from mdclaw._common import finalize_error
 from mdclaw._registry import SERVER_REGISTRY
 from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE
-from mdclaw._tool_meta import tool_job_dir_is_data, tool_node_type, tool_requires_node
+from mdclaw._tool_meta import (
+    tool_job_dir_is_data,
+    tool_node_type,
+    tool_parameter_example_map,
+    tool_requires_node,
+)
 
 # Tools consolidated during the schema-v3 refactor. Old names are no longer
 # registered as CLI subcommands; invoking one returns a structured
@@ -894,6 +899,7 @@ def _tool_parameter_schemas(tool_name: str, fn) -> list[dict]:
     except Exception:
         pass
 
+    parameter_examples = tool_parameter_example_map(fn)
     params = []
     for pname, param in sig.parameters.items():
         if pname.startswith("_"):
@@ -933,6 +939,8 @@ def _tool_parameter_schemas(tool_name: str, fn) -> list[dict]:
             entry["nargs"] = "+"
         elif _takes_json(inner):
             entry["expects_json"] = True
+            if pname in parameter_examples:
+                entry["json_examples"] = parameter_examples[pname]
         if tool_job_dir_is_data(fn) and pname == "job_dir":
             entry["job_dir_role"] = "data"
         params.append(entry)

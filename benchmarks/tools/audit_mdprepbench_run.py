@@ -144,6 +144,52 @@ def _shell_tokens(command: str) -> list[str]:
         return normalized.split()
 
 
+def _command_index(tokens: list[str], start: int, end: int) -> int | None:
+    """Return the executable position for one simple shell segment."""
+    index = start
+    while index < end and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[index]):
+        index += 1
+    if index >= end:
+        return None
+
+    if Path(tokens[index]).name == "env":
+        index += 1
+        while index < end and (
+            tokens[index].startswith("-")
+            or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[index])
+        ):
+            index += 1
+    elif Path(tokens[index]).name == "command":
+        index += 1
+        if index < end and tokens[index] in {"-v", "-V"}:
+            return None
+        while index < end and tokens[index].startswith("-"):
+            index += 1
+    elif Path(tokens[index]).name == "time":
+        index += 1
+        while index < end and tokens[index].startswith("-"):
+            index += 1
+    return index if index < end else None
+
+
+def _mdclaw_command_in_segment(
+    tokens: list[str], start: int, end: int
+) -> tuple[int, int] | None:
+    """Return ``(command_index, argv_start)`` for an MDClaw command segment."""
+    index = _command_index(tokens, start, end)
+    if index is None:
+        return None
+    if Path(tokens[index]).name == "mdclaw":
+        return index, index + 1
+
+    executable = Path(tokens[index]).name
+    if executable.startswith("python"):
+        for option_index in range(index + 1, end - 1):
+            if tokens[option_index] == "-m" and tokens[option_index + 1] == "mdclaw._cli":
+                return option_index + 1, option_index + 2
+    return None
+
+
 def _mdclaw_invocations(call: dict[str, Any]) -> list[dict[str, Any]]:
     if call.get("tool_name") not in {"bash", "shell", "exec", "exec_command"}:
         return []
@@ -151,20 +197,21 @@ def _mdclaw_invocations(call: dict[str, Any]) -> list[dict[str, Any]]:
     command = str(arguments.get("command") or arguments.get("cmd") or "")
     tokens = _shell_tokens(command)
     invocations: list[dict[str, Any]] = []
+    segment_start = 0
+    segment_ranges: list[tuple[int, int]] = []
     for index, token in enumerate(tokens):
-        if Path(token).name != "mdclaw":
+        if token not in _SHELL_OPERATORS:
             continue
-        segment_start = max(
-            (position + 1 for position in range(index) if tokens[position] in _SHELL_OPERATORS),
-            default=0,
-        )
-        segment_command = Path(tokens[segment_start]).name
-        if segment_command in {"command", "ls", "stat", "test", "type", "which"}:
+        segment_ranges.append((segment_start, index))
+        segment_start = index + 1
+    segment_ranges.append((segment_start, len(tokens)))
+
+    for segment_start, end in segment_ranges:
+        match = _mdclaw_command_in_segment(tokens, segment_start, end)
+        if match is None:
             continue
-        end = index + 1
-        while end < len(tokens) and tokens[end] not in _SHELL_OPERATORS:
-            end += 1
-        argv = tokens[index + 1:end]
+        _, argv_start = match
+        argv = tokens[argv_start:end]
         tool, target = _mdclaw_tool(argv)
         truncated = bool(
             re.search(

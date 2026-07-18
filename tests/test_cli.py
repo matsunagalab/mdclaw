@@ -767,6 +767,14 @@ class TestArgparseConstruction:
         prepare_params = {param["name"]: param for param in prepare["parameters"]}
         assert prepare_params["protonation_states"]["cli_flag"] == "--protonation-states"
         assert prepare_params["protonation_states"]["expects_json"] is True
+        assert prepare_params["protonation_states"]["json_examples"] == [
+            {"A:11": "GLH"},
+            [{"chain": "A", "resnum": 11, "state": "GLH"}],
+        ]
+        assert prepare_params["disulfide_pairs"]["json_examples"][0][0] == {
+            "cys1": {"chain": "A", "resnum": 6},
+            "cys2": {"chain": "A", "resnum": 127},
+        }
 
         targeted = _tool_list_json(tools, "solvate_structure")
         assert targeted["success"] is True

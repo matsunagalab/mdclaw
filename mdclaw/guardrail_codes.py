@@ -267,6 +267,7 @@ GUARDRAIL_CODES: dict[str, str] = {
 
     # --- study logging ---
     "invalid_study_record_type": "Use record_study_log --record-type one of: decision, question, token_usage.",
+    "study_dir_required": "Provide a non-empty study directory path.",
     "study_record_fields_missing": "Provide the fields required by the chosen study record_type.",
 
     # --- Boltz-2 ---

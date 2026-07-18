@@ -16,6 +16,7 @@ from mdclaw.study._base import (
     _atomic_write_json,
     _load_study,
     _now_iso,
+    _resolve_study_dir,
     _study_plan_path,
     logger,
 )
@@ -73,7 +74,12 @@ def init_study(
         "warnings": [],
     }
     try:
-        sd = Path(study_dir).expanduser().resolve()
+        sd = _resolve_study_dir(study_dir)
+    except ValueError as exc:
+        result["code"] = "study_dir_required"
+        result["errors"].append(str(exc))
+        return result
+    try:
         ensure_directory(sd)
         ensure_directory(sd / "jobs")
         ensure_directory(sd / "plans")
@@ -185,10 +191,15 @@ def bootstrap_md_workflow(
             f"{sorted(EXECUTION_MODES)} (got {execution_mode!r})"
         )
         return result
+    try:
+        sd = _resolve_study_dir(study_dir)
+    except ValueError as exc:
+        result["code"] = "study_dir_required"
+        result["errors"].append(str(exc))
+        return result
 
     try:
         safe_job_id = _safe_component(job_id, "job_id")
-        sd = Path(study_dir).expanduser().resolve()
         study_file = sd / "study.json"
         if study_file.exists():
             ensure_directory(sd / "jobs")
@@ -391,7 +402,7 @@ def add_study_job(
         result["errors"].append("job_id is required")
         return result
     try:
-        sd = Path(study_dir).expanduser().resolve()
+        sd = _resolve_study_dir(study_dir)
         study_file = sd / "study.json"
         with file_lock(sd / "study.lock"):
             study = _load_study(sd)
@@ -444,7 +455,7 @@ def list_study_jobs(study_dir: str, include_progress: bool = True) -> dict:
         "warnings": [],
     }
     try:
-        sd = Path(study_dir).expanduser().resolve()
+        sd = _resolve_study_dir(study_dir)
         study = _load_study(sd)
         jobs_out: list[dict] = []
         for entry in study.get("jobs", []):

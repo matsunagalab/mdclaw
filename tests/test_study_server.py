@@ -42,6 +42,39 @@ def test_init_study_creates_minimal_layout(tmp_path):
     assert data["jobs"] == []
 
 
+@pytest.mark.parametrize("study_dir", ["", "   "])
+def test_init_study_rejects_empty_study_dir(study_dir, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = init_study(study_dir)
+
+    assert result["success"] is False
+    assert result["code"] == "study_dir_required"
+    assert "study_dir is required" in result["errors"][0]
+    assert not (tmp_path / "study.json").exists()
+
+
+def test_bootstrap_rejects_empty_study_dir_without_touching_cwd(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = bootstrap_md_workflow("", question="Prepare RNA")
+
+    assert result["success"] is False
+    assert result["code"] == "study_dir_required"
+    assert "study_dir is required" in result["errors"][0]
+    assert not (tmp_path / "study.json").exists()
+    assert not (tmp_path / "jobs").exists()
+
+
+def test_init_study_allows_explicit_current_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = init_study(".")
+
+    assert result["success"] is True
+    assert result["study_dir"] == str(tmp_path.resolve())
+
+
 def test_bootstrap_md_workflow_creates_canonical_single_job_layout(tmp_path):
     study_dir = tmp_path / "study"
 

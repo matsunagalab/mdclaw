@@ -11,6 +11,7 @@ from mdclaw.study._base import (
     _STUDY_RECORD_TYPES,
     _load_study,
     _now_iso,
+    _resolve_study_dir,
     logger,
 )
 
@@ -211,7 +212,7 @@ def _record_study_log(study_dir: str, filename: str, payload: dict) -> dict:
         "warnings": [],
     }
     try:
-        sd = Path(study_dir).expanduser().resolve()
+        sd = _resolve_study_dir(study_dir)
         _load_study(sd)
         record = {
             "timestamp": _now_iso(),
@@ -232,4 +233,3 @@ def _record_study_log(study_dir: str, filename: str, payload: dict) -> dict:
             f"record study log failed: {type(exc).__name__}: {exc}"
         )
         return result
-

@@ -10,6 +10,7 @@ from mdclaw.study._base import (
     _atomic_write_json,
     _load_study,
     _now_iso,
+    _resolve_study_dir,
     _study_plan_path,
     _validate_study_plan,
     logger,
@@ -43,7 +44,7 @@ def record_study_plan(
         result["errors"].extend(errors)
         return result
     try:
-        sd = Path(study_dir).expanduser().resolve()
+        sd = _resolve_study_dir(study_dir)
         plan_key = plan_id or "active"
         plan_file = _study_plan_path(sd, plan_key)
         now = _now_iso()
@@ -97,7 +98,7 @@ def get_study_plan(study_dir: str, plan_id: Optional[str] = None) -> dict:
         "warnings": [],
     }
     try:
-        sd = Path(study_dir).expanduser().resolve()
+        sd = _resolve_study_dir(study_dir)
         _load_study(sd)
         plan_file = _study_plan_path(sd, plan_id or "active")
         if not plan_file.exists():
@@ -127,7 +128,7 @@ def list_study_plans(study_dir: str) -> dict:
         "warnings": [],
     }
     try:
-        sd = Path(study_dir).expanduser().resolve()
+        sd = _resolve_study_dir(study_dir)
         _load_study(sd)
         plan_files: list[Path] = []
         active = sd / "study_plan.json"

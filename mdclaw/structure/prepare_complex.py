@@ -17,7 +17,7 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import setup_logger  # noqa: E402
-from mdclaw._tool_meta import node_tool  # noqa: E402
+from mdclaw._tool_meta import node_tool, tool_parameter_examples  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -476,6 +476,20 @@ def _prepare_complex_initial_result(job_id: str, structure_file: Optional[str]) 
 
 
 @node_tool(node_type="prep")
+@tool_parameter_examples(
+    ligand_smiles=[{"LIG": "CCO"}],
+    disulfide_pairs=[[
+        {
+            "cys1": {"chain": "A", "resnum": 6},
+            "cys2": {"chain": "A", "resnum": 127},
+        }
+    ]],
+    histidine_states=[{"A:57": "HID"}],
+    protonation_states=[
+        {"A:11": "GLH"},
+        [{"chain": "A", "resnum": 11, "state": "GLH"}],
+    ],
+)
 def prepare_complex(
     structure_file: Optional[str] = None,
     output_dir: Optional[str] = None,

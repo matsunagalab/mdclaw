@@ -47,6 +47,8 @@ the tool name is not already known. `mdclaw --list-json` returns the full
 discovered tool contract. Pass one exact tool name, for example
 `mdclaw --list-json run_minimization`, to return only its summary, execution
 metadata, and parameter schema as compact single-line JSON.
+Structured parameters may also expose non-validating `json_examples` declared
+on the tool; these document accepted shapes without narrowing runtime inputs.
 The targeted form omits the long docstring; use full `--help` only when that
 compact contract is insufficient. An unknown name returns the structured
 `tool_not_available` error instead of argparse text.

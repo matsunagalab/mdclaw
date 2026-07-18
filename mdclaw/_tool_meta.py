@@ -17,12 +17,14 @@ discovery instead of relying on someone editing a separate frozenset.
 
 from __future__ import annotations
 
+import inspect
 from typing import Callable, TypeVar
 
 F = TypeVar("F", bound=Callable)
 
 NODE_TYPE_ATTR = "_mdclaw_node_type"
 JOB_DIR_IS_DATA_ATTR = "_mdclaw_job_dir_is_data"
+PARAMETER_EXAMPLES_ATTR = "_mdclaw_parameter_examples"
 
 
 def node_tool(*, node_type: str) -> Callable[[F], F]:
@@ -42,6 +44,24 @@ def job_dir_data_tool(fn: F) -> F:
     """Mark a tool whose ``job_dir`` argument is data, not execution context."""
     setattr(fn, JOB_DIR_IS_DATA_ATTR, True)
     return fn
+
+
+def tool_parameter_examples(**examples: list[object]) -> Callable[[F], F]:
+    """Attach non-validating CLI examples to structured tool parameters."""
+    if any(not isinstance(values, list) for values in examples.values()):
+        raise ValueError("tool parameter examples must be provided as lists")
+
+    def decorator(fn: F) -> F:
+        unknown = set(examples) - set(inspect.signature(fn).parameters)
+        if unknown:
+            raise ValueError(
+                "tool parameter examples reference unknown parameters: "
+                + ", ".join(sorted(unknown))
+            )
+        setattr(fn, PARAMETER_EXAMPLES_ATTR, examples)
+        return fn
+
+    return decorator
 
 
 def tool_requires_node(fn: Callable) -> bool:
@@ -67,3 +87,16 @@ def tool_job_dir_is_data(fn: Callable) -> bool:
         return True
     wrapped = getattr(fn, "__wrapped__", None)
     return bool(wrapped is not None and getattr(wrapped, JOB_DIR_IS_DATA_ATTR, False))
+
+
+def tool_parameter_example_map(fn: Callable) -> dict[str, list[object]]:
+    """Return declarative parameter examples attached to a tool."""
+    examples = getattr(fn, PARAMETER_EXAMPLES_ATTR, None)
+    if examples is None:
+        wrapped = getattr(fn, "__wrapped__", None)
+        examples = (
+            getattr(wrapped, PARAMETER_EXAMPLES_ATTR, None)
+            if wrapped is not None
+            else None
+        )
+    return dict(examples) if isinstance(examples, dict) else {}

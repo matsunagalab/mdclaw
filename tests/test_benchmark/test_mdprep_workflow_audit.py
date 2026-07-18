@@ -51,6 +51,50 @@ def test_discovery_preview_is_not_failed_or_extra():
     assert audit["estimated_extra_tool_call_count"] == 0
 
 
+def test_paths_named_mdclaw_are_not_cli_invocations():
+    commands = [
+        'find /home/user/mdclaw -name "*.py" -path "*/structure/*" | head -20',
+        'cd /workspace && grep -r "protonation" mdclaw/ --include="*.py" -l',
+        "command -v mdclaw",
+    ]
+
+    for index, command in enumerate(commands):
+        call = {
+            "call_id": f"call-{index}",
+            "index": index,
+            "tool_name": "bash",
+            "arguments": {"command": command},
+            "result_is_error": True,
+            "result_text": "",
+        }
+        assert AUDIT_MODULE._mdclaw_invocations(call) == []
+
+
+def test_mdclaw_command_position_variants_are_detected():
+    commands = [
+        "mdclaw --list-json prepare_complex",
+        "/opt/bin/mdclaw --list-json prepare_complex",
+        "MODE=test mdclaw --list-json prepare_complex",
+        "env MODE=test mdclaw --list-json prepare_complex",
+        "python -m mdclaw._cli --list-json prepare_complex",
+        "cd /workspace && mdclaw --list-json prepare_complex",
+    ]
+
+    for index, command in enumerate(commands):
+        call = {
+            "call_id": f"call-{index}",
+            "index": index,
+            "tool_name": "bash",
+            "arguments": {"command": command},
+            "result_is_error": False,
+            "result_text": '{"success": true}',
+        }
+        invocations = AUDIT_MODULE._mdclaw_invocations(call)
+        assert len(invocations) == 1, command
+        assert invocations[0]["tool"] == "--list-json"
+        assert invocations[0]["target"] == "prepare_complex"
+
+
 def _build_task(run_dir: Path, task_id: str, *, successful: bool) -> None:
     task_dir = run_dir / "tasks" / task_id
     submission = task_dir / "submission"

@@ -105,6 +105,19 @@ def test_inspect_molecules_exposes_label_and_author_ids(cif_label_ne_auth):
     assert "altloc" in contract["standard_cleanup_handles"]
 
 
+def test_public_inspection_places_action_contract_before_large_details(
+    cif_label_ne_auth,
+):
+    from mdclaw.research.inspection import inspect_molecules
+
+    result = inspect_molecules(structure_file=cif_label_ne_auth)
+
+    assert result["success"] is True
+    keys = list(result)
+    assert keys.index("action_contract") < keys.index("entities")
+    assert keys.index("summary") < keys.index("chains")
+
+
 def test_split_molecules_matches_label_asym_id(cif_label_ne_auth, tmp_path):
     """Primary contract: select_chains=['B'] picks label 'B' even though auth is 'BBB'."""
     from mdclaw.structure.split import split_molecules

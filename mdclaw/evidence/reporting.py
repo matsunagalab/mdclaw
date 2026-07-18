@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from mdclaw._common import ensure_directory, setup_logger
 from mdclaw.evidence_schema import base_evidence_report
-from mdclaw.study._base import _study_plan_path
+from mdclaw.study._base import _resolve_study_dir, _study_plan_path
 
 logger = setup_logger(__name__)
 
@@ -1435,7 +1435,7 @@ def generate_study_methods_report(
         "warnings": [],
     }
     try:
-        sd = Path(study_dir).expanduser().resolve()
+        sd = _resolve_study_dir(study_dir)
         study = _load_study(sd)
         jobs = [job for job in study.get("jobs", []) if isinstance(job, dict)]
         if not jobs:
@@ -1514,7 +1514,7 @@ def generate_study_evidence_report(
         "warnings": [],
     }
     try:
-        sd = Path(study_dir).expanduser().resolve()
+        sd = _resolve_study_dir(study_dir)
         study = _load_study(sd)
         study_plan_record, study_plan_file = _load_study_plan(sd, plan_id=plan_id)
         if plan_id is not None and study_plan_record is None:

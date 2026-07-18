@@ -34,12 +34,21 @@ def _atomic_write_json(path: Path, data: dict) -> None:
     os.replace(str(tmp), str(path))
 
 
+def _resolve_study_dir(study_dir: str | Path) -> Path:
+    """Resolve an explicitly provided study directory."""
+    if isinstance(study_dir, str) and not study_dir.strip():
+        raise ValueError("study_dir is required and must not be empty")
+    if not isinstance(study_dir, (str, Path)):
+        raise ValueError("study_dir is required and must be a path")
+    return Path(study_dir).expanduser().resolve()
+
+
 def _study_json_path(study_dir: str | Path) -> Path:
-    return Path(study_dir).expanduser().resolve() / "study.json"
+    return _resolve_study_dir(study_dir) / "study.json"
 
 
 def _study_plan_path(study_dir: str | Path, plan_id: str | None = None) -> Path:
-    sd = Path(study_dir).expanduser().resolve()
+    sd = _resolve_study_dir(study_dir)
     if not plan_id or plan_id == "active":
         return sd / "study_plan.json"
     safe_id = "".join(c if c.isalnum() or c in {"-", "_"} else "_" for c in plan_id)
