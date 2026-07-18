@@ -252,7 +252,9 @@ signature, update the relevant section here and the matching skill examples.
 - `run_minimization(...)`: standalone post-topology minimization. In node mode
   topology inputs resolve from the `topo` ancestor, and the `min` node records
   `state`, `minimized_structure`, and `minimization_report` artifacts for
-  downstream `eq` nodes.
+  downstream `eq` nodes. Its `solute_heavy` default uses prep provenance to
+  include structural solute components while excluding added solvent, ions,
+  and membrane lipids.
 - `run_equilibration(...)`: restrained equilibration with an NVT heating stage
   and optional NPT density stage. In node mode topology inputs resolve from the
   `topo` ancestor. New DAGs should parent `eq` from `min`; the minimized state

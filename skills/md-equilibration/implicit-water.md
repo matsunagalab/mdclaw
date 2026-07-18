@@ -10,7 +10,7 @@ nodes that was baked into `system.xml` at the `topo` node.
 NVT only (no NPT — no periodic box in implicit solvent) with the standard
 `min -> eq` prelude used for every system: standalone restrained minimization
 in a `min` node, low-temperature NVT warmup, then normal-temperature NVT with
-CA positional restraints. Uses 4 fs + HMR so the final checkpoint is compatible
+solute-heavy positional restraints. Uses 4 fs + HMR so the final checkpoint is compatible
 with production settings.
 
 ### Run Equilibration
@@ -19,7 +19,7 @@ with production settings.
 mdclaw --job-dir <job_dir> --node-id <min_node_id> run_minimization \
   --implicit-solvent GBn2 \
   --max-iterations 5000 \
-  --restraint-atoms CA \
+  --restraint-atoms solute_heavy \
   --restraint-force-constant 100.0
 
 mdclaw --job-dir <job_dir> --node-id <eq_node_id> run_equilibration \
@@ -54,11 +54,12 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
 - Do not request a positive `--npt-time-ns` for implicit solvent; NPT is not
   applicable when `--pressure-bar 0`.
 - Positional restraints prevent structural collapse during heating.
-  `--restraint-atoms` options (solute-only; water/ions are always excluded):
+  `--restraint-atoms` options:
 
   | Value | Restrains | Notes |
   |---|---|---|
-  | `CA` (default) | alpha carbons | recommended for most workflows |
+  | `solute_heavy` (default) | prep-derived solute heavy atoms | includes structural ions; excludes solvent and added ions |
+  | `CA` | alpha carbons | protein-only legacy selection |
   | `backbone` | protein backbone heavy atoms (N, CA, C, O) | |
   | `heavy` | all non-hydrogen solute atoms | strongest restraint |
 - All restraints are removed in the production-matching checkpoint

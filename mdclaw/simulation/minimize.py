@@ -34,6 +34,7 @@ WORKING_DIR = Path("outputs").resolve()
 ensure_directory(WORKING_DIR)
 
 from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fail_node_if_running, _node_artifact_path, _resolve_implicit_solvent_model  # noqa: E402
+from mdclaw.simulation.restraints import RESTRAINT_SELECTIONS, select_restraint_atoms  # noqa: E402
 from mdclaw.simulation.restart import _save_state_atomic  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _load_xml_topology_inputs, _system_signature, _validate_xml_system_contract  # noqa: E402
 
@@ -44,7 +45,7 @@ def run_minimization(
     topology_pdb_file: Optional[str] = None,
     state_xml_file: Optional[str] = None,
     max_iterations: int = 5000,
-    restraint_atoms: str = "CA",
+    restraint_atoms: str = "solute_heavy",
     restraint_force_constant: float = 100.0,
     name: Optional[str] = None,
     output_dir: Optional[str] = None,
@@ -75,6 +76,7 @@ def run_minimization(
         )
 
     _node_mode = bool(job_dir and node_id)
+    _chain_identity_map_file = None
     if _node_mode:
         from mdclaw._node import (
             begin_node, fail_node,
@@ -108,6 +110,7 @@ def run_minimization(
             state_xml_file = _inputs["state_xml_file"]
         if not is_membrane and _inputs.get("is_membrane"):
             is_membrane = True
+        _chain_identity_map_file = _inputs.get("chain_identity_map_file")
 
         _topo_solvent_mismatch = _check_topology_implicit_solvent_match(
             topology_implicit_solvent=_inputs.get("topology_implicit_solvent"),
@@ -171,6 +174,8 @@ def run_minimization(
         "max_iterations": max_iterations,
         "restraint_atoms": restraint_atoms,
         "restraint_count": 0,
+        "restraint_counts_by_component": {},
+        "restraint_selection_source": None,
         "platform": None,
         "nan_failure_diagnostics": None,
         "errors": [],
@@ -190,19 +195,13 @@ def run_minimization(
         result["errors"].append(f"state.xml not found: {state_xml_file}")
         return _fail_node_if_running(job_dir, node_id, result)
 
-    RESTRAINT_SELECTIONS = {
-        "CA": {"CA"},
-        "backbone": {"N", "CA", "C", "O"},
-        "heavy": None,
-    }
     if restraint_atoms not in RESTRAINT_SELECTIONS:
         result["errors"].append(
-            "restraint_atoms must be one of: CA, backbone, heavy"
+            "restraint_atoms must be one of: " + ", ".join(RESTRAINT_SELECTIONS)
         )
         result["code"] = "minimization_restraint_atoms_invalid"
         result["allowed_values"] = list(RESTRAINT_SELECTIONS)
-        if restraint_atoms == "P":
-            result["recommended_value"] = "backbone"
+        result["recommended_value"] = "solute_heavy"
         return _fail_node_if_running(job_dir, node_id, result)
 
     try:
@@ -216,22 +215,6 @@ def run_minimization(
     IMPLICIT_MODELS = {
         "HCT": HCT, "OBC1": OBC1, "OBC2": OBC2, "GBn": GBn, "GBn2": GBn2,
     }
-
-    from mdclaw.chemistry_constants import (
-        WATER_NAMES,
-        is_standard_bare_ion_resname,
-    )
-    _NON_SOLUTE_RESNAMES = WATER_NAMES
-
-    def _is_solute_atom(atom) -> bool:
-        residue = atom.residue
-        resname = residue.name.strip()
-        if resname.upper() in _NON_SOLUTE_RESNAMES:
-            return False
-        residue_atoms = list(residue.atoms())
-        if len(residue_atoms) == 1 and is_standard_bare_ion_resname(resname):
-            return False
-        return True
 
     try:
         if _node_mode:
@@ -251,6 +234,28 @@ def run_minimization(
             topology_pdb_file=str(topology_pdb_path),
             state_xml_file=str(state_xml_path) if state_xml_path else None,
         )
+        restraint_selection = select_restraint_atoms(
+            xml_inputs.topology,
+            restraint_atoms,
+            chain_identity_map_file=_chain_identity_map_file,
+        )
+        result["warnings"].extend(restraint_selection["warnings"])
+        restraint_indices = restraint_selection["atom_indices"]
+        result["restraint_count"] = len(restraint_indices)
+        result["restraint_counts_by_component"] = restraint_selection[
+            "counts_by_component"
+        ]
+        result["restraint_selection_source"] = restraint_selection[
+            "selection_source"
+        ]
+        if restraint_force_constant > 0 and not restraint_indices:
+            result["code"] = "restraint_selection_empty"
+            result["allowed_values"] = list(RESTRAINT_SELECTIONS)
+            result["recommended_value"] = "solute_heavy"
+            result["errors"].append(
+                f"restraint_atoms={restraint_atoms!r} matched zero atoms"
+            )
+            return _fail_node_if_running(job_dir, node_id, result)
         if implicit_solvent:
             _gb_model, gb_err = _resolve_implicit_solvent_model(
                 implicit_solvent, IMPLICIT_MODELS
@@ -278,7 +283,6 @@ def run_minimization(
             implicit_solvent_request=implicit_solvent,
         )
 
-        allowed_names = RESTRAINT_SELECTIONS[restraint_atoms]
         positions = xml_inputs.positions
         restraint = CustomExternalForce(
             "k*periodicdistance(x, y, z, x0, y0, z0)^2"
@@ -292,24 +296,14 @@ def run_minimization(
             * kilojoules_per_mole
             / (nanometer * nanometer)
         )
-        restraint_count = 0
-        for atom in xml_inputs.topology.atoms():
-            if not _is_solute_atom(atom):
-                continue
-            if allowed_names is None:
-                if atom.element is None or atom.element.symbol == "H":
-                    continue
-            elif atom.name not in allowed_names:
-                continue
-            restraint.addParticle(atom.index, [
+        for atom_index in restraint_indices:
+            restraint.addParticle(atom_index, [
                 k_value,
-                positions[atom.index][0],
-                positions[atom.index][1],
-                positions[atom.index][2],
+                positions[atom_index][0],
+                positions[atom_index][1],
+                positions[atom_index][2],
             ])
-            restraint_count += 1
         system_min.addForce(restraint)
-        result["restraint_count"] = restraint_count
 
         integrator = VerletIntegrator(0.001)
         PLATFORM_MAP = {
@@ -404,7 +398,13 @@ def run_minimization(
                 "max_iterations": max_iterations,
                 "restraint_atoms": restraint_atoms,
                 "restraint_force_constant": restraint_force_constant,
-                "restraint_count": restraint_count,
+                "restraint_count": result["restraint_count"],
+                "restraint_counts_by_component": result[
+                    "restraint_counts_by_component"
+                ],
+                "restraint_selection_source": result[
+                    "restraint_selection_source"
+                ],
                 "energy_is_finite": final_check["finite"],
                 "positions_are_finite": True,
                 "atom_count_preserved": (
@@ -482,6 +482,12 @@ def run_minimization(
                     "restraint_atoms": restraint_atoms,
                     "restraint_force_constant": restraint_force_constant,
                     "restraint_count": result.get("restraint_count"),
+                    "restraint_counts_by_component": result.get(
+                        "restraint_counts_by_component"
+                    ),
+                    "restraint_selection_source": result.get(
+                        "restraint_selection_source"
+                    ),
                     "is_membrane": is_membrane,
                     "implicit_solvent": implicit_solvent,
                     "hmr": hmr,

@@ -34,6 +34,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `continue_from_not_prod` | continue-from must reference a prod node. |
 | `continue_from_parents_conflict` | continue-from conflicts with the given parents; resolve one. |
 | `empty_ligand_resname_selection` | Provide at least one ligand resname or drop ligand from --include-types. |
+| `equilibration_restraint_atoms_invalid` | Provide a valid restraint atom selection. |
 | `equilibration_time_step_conflict` | Resolve the equilibration time-step conflict (HMR vs dt). |
 | `explicit_ions_in_implicit_solvent` | Remove explicit ions before an implicit build, or use explicit/vacuum. |
 | `explicit_solvent_box_dimensions_missing` | Build topology from a completed explicit-solvent solv node. |
@@ -221,6 +222,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `requested_ligand_resnames_not_found` | Requested ligand resnames are absent in the structure. |
 | `requested_ligand_resnames_not_in_selected_scope` | Requested ligand resnames are outside the selected chains/scope. |
 | `restart_from_unavailable` | Requested restart point is unavailable; pick a valid parent state. |
+| `restraint_selection_empty` | Use a restraint selection that matches at least one atom. |
 | `sbatch_directive_injection` | Reject injected sbatch directives; sanitize the submission. |
 | `slurm_completed_without_node_completion` | SLURM job completed but the node did not; inspect artifacts. |
 | `slurm_node_already_submitted` | This node was already submitted; do not resubmit. |

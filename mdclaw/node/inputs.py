@@ -554,6 +554,11 @@ def resolve_node_inputs(
 
     elif node_type == "min":
         result.update(_resolve_topology_files(job_dir, node_id))
+        chain_identity_map = find_ancestor_artifact(
+            job_dir, node_id, "prep", "chain_identity_map"
+        )
+        if chain_identity_map:
+            result["chain_identity_map_file"] = chain_identity_map
         topo_anc = _find_ancestor_node_id(job_dir, node_id, "topo")
         if topo_anc is not None:
             is_membrane = _read_metadata_field(job_dir, topo_anc, "is_membrane")
@@ -562,6 +567,11 @@ def resolve_node_inputs(
 
     elif node_type == "eq":
         result.update(_resolve_topology_files(job_dir, node_id))
+        chain_identity_map = find_ancestor_artifact(
+            job_dir, node_id, "prep", "chain_identity_map"
+        )
+        if chain_identity_map:
+            result["chain_identity_map_file"] = chain_identity_map
         topo_anc = _find_ancestor_node_id(job_dir, node_id, "topo")
         if topo_anc is not None:
             is_membrane = _read_metadata_field(job_dir, topo_anc, "is_membrane")

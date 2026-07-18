@@ -4,7 +4,7 @@
 
 Standalone restrained minimization in a `min` node, followed by low-temperature
 NVT warmup, normal-temperature NVT heating, and NPT density equilibration in an
-`eq` node, with CA positional restraints. The same `min -> eq` prelude is used
+`eq` node, with solute-heavy positional restraints. The same `min -> eq` prelude is used
 for implicit and explicit systems. Both equilibration stages use 4 fs + HMR so
 the final checkpoint is compatible with production settings.
 
@@ -19,7 +19,7 @@ equilibration (a `slow_on_cpu` / `not_recommended` system should go to
 ```bash
 mdclaw --job-dir <job_dir> --node-id <min_node_id> run_minimization \
   --max-iterations 5000 \
-  --restraint-atoms CA \
+  --restraint-atoms solute_heavy \
   --restraint-force-constant 100.0
 
 mdclaw --job-dir <job_dir> --node-id <eq_node_id> run_equilibration \
@@ -41,12 +41,12 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
   `run_equilibration` starts from the `min` node's `state`, skips coordinate
   minimization, then runs low-temperature warmup before normal NVT/NPT.
 - Equilibration uses positional restraints to prevent structural collapse.
-  `--restraint-atoms` options (solute-only; water, ions, and OPC virtual sites
-  are always excluded):
+  `--restraint-atoms` options:
 
   | Value | Restrains | Notes |
   |---|---|---|
-  | `CA` (default) | alpha carbons | recommended for most workflows |
+  | `solute_heavy` (default) | prep-derived solute heavy atoms | includes structural ions; excludes water, added ions, lipids, and virtual sites |
+  | `CA` | alpha carbons | protein-only legacy selection |
   | `backbone` | protein backbone heavy atoms (N, CA, C, O) | |
   | `heavy` | all non-hydrogen solute atoms | strongest; useful for early-stage relaxation |
 - NVT default length: 1 ns. Prefer `--nvt-time-ns <ns>` for user-facing

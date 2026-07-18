@@ -2160,7 +2160,10 @@ class TestDAGAutoResolve:
         jd = str(job_dir)
         create_node(jd, "prep")
         complete_node(jd, "prep_001",
-                      artifacts={"merged_pdb": "artifacts/merge/merged.pdb"})
+                      artifacts={
+                          "merged_pdb": "artifacts/merge/merged.pdb",
+                          "chain_identity_map": "artifacts/chain_identity_map.json",
+                      })
 
         create_node(jd, "solv", parent_node_ids=["prep_001"])
         complete_node(jd, "solv_001",
@@ -2327,6 +2330,9 @@ class TestDAGAutoResolve:
         assert "topology_pdb_file" in inputs
         assert inputs["system_xml_file"].endswith("system.xml")
         assert inputs["topology_pdb_file"].endswith("topology.pdb")
+        assert inputs["chain_identity_map_file"].endswith(
+            "prep_001/artifacts/chain_identity_map.json"
+        )
         # The first eq node from topo has no eq/prod ancestor, so no
         # restart source is surfaced — it runs from the topo state.xml
         # as a fresh equilibration.
@@ -2343,6 +2349,9 @@ class TestDAGAutoResolve:
             "topo_001/artifacts/topology.pdb"
         )
         assert inputs["state_xml_file"].endswith("topo_001/artifacts/state.xml")
+        assert inputs["chain_identity_map_file"].endswith(
+            "prep_001/artifacts/chain_identity_map.json"
+        )
 
     def test_resolve_node_inputs_eq_uses_min_state(self, job_dir):
         jd = str(job_dir)

@@ -34,6 +34,7 @@ ensure_directory(WORKING_DIR)
 
 from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fail_node_if_running, _node_artifact_path, _resolve_implicit_solvent_model  # noqa: E402
 from mdclaw.simulation.integrator_plan import _resolve_equilibration_stage_steps  # noqa: E402
+from mdclaw.simulation.restraints import RESTRAINT_SELECTIONS, select_restraint_atoms  # noqa: E402
 from mdclaw.simulation.restart import _close_reporter_stream, _load_state_into_simulation, _resolve_restart_node_id_for_run, _restart_node_type_for_run, _restart_random_seed, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _effective_pressure_bar, _integrator_signature, _load_xml_topology_inputs, _system_signature, _validate_xml_system_contract  # noqa: E402
 
@@ -49,7 +50,7 @@ def run_equilibration(
     npt_steps: Optional[int] = None,
     nvt_time_ns: Optional[float] = None,
     npt_time_ns: Optional[float] = None,
-    restraint_atoms: str = "CA",
+    restraint_atoms: str = "solute_heavy",
     restraint_force_constant: float = 100.0,
     name: Optional[str] = None,
     output_dir: Optional[str] = None,
@@ -118,7 +119,8 @@ def run_equilibration(
             natural-language requests such as "0.1 ns NPT"; the tool
             converts it to steps using timestep_fs.
         restraint_atoms: Atom selection for restraints. Options:
-            - "CA": alpha carbons only (default, recommended)
+            - "solute_heavy": prep-derived solute heavy atoms (default)
+            - "CA": alpha carbons only
             - "backbone": backbone heavy atoms (N, CA, C, O)
             - "heavy": all non-hydrogen atoms
         restraint_force_constant: Restraint force constant in kJ/mol/nm^2
@@ -219,6 +221,7 @@ def run_equilibration(
 
     _restart_from_node_id = None
     _restart_from_node_type = None
+    _chain_identity_map_file = None
 
     # Auto-resolve inputs from DAG when in node mode
     if job_dir and node_id:
@@ -270,6 +273,7 @@ def run_equilibration(
             state_xml_file = _inputs["state_xml_file"]
         if not is_membrane and _inputs.get("is_membrane"):
             is_membrane = True
+        _chain_identity_map_file = _inputs.get("chain_identity_map_file")
         # min → eq and eq → eq chaining: when a min/eq/prod ancestor exposes
         # a state artifact, resume from it. A min source skips only the
         # minimization part; prior eq/prod sources skip the full prelude.
@@ -390,6 +394,8 @@ def run_equilibration(
         "timestep_fs": timestep_fs,
         "restraint_atoms": restraint_atoms,
         "restraint_count": 0,
+        "restraint_counts_by_component": {},
+        "restraint_selection_source": None,
         "relaxation_protocol": None,
         "low_temperature_warmup_steps": 0,
         "nan_failure_diagnostics": None,
@@ -417,6 +423,15 @@ def run_equilibration(
         result["errors"].append(f"Restart file not found: {restart_from}")
         return _fail_node_if_running(job_dir, node_id, result)
 
+    if restraint_atoms not in RESTRAINT_SELECTIONS:
+        result["errors"].append(
+            "restraint_atoms must be one of: " + ", ".join(RESTRAINT_SELECTIONS)
+        )
+        result["code"] = "equilibration_restraint_atoms_invalid"
+        result["allowed_values"] = list(RESTRAINT_SELECTIONS)
+        result["recommended_value"] = "solute_heavy"
+        return _fail_node_if_running(job_dir, node_id, result)
+
     try:
         from openmm.app import (
             Simulation, StateDataReporter,
@@ -441,33 +456,6 @@ def run_equilibration(
     IMPLICIT_MODELS = {
         "HCT": HCT, "OBC1": OBC1, "OBC2": OBC2, "GBn": GBn, "GBn2": GBn2,
     }
-    RESTRAINT_SELECTIONS = {
-        "CA": {"CA"},
-        "backbone": {"N", "CA", "C", "O"},
-        "heavy": None,  # all non-hydrogen
-    }
-
-    # Restraints anchor *solute* atoms only. Iterating over every atom in
-    # the topology (which includes solvent waters, ions, and OPC virtual
-    # sites) would otherwise wrongly restrain the bulk water oxygens or
-    # crash on virtual particles whose `element` is None. Filter by
-    # residue name against the standard solvent set.
-    from mdclaw.chemistry_constants import (
-        WATER_NAMES,
-        is_standard_bare_ion_resname,
-    )
-    _NON_SOLUTE_RESNAMES = WATER_NAMES
-
-    def _is_solute_atom(atom) -> bool:
-        residue = atom.residue
-        resname = residue.name.strip()
-        if resname.upper() in _NON_SOLUTE_RESNAMES:
-            return False
-        residue_atoms = list(residue.atoms())
-        if len(residue_atoms) == 1 and is_standard_bare_ion_resname(resname):
-            return False
-        return True
-
     try:
         # Set up output directory
         _node_mode = job_dir and node_id
@@ -492,6 +480,28 @@ def run_equilibration(
             topology_pdb_file=str(topology_pdb_path),
             state_xml_file=str(state_xml_path) if state_xml_path else None,
         )
+        restraint_selection = select_restraint_atoms(
+            xml_inputs.topology,
+            restraint_atoms,
+            chain_identity_map_file=_chain_identity_map_file,
+        )
+        result["warnings"].extend(restraint_selection["warnings"])
+        restraint_indices = restraint_selection["atom_indices"]
+        result["restraint_count"] = len(restraint_indices)
+        result["restraint_counts_by_component"] = restraint_selection[
+            "counts_by_component"
+        ]
+        result["restraint_selection_source"] = restraint_selection[
+            "selection_source"
+        ]
+        if restraint_force_constant > 0 and not restraint_indices:
+            result["code"] = "restraint_selection_empty"
+            result["allowed_values"] = list(RESTRAINT_SELECTIONS)
+            result["recommended_value"] = "solute_heavy"
+            result["errors"].append(
+                f"restraint_atoms={restraint_atoms!r} matched zero atoms"
+            )
+            return _fail_node_if_running(job_dir, node_id, result)
 
         is_periodic = xml_inputs.is_periodic
         if implicit_solvent:
@@ -575,33 +585,23 @@ def run_equilibration(
         restraint.addPerParticleParameter('y0')
         restraint.addPerParticleParameter('z0')
 
-        allowed_names = RESTRAINT_SELECTIONS.get(restraint_atoms, {"CA"})
         positions = xml_inputs.positions
-        restraint_count = 0
 
-        for atom in xml_inputs.topology.atoms():
-            if not _is_solute_atom(atom):
-                continue
-            if allowed_names is None:
-                # "heavy" = all non-hydrogen. Virtual sites (e.g. OPC's
-                # EPW dummy particle) have no element — skip them too.
-                if atom.element is None or atom.element.symbol == 'H':
-                    continue
-            elif atom.name not in allowed_names:
-                continue
-
+        for atom_index in restraint_indices:
             k_value = restraint_force_constant * kilojoules_per_mole / (nanometer * nanometer)
-            restraint.addParticle(atom.index, [
+            restraint.addParticle(atom_index, [
                 k_value,
-                positions[atom.index][0],
-                positions[atom.index][1],
-                positions[atom.index][2],
+                positions[atom_index][0],
+                positions[atom_index][1],
+                positions[atom_index][2],
             ])
-            restraint_count += 1
 
         system_nvt.addForce(restraint)
-        result["restraint_count"] = restraint_count
-        logger.info(f"Applied restraints to {restraint_count} atoms ({restraint_atoms})")
+        logger.info(
+            "Applied restraints to %d atoms (%s)",
+            result["restraint_count"],
+            restraint_atoms,
+        )
 
         restart_seed_step: Optional[int] = None
         if restart_path is not None and _node_mode:
@@ -863,20 +863,13 @@ def run_equilibration(
             restraint_npt.addPerParticleParameter('y0')
             restraint_npt.addPerParticleParameter('z0')
 
-            for atom in xml_inputs.topology.atoms():
-                if not _is_solute_atom(atom):
-                    continue
-                if allowed_names is None:
-                    if atom.element is None or atom.element.symbol == 'H':
-                        continue
-                elif atom.name not in allowed_names:
-                    continue
+            for atom_index in restraint_indices:
                 k_value = restraint_force_constant * kilojoules_per_mole / (nanometer * nanometer)
-                restraint_npt.addParticle(atom.index, [
+                restraint_npt.addParticle(atom_index, [
                     k_value,
-                    positions[atom.index][0],
-                    positions[atom.index][1],
-                    positions[atom.index][2],
+                    positions[atom_index][0],
+                    positions[atom_index][1],
+                    positions[atom_index][2],
                 ])
 
             system_npt.addForce(restraint_npt)
@@ -1135,6 +1128,12 @@ def run_equilibration(
                     "timestep_fs": timestep_fs,
                     "restraint_atoms": restraint_atoms,
                     "restraint_count": result.get("restraint_count"),
+                    "restraint_counts_by_component": result.get(
+                        "restraint_counts_by_component"
+                    ),
+                    "restraint_selection_source": result.get(
+                        "restraint_selection_source"
+                    ),
                     "temperature_kelvin": temperature_kelvin,
                     "pressure_bar": pressure_bar,
                     "restart_from_node_id": _restart_from_node_id,

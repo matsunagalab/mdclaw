@@ -64,7 +64,7 @@ Create nodes first; the regime page runs the tools with `--job-dir` /
 mdclaw create_node --job-dir <job_dir> --node-type min \
   --label "minimized" \
   --conditions '{"max_iterations": 5000,
-                 "restraint_atoms": "CA",
+                 "restraint_atoms": "solute_heavy",
                  "restraint_force_constant": 100.0}'
 
 mdclaw create_node --job-dir <job_dir> --node-type eq \

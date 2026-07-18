@@ -137,8 +137,59 @@ def test_minimization_invalid_phosphate_selection_is_actionable(tmp_path):
     )
 
     assert result["code"] == "minimization_restraint_atoms_invalid"
-    assert result["allowed_values"] == ["CA", "backbone", "heavy"]
-    assert result["recommended_value"] == "backbone"
+    assert result["allowed_values"] == [
+        "solute_heavy", "CA", "backbone", "heavy",
+    ]
+    assert result["recommended_value"] == "solute_heavy"
+
+
+def test_equilibration_invalid_restraint_selection_is_actionable(tmp_path):
+    system_xml = tmp_path / "system.xml"
+    topology_pdb = tmp_path / "topology.pdb"
+    system_xml.write_text("<System/>")
+    topology_pdb.write_text("END\n")
+
+    result = run_equilibration(
+        system_xml_file=str(system_xml),
+        topology_pdb_file=str(topology_pdb),
+        restraint_atoms="P",
+    )
+
+    assert result["code"] == "equilibration_restraint_atoms_invalid"
+    assert result["allowed_values"] == [
+        "solute_heavy", "CA", "backbone", "heavy",
+    ]
+    assert result["recommended_value"] == "solute_heavy"
+
+
+def test_minimization_rejects_zero_match_restraints(tmp_path):
+    from openmm.app import Topology, element
+
+    system_xml = tmp_path / "system.xml"
+    topology_pdb = tmp_path / "topology.pdb"
+    system_xml.write_text("<System/>")
+    topology_pdb.write_text("END\n")
+    topology = Topology()
+    chain = topology.addChain()
+    residue = topology.addResidue("A", chain)
+    topology.addAtom("P", element.phosphorus, residue)
+    xml_inputs = SimpleNamespace(topology=topology)
+
+    with patch(
+        "mdclaw.simulation.minimize._load_xml_topology_inputs",
+        return_value=xml_inputs,
+    ):
+        result = run_minimization(
+            system_xml_file=str(system_xml),
+            topology_pdb_file=str(topology_pdb),
+            restraint_atoms="backbone",
+            output_dir=str(tmp_path),
+        )
+
+    assert result["success"] is False
+    assert result["code"] == "restraint_selection_empty"
+    assert result["restraint_count"] == 0
+    assert result["recommended_value"] == "solute_heavy"
 
 
 def test_build_amber_system_blocks_missing_box_for_explicit_job(tmp_path):

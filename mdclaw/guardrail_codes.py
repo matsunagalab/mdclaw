@@ -252,6 +252,8 @@ GUARDRAIL_CODES: dict[str, str] = {
     # --- minimization / equilibration / timestep ---
     "minimization_iterations_invalid": "Use a valid (non-negative) minimization iteration count.",
     "minimization_restraint_atoms_invalid": "Provide a valid restraint atom selection.",
+    "equilibration_restraint_atoms_invalid": "Provide a valid restraint atom selection.",
+    "restraint_selection_empty": "Use a restraint selection that matches at least one atom.",
     "equilibration_time_step_conflict": "Resolve the equilibration time-step conflict (HMR vs dt).",
     "timestep_unsupported": "Use a supported integration time step for this system.",
 
