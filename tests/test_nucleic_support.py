@@ -93,6 +93,22 @@ def test_inspect_molecules_classifies_standard_dna_rna(tmp_path):
     assert summary["modified_nucleic_support_status"] == "not_detected"
 
 
+def test_public_pdb_action_contract_uses_author_chain_for_ions(tmp_path):
+    from mdclaw.research.inspection import inspect_molecules
+
+    pdb = _DNA_RNA_PDB.replace(
+        "END\n",
+        "HETATM   36 CA    CA A   2      14.500   0.000 -40.000  1.00 20.00          Ca\nEND\n",
+    )
+
+    result = inspect_molecules(structure_file=_write_pdb(tmp_path, pdb))
+
+    assert result["success"], result.get("errors")
+    contract = result["action_contract"]
+    assert contract["chain_id_namespace"] == "auth_asym_id"
+    assert contract["chains_by_type"]["ion"] == ["A"]
+
+
 def test_inspect_molecules_reports_modified_nucleic_as_unsupported(tmp_path):
     from mdclaw.structure.split import _inspect_molecules_impl
 
