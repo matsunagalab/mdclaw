@@ -582,6 +582,35 @@ def test_split_molecules_includes_associated_ligand_by_resname(
     assert "ACT" not in ligand_content
 
 
+@pytest.mark.parametrize(
+    "selector",
+    [
+        {"include_ligand_ids": ["A:AP5:215"]},
+        {"include_ligand_resnames": ["AP5"]},
+    ],
+)
+def test_ligand_selector_requires_ligand_include_type(
+    cif_protein_a_ap5_act_auth_a,
+    tmp_path,
+    selector,
+):
+    from mdclaw.structure.split import split_molecules
+
+    result = split_molecules(
+        structure_file=cif_protein_a_ap5_act_auth_a,
+        output_dir=str(tmp_path / "out_ligand_type_required"),
+        include_types=["protein"],
+        **selector,
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "ligand_type_required"
+    assert result["context"]["field"] == "include_types"
+    assert any(
+        "--include-types protein ligand" in hint for hint in result["hints"]
+    )
+
+
 def test_split_molecules_resname_scope_rejects_other_chain_match(
     cif_protein_a_ap5_act_auth_a,
     tmp_path,

@@ -84,6 +84,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "missing_pdb_file": "Use DAG auto-resolution or provide a valid PDB/mmCIF path.",
     "missing_structure_file": "Provide the structure file this tool requires.",
     "missing_uniprot_id": "Provide a valid UniProt accession.",
+    "source_candidate_selection_required": "Choose one listed source candidate and pass --source-structure-id to the prep tool.",
     "pdbfixer_missing_residues_out_of_scope": "Regenerate the source with MODELLER/Boltz-2 instead of PDBFixer repair.",
 
     # --- prep / cleaning / selection ---
@@ -101,6 +102,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     # --- ligands ---
     "ligand_chain_auto_included": "A ligand chain was auto-included; confirm it is intended.",
     "ligand_resname_chain_auto_included": "A ligand resname's chain was auto-included; confirm intent.",
+    "ligand_type_required": "Add ligand to --include-types or remove the ligand selector.",
     "associated_ligand_chain_auto_included": "An associated ligand chain was auto-included; confirm intent.",
     "associated_ligands_require_selection": "Select ligands explicitly with --include-ligand-resnames or the recommended IDs.",
     "unparametrizable_ligand_selected": "Placeholder residue (UNX/UNL/UNK) has no chemistry; drop it or predict a real ligand.",

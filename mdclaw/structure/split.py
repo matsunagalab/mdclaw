@@ -777,6 +777,29 @@ def split_molecules(
         "errors": [],
         "warnings": []
     }
+
+    if (
+        "ligand" not in include_types
+        and (include_ligand_ids is not None or include_ligand_resnames is not None)
+    ):
+        result.update(
+            create_validation_error(
+                "include_types",
+                "Ligand selectors require ligand in include_types",
+                expected="Add ligand to include_types or remove the ligand selector",
+                actual=include_types,
+                hints=[
+                    "Include ligands: --include-types protein ligand",
+                    "Or remove --include-ligand-ids/--include-ligand-resnames.",
+                ],
+                context_extra={
+                    "include_ligand_ids": include_ligand_ids,
+                    "include_ligand_resnames": include_ligand_resnames,
+                },
+                code="ligand_type_required",
+            )
+        )
+        return result
     
     # First, analyze the structure
     analysis = _inspect_molecules_impl(structure_file)

@@ -107,6 +107,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `ligand_protonation_charge_unreachable` | Requested ligand protonation/charge is unreachable; adjust the target state. |
 | `ligand_resname_chain_auto_included` | A ligand resname's chain was auto-included; confirm intent. |
 | `ligand_template_coverage_failed` | Ligand template coverage failed; provide parameters or SMILES. |
+| `ligand_type_required` | Add ligand to --include-types or remove the ligand selector. |
 | `lipid21_external_bond_patching_failed` | Lipid21 external bond patching failed; inspect the lipid topology. |
 | `membrane_embedding_geometry_failed` | Membrane embedding geometry failed; inspect protein/bilayer placement. |
 | `membrane_patch_build_failed` | Membrane patch packmol build failed; inspect the structured error. |
@@ -232,6 +233,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `slurm_node_unavailable` | SLURM node/tooling is unavailable; check the cluster runtime. |
 | `solvation_topology_water_model_mismatch` | Match the topology water model to the solvation step. |
 | `source_already_exists` | One source per job; add to the existing bundle or use another job. |
+| `source_candidate_selection_required` | Choose one listed source candidate and pass --source-structure-id to the prep tool. |
 | `source_cannot_have_dependencies` | Source nodes have no dependencies; remove them. |
 | `source_cannot_have_parents` | Source nodes have no parents; omit --parent-node-ids. |
 | `state_pdb_export_failed` | Exporting PDB from state failed; inspect the structured error. |

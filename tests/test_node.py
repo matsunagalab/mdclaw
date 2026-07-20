@@ -3851,6 +3851,27 @@ class TestSourceStudyContext:
         assert "input_resolution_error" not in inputs
         assert inputs["source_structure_count"] == 2
         assert inputs["source_bundle_file"].endswith("source_bundle.json")
+        assert [
+            candidate["structure_id"] for candidate in inputs["source_candidates"]
+        ] == ["candidate_001", "candidate_002"]
+
+        explanation = explain_node(jd, "prep_001")
+
+        assert explanation["success"] is True
+        assert list(explanation)[:4] == [
+            "success",
+            "code",
+            "ready_to_run",
+            "required_action",
+        ]
+        assert explanation["code"] == "source_candidate_selection_required"
+        assert explanation["ready_to_run"] is False
+        assert explanation["required_action"]["cli_flag"] == "--source-structure-id"
+        assert [
+            candidate["structure_id"]
+            for candidate in explanation["required_action"]["candidates"]
+        ] == ["candidate_001", "candidate_002"]
+        assert "--source-structure-id" in explanation["missing_inputs"][0]
 
     def test_prepare_resolver_selects_explicit_source_candidate(self, job_dir):
         from mdclaw.source_bundle import build_source_bundle, write_source_bundle

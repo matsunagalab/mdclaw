@@ -794,6 +794,11 @@ class TestArgparseConstruction:
         })
 
         output = capsys.readouterr().out
+        assert output.splitlines()[:3] == [
+            "MD workflow: follow the matching skill; prefer MDClaw CLI tools over custom scripts.",
+            "Preparation stage: use prepare_complex; use focused helpers only when directed.",
+            "DAG: create_node -> explain_node -> stage tool. Inspect: mdclaw --list-json <tool>.",
+        ]
         assert "example_tool" in output
         assert "mdclaw --list-json <tool>" in output
         assert "description that should not fill the index" not in output

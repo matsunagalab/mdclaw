@@ -1003,7 +1003,10 @@ def _print_tool_list(tools: dict[str, dict]) -> None:
     for tool_name, info in tools.items():
         by_server.setdefault(info["server"], []).append(tool_name)
 
-    print("Tool index. Inspect one: mdclaw --list-json <tool>")
+    print("MD workflow: follow the matching skill; prefer MDClaw CLI tools over custom scripts.")
+    print("Preparation stage: use prepare_complex; use focused helpers only when directed.")
+    print("DAG: create_node -> explain_node -> stage tool. Inspect: mdclaw --list-json <tool>.")
+    print("Tool index:")
     for server_name in sorted(by_server):
         print(f"\n[{server_name}]")
         print("  " + "  ".join(sorted(by_server[server_name])))

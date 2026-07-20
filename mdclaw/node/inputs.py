@@ -66,11 +66,47 @@ def explain_node(
         validate_conditions=actual_conditions is not None,
     )
     resolved_inputs = resolve_node_inputs(str(jd), node_id, node_type)
-    input_errors = resolved_inputs.get("input_resolution_errors", [])
+    input_errors = list(resolved_inputs.get("input_resolution_errors", []))
+    source_candidates = resolved_inputs.pop("source_candidates", [])
+    source_selection_required = (
+        node_type == "prep"
+        and resolved_inputs.get("source_structure_count", 0) > 1
+        and not resolved_inputs.get("structure_file")
+    )
+    if source_selection_required:
+        candidate_ids = [
+            str(candidate.get("structure_id"))
+            for candidate in source_candidates
+            if candidate.get("structure_id")
+        ]
+        input_errors.append(
+            "Pass --source-structure-id before running this prep node. "
+            f"Options: {candidate_ids}"
+        )
+
+    code = (
+        "source_candidate_selection_required"
+        if source_selection_required
+        else "ok"
+    )
+    ready_to_run = validation.get("success") is True and not input_errors
+    required_action = (
+        {
+            "required_action": {
+                "parameter": "source_structure_id",
+                "cli_flag": "--source-structure-id",
+                "candidates": source_candidates,
+            }
+        }
+        if source_selection_required
+        else {}
+    )
 
     return {
         "success": True,
-        "code": "ok",
+        "code": code,
+        "ready_to_run": ready_to_run,
+        **required_action,
         "dag_guidance": DAG_GUIDANCE,
         "job_dir": str(jd),
         "node_id": node_id,
@@ -87,7 +123,6 @@ def explain_node(
         "warnings": node.get("warnings", []),
         "progress_entry": progress_entry,
         "validation": validation,
-        "ready_to_run": validation.get("success") is True and not input_errors,
         "resolved_inputs": resolved_inputs,
         "missing_inputs": input_errors,
     }
@@ -515,6 +550,17 @@ def resolve_node_inputs(
                             "source_bundle_resolved_from_node_id": source_id,
                             "source_structure_count": len(structures),
                         })
+                        if len(structures) > 1:
+                            result["source_candidates"] = [
+                                {
+                                    "structure_id": record.get("structure_id"),
+                                    "candidate_id": record.get("candidate_id"),
+                                    "rank": record.get("rank"),
+                                    "is_primary": bool(record.get("is_primary")),
+                                    "label": record.get("label"),
+                                }
+                                for record in structures
+                            ]
                         if len(structures) == 1:
                             record = structures[0]
                             structure_file = source_record_path(record, source_node_dir)
