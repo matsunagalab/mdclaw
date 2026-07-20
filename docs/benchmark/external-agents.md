@@ -152,12 +152,15 @@ workspaces. The private evaluator package first appears in the evaluator
 workspace after solving is complete.
 
 Agent handoff is complete only when final artifacts are in the exact
-`submission_dir` and the public preflight passes. The automated runner records
-incomplete or failed handoffs in `finalization.json` and includes
-`contract_status`, `harness_status`,
+`submission_dir` and the public preflight passes. For Study tasks, local child
+processes in the harness-owned process group are supervised within the task
+walltime, and one continuation attempt may re-enter the existing work/DAG and
+finish the submission with the remaining budget. The automated runner records
+unresolved handoffs in `finalization.json` and includes `contract_status`,
+`harness_status`,
 `failure_class`, and `harness_evidence_status` in `summary.json`; this keeps
-scientific artifact score separate from harness/runtime failures such as
-background processes or running MDClaw DAG nodes.
+scientific artifact score separate from failures such as detached background
+processes or DAG nodes that remain active after continuation.
 
 Harness or evaluator code may also read:
 

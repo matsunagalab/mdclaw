@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tool-neutral public preflight for MDPrepBench submissions.
+"""Tool-neutral public preflight for MD benchmark submissions.
 
 This script intentionally uses only the public ``submission_contract.json`` and
 the solver's ``submission/`` directory. It does not read private task metadata
@@ -228,6 +228,14 @@ def validate_submission(
         "empty": empty,
     })
 
+    manifest_result = _validate_manifest_contract(
+        submission_dir=submission_dir,
+        contract=contract,
+        task_id=task_id,
+    )
+    checks.append(manifest_result)
+    errors.extend(manifest_result.get("errors") or [])
+
     has_openmm_contract = all(rel in required_outputs for rel in OPENMM_TRIPLE)
     if has_openmm_contract:
         openmm_result = _validate_openmm_bundle(
@@ -250,6 +258,152 @@ def validate_submission(
         warnings=warnings,
         checks=checks,
     )
+
+
+def _validate_manifest_contract(
+    *,
+    submission_dir: Path,
+    contract: dict[str, Any],
+    task_id: str,
+) -> dict[str, Any]:
+    """Validate completed manifest fields declared by the public contract."""
+    rules = contract.get("manifest_contract")
+    if not isinstance(rules, dict):
+        return {
+            "name": "completed_manifest_contract",
+            "passed": True,
+            "skipped": True,
+            "errors": [],
+        }
+
+    errors: list[str] = []
+    manifest_path = submission_dir / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except FileNotFoundError:
+        return {
+            "name": "completed_manifest_contract",
+            "passed": False,
+            "skipped": False,
+            "errors": ["missing required output manifest.json"],
+        }
+    except json.JSONDecodeError as exc:
+        return {
+            "name": "completed_manifest_contract",
+            "passed": False,
+            "skipped": False,
+            "errors": [f"manifest.json invalid: {exc}"],
+        }
+    if not isinstance(manifest, dict):
+        return {
+            "name": "completed_manifest_contract",
+            "passed": False,
+            "skipped": False,
+            "errors": ["manifest.json must contain a JSON object"],
+        }
+
+    manifest_task_id = manifest.get("task_id")
+    if manifest_task_id != task_id:
+        errors.append(
+            f"manifest.task_id={manifest_task_id!r} differs from {task_id!r}"
+        )
+    status = manifest.get("status", "completed")
+    allowed_statuses = rules.get("allowed_statuses") or []
+    if allowed_statuses and status not in allowed_statuses:
+        errors.append(
+            f"manifest.status={status!r} is not one of {allowed_statuses!r}"
+        )
+
+    completed_status = rules.get("completed_status", "completed")
+    required_fields = rules.get("required_manifest_output_fields") or []
+    list_fields = rules.get("required_manifest_list_fields") or {}
+    if status == completed_status:
+        for json_path in required_fields:
+            if not isinstance(json_path, str):
+                errors.append(
+                    f"invalid required manifest output path in contract: {json_path!r}"
+                )
+                continue
+            value, found = _json_path_value(manifest, json_path)
+            if not found or value in (None, "", []):
+                errors.append(
+                    f"missing required output field in manifest: {json_path}"
+                )
+                continue
+            errors.extend(
+                _manifest_artifact_path_errors(
+                    submission_dir=submission_dir,
+                    json_path=json_path,
+                    value=value,
+                )
+            )
+
+        if not isinstance(list_fields, dict):
+            errors.append("required_manifest_list_fields must be a JSON object")
+        else:
+            for json_path, raw_min_count in list_fields.items():
+                if not isinstance(json_path, str):
+                    errors.append(
+                        "invalid required manifest list path in contract: "
+                        f"{json_path!r}"
+                    )
+                    continue
+                try:
+                    min_count = int(raw_min_count)
+                except (TypeError, ValueError):
+                    errors.append(
+                        f"invalid minimum list size for {json_path}: {raw_min_count!r}"
+                    )
+                    continue
+                value, found = _json_path_value(manifest, json_path)
+                if not found or not isinstance(value, list) or len(value) < min_count:
+                    errors.append(
+                        f"missing required output list in manifest: {json_path} "
+                        f"needs at least {min_count} item(s)"
+                    )
+
+    return {
+        "name": "completed_manifest_contract",
+        "passed": not errors,
+        "skipped": False,
+        "status": status,
+        "errors": errors,
+    }
+
+
+def _json_path_value(payload: Any, json_path: str) -> tuple[Any, bool]:
+    current = payload
+    for part in json_path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None, False
+        current = current[part]
+    return current, True
+
+
+def _manifest_artifact_path_errors(
+    *,
+    submission_dir: Path,
+    json_path: str,
+    value: Any,
+) -> list[str]:
+    paths = value if isinstance(value, list) else [value]
+    errors: list[str] = []
+    for item in paths:
+        if not isinstance(item, str):
+            errors.append(
+                f"manifest output {json_path} contains a non-path item: {item!r}"
+            )
+            continue
+        reason = _invalid_relative_path_reason(item)
+        if reason:
+            errors.append(f"invalid manifest output path {json_path}: {item!r} ({reason})")
+            continue
+        path = submission_dir / item
+        if not path.is_file():
+            errors.append(f"manifest output file not found for {json_path}: {item}")
+        elif path.stat().st_size <= 0:
+            errors.append(f"manifest output file is empty for {json_path}: {item}")
+    return errors
 
 
 def _result(

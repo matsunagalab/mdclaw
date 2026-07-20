@@ -770,6 +770,7 @@ def test_study_answer_validation_requires_trajectory_manifest_outputs(
 
     assert result["success"] is False
     assert any("outputs.trajectories" in err for err in result["errors"])
+    assert any("outputs.topology" in err for err in result["errors"])
 
 
 def test_score_submission_rejects_manifest_output_path_escape(tmp_path: Path):

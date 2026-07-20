@@ -836,8 +836,39 @@ def _mdclaw_cli_instruction(
     }
 
 
-def _submission_packaging_instruction(public_dir: Path) -> dict[str, Any]:
+def _submission_packaging_instruction(
+    public_dir: Path,
+    primary_score: str,
+) -> dict[str, Any]:
     """Agent-visible final packaging contract for one task."""
+    if primary_score in _STUDY_PRIMARY_SCORES:
+        writes = [
+            "manifest.json",
+            "provenance.json",
+            "evidence_report.json",
+        ]
+        if primary_score == "scientific_answer":
+            writes.extend([
+                "metrics.json",
+                "manifest-declared comparative trajectories",
+                "manifest-declared matching topologies",
+            ])
+        else:
+            writes.extend(["methods.md", "decision_log.jsonl"])
+        return {
+            "standalone_packager": None,
+            "mdclaw_packager": None,
+            "usage": (
+                "For MDStudyBench tasks, author the required submission files "
+                "and manifest-declared artifacts directly. They are scored as "
+                "written; the MDPrepBench OpenMM packager does not apply."
+            ),
+            "writes": writes,
+            "post_packaging_rule": (
+                "Run the public preflight and fix the authored manifest or "
+                "artifacts directly until the public contract passes."
+            ),
+        }
     packager = public_dir / "tools" / "package_submission.py"
     return {
         "standalone_packager": str(packager),
@@ -952,8 +983,10 @@ def _task_agent_prompt(
         "the harness records failure/status."
         if primary_score == "preparation"
         else (
-            "Run public preflight after writing submission/. Exit after "
-            "preflight passes or explicit incomplete failure."
+            "Keep local MD work attached until it finishes. Run public "
+            "preflight after writing submission/. Exit after preflight passes; "
+            "externally scheduled work must remain in durable re-enterable DAG "
+            "state."
         )
     )
     stage_guidance = (
@@ -972,11 +1005,10 @@ def _task_agent_prompt(
         "Instructions:\n\n"
         f"{instruction_file}\n\n"
         f"Use MD. {skill_line}\n\n"
-        "Read task_instructions.json for prompt, contract, checklist, "
-        "submission_dir, work_dir, stage_recording, submission_packaging, "
-        "submission_preflight, agent_skills. Use work_dir for study/job/work "
-        "files. Write final outputs only to exact submission_dir path, never "
-        "work_dir/submission.\n\n"
+        "Read task_instructions.json, including submission_packaging, "
+        "submission_preflight, and runtime_budget (the harness deadline). "
+        "Use work_dir for study/job/work files. Write final outputs only to "
+        "exact submission_dir path, never work_dir/submission.\n\n"
         "Solve only this task. Do not inspect siblings, categorize suite, "
         "or write benchmark-wide solver scripts.\n\n"
         f"{stage_guidance} Do not create/edit harness_execution.json.\n\n"
@@ -996,8 +1028,10 @@ def _task_agent_finalization_prompt(
     original_prompt_file: Path,
     finalization_file: Path,
     primary_score: str,
+    *,
+    resume_incomplete_work: bool = False,
 ) -> str:
-    """Prompt for a tool-neutral final packaging retry.
+    """Prompt for tool-neutral finalization or Study-work continuation.
 
     The benchmark runner must not select MD artifacts or call an MDClaw-only
     packager on the agent's behalf. This retry gives every agent one identical
@@ -1012,6 +1046,32 @@ def _task_agent_finalization_prompt(
             "required stage from submission_contract.json."
         )
     )
+    if resume_incomplete_work:
+        return (
+            f"# MD Benchmark Study Continuation: {task_id}\n\n"
+            "The previous agent process exited before the Study submission "
+            "contract passed. Durable MD workflow nodes may still be active. "
+            "The harness has preserved the same work_dir, submission_dir, task "
+            "instructions, and remaining task walltime.\n\n"
+            "Do not inspect private evaluator files, sibling tasks, truth data, "
+            "or scorer internals. Do not fabricate artifacts.\n\n"
+            "Use this same agent-safe instruction file:\n\n"
+            f"{instruction_file}\n\n"
+            "Original task prompt, if needed for context:\n\n"
+            f"{original_prompt_file}\n\n"
+            "Previous finalization report:\n\n"
+            f"{finalization_file}\n\n"
+            "Re-enter the existing study rather than starting over. Inspect its "
+            "durable status, monitor or resume active nodes with the workflow's "
+            "normal re-entry tools, then complete production, analysis, report, "
+            "and submission packaging. Keep local child work attached; externally "
+            "scheduled work must remain represented by durable DAG state.\n\n"
+            f"{stage_guidance} Bare `mdclaw ...` commands are recorded "
+            "automatically; do not double-wrap them.\n\n"
+            "Run the public preflight from task_instructions.json before exiting. "
+            "Exit 0 only after preflight passes; otherwise exit nonzero with the "
+            "durable workflow state intact.\n"
+        )
     return (
         f"# MD Benchmark Finalization Retry: {task_id}\n\n"
         "The previous agent process exited before the public submission "
@@ -1336,6 +1396,51 @@ def _terminate_process_group_id(
         return
 
 
+def _wait_for_process_group(
+    process_group_id: Optional[int],
+    *,
+    timeout_seconds: Optional[float],
+    poll_interval_seconds: float = 0.25,
+) -> tuple[list[dict[str, Any]], float]:
+    """Supervise orphaned agent children until completion or timeout.
+
+    Study agents sometimes start local production in the background and exit
+    their controller process. Those children remain in the harness-owned POSIX
+    process group, so the runner can safely keep the task alive without
+    detaching unmanaged work. The caller still terminates any members left at
+    the deadline.
+    """
+    started = time.monotonic()
+    deadline = (
+        started + timeout_seconds
+        if timeout_seconds is not None
+        else None
+    )
+    members = _process_group_members(process_group_id)
+    while members:
+        # Zombies have completed their work and cannot be signalled. Treat a
+        # group containing only zombies as complete while their adopter reaps.
+        live_members = [
+            member
+            for member in members
+            if not str(member.get("stat") or "").startswith("Z")
+        ]
+        if not live_members:
+            members = []
+            break
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                members = live_members
+                break
+            sleep_seconds = min(poll_interval_seconds, remaining)
+        else:
+            sleep_seconds = poll_interval_seconds
+        time.sleep(max(0.01, sleep_seconds))
+        members = _process_group_members(process_group_id)
+    return members, round(time.monotonic() - started, 6)
+
+
 def _run_public_submission_preflight(
     *,
     public_dir: Path,
@@ -1568,19 +1673,20 @@ def _should_retry_agent_finalization(
     exit_code: int,
     timed_out: bool,
     background_processes: list[dict[str, Any]],
+    allow_incomplete_work_retry: bool = False,
 ) -> bool:
     if exit_code != 0 or timed_out or background_processes:
         return False
     if finalization.get("harness_status") != "failed":
         return False
-    if finalization.get("failure_class") in {
-        "background_processes",
-        "incomplete_running_work",
-    }:
+    failure_class = finalization.get("failure_class")
+    if failure_class == "background_processes":
         return False
+    if failure_class == "incomplete_running_work":
+        return allow_incomplete_work_retry
     progress = finalization.get("mdclaw_progress")
     if isinstance(progress, dict) and progress.get("active_node_count"):
-        return False
+        return allow_incomplete_work_retry
     preflight = finalization.get("preflight")
     preflight_failure = (
         preflight.get("failure_class") if isinstance(preflight, dict) else None
@@ -1851,6 +1957,12 @@ def prepare_benchmark_run(
             "mdclaw-cli-only",
         }
         primary_score = _task_primary_score(dataset, task_id)
+        declared_time_limit, is_study = _task_time_budget(dataset, task_id)
+        effective_time_limit = _effective_task_walltime(
+            declared_time_limit,
+            is_study=is_study,
+            operator_limit=max_walltime_minutes_per_task,
+        )
         stage_usage = (
             f"{stage_wrapper_path} --stage <source|prep|topo|min> -- <command>; "
             f"minimization: {stage_wrapper_path} --stage min -- <command>"
@@ -1871,6 +1983,15 @@ def prepare_benchmark_run(
             ),
             "submission_dir": str(task_run_dir / "submission"),
             "work_dir": str(task_run_dir / "work"),
+            "runtime_budget": {
+                "declared_time_limit_minutes": declared_time_limit,
+                "operator_cap_minutes": (
+                    max_walltime_minutes_per_task
+                    if max_walltime_minutes_per_task > 0
+                    else None
+                ),
+                "effective_walltime_minutes": effective_time_limit,
+            },
             "stage_recording": {
                 "wrapper": str(stage_wrapper_path),
                 "usage": stage_usage,
@@ -1885,7 +2006,10 @@ def prepare_benchmark_run(
                     "MDClaw-enabled tooling conditions."
                 ),
             ),
-            "submission_packaging": _submission_packaging_instruction(public_dir),
+            "submission_packaging": _submission_packaging_instruction(
+                public_dir,
+                primary_score,
+            ),
             "submission_preflight": _submission_preflight_instruction(
                 public_dir,
                 task_id,
@@ -2020,9 +2144,10 @@ def run_benchmark_agent(
     profiles that read only the generated task prompt.
 
     ``finalization_retries`` gives every agent the same tool-neutral chance to
-    recover from exiting before public preflight passes. The retry uses a
-    finalize-only prompt and the same public task materials; the runner never
-    selects MD artifacts or calls an MDClaw-specific packager.
+    recover from exiting before public preflight passes. Study tasks receive a
+    work/DAG continuation prompt and the remaining task walltime; other tasks
+    receive a finalize-only prompt. The runner never selects MD artifacts or
+    calls an MDClaw-specific packager.
 
     If ``agent_skills_dir`` is provided, its skills are copied into the solver
     workspace under ``skills/``, ``.agents/skills/``, ``.claude/skills/``, and
@@ -2333,11 +2458,11 @@ def _task_time_budget(private_dir: Path, task_id: str) -> tuple[Optional[int], b
     """Return ``(declared time_limit_minutes, is_study_task)`` from the private
     task.json.
 
-    For MDStudyBench tasks the declared per-task time limit is authoritative and
-    the operator's ``--max-walltime-minutes-per-task`` is ignored, so the
-    benchmark's stated per-task budget is fixed and reproducible (and is the same
-    number surfaced to the agent in the prompt). For other suites the CLI cap
-    still applies with the declared limit only as a fallback.
+    A positive operator ``--max-walltime-minutes-per-task`` is an explicit cap;
+    zero or a negative value selects the task's declared limit. A Study cap may
+    shorten but never extend that declared budget. ``is_study`` is returned
+    separately because Study tasks support supervised long-running children
+    and durable-DAG continuation.
     """
     task_file = private_dir / "tasks" / task_id / "task.json"
     try:
@@ -2348,6 +2473,20 @@ def _task_time_budget(private_dir: Path, task_id: str) -> tuple[Optional[int], b
     minutes = int(value) if isinstance(value, (int, float)) and value > 0 else None
     is_study = payload.get("primary_score") in _STUDY_PRIMARY_SCORES
     return minutes, is_study
+
+
+def _effective_task_walltime(
+    task_limit: Optional[int],
+    *,
+    is_study: bool,
+    operator_limit: int,
+) -> Optional[int]:
+    """Resolve the runtime deadline without extending a Study task budget."""
+    if operator_limit <= 0:
+        return task_limit
+    if is_study and task_limit:
+        return min(operator_limit, task_limit)
+    return operator_limit
 
 
 def _run_one_benchmark_agent_task(
@@ -2405,6 +2544,17 @@ def _run_one_benchmark_agent_task(
     )
 
     primary_score = _task_primary_score(private_dir, task_id)
+    task_limit, is_study = _task_time_budget(private_dir, task_id)
+    effective_walltime_minutes = _effective_task_walltime(
+        task_limit,
+        is_study=is_study,
+        operator_limit=max_walltime_minutes_per_task,
+    )
+    timeout_seconds = (
+        effective_walltime_minutes * 60
+        if effective_walltime_minutes and effective_walltime_minutes > 0
+        else None
+    )
     stage_usage = (
         f"{stage_wrapper_path} --stage <source|prep|topo|min> -- <command>; "
         "use --stage min for the actual non-MDClaw minimization command; "
@@ -2427,6 +2577,15 @@ def _run_one_benchmark_agent_task(
         ),
         "submission_dir": str(solver_submission),
         "work_dir": str(solver_work_dir),
+        "runtime_budget": {
+            "declared_time_limit_minutes": task_limit,
+            "operator_cap_minutes": (
+                max_walltime_minutes_per_task
+                if max_walltime_minutes_per_task > 0
+                else None
+            ),
+            "effective_walltime_minutes": effective_walltime_minutes,
+        },
         "stage_recording": {
             "wrapper": str(stage_wrapper_path),
             "usage": stage_usage,
@@ -2438,7 +2597,10 @@ def _run_one_benchmark_agent_task(
             policy=mdclaw_cli_policy,
             reason=mdclaw_cli_reason,
         ),
-        "submission_packaging": _submission_packaging_instruction(public_dir),
+        "submission_packaging": _submission_packaging_instruction(
+            public_dir,
+            primary_score,
+        ),
         "submission_preflight": _submission_preflight_instruction(
             public_dir,
             task_id,
@@ -2520,22 +2682,7 @@ def _run_one_benchmark_agent_task(
     if cuda_visible_devices is not None:
         run_env["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
 
-    # Effective per-task walltime. For MDStudyBench the task's declared limit is
-    # authoritative and the operator cap is ignored (fixed, reproducible, and the
-    # same number the prompt shows the agent). For other suites an explicit
-    # operator cap wins, falling back to the task's declared limit.
-    task_limit, is_study = _task_time_budget(private_dir, task_id)
-    if is_study and task_limit:
-        effective_walltime_minutes = task_limit
-    else:
-        effective_walltime_minutes = max_walltime_minutes_per_task
-        if not effective_walltime_minutes or effective_walltime_minutes <= 0:
-            effective_walltime_minutes = task_limit
-    timeout_seconds = (
-        effective_walltime_minutes * 60
-        if effective_walltime_minutes and effective_walltime_minutes > 0
-        else None
-    )
+    task_started_wall = time.monotonic()
 
     def _execute_agent_attempt(
         *,
@@ -2544,7 +2691,7 @@ def _run_one_benchmark_agent_task(
         stderr_file: Path,
         attempt_index: int,
         phase: str,
-        timeout_override_seconds: Optional[int] = None,
+        timeout_override_seconds: Optional[float] = None,
     ) -> dict[str, Any]:
         started_wall = time.monotonic()
         started_at = _now_utc()
@@ -2556,6 +2703,9 @@ def _run_one_benchmark_agent_task(
             else timeout_override_seconds
         )
         process_group_id: Optional[int] = None
+        background_processes_detected: list[dict[str, Any]] = []
+        background_processes: list[dict[str, Any]] = []
+        background_wait_seconds = 0.0
         process_kwargs: dict[str, Any] = {}
         if os.name == "posix":
             process_kwargs["preexec_fn"] = os.setsid
@@ -2580,8 +2730,36 @@ def _run_one_benchmark_agent_task(
                     "\n[mdclaw benchmark runner] agent command timed out after "
                     f"{attempt_timeout_seconds} seconds\n"
                 )
+            if not timed_out:
+                background_processes_detected = _process_group_members(
+                    process_group_id
+                )
+                background_processes = list(background_processes_detected)
+                if is_study and background_processes_detected:
+                    remaining_seconds = None
+                    if attempt_timeout_seconds is not None:
+                        remaining_seconds = max(
+                            0.0,
+                            attempt_timeout_seconds
+                            - (time.monotonic() - started_wall),
+                        )
+                    background_processes, background_wait_seconds = (
+                        _wait_for_process_group(
+                            process_group_id,
+                            timeout_seconds=remaining_seconds,
+                        )
+                    )
+                    if background_processes:
+                        exit_code = 124
+                        timed_out = True
+                        stderr_f.write(
+                            "\n[mdclaw benchmark runner] supervised background "
+                            "work exceeded the remaining task walltime\n"
+                        )
         walltime = round(float(time.monotonic() - started_wall), 6)
-        background_processes = _process_group_members(process_group_id)
+        if not background_processes_detected:
+            background_processes = _process_group_members(process_group_id)
+            background_processes_detected = list(background_processes)
         if background_processes:
             _terminate_process_group_id(process_group_id)
         record = {
@@ -2600,6 +2778,8 @@ def _run_one_benchmark_agent_task(
             ),
             "started_at": started_at,
             "completed_at": _now_utc(),
+            "background_processes_detected": background_processes_detected,
+            "background_wait_seconds": background_wait_seconds,
         }
         if timed_out:
             record["status"] = "timeout"
@@ -2649,14 +2829,27 @@ def _run_one_benchmark_agent_task(
         background_processes=agent_attempts[-1]["background_processes"]
     )
     retry_limit = max(0, int(finalization_retries or 0))
-    retry_timeout_seconds = 600 if timeout_seconds is None else min(timeout_seconds, 600)
     retry_count = 0
     while retry_count < retry_limit and _should_retry_agent_finalization(
         finalization,
         exit_code=int(agent_attempts[-1]["exit_code"]),
         timed_out=bool(agent_attempts[-1]["timed_out"]),
         background_processes=agent_attempts[-1]["background_processes"],
+        allow_incomplete_work_retry=is_study,
     ):
+        resume_incomplete_work = is_study
+        remaining_task_seconds = None
+        if timeout_seconds is not None:
+            remaining_task_seconds = timeout_seconds - (
+                time.monotonic() - task_started_wall
+            )
+            if remaining_task_seconds <= 0:
+                break
+        retry_timeout_seconds = (
+            remaining_task_seconds
+            if resume_incomplete_work
+            else min(remaining_task_seconds or 600, 600)
+        )
         retry_count += 1
         retry_prompt_path = task_run_dir / f"agent_finalization_prompt_{retry_count}.md"
         _write_text(
@@ -2667,6 +2860,7 @@ def _run_one_benchmark_agent_task(
                 agent_prompt_path,
                 task_run_dir / "finalization.json",
                 primary_score,
+                resume_incomplete_work=resume_incomplete_work,
             ),
         )
         retry_values = dict(template_values)
@@ -2684,7 +2878,11 @@ def _run_one_benchmark_agent_task(
                 stderr_file=task_run_dir
                 / f"agent.finalization_retry_{retry_count}.stderr.log",
                 attempt_index=retry_count,
-                phase="finalization_retry",
+                phase=(
+                    "study_continuation"
+                    if resume_incomplete_work
+                    else "finalization_retry"
+                ),
                 timeout_override_seconds=retry_timeout_seconds,
             )
         )

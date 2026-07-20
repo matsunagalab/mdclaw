@@ -307,3 +307,74 @@ def test_public_preflight_allows_study_manifest_artifacts(tmp_path: Path):
 
     assert completed.returncode == 0, payload
     assert payload["success"] is True
+
+
+def test_public_preflight_enforces_completed_study_manifest_outputs(
+    tmp_path: Path,
+):
+    submission = tmp_path / "submission"
+    trajectories = [
+        "trajectories/reference.dcd",
+        "trajectories/variant.dcd",
+    ]
+    for relative in trajectories:
+        path = submission / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"CORD\x00\x00\x00\x00")
+    (submission / "metrics.json").write_text("{}\n")
+    manifest = {
+        "task_id": "S_test",
+        "status": "completed",
+        "outputs": {"trajectories": trajectories},
+    }
+    (submission / "manifest.json").write_text(json.dumps(manifest))
+    contract = tmp_path / "submission_contract.json"
+    contract.write_text(json.dumps({
+        "task_id": "S_test",
+        "primary_score": "scientific_answer",
+        "required_outputs": ["manifest.json", "metrics.json"],
+        "manifest_contract": {
+            "allowed_statuses": ["completed", "partial", "failed", "blocked"],
+            "completed_status": "completed",
+            "required_manifest_output_fields": [
+                "outputs.metrics",
+                "outputs.trajectories",
+                "outputs.topology",
+            ],
+            "required_manifest_list_fields": {
+                "outputs.trajectories": 2,
+                "outputs.topology": 2,
+            },
+        },
+    }))
+
+    completed, payload = _run_preflight(
+        submission,
+        contract,
+        "--skip-openmm",
+    )
+
+    assert completed.returncode == 1
+    assert payload["failure_class"] == "missing_raw_artifacts"
+    assert any("outputs.metrics" in error for error in payload["errors"])
+    assert any("outputs.topology" in error for error in payload["errors"])
+
+    topologies = ["topology/reference.pdb", "topology/variant.pdb"]
+    for relative in topologies:
+        path = submission / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("ATOM\n")
+    manifest["outputs"].update({
+        "metrics": "metrics.json",
+        "topology": topologies,
+    })
+    (submission / "manifest.json").write_text(json.dumps(manifest))
+
+    completed, payload = _run_preflight(
+        submission,
+        contract,
+        "--skip-openmm",
+    )
+
+    assert completed.returncode == 0, payload
+    assert payload["success"] is True

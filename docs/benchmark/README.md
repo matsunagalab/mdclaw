@@ -74,18 +74,24 @@ only when that label accurately describes the solver. The label never changes
 the score; direct OpenMM/PDBFixer, MDCrow, MDClaw CLI-only, and MDClaw-skill
 runs are all judged by the same artifact checks.
 
-The automated runner defaults to 30 minutes per task. Increase
-`--max-walltime-minutes-per-task` for slow local MD or exploratory debugging
-runs.
+The automated runner defaults to 30 minutes per task. A positive
+`--max-walltime-minutes-per-task` is an explicit cap. A value of `0` selects
+the task's declared limit; the MDStudyBench batch wrapper uses this mode by
+default. A Study cap may shorten but not extend its declared limit. The
+effective value is written to each task's
+`task_instructions.json` as `runtime_budget`.
 
 If an agent exits cleanly before the public submission preflight passes,
-`run_benchmark_agent` makes one tool-neutral finalization retry by default. It
-reruns the same agent command with a finalize-only prompt and the same public
-task materials. The runner does not inspect MDClaw DAGs, choose artifacts, or
-call an MDClaw-specific packager on the agent's behalf. The retry is capped at
-10 minutes so it cannot become a second full MD attempt. Set
-`--finalization-retries 0` to disable this retry. Each retry is recorded in the
-task's `agent_run.json`, `harness_execution.json`, and `finalization.json`.
+`run_benchmark_agent` makes one tool-neutral retry by default. Ordinary
+contract failures get a finalize-only prompt capped at 10 minutes. A Study
+task instead gets a continuation prompt and the remaining task walltime, so it
+can inspect durable DAG state and finish analysis/reporting after production.
+Local Study child processes that remain in the
+harness-owned process group are supervised first; detached processes are not
+allowed. The runner does not choose artifacts or call an MDClaw-specific
+packager on the agent's behalf. Set `--finalization-retries 0` to disable the
+retry. Each attempt is recorded in `agent_run.json`,
+`harness_execution.json`, and `finalization.json`.
 
 The built-in profiles also set an explicit model unless `--agent-model` is
 provided: Pi uses `spark1-vllm/deepseek-v4-flash`, Claude Code uses
@@ -400,9 +406,11 @@ Automated runs additionally write `finalization.json` per task and aggregate
 `weighted_total` or per-task `scientific_score` remains the artifact score;
 `contract_status`, `harness_status`, `failure_class`, and
 `harness_evidence_status` report whether the harness saw a complete, auditable
-handoff or a control-plane failure such as `background_processes` or
-`incomplete_running_work`. `agent_finalization_retry_count` records whether a
-tool-neutral finalization retry was needed.
+handoff or an unresolved control-plane failure such as `background_processes`
+or `incomplete_running_work`. Study children that finish under harness
+supervision and active DAGs completed through the continuation attempt are not
+reported as failures. `agent_finalization_retry_count` records whether a
+finalization or continuation retry was needed.
 
 Individual tasks inspect submitted structures, OpenMM bundle contents, and
 scorer-side references under `truth/`. For example, P11 checks the submitted PDB

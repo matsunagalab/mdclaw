@@ -16,6 +16,16 @@ _PUBLIC_METRIC_CHECKS = {
     "json_min_length": ("min_length", "min_length"),
     "json_allowed_values": ("allowed_values", "allowed_values"),
 }
+_MANIFEST_FIXED_OUTPUT_FIELDS = {
+    "metrics.json": "metrics",
+    "provenance.json": "provenance",
+    "evidence_report.json": "evidence_report",
+    "decision_log.jsonl": "decision_log",
+    "methods.md": "methods",
+    "prepared_structure.pdb": "prepared_structure",
+    "minimized_structure.pdb": "minimized_structure",
+    "minimization_report.json": "minimization_report",
+}
 
 
 def public_metric_requirements(task: Task) -> list[dict[str, Any]]:
@@ -366,14 +376,16 @@ def submission_lifecycle(task: Task) -> dict[str, Any]:
             "--submission-contract <submission_contract.json> --skip-openmm"
         ),
         "exit_condition": (
-            "Exit only after required public-contract outputs are present in "
-            "submission_dir, or after writing an explicit incomplete/failed "
-            "submission record."
+            "Keep local work attached until it finishes. Exit only after "
+            "required public-contract outputs are present in submission_dir, "
+            "or after recording durable scheduler/DAG state that a harness "
+            "continuation can re-enter."
         ),
         "background_policy": (
-            "Do not leave preparation, solvation, topology, minimization, "
-            "equilibration, production, analysis, evidence generation, or "
-            "packaging work running after the agent process exits."
+            "Do not detach unmanaged work. Local child processes in the "
+            "agent process group are supervised within the task walltime; "
+            "external scheduler work must be represented by durable DAG "
+            "nodes that can be inspected and resumed on continuation."
         ),
         "agent_neutrality": (
             "No MDClaw-specific command sequence is required or rewarded."
@@ -388,13 +400,30 @@ def manifest_contract(task: Task) -> dict[str, Any]:
         "completed_status": "completed",
         "required_outputs_for_completed_submission": list(task.required_outputs),
     }
-    study_required = {
-        "scientific_answer": ["outputs.trajectories", "outputs.topology"],
-        "evidence_communication": ["outputs.methods", "outputs.decision_log"],
-    }.get(task.primary_score)
-    if study_required:
-        contract["required_manifest_output_fields"] = study_required
+    required_fields = manifest_output_field_requirements(task)
+    if required_fields:
+        contract["required_manifest_output_fields"] = required_fields
+    list_requirements = manifest_list_output_requirements(task)
+    if list_requirements:
+        contract["required_manifest_list_fields"] = {
+            f"outputs.{field}": min_count
+            for field, min_count in sorted(list_requirements.items())
+        }
     return contract
+
+
+def manifest_output_field_requirements(task: Task) -> list[str]:
+    """Return completed manifest paths required by task output contracts."""
+    fields = [
+        f"outputs.{_MANIFEST_FIXED_OUTPUT_FIELDS[relative]}"
+        for relative in task.required_outputs
+        if relative in _MANIFEST_FIXED_OUTPUT_FIELDS
+    ]
+    if task.primary_score == "scientific_answer":
+        fields.extend(["outputs.trajectories", "outputs.topology"])
+    elif task.primary_score == "evidence_communication":
+        fields.extend(["outputs.methods", "outputs.decision_log"])
+    return list(dict.fromkeys(fields))
 
 
 def submission_blueprint(task: Task) -> dict[str, Any]:
@@ -522,10 +551,10 @@ def submission_checklist(task: Task) -> list[str]:
         checks.append(
             "submitted artifacts satisfy every artifact_requirements item"
         )
-    if _manifest_list_outputs(task):
+    if manifest_list_output_requirements(task):
         checks.append(
             "manifest.outputs lists real artifact paths for: "
-            + ", ".join(sorted(_manifest_list_outputs(task)))
+            + ", ".join(sorted(manifest_list_output_requirements(task)))
         )
     evidence_keys = _evidence_required_keys(task)
     if evidence_keys:
@@ -800,12 +829,20 @@ def _manifest_output_blueprint(task: Task) -> dict[str, Any]:
         if field is not None:
             outputs[field[0]] = field[1]
 
-    for field, min_count in _manifest_list_outputs(task).items():
+    for field, min_count in manifest_list_output_requirements(task).items():
         outputs[field] = _manifest_list_example(field, min_count)
     return outputs
 
 
-def _manifest_list_outputs(task: Task) -> dict[str, int]:
+def manifest_list_output_requirements(task: Task) -> dict[str, int]:
+    """Return minimum sizes for manifest output lists required by a task.
+
+    Most list requirements are declared directly through ``json_min_length``
+    or ``manifest_artifact_floor`` checks. Scientific-answer tasks also refer
+    to indexed trajectory/topology entries from recompute checks; surface
+    those implicit requirements in the public contract and private preflight
+    instead of waiting for the scorer to fail later.
+    """
     outputs: dict[str, int] = {}
     for check in task.scoring.deterministic_checks:
         if (
@@ -824,12 +861,31 @@ def _manifest_list_outputs(task: Task) -> dict[str, int]:
         ):
             field = check.manifest_path.split(".", 1)[1]
             outputs[field] = max(outputs.get(field, 0), int(check.min_count or 1))
+    if task.primary_score == "scientific_answer":
+        for check in task.scoring.deterministic_checks:
+            for attribute in (
+                "trajectory_manifest_path",
+                "topology_manifest_path",
+                "mutant_topology_manifest_path",
+            ):
+                path = getattr(check, attribute, None)
+                if not isinstance(path, str) or not path.startswith("outputs."):
+                    continue
+                parts = path.split(".")
+                if len(parts) < 2 or parts[1] not in {"topology", "trajectories"}:
+                    continue
+                min_count = 1
+                if len(parts) >= 3 and parts[2].isdigit():
+                    min_count = int(parts[2]) + 1
+                field = parts[1]
+                outputs[field] = max(outputs.get(field, 0), min_count)
     return outputs
 
 
 def _manifest_list_example(field: str, min_count: int) -> list[str]:
     templates = {
         "trajectories": "trajectories/trajectory_{index}.dcd",
+        "topology": "topology/topology_{index}.pdb",
         "figures": "figures/figure_{index}.png",
         "checkpoints": "checkpoints/checkpoint_{index}.xml",
     }

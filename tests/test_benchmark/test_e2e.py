@@ -684,6 +684,114 @@ _fake_submissions.GENERATORS[args.task_id](
     assert score["status"] == "passed"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-only")
+def test_run_benchmark_agent_supervises_and_reenters_study_work(
+    tmp_path: Path,
+):
+    fake_agent = tmp_path / "fake_study_continuation_agent.py"
+    fake_agent.write_text(
+        """
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from tests.test_benchmark import _fake_study_submissions
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--prompt", required=True)
+parser.add_argument("--submission-dir", required=True)
+parser.add_argument("--run-id", required=True)
+parser.add_argument("--task-id", required=True)
+args = parser.parse_args()
+
+prompt = Path(args.prompt).read_text()
+work_dir = Path(os.environ["MDCLAW_BENCHMARK_WORK_DIR"])
+job_dir = work_dir / "study" / "jobs" / "main"
+job_dir.mkdir(parents=True, exist_ok=True)
+progress_file = job_dir / "progress.json"
+marker = work_dir / "background_complete.txt"
+Path(args.submission_dir).mkdir(parents=True, exist_ok=True)
+
+if "Study Continuation" not in prompt:
+    progress_file.write_text(json.dumps({
+        "nodes": {
+            "source_001": {"node_type": "source", "status": "completed"},
+            "prod_001": {"node_type": "prod", "status": "running"},
+        }
+    }))
+    child = (
+        "import json,pathlib,time; time.sleep(0.2); "
+        f"p=pathlib.Path({str(progress_file)!r}); "
+        "data=json.loads(p.read_text()); "
+        "data['nodes']['prod_001']['status']='completed'; "
+        "p.write_text(json.dumps(data)); "
+        f"pathlib.Path({str(marker)!r}).write_text('done')"
+    )
+    subprocess.Popen([sys.executable, "-c", child])
+    sys.exit(0)
+
+assert marker.read_text() == "done"
+progress_file.write_text(json.dumps({
+    "nodes": {
+        "source_001": {"node_type": "source", "status": "completed"},
+        "prod_001": {"node_type": "prod", "status": "completed"},
+    }
+}))
+stage_wrapper = os.environ["MDCLAW_BENCHMARK_STAGE_WRAPPER"]
+for stage in ("source", "prep", "prod", "analysis", "report"):
+    subprocess.run(
+        [sys.executable, stage_wrapper, "--stage", stage, "--",
+         sys.executable, "-c", "pass"],
+        check=True,
+    )
+_fake_study_submissions.GENERATORS[args.task_id](
+    Path(args.submission_dir), run_id=args.run_id, mode="honest"
+)
+""".lstrip()
+    )
+    output_dir = tmp_path / "benchmark_runs"
+    command = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(fake_agent))} "
+        "--prompt {{agent_prompt}} --submission-dir {{submission_dir}} "
+        "--run-id {{run_id}} --task-id {{task_id}}"
+    )
+
+    result = benchmark_run.run_benchmark_agent(
+        output_dir=str(output_dir),
+        run_id="study_supervised_continuation",
+        dataset_dir=str(STUDY_DATASET_DIR),
+        task_ids=[STUDY_TASK_ID],
+        agent_name="fake-study-agent",
+        agent_command=command,
+        execution_mode="dry_run",
+        max_walltime_minutes_per_task=1,
+        finalization_retries=1,
+        env={"PYTHONPATH": str(REPO_ROOT)},
+    )
+
+    assert result["success"], result
+    task_run_dir = (
+        output_dir
+        / "study_supervised_continuation"
+        / "tasks"
+        / STUDY_TASK_ID
+    )
+    agent_run = json.loads((task_run_dir / "agent_run.json").read_text())
+    assert [attempt["phase"] for attempt in agent_run["agent_attempts"]] == [
+        "solve",
+        "study_continuation",
+    ]
+    first_attempt = agent_run["agent_attempts"][0]
+    assert first_attempt["background_processes_detected"]
+    assert first_attempt["background_wait_seconds"] > 0
+    assert agent_run["agent_finalization_retry_count"] == 1
+    assert agent_run["finalization"]["harness_status"] == "ok"
+
+
 def test_run_benchmark_agent_classifies_running_mdclaw_work_as_incomplete(
     tmp_path: Path,
 ):
@@ -1316,6 +1424,7 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
         "submission_checklist",
         "submission_dir",
         "work_dir",
+        "runtime_budget",
         "stage_recording",
         "mdclaw_cli",
         "submission_packaging",
@@ -1479,11 +1588,14 @@ def _agent_run_record(task_run_dir: Path) -> dict:
     raise AssertionError("no agent_run harness record found")
 
 
-def test_run_benchmark_agent_study_time_limit_is_authoritative(tmp_path: Path):
-    """For MDStudyBench the task's declared ``time_limit_minutes`` (1440) is
-    authoritative: it is used with no operator cap AND an explicit operator cap
-    is ignored, so the per-task budget is fixed/reproducible and matches the
-    number shown to the agent in the prompt."""
+def test_run_benchmark_agent_study_time_limit_and_operator_override(tmp_path: Path):
+    """Study tasks default to their declared limit while allowing an explicit
+    shorter operator cap for smoke and development runs."""
+    assert benchmark_run._effective_task_walltime(
+        1440,
+        is_study=True,
+        operator_limit=2000,
+    ) == 1440
     fake_agent = tmp_path / "fake_study_agent.py"
     fake_agent.write_text(
         """
@@ -1538,8 +1650,13 @@ _fake_study_submissions.GENERATORS[args.task_id](
         output_dir / "study_timelimit_default" / "tasks" / STUDY_TASK_ID
     )
     assert record["walltime_limit_minutes"] == 1440
+    assert result["tasks"][0]["agent_instruction"]["runtime_budget"] == {
+        "declared_time_limit_minutes": 1440,
+        "operator_cap_minutes": None,
+        "effective_walltime_minutes": 1440,
+    }
 
-    # explicit operator cap is IGNORED for study tasks (declared limit wins)
+    # an explicit positive operator cap wins for smoke/development runs
     result = benchmark_run.run_benchmark_agent(
         output_dir=str(output_dir),
         run_id="study_timelimit_capped",
@@ -1555,7 +1672,12 @@ _fake_study_submissions.GENERATORS[args.task_id](
     record = _agent_run_record(
         output_dir / "study_timelimit_capped" / "tasks" / STUDY_TASK_ID
     )
-    assert record["walltime_limit_minutes"] == 1440
+    assert record["walltime_limit_minutes"] == 5
+    assert result["tasks"][0]["agent_instruction"]["runtime_budget"] == {
+        "declared_time_limit_minutes": 1440,
+        "operator_cap_minutes": 5,
+        "effective_walltime_minutes": 5,
+    }
 
 
 def test_prepare_benchmark_run_records_studybench_version(tmp_path: Path):
@@ -1586,6 +1708,10 @@ def test_prepare_benchmark_run_records_studybench_version(tmp_path: Path):
     assert agent_tasks["dataset_dir"] == str(STUDY_DATASET_DIR)
     assert "agent_prompt" in agent_tasks["tasks"][0]
     assert "submission_checklist" in agent_tasks["tasks"][0]
+    packaging = agent_tasks["tasks"][0]["submission_packaging"]
+    assert packaging["standalone_packager"] is None
+    assert "scored as written" in packaging["usage"]
+    assert "manifest-declared matching topologies" in packaging["writes"]
     assert contract["primary_score"] == "scientific_answer"
     assert "topology_output_shape" not in contract["manifest_contract"]
 

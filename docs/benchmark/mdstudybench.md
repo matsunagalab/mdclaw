@@ -119,7 +119,10 @@ submission/
 `manifest.outputs.trajectories` and `manifest.outputs.topology` must each list
 the WT/reference system first and the mutant/variant second so the scorer can
 reload and verify the paired comparison. The exported `submission_contract.json`
-carries `required_manifest_output_fields` listing these keys.
+carries `required_manifest_output_fields` for these artifacts plus the required
+metrics/provenance/evidence mappings, and minimum list sizes for the paired
+artifacts. The standalone public preflight validates the fields, list lengths,
+relative paths, and referenced files before private scoring.
 
 A scorer-side `harness_execution.json` (kept outside `submission/`) supplies the
 trusted workflow-stage evidence; solver-written `provenance.json` is an audit
@@ -178,6 +181,17 @@ group on timeout. The study batch runner defaults to
 `--max-walltime-minutes-per-task 0`, which means "use each task's declared
 `time_limit_minutes`" (all four tasks = 1440 min / 24 h). Pass an explicit
 positive value to override with a smaller fixed cap for quick local smoke runs.
+The effective deadline is also exposed to the evaluated agent as
+`task_instructions.json.runtime_budget`.
+
+Long-running local children remain in the harness-owned process group. If the
+controller exits early, the runner supervises those children within the same
+task walltime instead of immediately killing completed-in-time work. If a
+Study submission is still incomplete afterward, the default retry re-enters
+the same work directory with the remaining walltime and a Study continuation
+prompt. It may monitor/resume durable MDClaw or HPC DAG nodes and finish
+analysis/reporting. Detached unmanaged processes are still rejected, and an
+unresolved active DAG remains a failed handoff.
 
 The prompts deliberately prescribe no target simulation length: the agent gets a
 24 h wall-clock budget and must plan the production length and any replicate

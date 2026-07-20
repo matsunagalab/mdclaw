@@ -526,6 +526,19 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
     assert contract["manifest_contract"][
         "required_outputs_for_completed_submission"
     ] == contract["required_outputs"]
+    assert set(
+        contract["manifest_contract"]["required_manifest_output_fields"]
+    ) == {
+        "outputs.metrics",
+        "outputs.provenance",
+        "outputs.evidence_report",
+        "outputs.topology",
+        "outputs.trajectories",
+    }
+    assert contract["manifest_contract"]["required_manifest_list_fields"] == {
+        "outputs.topology": 2,
+        "outputs.trajectories": 2,
+    }
     assert "topology_output_shape" not in contract["manifest_contract"]
     assert "minimized_structure.pdb" not in contract["required_outputs"]
     assert (out_dir / "tasks" / "S01_stability_t4l_l99a" / "submission_checklist.md").is_file()
@@ -535,6 +548,12 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
         "trajectories/trajectory_1.dcd",
         "trajectories/trajectory_2.dcd",
     ]
+    assert contract["submission_blueprint"]["manifest_minimum"]["outputs"][
+        "topology"
+    ] == [
+        "topology/topology_1.pdb",
+        "topology/topology_2.pdb",
+    ]
     assert contract["submission_blueprint"]["metrics_minimum"]["md_analysis"][
         "production_time_ns"
     ] == ">= 1.0"
@@ -542,4 +561,11 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
         "source, prep, prod, analysis, report" in item
         for item in contract["submission_checklist"]
     )
-    assert "production" in contract["submission_lifecycle"]["background_policy"]
+    assert "supervised" in contract["submission_lifecycle"]["background_policy"]
+    checklist = (
+        out_dir
+        / "tasks"
+        / "S01_stability_t4l_l99a"
+        / "submission_checklist.md"
+    ).read_text()
+    assert "outputs.topology" in checklist

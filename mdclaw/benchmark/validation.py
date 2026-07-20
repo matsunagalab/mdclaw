@@ -15,6 +15,10 @@ from pydantic import ValidationError
 
 from mdclaw.benchmark import integrity
 from mdclaw.benchmark.models import SubmissionManifest, Task
+from mdclaw.benchmark.public_contract import (
+    manifest_list_output_requirements,
+    manifest_output_field_requirements,
+)
 
 
 def load_task(task_file: str | Path) -> Task:
@@ -207,47 +211,24 @@ def _validate_completed_manifest_outputs(
             )
             continue
         for rel in value:
-            if isinstance(rel, str) and not (sub_dir / rel).is_file():
+            if not isinstance(rel, str) or not rel:
+                out["errors"].append(
+                    f"outputs.{field} contains a non-path item: {rel!r}"
+                )
+            elif not (sub_dir / rel).is_file():
                 out["errors"].append(
                     f"outputs.{field} points to missing file: {rel}"
                 )
 
 
 def _required_manifest_output_fields(task: Task) -> list[str]:
-    output_fields = {
-        "metrics.json": "metrics",
-        "provenance.json": "provenance",
-        "evidence_report.json": "evidence_report",
-        "decision_log.jsonl": "decision_log",
-        "methods.md": "methods",
-        "prepared_structure.pdb": "prepared_structure",
-        "minimized_structure.pdb": "minimized_structure",
-        "minimization_report.json": "minimization_report",
-    }
     return [
-        output_fields[rel]
-        for rel in task.required_outputs
-        if rel in output_fields
+        path.split(".", 1)[1]
+        for path in manifest_output_field_requirements(task)
+        if path.startswith("outputs.")
+        and path.split(".", 1)[1] not in {"topology", "trajectories"}
     ]
 
 
 def _required_manifest_list_fields(task: Task) -> dict[str, int]:
-    fields: dict[str, int] = {}
-    for check in task.scoring.deterministic_checks:
-        if (
-            check.check_type == "json_min_length"
-            and check.json_file == "manifest.json"
-            and check.json_path
-            and check.json_path.startswith("outputs.")
-        ):
-            field = check.json_path.split(".", 1)[1]
-            fields[field] = max(fields.get(field, 0), int(check.min_length or 1))
-    for check in task.scoring.integrity_checks:
-        if (
-            check.check_type == "manifest_artifact_floor"
-            and check.manifest_path
-            and check.manifest_path.startswith("outputs.")
-        ):
-            field = check.manifest_path.split(".", 1)[1]
-            fields[field] = max(fields.get(field, 0), int(check.min_count or 1))
-    return fields
+    return manifest_list_output_requirements(task)

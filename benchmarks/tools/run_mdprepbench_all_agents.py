@@ -59,6 +59,35 @@ def _benchmark_label(dataset_dir: str) -> str:
     return Path(dataset_dir).name
 
 
+def _dataset_supports_llm_judge(
+    dataset_dir: str,
+    task_ids: list[str],
+) -> bool:
+    """Return whether the selected dataset tasks declare an LLM rubric.
+
+    The all-agents driver is shared by deterministic-only MDPrepBench and
+    MDStudyBench, whose study tasks intentionally include secondary LLM
+    judging. Keep the CLI generic while rejecting an unsupported judge mode
+    before any runs are created.
+    """
+    tasks_dir = Path(dataset_dir) / "tasks"
+    selected = task_ids or []
+    task_files = (
+        [tasks_dir / task_id / "task.json" for task_id in selected]
+        if selected
+        else sorted(tasks_dir.glob("*/task.json"))
+    )
+    for task_file in task_files:
+        try:
+            payload = json.loads(task_file.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        scoring = payload.get("scoring")
+        if isinstance(scoring, dict) and scoring.get("llm_judge_rubrics"):
+            return True
+    return False
+
+
 def _safe_token(value: str) -> str:
     token = re.sub(r"[^A-Za-z0-9]+", "_", value.strip()).strip("_").lower()
     return token or "agent"
@@ -339,7 +368,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--execution-mode", default="lite")
     parser.add_argument(
         "--judge-mode",
-        choices=("deterministic",),
+        choices=("deterministic", "llm_judge"),
         default="deterministic",
     )
     parser.add_argument("--max-walltime-minutes-per-task", type=int, default=30)
@@ -406,6 +435,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--jobs must be >= 1")
     if args.gpus < 0:
         parser.error("--gpus must be >= 0")
+    if args.judge_mode == "llm_judge" and not _dataset_supports_llm_judge(
+        args.dataset_dir,
+        args.task_ids,
+    ):
+        parser.error(
+            "--judge-mode: invalid choice: 'llm_judge' for the selected "
+            "dataset/tasks (no llm_judge_rubrics are declared)"
+        )
     try:
         agent_profiles = _parse_agent_map(args.agent_profile, option_name="--agent-profile")
         agent_models = _parse_agent_map(args.agent_model, option_name="--agent-model")

@@ -402,11 +402,14 @@ signature, update the relevant section here and the matching skill examples.
   `package.json` inside the solver workspace. Built-in `agent_profile` values
   provide practical Pi, Claude Code, and Codex command templates, including
   non-interactive approval-bypass flags for Claude Code / Codex, explicit
-  default model selection via `agent_model`, one tool-neutral finalization retry
-  for clean exits before public preflight passes, and process-group cleanup on
-  timeout. `jobs` runs that many tasks concurrently in one run (scored once
-  after all finish); `gpus` (when > 0) round-robins `CUDA_VISIBLE_DEVICES`
-  across concurrent tasks by task index.
+  default model selection via `agent_model`, one tool-neutral retry for clean
+  exits before public preflight passes, and process-group cleanup on timeout.
+  Study tasks supervise harness-owned local children and use that retry as a
+  work/DAG continuation when the submission remains incomplete; the
+  continuation receives only the remaining per-task walltime. `jobs` runs
+  that many tasks concurrently in one run (scored once after all finish);
+  `gpus` (when > 0) round-robins
+  `CUDA_VISIBLE_DEVICES` across concurrent tasks by task index.
 - `score_benchmark_run(...)`: validate and score every `submission/` under a
   run directory, then summarize the run.
 - `init_benchmark_run(...)` / `summarize_benchmark_run(...)`: lower-level run
