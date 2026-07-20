@@ -105,8 +105,8 @@ emits the modern artifact triple
 `metadata.system_artifact_kind="openmm_system_xml"` and a
 `metadata.forcefield_provenance` dict (XML names, sha256, OpenMM /
 openmmforcefields versions, `method.hmr`, ligand template sources). HMR defaults
-to `--hmr` (4 amu hydrogens) so the run-side default 4 fs timestep is
-loadable; the run-time validator rejects mismatched HMR with
+to `--hmr` (4 amu hydrogens); run nodes inherit HMR and the 4 fs timestep from
+the topology. The run-time validator rejects explicit mismatches with
 `modern_system_hmr_mismatch`. The XML triple is the only topology
 contract on the run side — tleap / `parm7` / `rst7` are not produced
 or consumed anywhere. The topo node's `state.xml` carries the topology-time

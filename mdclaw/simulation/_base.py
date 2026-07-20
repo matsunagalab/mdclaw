@@ -29,6 +29,31 @@ WORKING_DIR = Path("outputs").resolve()
 ensure_directory(WORKING_DIR)
 
 
+def _resolve_topology_run_settings(
+    *,
+    hmr: Optional[bool],
+    implicit_solvent: Optional[str],
+    topology_hmr: Optional[bool] = None,
+    topology_implicit_solvent: Optional[str] = None,
+    timestep_fs: Optional[float] = None,
+) -> tuple[bool, Optional[str], Optional[float]]:
+    """Inherit omitted run settings from the immutable topology contract."""
+    if hmr is None:
+        effective_hmr = topology_hmr if isinstance(topology_hmr, bool) else True
+    else:
+        effective_hmr = hmr
+
+    effective_implicit = (
+        topology_implicit_solvent
+        if implicit_solvent is None
+        else implicit_solvent
+    )
+    effective_timestep = timestep_fs
+    if timestep_fs is None:
+        effective_timestep = 4.0 if effective_hmr else 2.0
+    return effective_hmr, effective_implicit, effective_timestep
+
+
 
 def _node_artifact_path(path: Optional[str]) -> str:
     """Convert an absolute output path into a node-relative artifact path."""

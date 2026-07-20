@@ -67,12 +67,14 @@ class TestResearchServer:
         assert result["preparation_guidance"]["ions"] == {
             "residue_names": ["ZN"],
             "classification": "ion_not_ligand",
-            "explicit_solvent_action": "kept_by_default",
+            "explicit_solvent_action": "kept_by_default_unless_select_chains_is_used",
             "do_not_select_ions_with": [
                 "--include-ligand-ids",
                 "--include-ligand-resnames",
             ],
         }
+        assert result["action_contract"]["select_chains_scope"] == "all_component_types"
+        assert result["action_contract"]["ion_chain_ids_when_selecting_chains"] == ["A"]
 
     @pytest.mark.asyncio
     async def test_download_structure(self, tmp_path):

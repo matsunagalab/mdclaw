@@ -7,22 +7,21 @@ stage-specific run commands.
 Officially supported implicit-water models: **HCT, OBC1, OBC2, GBn, GBn2**
 (GBn2 recommended).
 
-Standard recipe: pass `--implicit-solvent <MODEL>` consistently on every node:
-`build_amber_system --implicit-solvent <MODEL>` on the `topo` node, then the same
-flag on `run_minimization`, `run_equilibration`, and `run_production`.
-`build_amber_system` bakes the matching GB force (e.g. `implicit/gbn2.xml`) into
-`system.xml` and stamps the canonical model name on `metadata.implicit_solvent`.
+Set `--implicit-solvent <MODEL>` when building the `topo` node.
+`build_amber_system` bakes the matching GB force into `system.xml` and records
+the model on the topology. `min`, `eq`, and `prod` inherit it when the flag is
+omitted; an explicit runtime value must match the topology.
 
 The run side validates the chain in three layers before building any System:
 
 | Layer | Code | Trigger |
 |---|---|---|
-| Topology guard (resolver) | `implicit_solvent_topology_mismatch` | `metadata.implicit_solvent` and the runtime `--implicit-solvent` disagree after canonicalization |
+| Topology guard (resolver) | `implicit_solvent_topology_mismatch` | An explicit runtime model disagrees with `metadata.implicit_solvent` |
 | Runtime lookup | `implicit_solvent_model_unsupported` | Unknown / typo'd GB name (no silent OBC2 fallback) |
 | Shim contract (deserialize) | `modern_system_implicit_solvent_unsupported` | `system.xml` carries no GB force at all |
 
-`--implicit-solvent` is required; omitting it builds a vacuum system, not
-implicit solvent.
+The topology build still requires `--implicit-solvent`; omitting it there builds
+a vacuum system.
 
 ## Research and external XML paths
 

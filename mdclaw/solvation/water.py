@@ -446,6 +446,7 @@ def solvate_structure(
                     metadata={
                         "water_model": water_model,
                         "backend": "openmm_fallback",
+                        "neutralization_expected": bool(salt),
                         "buffer_distance_angstrom": dist,
                         "salt_cation": salt_c,
                         "salt_anion": salt_a,
@@ -703,6 +704,7 @@ def solvate_structure(
                 },
                 metadata={
                     "water_model": water_model,
+                    "neutralization_expected": bool(salt),
                     "box_shape": "cubic" if _box.get("is_cubic") else "rectangular",
                     "buffer_distance_angstrom": dist,
                     "salt_concentration_M": saltcon,

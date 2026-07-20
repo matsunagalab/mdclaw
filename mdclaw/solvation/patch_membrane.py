@@ -1841,12 +1841,29 @@ def embed_with_membrane_patch_tiles(
                 protein_grid=grid,
                 carve_cutoff=cutoff,
             )
+            if not neutralization.get("complete"):
+                return {
+                    "success": False,
+                    "code": "membrane_neutralization_failed",
+                    "errors": [
+                        "Membrane neutralization could not place all required "
+                        "counter-ions in bulk water. Increase the water layer "
+                        "or membrane box before retrying."
+                    ],
+                    "warnings": warnings + patch.get("warnings", []),
+                    "neutralization": neutralization,
+                }
         else:
-            warnings.append(
-                "exact net-charge evaluation failed; membrane written without "
-                "protein-charge neutralization: "
-                + "; ".join(charge_result.get("errors", []))
-            )
+            return {
+                "success": False,
+                "code": "membrane_neutralization_failed",
+                "errors": [
+                    "Exact membrane net-charge evaluation failed; no "
+                    "unverified membrane artifact was accepted."
+                ] + list(charge_result.get("errors", [])),
+                "warnings": warnings + patch.get("warnings", []),
+                "charge_evaluation_code": charge_result.get("code"),
+            }
         try:
             provisional.unlink()
         except FileNotFoundError:
@@ -2039,8 +2056,11 @@ def _apply_neutralizing_swap(
 
     return kept, {
         "applied": True,
+        "complete": placed_cations == n_cation and placed_anions == n_anion,
         "net_charge": net_charge,
         "water_residues": n_water,
+        "cations_requested": n_cation,
+        "anions_requested": n_anion,
         "cations_added": placed_cations,
         "anions_added": placed_anions,
         "cation_resname": cation_res,

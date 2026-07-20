@@ -32,7 +32,7 @@ from mdclaw._common import (  # noqa: E402
 WORKING_DIR = Path("outputs").resolve()
 ensure_directory(WORKING_DIR)
 
-from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fail_node_if_running, _resolve_implicit_solvent_model  # noqa: E402
+from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fail_node_if_running, _resolve_implicit_solvent_model, _resolve_topology_run_settings  # noqa: E402
 from mdclaw.simulation.custom_forces import CUSTOM_FORCE_GROUP, CustomForceError, CustomForceReporter, custom_force_signature, load_custom_forces, write_cv_metadata  # noqa: E402
 from mdclaw.simulation.integrator_plan import _compute_step_plan, _record_production_node_result  # noqa: E402
 from mdclaw.simulation.restart import _close_reporter_stream, _count_state_data_rows, _detect_ensemble_mismatch, _flush_reporter_stream, _load_state_into_simulation, _resolve_dcd_append_mode, _resolve_restart_node_id_for_run, _restart_random_seed, _restart_source_metadata, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
@@ -72,7 +72,7 @@ def run_production(
     simulation_time_ns: float = 1.0,
     temperature_kelvin: float = 300.0,
     pressure_bar: Optional[float] = None,
-    timestep_fs: float = 4.0,
+    timestep_fs: Optional[float] = None,
     output_frequency_ps: float = 10.0,
     trajectory_format: str = "dcd",
     restraint_file: Optional[str] = None,
@@ -85,7 +85,7 @@ def run_production(
     platform: str = "auto",
     device_index: Optional[str] = None,
     restart_from: Optional[str] = None,
-    hmr: bool = True,
+    hmr: Optional[bool] = None,
     random_seed: Optional[int] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
@@ -114,7 +114,8 @@ def run_production(
                      production duration.)
         temperature_kelvin: Temperature in Kelvin (default: 300.0)
         pressure_bar: Pressure in bar. Set for NPT, None for NVT (default: None)
-        timestep_fs: Integration timestep in femtoseconds (default: 4.0)
+        timestep_fs: Integration timestep in femtoseconds. When omitted, uses
+                     4 fs for HMR topologies and 2 fs otherwise.
         output_frequency_ps: Output frequency in picoseconds (default: 10.0)
         trajectory_format: Trajectory format - "dcd" or "pdb" (default: "dcd")
         restraint_file: DEPRECATED and ignored. Use ``custom_force_script``
@@ -166,9 +167,8 @@ def run_production(
                      fresh DCD (no cross-node append) — to stitch
                      trajectories across nodes, concatenate with mdtraj
                      or similar.
-        hmr: Enable Hydrogen Mass Repartitioning (hydrogenMass=4 amu).
-                     Enabled by default. Allows 4 fs timestep for ~2x throughput.
-                     Use --no-hmr to disable (timestep should then be <= 2 fs).
+        hmr: Hydrogen Mass Repartitioning setting. When omitted in node mode,
+                     inherits the topology; standalone runs default to enabled.
         random_seed: Random number seed for reproducible simulations.
                      Controls integrator and initial velocity randomization.
                      If None (default), OpenMM uses system entropy.
@@ -191,8 +191,6 @@ def run_production(
             - errors: list[str] - Error messages if any
             - warnings: list[str] - Non-critical warnings
     """
-    pressure_bar = _effective_pressure_bar(pressure_bar, implicit_solvent)
-
     # Auto-resolve inputs from DAG when in node mode
     _eq_final_ensemble: Optional[str] = None
     _eq_pressure_bar: Optional[float] = None
@@ -202,6 +200,13 @@ def run_production(
         _inputs = resolve_node_inputs(job_dir, node_id, "prod")
         if not is_membrane and _inputs.get("is_membrane"):
             is_membrane = True
+        hmr, implicit_solvent, timestep_fs = _resolve_topology_run_settings(
+            hmr=hmr,
+            implicit_solvent=implicit_solvent,
+            topology_hmr=_inputs.get("topology_hmr"),
+            topology_implicit_solvent=_inputs.get("topology_implicit_solvent"),
+            timestep_fs=timestep_fs,
+        )
         _eq_final_ensemble = _inputs.get("eq_final_ensemble")
         _eq_pressure_bar = _inputs.get("eq_pressure_bar")
         # Inherit the custom force from a ``--continue-from`` parent so a
@@ -222,6 +227,7 @@ def run_production(
                 f"pressure_bar inherited from eq ancestor "
                 f"(final_ensemble=NPT, {pressure_bar} bar)"
             )
+        pressure_bar = _effective_pressure_bar(pressure_bar, implicit_solvent)
         # Resolver-level failures are recorded on the node so a failed
         # extension does not remain pending after the tool exits.
         if not restart_from and "restart_from_error" in _inputs:
@@ -327,6 +333,14 @@ def run_production(
             )
             err["errors"] = _topo_solvent_mismatch["errors"]
             return err
+
+    if not (job_dir and node_id):
+        hmr, implicit_solvent, timestep_fs = _resolve_topology_run_settings(
+            hmr=hmr,
+            implicit_solvent=implicit_solvent,
+            timestep_fs=timestep_fs,
+        )
+        pressure_bar = _effective_pressure_bar(pressure_bar, implicit_solvent)
 
     if not (system_xml_file and topology_pdb_file):
         return create_validation_error(

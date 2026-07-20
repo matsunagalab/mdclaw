@@ -33,7 +33,7 @@ from mdclaw._common import (  # noqa: E402
 WORKING_DIR = Path("outputs").resolve()
 ensure_directory(WORKING_DIR)
 
-from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fail_node_if_running, _node_artifact_path, _resolve_implicit_solvent_model  # noqa: E402
+from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fail_node_if_running, _node_artifact_path, _resolve_implicit_solvent_model, _resolve_topology_run_settings  # noqa: E402
 from mdclaw.simulation.restraints import RESTRAINT_SELECTIONS, select_restraint_atoms  # noqa: E402
 from mdclaw.simulation.restart import _save_state_atomic  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _load_xml_topology_inputs, _system_signature, _validate_xml_system_contract  # noqa: E402
@@ -53,7 +53,7 @@ def run_minimization(
     implicit_solvent: Optional[str] = None,
     platform: str = "auto",
     device_index: Optional[str] = None,
-    hmr: bool = True,
+    hmr: Optional[bool] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -111,6 +111,12 @@ def run_minimization(
         if not is_membrane and _inputs.get("is_membrane"):
             is_membrane = True
         _chain_identity_map_file = _inputs.get("chain_identity_map_file")
+        hmr, implicit_solvent, _ = _resolve_topology_run_settings(
+            hmr=hmr,
+            implicit_solvent=implicit_solvent,
+            topology_hmr=_inputs.get("topology_hmr"),
+            topology_implicit_solvent=_inputs.get("topology_implicit_solvent"),
+        )
 
         _topo_solvent_mismatch = _check_topology_implicit_solvent_match(
             topology_implicit_solvent=_inputs.get("topology_implicit_solvent"),
@@ -149,6 +155,12 @@ def run_minimization(
         )
         if not _ctx["success"]:
             return {"success": False, "error_type": "ValidationError", **_ctx}
+
+    if not _node_mode:
+        hmr, implicit_solvent, _ = _resolve_topology_run_settings(
+            hmr=hmr,
+            implicit_solvent=implicit_solvent,
+        )
 
     if not (system_xml_file and topology_pdb_file):
         return create_validation_error(

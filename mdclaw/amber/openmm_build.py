@@ -34,6 +34,7 @@ from mdclaw._common import setup_logger  # noqa: E402
 logger = setup_logger(__name__)
 
 import contextlib  # noqa: E402
+import copy  # noqa: E402
 import io  # noqa: E402
 import json  # noqa: E402
 import math  # noqa: E402
@@ -190,6 +191,51 @@ def _system_net_charge_e(system: Any) -> float | None:
             total += float(charge.value_in_unit(unit.elementary_charge))
         return total
     return None
+
+
+def _standard_ion_residue_templates(topology: Any, water_model: str | None) -> dict:
+    """Pin monoatomic standard ions to their exact water-XML templates."""
+    supported = _ff_catalog.standard_ion_resnames_for_water(water_model)
+    if not supported:
+        return {}
+    return {
+        residue: residue.name
+        for residue in topology.residues()
+        if residue.name in supported and sum(1 for _ in residue.atoms()) == 1
+    }
+
+
+def _create_system_with_residue_templates(
+    system_generator: Any,
+    topology: Any,
+    *,
+    molecules: list[Any] | None,
+    residue_templates: dict,
+) -> Any:
+    """Create a System while disambiguating exact bare-ion templates.
+
+    ``SystemGenerator.create_system`` does not expose OpenMM's public
+    ``residueTemplates`` argument. Mirror its small dispatch here only when
+    exact ion pins are needed; the ordinary path remains upstream's method.
+    """
+    if not residue_templates:
+        return system_generator.create_system(topology, molecules=molecules)
+
+    if system_generator.template_generator is not None and molecules is not None:
+        system_generator.template_generator.add_molecules(molecules)
+
+    kwargs = copy.deepcopy(system_generator.forcefield_kwargs)
+    if topology.getPeriodicBoxVectors() is None:
+        kwargs.update(system_generator.nonperiodic_forcefield_kwargs)
+    else:
+        kwargs.update(system_generator.periodic_forcefield_kwargs)
+    kwargs["residueTemplates"] = residue_templates
+
+    system = system_generator.forcefield.createSystem(topology, **kwargs)
+    system_generator._modify_forces(system)
+    if system_generator.postprocess_system is not None:
+        system = system_generator.postprocess_system(system)
+    return system
 
 
 def _coerce_expected_charge(value: Any) -> float | None:
@@ -1433,7 +1479,14 @@ def _run_openmmforcefields_build(
     # extra particles (for example OPC virtual sites) and then validates by
     # attempting SystemGenerator.create_system.
     try:
-        modeller.addExtraParticles(sg.forcefield)
+        ion_templates = _standard_ion_residue_templates(
+            modeller.topology,
+            canon_water,
+        )
+        modeller.addExtraParticles(
+            sg.forcefield,
+            residueTemplates=ion_templates,
+        )
         patch_summary["add_extra_particles_completed"] = True
     except Exception as exc:  # noqa: BLE001
         patch_summary["add_extra_particles_completed"] = False
@@ -1444,9 +1497,20 @@ def _run_openmmforcefields_build(
 
     _stage("system_generator_create_system")
     try:
+        ion_templates = _standard_ion_residue_templates(
+            modeller.topology,
+            canon_water,
+        )
+        if ion_templates:
+            patch_summary["standard_ion_templates_pinned"] = sorted(
+                residue.name for residue in ion_templates
+            )
         with _charge_fit_timeout_guard(_resolve_charge_fit_timeout()):
-            system = sg.create_system(
-                modeller.topology, molecules=ligand_molecules_for_gaff or None
+            system = _create_system_with_residue_templates(
+                sg,
+                modeller.topology,
+                molecules=ligand_molecules_for_gaff or None,
+                residue_templates=ion_templates,
             )
     except TimeoutError:
         # Propagate to ``build_amber_system``'s handler (code

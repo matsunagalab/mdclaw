@@ -1189,7 +1189,7 @@ class TestHPCParameters:
         assert args.hmr is True
         assert args.timestep_fs == 4.0
 
-    def test_hmr_default_true(self):
+    def test_run_settings_default_to_topology_inheritance(self):
         from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
@@ -1200,8 +1200,8 @@ class TestHPCParameters:
             "--system-xml-file", "sys.system.xml",
             "--topology-pdb-file", "sys.topology.pdb",
         ])
-        assert args.hmr is True
-        assert args.timestep_fs == 4.0
+        assert args.hmr is None
+        assert args.timestep_fs is None
         assert args.platform == "auto"
         assert args.device_index is None
         assert args.restart_from is None

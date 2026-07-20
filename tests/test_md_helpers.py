@@ -20,6 +20,7 @@ from mdclaw.simulation.integrator_plan import (
 )
 from mdclaw.simulation.platform import inspect_openmm_platforms
 from mdclaw.simulation.production import run_production
+from mdclaw.simulation._base import _resolve_topology_run_settings
 from mdclaw.simulation.restart import (
     _DCD_MAGIC,
     _dcd_has_valid_header,
@@ -31,6 +32,34 @@ from mdclaw._node import (
     init_progress_v3,
 )
 from tests.pipeline_helpers import complete_node_with_placeholders as complete_node
+
+
+def test_run_settings_inherit_non_hmr_implicit_topology():
+    hmr, implicit_solvent, timestep_fs = _resolve_topology_run_settings(
+        hmr=None,
+        implicit_solvent=None,
+        topology_hmr=False,
+        topology_implicit_solvent="GBn2",
+        timestep_fs=None,
+    )
+
+    assert hmr is False
+    assert implicit_solvent == "GBn2"
+    assert timestep_fs == 2.0
+
+
+def test_explicit_run_settings_override_topology_defaults():
+    hmr, implicit_solvent, timestep_fs = _resolve_topology_run_settings(
+        hmr=True,
+        implicit_solvent="OBC2",
+        topology_hmr=False,
+        topology_implicit_solvent="GBn2",
+        timestep_fs=3.0,
+    )
+
+    assert hmr is True
+    assert implicit_solvent == "OBC2"
+    assert timestep_fs == 3.0
 
 
 def test_inspect_openmm_platforms_reports_only_context_usable_platforms(monkeypatch):
@@ -1663,6 +1692,7 @@ class TestExplicitRestartFromFinalStepAlignment:
                 # focused on the restart path.
                 nvt_steps=0,
                 npt_steps=0,
+                restraint_force_constant=0,
                 restart_from=str(external),
                 job_dir=str(jd),
                 node_id="eq_002",
@@ -1983,6 +2013,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
                 "state_xml": str(kwargs["state_xml_file"]),
                 "num_atoms": 1,
                 "num_residues": 1,
+                "system_net_charge_e": 0.0,
                 "forcefield_provenance": {
                     "kind": "amber_via_openmmforcefields",
                     "openmm_xml": [],
@@ -1994,6 +2025,69 @@ class TestBuildAmberSystemHmrAndImplicitContract:
             }
 
         return captured, _fake
+
+    def test_neutralized_solvation_rejects_charged_topology(self, tmp_path):
+        from unittest.mock import patch
+
+        from mdclaw._node import complete_node as complete_node_raw
+        from mdclaw._node import read_node
+        from mdclaw.amber.build_system import build_amber_system
+
+        job_dir = tmp_path / "job"
+        prep = create_node(str(job_dir), "prep")
+        prep_pdb = job_dir / "nodes" / prep["node_id"] / "artifacts" / "prepared.pdb"
+        prep_pdb.write_text(
+            "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\nEND\n"
+        )
+        complete_node_raw(
+            str(job_dir), prep["node_id"],
+            artifacts={"merged_pdb": "artifacts/prepared.pdb"},
+        )
+        solv = create_node(
+            str(job_dir), "solv", parent_node_ids=[prep["node_id"]]
+        )
+        solv_dir = job_dir / "nodes" / solv["node_id"] / "artifacts"
+        (solv_dir / "solvated.pdb").write_text(prep_pdb.read_text())
+        (solv_dir / "box_dimensions.json").write_text(
+            '{"box_a": 40.0, "box_b": 40.0, "box_c": 40.0}'
+        )
+        complete_node_raw(
+            str(job_dir), solv["node_id"],
+            artifacts={
+                "solvated_pdb": "artifacts/solvated.pdb",
+                "box_dimensions": "artifacts/box_dimensions.json",
+            },
+            metadata={
+                "water_model": "opc",
+                "neutralization_expected": True,
+            },
+        )
+        topo = create_node(
+            str(job_dir), "topo", parent_node_ids=[solv["node_id"]]
+        )
+
+        _, fake = self._fake_om_build_capturing_kwargs()
+
+        def charged_fake(**kwargs):
+            result = fake(**kwargs)
+            result["system_net_charge_e"] = -1.0
+            result["forcefield_provenance"]["system_net_charge_e"] = -1.0
+            return result
+
+        with patch(
+            "mdclaw.amber.build_system._run_openmmforcefields_build",
+            side_effect=charged_fake,
+        ):
+            result = build_amber_system(
+                forcefield="ff19SB",
+                water_model="opc",
+                job_dir=str(job_dir),
+                node_id=topo["node_id"],
+            )
+
+        assert result["success"] is False
+        assert result["code"] == "neutralization_charge_mismatch"
+        assert read_node(str(job_dir), topo["node_id"])["status"] == "failed"
 
     @staticmethod
     def _pdb_with_single_atom_ion(resname: str, element: str) -> str:
@@ -2136,8 +2230,8 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         """The default ``build_amber_system()`` call (no hmr= override) must
         bake HMR into system.xml. This is the contract that lets the
         zero-kwarg workflow (build_amber_system → run_equilibration →
-        run_production with no overrides) succeed: run_equilibration's
-        default ``hmr=True`` would otherwise trip
+        run_production with no overrides) succeed: run-side topology
+        inheritance would otherwise trip
         ``modern_system_hmr_mismatch`` against a non-HMR build."""
         from unittest.mock import patch
         from mdclaw.amber.build_system import build_amber_system
@@ -2162,7 +2256,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         assert result["success"] is True
         assert captured["hmr"] is True, (
             "build_amber_system default hmr must be True so run_equilibration "
-            "/ run_production defaults (also hmr=True) line up under the "
+            "/ run_production topology inheritance lines up under the "
             "modern-system contract."
         )
         prov = result.get("forcefield_provenance") or {}
@@ -3027,20 +3121,38 @@ class TestImplicitSolventTopologyMismatchInRunFunctions:
         assert result.get("success", False) is False
         assert result.get("code") == "implicit_solvent_topology_mismatch"
 
-    def test_run_equilibration_implicit_topo_without_runtime_implicit_fails(
-        self, tmp_path,
+    def test_run_equilibration_inherits_implicit_topology_setting(
+        self, tmp_path, monkeypatch,
     ):
-        """Topo built with GB; runtime omits ``--implicit-solvent``."""
+        """Topo built with GB; omitted runtime setting inherits OBC2."""
         from mdclaw._node import create_node
+        from mdclaw.simulation import equilibrate as eq_module
         from mdclaw.simulation.equilibrate import run_equilibration
 
         job_dir = self._dag_with_modern_topo(tmp_path, "OBC2")
         create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
 
+        captured = {}
+
+        def capture_match(*, topology_implicit_solvent, runtime_implicit_solvent):
+            captured["topology"] = topology_implicit_solvent
+            captured["runtime"] = runtime_implicit_solvent
+            return {
+                "code": "test_capture",
+                "errors": ["stop after capture"],
+                "message": "stop after capture",
+            }
+
+        monkeypatch.setattr(
+            eq_module,
+            "_check_topology_implicit_solvent_match",
+            capture_match,
+        )
         result = run_equilibration(
             pressure_bar=0,
             job_dir=str(job_dir),
             node_id="eq_002",
         )
-        assert result.get("success", False) is False
-        assert result.get("code") == "implicit_solvent_topology_mismatch"
+
+        assert result["code"] == "test_capture"
+        assert captured == {"topology": "OBC2", "runtime": "OBC2"}

@@ -2,8 +2,7 @@
 
 Read `skills/common/implicit-solvent-contract.md` first for the supported models
 (HCT, OBC1, OBC2, GBn, GBn2; GBn2 recommended) and the build/run validation
-contract. Pass the same `--implicit-solvent <MODEL>` on the `min` and `eq`
-nodes that was baked into `system.xml` at the `topo` node.
+contract. `min` and `eq` inherit the model baked into the topology.
 
 ## Equilibration Protocol
 
@@ -17,7 +16,6 @@ with production settings.
 
 ```bash
 mdclaw --job-dir <job_dir> --node-id <min_node_id> run_minimization \
-  --implicit-solvent GBn2 \
   --max-iterations 5000 \
   --restraint-atoms solute_heavy \
   --restraint-force-constant 100.0
@@ -25,15 +23,13 @@ mdclaw --job-dir <job_dir> --node-id <min_node_id> run_minimization \
 mdclaw --job-dir <job_dir> --node-id <eq_node_id> run_equilibration \
   --temperature-kelvin <T> \
   --pressure-bar 0 \
-  --implicit-solvent GBn2 \
   --nvt-time-ns <NVT_NS>
 ```
 
 `run_minimization` auto-resolves `system_xml_file`, `topology_pdb_file`, and
 `state_xml_file` from the `topo` ancestor. `run_equilibration` auto-resolves
 the same topology bundle plus the parent `min` node's portable `state`.
-Always pass `--implicit-solvent <model>` so OpenMM builds a GB system rather
-than rejecting the non-periodic topology as vacuum. Pass `--pressure-bar 0`
+The GB model and HMR setting inherit from the topology. Pass `--pressure-bar 0`
 to make the declared node conditions and restart signature explicit; implicit
 solvent has no barostat and always equilibrates as NVT. To override inputs,
 pass `--system-xml-file` / `--topology-pdb-file` / `--state-xml-file` explicitly.
@@ -43,8 +39,7 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
 ### Domain Knowledge
 
 - NVT only: implicit solvent has no periodic box, so no barostat
-- `--implicit-solvent` is required for GB simulations; omitting it is vacuum,
-  not implicit solvent
+- The topology build selects the GB model; min/eq inherit it.
 - NVT default length: 1 ns. If the user gives an equilibration duration,
   pass it as `--nvt-time-ns <ns>` and keep `--pressure-bar 0`.
 - Do not convert ns/ps to steps in the agent. The tool converts time to

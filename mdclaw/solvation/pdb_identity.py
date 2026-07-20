@@ -267,12 +267,13 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
     """Return the packmol-memgen charge delta for packmol-unrecognized charges.
 
     packmol-memgen estimates the solute charge from a fixed residue-name table
-    that covers standard amino acids, nucleotides, and a few ions (MG, CA,
-    Na+, Cl-). Charged MD components it does not recognize therefore leave a
+    that covers standard amino acids, nucleotides, and a few ions (MG, CA).
+    Charged MD components it does not recognize therefore leave a
     residual net charge after neutralization:
 
-    - Transition-metal / non-MG/CA ions kept as components (ZN, MN, FE, CO,
-      NI, CU, ...) are counted as neutral, so a catalytic Zn2+ leaves +2.
+    - Bare ions not recognized by packmol-memgen (including retained halides
+      and transition metals) are counted as neutral, so their full formal
+      charge must be added to the estimate.
     - MG/CA are normally counted, but packmol-memgen tracks charged residues
       by residue number only; same-resseq ion collisions can drop later ions.
     - Protonated ASP/GLU residues that have been restored to canonical residue
@@ -288,14 +289,15 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
     residue and returns it as a ``--charge_pdb_delta`` so neutralization adds
     the missing counter-ions.
     """
-    from mdclaw.chemistry_constants import METAL_CHARGES
+    from mdclaw.chemistry_constants import BARE_ION_CHARGES
 
     residues = _iter_pdb_residues(pdb_path)
     ions: list[dict] = []
     charge_delta = 0
     packmol_charge_track: str | None = None
     for residue in residues:
-        resname = (residue.get("resname") or "").strip().upper()
+        exact_resname = (residue.get("resname") or "").strip()
+        resname = exact_resname.upper()
         atom_count = residue.get("atom_count", 0)
         track_resseq = _packmol_charge_tracking_resseq(residue)
         packmol_counts_this_residue = (
@@ -310,14 +312,14 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
         already_counted = 0
         kind = None
         atom_names = _atom_names(residue)
-        # Monoatomic residues are treated as bare metal ions; this avoids
-        # misreading a metal atom that belongs to a larger cofactor residue.
-        if atom_count == 1 and resname in METAL_CHARGES:
-            formal_charge = int(METAL_CHARGES[resname])
+        # Only monoatomic residues enter the bare-ion path. This avoids
+        # misreading an ion-named atom that belongs to a larger cofactor.
+        if atom_count == 1 and exact_resname in BARE_ION_CHARGES:
+            formal_charge = int(BARE_ION_CHARGES[exact_resname])
             if packmol_counts_this_residue:
                 already_counted = int(_PACKMOL_RECOGNIZED_ION_CHARGES.get(resname, 0))
             contribution = formal_charge - already_counted
-            kind = "metal_ion"
+            kind = "metal_ion" if formal_charge > 0 else "bare_ion"
         elif resname in _CANONICAL_PROTONATED_ACID_HYDROGENS and (
             atom_names & _CANONICAL_PROTONATED_ACID_HYDROGENS[resname]
         ):
@@ -342,7 +344,11 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
 
         entry = {
             "residue": _pdb_residue_label(residue),
-            "resname": resname,
+            "resname": (
+                exact_resname
+                if atom_count == 1 and exact_resname in BARE_ION_CHARGES
+                else resname
+            ),
             "kind": kind,
             "formal_charge": formal_charge,
             "packmol_recognized_charge": already_counted,

@@ -110,6 +110,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `ligand_type_required` | Add ligand to --include-types or remove the ligand selector. |
 | `lipid21_external_bond_patching_failed` | Lipid21 external bond patching failed; inspect the lipid topology. |
 | `membrane_embedding_geometry_failed` | Membrane embedding geometry failed; inspect protein/bilayer placement. |
+| `membrane_neutralization_failed` | Membrane charge evaluation or counter-ion placement failed; rebuild with enough bulk water. |
 | `membrane_patch_build_failed` | Membrane patch packmol build failed; inspect the structured error. |
 | `membrane_patch_build_invalid_output` | Membrane patch packmol build output is missing requested lipids. |
 | `membrane_patch_build_no_output` | Membrane patch packmol build produced no output PDB. |
@@ -163,7 +164,8 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `mutation_spec_invalid` | Fix the mutation spec format (e.g. A:GLU123ALA). |
 | `mutation_validation_failed` | Mutation validation failed; inspect the reported residues. |
 | `need_index_out_of_range` | Use a need index that exists on the node. |
-| `net_charge_exception` | Exact net-charge evaluation raised; membrane written without protein-charge neutralization. |
+| `net_charge_exception` | Exact net-charge evaluation raised; membrane neutralization was stopped. |
+| `neutralization_charge_mismatch` | Fix retained ion or ligand charges, then rebuild solvation and topology on new nodes. |
 | `node_already_claimed` | Another worker holds the claim; wait, or override only if stale. |
 | `node_context_required` | Create the node, then run it with both --job-dir and --node-id. |
 | `node_execution_context_invalid` | Node context is invalid; fix node type/conditions or branch a new node. |

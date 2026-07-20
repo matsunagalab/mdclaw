@@ -68,6 +68,80 @@ STANDARD_BARE_ION_RESNAME_KEYS = frozenset(
     STANDARD_BARE_ION_RESNAMES | {name.upper() for name in STANDARD_BARE_ION_RESNAMES}
 )
 
+# Exact formal charges for every bare-ion template shipped by the supported
+# OpenMM water XMLs. Case is significant: for example ``AG`` is Ag(I), while
+# ``Ag`` is Ag(II); ``CE``/``Ce`` and several other pairs follow the same
+# convention. Keep this table in lockstep with STANDARD_BARE_ION_RESNAMES.
+BARE_ION_CHARGES: dict[str, int] = {
+    # Anions
+    "BR": -1,
+    "CL": -1,
+    "F": -1,
+    "I": -1,
+    "IOD": -1,
+    # Monovalent cations
+    "AG": 1,
+    "CS": 1,
+    "CU1": 1,
+    "K": 1,
+    "LI": 1,
+    "NA": 1,
+    "RB": 1,
+    "TL": 1,
+    # Divalent cations
+    "Ag": 2,
+    "BA": 2,
+    "Be": 2,
+    "CA": 2,
+    "CD": 2,
+    "CO": 2,
+    "CU": 2,
+    "Cr": 2,
+    "EU": 2,
+    "FE2": 2,
+    "HG": 2,
+    "MG": 2,
+    "MN": 2,
+    "NI": 2,
+    "PB": 2,
+    "PD": 2,
+    "PT": 2,
+    "Ra": 2,
+    "SR": 2,
+    "Sm": 2,
+    "Sn": 2,
+    "V2+": 2,
+    "YB2": 2,
+    "ZN": 2,
+    # Trivalent cations
+    "AL": 3,
+    "CE": 3,
+    "CR": 3,
+    "Dy": 3,
+    "EU3": 3,
+    "Er": 3,
+    "FE": 3,
+    "GD": 3,
+    "GD3": 3,
+    "IN": 3,
+    "LA": 3,
+    "LU": 3,
+    "Nd": 3,
+    "PR": 3,
+    "SM": 3,
+    "TB": 3,
+    "Tl": 3,
+    "Tm": 3,
+    "Y": 3,
+    # Tetravalent cations
+    "Ce": 4,
+    "Hf": 4,
+    "Pu": 4,
+    "Th": 4,
+    "U4+": 4,
+    "Zr": 4,
+}
+
 # Common monoatomic ions seen in crystallographic structures. Historically this
 # public name is also used by run-side solute filters, so keep it to common
 # unambiguous residue names and use STANDARD_BARE_ION_RESNAMES for full water-XML
@@ -112,12 +186,9 @@ METAL_ELEMENTS = {
     "Bi",
 }
 
-# Common metal-ion residue names with their typical formal charges. This is
-# used for diagnostics and packmol-memgen charge-delta compensation; topology
-# parameter coverage still comes from the active water-model XML.
+# Public diagnostic lookup retained for the metal detector. Charge correction
+# uses BARE_ION_CHARGES directly so oxidation-state-specific XML names are not
+# collapsed to an element-level guess.
 METAL_CHARGES: dict[str, int] = {
-    "ZN": 2, "MG": 2, "CA": 2, "MN": 2, "FE": 2, "CO": 2, "NI": 2, "CU": 2,
-    "FE3": 3, "AL": 3, "CR": 3,
-    "NA": 1, "K": 1, "CU1": 1, "AG": 1,
-    "HG": 2, "CD": 2, "PB": 2,
+    name: charge for name, charge in BARE_ION_CHARGES.items() if charge > 0
 }

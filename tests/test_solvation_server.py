@@ -8,6 +8,10 @@ from types import SimpleNamespace
 import mdclaw.solvation._base as solv_base  # noqa: F401
 import mdclaw.solvation.water as solv_water
 import mdclaw.solvation.membrane as solv_membrane
+from mdclaw.chemistry_constants import (
+    BARE_ION_CHARGES,
+    STANDARD_BARE_ION_RESNAMES,
+)
 from mdclaw.solvation.pdb_identity import (
     _auto_metal_ion_packmol_charge_pdb_delta,
     _auto_nucleic_packmol_charge_pdb_delta,
@@ -263,6 +267,62 @@ def test_metal_ion_charge_delta_ignores_packmol_recognized_ions(tmp_path):
     report = _auto_metal_ion_packmol_charge_pdb_delta(pdb)
 
     assert report["charge_pdb_delta"] == 0
+
+
+def test_bare_ion_charge_delta_counts_retained_halides(tmp_path):
+    pdb = tmp_path / "halides.pdb"
+    pdb.write_text(
+        "".join(
+            _pdb_hetatm(i, "CL", "CL", chain, 500 + i, "Cl")
+            for i, chain in enumerate("ABCD", start=1)
+        )
+        + "END\n"
+    )
+
+    report = _auto_metal_ion_packmol_charge_pdb_delta(pdb)
+
+    assert report["charge_pdb_delta"] == -4
+    assert report["applied_ion_count"] == 4
+    assert {entry["kind"] for entry in report["ions"]} == {"bare_ion"}
+
+
+def test_bare_ion_charge_table_covers_every_standard_water_template():
+    assert set(BARE_ION_CHARGES) == set(STANDARD_BARE_ION_RESNAMES)
+
+
+def test_bare_ion_charge_delta_preserves_case_sensitive_oxidation_states(tmp_path):
+    expected = {
+        "AG": 1,
+        "Ag": 2,
+        "CE": 3,
+        "Ce": 4,
+        "CR": 3,
+        "Cr": 2,
+        "SM": 3,
+        "Sm": 2,
+        "TL": 1,
+        "Tl": 3,
+        "FE": 3,
+        "FE2": 2,
+        "CU": 2,
+        "CU1": 1,
+    }
+    pdb = tmp_path / "oxidation_states.pdb"
+    pdb.write_text(
+        "".join(
+            _pdb_hetatm(i, resname, resname, "A", 600 + i, "X")
+            for i, resname in enumerate(expected, start=1)
+        )
+        + "END\n"
+    )
+
+    report = _auto_metal_ion_packmol_charge_pdb_delta(pdb)
+
+    observed = {
+        entry["resname"]: entry["formal_charge"] for entry in report["ions"]
+    }
+    assert observed == expected
+    assert report["charge_pdb_delta"] == sum(expected.values())
 
 
 def test_metal_ion_charge_delta_counts_packmol_resseq_collision(tmp_path):
@@ -887,16 +947,20 @@ def test_embed_in_membrane_restores_packmol_solute_identity(tmp_path, monkeypatc
     input_pdb.write_text(
         "ATOM      1  CA  ALA X   7       0.000   0.000   0.000  1.00  0.00           C\n"
         "ATOM      2  C   ALA X   7       1.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    3 ZN    ZN Y 300       2.000   0.000   0.000  1.00  0.00          Zn\n"
         "END\n"
     )
+    calls = []
 
     def fake_run(args, cwd, timeout):
+        calls.append(list(args))
         output_path = Path(args[args.index("-o") + 1])
         output_path.write_text(
             "CRYST1   40.000   40.000   70.000  90.00  90.00  90.00 P 1           1\n"
             "ATOM    101  CA  GLY Z 999       0.000   0.000   0.000  1.00  0.00           C\n"
             "ATOM    102  C   GLY Z 999       1.000   0.000   0.000  1.00  0.00           C\n"
-            "HETATM  103  C1  POPC M   1       2.000   0.000   0.000  1.00  0.00           C\n"
+            "HETATM  103 ZN    ZN Z 999       2.000   0.000   0.000  1.00  0.00          Zn\n"
+            "HETATM  104  C1  POPC M   1       3.000   0.000   0.000  1.00  0.00           C\n"
             "END\n"
         )
         return SimpleNamespace(stdout="", stderr="")
@@ -923,9 +987,12 @@ def test_embed_in_membrane_restores_packmol_solute_identity(tmp_path, monkeypatc
 
     assert result["success"] is True
     assert result["solute_identity_restored"] is True
-    assert result["solute_identity_restored_atom_count"] == 2
+    assert result["solute_identity_restored_atom_count"] == 3
+    assert calls[0][calls[0].index("--charge_pdb_delta") + 1] == "2"
+    assert result["parameters"]["neutralization_expected"] is True
     output_text = Path(result["output_file"]).read_text()
     assert "ALA X   7" in output_text
+    assert "ZN Y 300" in output_text
     assert "GLY Z 999" not in output_text
 
 
@@ -1332,10 +1399,12 @@ def test_compute_membrane_net_charge_disables_pablo_auto_download(
     result = solv_membrane._compute_membrane_net_charge(
         pdb_file=pdb,
         box_dims={"box_a": 40.0, "box_b": 40.0, "box_c": 81.0},
+        water_model="tip3p",
     )
 
     assert result["success"] is False
     assert captured["pablo_auto_download"] is False
+    assert captured["water_model"] == "tip3p"
 
 
 def test_embed_in_membrane_patch_tile_builds_then_reuses_cache(tmp_path, monkeypatch):
@@ -1468,7 +1537,7 @@ def test_embed_in_membrane_patch_tile_neutralizes_net_charge(tmp_path, monkeypat
     monkeypatch.setattr("mdclaw.solvation.membrane._equilibrate_membrane_patch", None)
 
     # Stub the exact-charge evaluation to report a +2 net charge.
-    def fake_charge(pdb_file, box_dims):
+    def fake_charge(pdb_file, box_dims, water_model):
         return {"success": True, "net_charge": 2, "warnings": [], "errors": []}
 
     monkeypatch.setattr("mdclaw.solvation.membrane._compute_membrane_net_charge", fake_charge)
@@ -1490,12 +1559,62 @@ def test_embed_in_membrane_patch_tile_neutralizes_net_charge(tmp_path, monkeypat
     assert result["success"] is True, result.get("errors")
     neutralization = result["statistics"]["neutralization"]
     assert neutralization["applied"] is True
+    assert neutralization["complete"] is True
     assert neutralization["net_charge"] == 2
     # +2 net charge is neutralized by adding 2 anions (Cl-).
     assert neutralization["anions_added"] == 2
     assert neutralization["cations_added"] == 0
     output_text = Path(result["output_file"]).read_text()
     assert "CL" in output_text
+    assert result["parameters"]["neutralization_expected"] is True
+
+
+def test_embed_in_membrane_patch_tile_rejects_charge_evaluation_failure(
+    tmp_path,
+    monkeypatch,
+):
+    input_pdb = tmp_path / "input.pdb"
+    input_pdb.write_text(
+        "ATOM      1  CA  ALA X   7       0.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    lipids = [("PA", "P", "P"), ("PC", "N", "N"), ("OL", "C1", "C")]
+    monkeypatch.setattr(
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation.membrane._run_packmol_memgen_noninteractive",
+        _fake_patch_packmol(lipids),
+    )
+    monkeypatch.setattr("mdclaw.solvation.membrane._equilibrate_membrane_patch", None)
+
+    def failed_charge(pdb_file, box_dims, water_model):
+        return {
+            "success": False,
+            "code": "net_charge_exception",
+            "errors": ["synthetic charge failure"],
+        }
+
+    monkeypatch.setattr(
+        "mdclaw.solvation.membrane._compute_membrane_net_charge",
+        failed_charge,
+    )
+
+    result = embed_in_membrane(
+        pdb_file=str(input_pdb),
+        output_dir=str(tmp_path / "out"),
+        lipids="POPC",
+        preoriented=True,
+        membrane_backend="patch-tile",
+        membrane_cache_mode="auto",
+        membrane_cache_dir=str(tmp_path / "cache"),
+        membrane_geometry_validation=False,
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "membrane_neutralization_failed"
+    assert "synthetic charge failure" in result["errors"]
 
 
 def test_embed_in_membrane_patch_tile_read_only_miss_falls_back(tmp_path, monkeypatch):

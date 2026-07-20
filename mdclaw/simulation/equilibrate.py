@@ -32,7 +32,7 @@ from mdclaw._common import (  # noqa: E402
 WORKING_DIR = Path("outputs").resolve()
 ensure_directory(WORKING_DIR)
 
-from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fail_node_if_running, _node_artifact_path, _resolve_implicit_solvent_model  # noqa: E402
+from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fail_node_if_running, _node_artifact_path, _resolve_implicit_solvent_model, _resolve_topology_run_settings  # noqa: E402
 from mdclaw.simulation.integrator_plan import _resolve_equilibration_stage_steps  # noqa: E402
 from mdclaw.simulation.restraints import RESTRAINT_SELECTIONS, select_restraint_atoms  # noqa: E402
 from mdclaw.simulation.restart import _close_reporter_stream, _load_state_into_simulation, _resolve_restart_node_id_for_run, _restart_node_type_for_run, _restart_random_seed, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
@@ -59,18 +59,16 @@ def run_equilibration(
     platform: str = "auto",
     device_index: Optional[str] = None,
     random_seed: Optional[int] = None,
-    hmr: bool = True,
-    timestep_fs: float = 4.0,
+    hmr: Optional[bool] = None,
+    timestep_fs: Optional[float] = None,
     restart_from: Optional[str] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
     """Run equilibration protocol with positional restraints.
 
-    Both stages run at ``timestep_fs`` (default 4 fs) with Hydrogen Mass
-    Repartitioning (``hmr=True`` by default), matching run_production's
-    default integrator so that the saved checkpoint can be loaded directly
-    by run_production without rebuilding the System.
+    Omitted HMR and implicit-solvent settings inherit the topology contract.
+    The default timestep is 4 fs for HMR topologies and 2 fs otherwise.
 
     The protocol depends on the production ensemble:
       - Explicit water + NPT production (pressure_bar > 0):
@@ -173,52 +171,6 @@ def run_equilibration(
           - errors: list[str]
           - warnings: list[str]
     """
-    pressure_bar = _effective_pressure_bar(pressure_bar, implicit_solvent)
-
-    try:
-        (
-            nvt_steps,
-            requested_nvt_time_ns,
-            effective_nvt_time_ns,
-        ) = _resolve_equilibration_stage_steps(
-            stage_name="nvt",
-            steps=nvt_steps,
-            time_ns=nvt_time_ns,
-            default_steps=250000,
-            timestep_fs=timestep_fs,
-        )
-        (
-            npt_steps,
-            requested_npt_time_ns,
-            effective_npt_time_ns,
-        ) = _resolve_equilibration_stage_steps(
-            stage_name="npt",
-            steps=npt_steps,
-            time_ns=npt_time_ns,
-            default_steps=250000,
-            timestep_fs=timestep_fs,
-        )
-    except ValueError as exc:
-        return create_validation_error(
-            "equilibration_time",
-            str(exc),
-            expected=(
-                "Use --nvt-time-ns/--npt-time-ns for durations, or "
-                "--nvt-steps/--npt-steps for explicit step counts, but do not "
-                "set both for the same stage"
-            ),
-            actual=(
-                f"nvt_time_ns={nvt_time_ns!r}, nvt_steps={nvt_steps!r}, "
-                f"npt_time_ns={npt_time_ns!r}, npt_steps={npt_steps!r}, "
-                f"timestep_fs={timestep_fs!r}"
-            ),
-            hints=[
-                "For a user-facing duration like 0.1 ns NVT, pass only --nvt-time-ns 0.1.",
-                "For explicit step counts, remove the matching time flag.",
-            ],
-            code="equilibration_time_step_conflict",
-        )
-
     _restart_from_node_id = None
     _restart_from_node_type = None
     _chain_identity_map_file = None
@@ -274,6 +226,13 @@ def run_equilibration(
         if not is_membrane and _inputs.get("is_membrane"):
             is_membrane = True
         _chain_identity_map_file = _inputs.get("chain_identity_map_file")
+        hmr, implicit_solvent, timestep_fs = _resolve_topology_run_settings(
+            hmr=hmr,
+            implicit_solvent=implicit_solvent,
+            topology_hmr=_inputs.get("topology_hmr"),
+            topology_implicit_solvent=_inputs.get("topology_implicit_solvent"),
+            timestep_fs=timestep_fs,
+        )
         # min → eq and eq → eq chaining: when a min/eq/prod ancestor exposes
         # a state artifact, resume from it. A min source skips only the
         # minimization part; prior eq/prod sources skip the full prelude.
@@ -331,6 +290,59 @@ def run_equilibration(
             )
             err["errors"] = _topo_solvent_mismatch["errors"]
             return err
+    if not (job_dir and node_id):
+        hmr, implicit_solvent, timestep_fs = _resolve_topology_run_settings(
+            hmr=hmr,
+            implicit_solvent=implicit_solvent,
+            timestep_fs=timestep_fs,
+        )
+
+    pressure_bar = _effective_pressure_bar(pressure_bar, implicit_solvent)
+    try:
+        (
+            nvt_steps,
+            requested_nvt_time_ns,
+            effective_nvt_time_ns,
+        ) = _resolve_equilibration_stage_steps(
+            stage_name="nvt",
+            steps=nvt_steps,
+            time_ns=nvt_time_ns,
+            default_steps=250000,
+            timestep_fs=timestep_fs,
+        )
+        (
+            npt_steps,
+            requested_npt_time_ns,
+            effective_npt_time_ns,
+        ) = _resolve_equilibration_stage_steps(
+            stage_name="npt",
+            steps=npt_steps,
+            time_ns=npt_time_ns,
+            default_steps=250000,
+            timestep_fs=timestep_fs,
+        )
+    except ValueError as exc:
+        return create_validation_error(
+            "equilibration_time",
+            str(exc),
+            expected=(
+                "Use --nvt-time-ns/--npt-time-ns for durations, or "
+                "--nvt-steps/--npt-steps for explicit step counts, but do not "
+                "set both for the same stage"
+            ),
+            actual=(
+                f"nvt_time_ns={nvt_time_ns!r}, nvt_steps={nvt_steps!r}, "
+                f"npt_time_ns={npt_time_ns!r}, npt_steps={npt_steps!r}, "
+                f"timestep_fs={timestep_fs!r}"
+            ),
+            hints=[
+                "For a user-facing duration like 0.1 ns NVT, pass only --nvt-time-ns 0.1.",
+                "For explicit step counts, remove the matching time flag.",
+            ],
+            code="equilibration_time_step_conflict",
+        )
+
+    if job_dir and node_id:
         _ctx = validate_node_execution_context(
             job_dir,
             node_id,

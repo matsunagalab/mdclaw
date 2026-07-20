@@ -35,6 +35,8 @@ from mdclaw.solvation.constants import (
     patch_equilibration_params,
 )
 from mdclaw.solvation.pdb_identity import (
+    _auto_metal_ion_packmol_charge_pdb_delta,
+    _auto_nucleic_packmol_charge_pdb_delta,
     _restore_packmol_solute_identity,
 )
 from mdclaw.solvation.patch_membrane import (
@@ -797,7 +799,12 @@ def _equilibrate_membrane_patch(
     }
 
 
-def _compute_membrane_net_charge(*, pdb_file: Path, box_dims: dict) -> dict:
+def _compute_membrane_net_charge(
+    *,
+    pdb_file: Path,
+    box_dims: dict,
+    water_model: str = "opc",
+) -> dict:
     """Return the exact integer net charge of an assembled membrane system.
 
     Builds an OpenMM System with the same force field the run side uses and sums
@@ -818,7 +825,7 @@ def _compute_membrane_net_charge(*, pdb_file: Path, box_dims: dict) -> dict:
                 pdb_file=str(pdb_file),
                 box_dimensions=box_dims,
                 forcefield=PATCH_EQUIL_FORCEFIELD,
-                water_model="opc",
+                water_model=water_model,
                 is_membrane=True,
                 hmr=True,
                 pablo_auto_download=False,
@@ -848,6 +855,18 @@ def _compute_membrane_net_charge(*, pdb_file: Path, box_dims: dict) -> dict:
         result["code"] = "net_charge_exception"
         result["errors"].append(f"{type(exc).__name__}: {exc}")
         return result
+
+
+def _membrane_packmol_charge_delta(pdb_file: Path) -> dict:
+    """Return retained-solute charge corrections for full packmol membrane builds."""
+    nucleic = _auto_nucleic_packmol_charge_pdb_delta(pdb_file)
+    ions = _auto_metal_ion_packmol_charge_pdb_delta(pdb_file)
+    return {
+        "charge_pdb_delta": int(nucleic.get("charge_pdb_delta", 0))
+        + int(ions.get("charge_pdb_delta", 0)),
+        "nucleic": nucleic,
+        "ions": ions,
+    }
 
 
 def _replace_cli_arg(args: list[str], option: str, value: object) -> list[str]:
@@ -1975,7 +1994,17 @@ def embed_in_membrane(
                 beta_barrel=memembed_beta_barrel,
                 force_span=memembed_force_span,
             ),
-            net_charge_fn=_compute_membrane_net_charge,
+            net_charge_fn=(
+                (
+                    lambda *, pdb_file, box_dims: _compute_membrane_net_charge(
+                        pdb_file=pdb_file,
+                        box_dims=box_dims,
+                        water_model=water_model,
+                    )
+                )
+                if _compute_membrane_net_charge is not None
+                else None
+            ),
             timeout=patch_builder_timeout,
             packmol_memgen_version=packmol_memgen_version,
         )
@@ -1993,6 +2022,13 @@ def embed_in_membrane(
             result["box_dimensions_file"] = patch_result.get("box_dimensions_file")
             result["statistics"].update(patch_result.get("statistics") or {})
             result["statistics"]["method"] = "patch_tile"
+            patch_neutralization = result["statistics"].get(
+                "neutralization",
+                {},
+            )
+            result["parameters"]["neutralization_expected"] = bool(
+                patch_neutralization.get("applied")
+            )
             result["packing_quality"] = {
                 "passed": True,
                 "backend": "patch-tile",
@@ -2057,6 +2093,9 @@ def embed_in_membrane(
                         "water_model": water_model,
                         "lipid_type": lipids,
                         "is_membrane": True,
+                        "neutralization_expected": bool(
+                            patch_neutralization.get("applied")
+                        ),
                         "salt_concentration_M": saltcon,
                         "salt_override": salt_override,
                         "packing_quality": result.get("packing_quality"),
@@ -2123,6 +2162,35 @@ def embed_in_membrane(
             )
         return result
 
+    packmol_charge_report = {
+        "charge_pdb_delta": 0,
+        "nucleic": {},
+        "ions": {},
+    }
+    if salt:
+        try:
+            packmol_charge_report = _membrane_packmol_charge_delta(input_copy)
+        except Exception as exc:  # noqa: BLE001
+            result["code"] = "membrane_neutralization_failed"
+            result["errors"].append(
+                "Could not evaluate the retained-solute charge required for "
+                "membrane neutralization: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            if _node_mode:
+                from mdclaw._node import fail_node
+                fail_node(job_dir, node_id, errors=result["errors"])
+            return result
+    packmol_charge_delta = int(packmol_charge_report["charge_pdb_delta"])
+    result["auto_charge_pdb_delta"] = packmol_charge_delta
+    result["auto_charge_pdb_delta_applied"] = bool(salt and packmol_charge_delta)
+    result["membrane_charge_delta_report"] = packmol_charge_report
+    result["parameters"]["neutralization_expected"] = bool(salt)
+    result["parameters"]["auto_charge_pdb_delta"] = packmol_charge_delta
+    result["parameters"]["auto_charge_pdb_delta_applied"] = bool(
+        salt and packmol_charge_delta
+    )
+
     try:
         # Build packmol-memgen command
         args = [
@@ -2150,6 +2218,9 @@ def embed_in_membrane(
                 "memembed_force_span is only applied by the patch-tile MEMEMBED "
                 "path; packmol-memgen does not expose MEMEMBED -l directly."
             )
+
+        if salt and packmol_charge_delta:
+            args.extend(["--charge_pdb_delta", str(packmol_charge_delta)])
 
         if salt:
             args.extend([
@@ -2535,8 +2606,15 @@ def embed_in_membrane(
                     "water_model": water_model,
                     "lipid_type": lipids,
                     "is_membrane": True,
+                    "neutralization_expected": bool(salt),
                     "salt_concentration_M": saltcon,
                     "salt_override": salt_override,
+                    "auto_charge_pdb_delta": result.get(
+                        "auto_charge_pdb_delta"
+                    ),
+                    "auto_charge_pdb_delta_applied": result.get(
+                        "auto_charge_pdb_delta_applied"
+                    ),
                     "packing_quality": result.get("packing_quality"),
                     "membrane_backend": result.get("parameters", {}).get(
                         "membrane_backend_used",

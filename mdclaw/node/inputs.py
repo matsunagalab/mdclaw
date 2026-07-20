@@ -368,6 +368,11 @@ def _resolve_topo_inputs(job_dir: str, node_id: str) -> dict:
         solv_water_model = _read_metadata_field(job_dir, solv_anc, "water_model")
         if isinstance(solv_water_model, str):
             result["solvation_water_model"] = solv_water_model
+        neutralization_expected = _read_metadata_field(
+            job_dir, solv_anc, "neutralization_expected"
+        )
+        if isinstance(neutralization_expected, bool):
+            result["neutralization_expected"] = neutralization_expected
     return result
 
 

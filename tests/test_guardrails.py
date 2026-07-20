@@ -15,6 +15,7 @@ from mdclaw.amber.build_system import (
     build_amber_system,
 )
 from mdclaw.amber.content_detection import (
+    _canonical_pablo_ion_resname,
     _normalize_pdb_chain_id,
     _scan_pdb_ion_residue_names,
     _rewrite_pablo_ion_pdb_line,
@@ -313,6 +314,110 @@ def test_pablo_ion_rewrite_covers_multivalent_ions():
     assert rewritten[12:16].strip() == "MG"
     assert rewritten[17:20].strip() == "MG"
     assert rewritten[76:78].strip() == "Mg"
+
+
+def test_pablo_ion_normalization_preserves_exact_oxidation_state_names():
+    expected_elements = {
+        "FE": "Fe",
+        "FE2": "Fe",
+        "CU": "Cu",
+        "CU1": "Cu",
+    }
+
+    for serial, (resname, element) in enumerate(expected_elements.items(), start=1):
+        line = (
+            f"HETATM{serial:5d} {resname:<4} {resname:>3} A{serial:4d}"
+            f"      10.000  10.000  10.000  1.00 20.00          {element:>2}\n"
+        )
+        rewritten, changed = _rewrite_pablo_ion_pdb_line(line)
+
+        assert changed is True
+        assert _canonical_pablo_ion_resname(resname) == resname
+        assert rewritten[12:16].strip() == resname
+        assert rewritten[17:20].strip() == resname
+        assert rewritten[76:78].strip() == element
+
+    assert _canonical_pablo_ion_resname("FE3") == "FE"
+    assert _canonical_pablo_ion_resname("CU2") == "CU"
+
+
+def test_pablo_ion_normalization_does_not_rewrite_rna_inosine():
+    line = (
+        "ATOM      1  C1'   I A   1      10.000  10.000  10.000"
+        "  1.00 20.00           C\n"
+    )
+
+    rewritten, changed = _rewrite_pablo_ion_pdb_line(line)
+
+    assert changed is False
+    assert rewritten == line
+    assert _canonical_pablo_ion_resname("I") is None
+
+
+def test_build_amber_system_pins_exact_multistate_ion_templates(tmp_path):
+    from openmm import NonbondedForce, XmlSerializer, unit
+
+    cases = [
+        ("AG", "Ag", 1),
+        ("Ag", "Ag", 2),
+        ("CE", "Ce", 3),
+        ("Ce", "Ce", 4),
+        ("CR", "Cr", 3),
+        ("Cr", "Cr", 2),
+        ("CU1", "Cu", 1),
+        ("CU", "Cu", 2),
+        ("EU", "Eu", 2),
+        ("EU3", "Eu", 3),
+        ("FE2", "Fe", 2),
+        ("FE", "Fe", 3),
+        ("Sm", "Sm", 2),
+        ("SM", "Sm", 3),
+        ("TL", "Tl", 1),
+        ("Tl", "Tl", 3),
+    ]
+    pdb = tmp_path / "multistate_ions.pdb"
+    pdb.write_text(
+        "\n".join(
+            f"HETATM{serial:5d} {resname:<4} {resname:>3} A{serial:4d}    "
+            f"{10.0 + ((serial - 1) % 4) * 15.0:8.3f}"
+            f"{10.0 + ((serial - 1) // 4) * 15.0:8.3f}{10.0:8.3f}"
+            f"  1.00  0.00          {element:>2}"
+            for serial, (resname, element, _charge) in enumerate(cases, start=1)
+        )
+        + "\n"
+        + "HETATM   17  O   HOH W  17      70.000  70.000  70.000  1.00  0.00           O\n"
+        + "HETATM   18  H1  HOH W  17      70.957  70.000  70.000  1.00  0.00           H\n"
+        + "HETATM   19  H2  HOH W  17      69.760  70.927  70.000  1.00  0.00           H\n"
+        + "END\n"
+    )
+
+    result = build_amber_system(
+        pdb_file=str(pdb),
+        forcefield="ff19SB",
+        water_model="opc",
+        box_dimensions={"box_a": 80.0, "box_b": 80.0, "box_c": 80.0},
+        hmr=False,
+        pablo_auto_download=False,
+        output_dir=str(tmp_path / "out"),
+        minimize_max_iterations=1,
+    )
+
+    assert result["success"] is True, result.get("errors")
+    system = XmlSerializer.deserialize(Path(result["system_xml"]).read_text())
+    nonbonded = next(
+        force for force in system.getForces() if isinstance(force, NonbondedForce)
+    )
+    charges = [
+        float(
+            nonbonded.getParticleParameters(index)[0].value_in_unit(
+                unit.elementary_charge
+            )
+        )
+        for index in range(nonbonded.getNumParticles())
+    ]
+    assert charges[:len(cases)] == [
+        float(charge) for _name, _element, charge in cases
+    ]
 
 
 def test_pablo_ion_rewrite_preserves_short_records_and_newline():

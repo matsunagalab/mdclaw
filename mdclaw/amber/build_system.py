@@ -159,6 +159,7 @@ def _resolve_build_amber_node_inputs(
         "box_dimensions": box_dimensions if box_dimensions is not None else inputs.get("box_dimensions"),
         "is_membrane": is_membrane if is_membrane is not None else bool(inputs.get("is_membrane")),
         "solvation_water_model": inputs.get("solvation_water_model"),
+        "neutralization_expected": bool(inputs.get("neutralization_expected")),
     }
 
 
@@ -336,6 +337,7 @@ def build_amber_system(
         ... )
     """
     solvation_water_model = None
+    neutralization_expected = False
     # Auto-resolve input from DAG when in node mode and pdb_file not provided
     if job_dir and node_id:
         _resolved = _resolve_build_amber_node_inputs(
@@ -372,6 +374,7 @@ def build_amber_system(
         box_dimensions = _resolved["box_dimensions"]
         is_membrane = _resolved["is_membrane"]
         solvation_water_model = _resolved["solvation_water_model"]
+        neutralization_expected = _resolved["neutralization_expected"]
 
     if is_membrane is None:
         is_membrane = False
@@ -1435,6 +1438,22 @@ def build_amber_system(
             result["glycam_bond_plan"] = om_result["glycam_bond_plan"]
         if om_result.get("glycam_normalization"):
             result["glycam_normalization"] = om_result["glycam_normalization"]
+        if om_result.get("success"):
+            result["system_net_charge_e"] = om_result.get("system_net_charge_e")
+            system_net_charge_e = om_result.get("system_net_charge_e")
+            if neutralization_expected and (
+                system_net_charge_e is None or abs(float(system_net_charge_e)) > 1e-3
+            ):
+                result["code"] = "neutralization_charge_mismatch"
+                message = (
+                    "Explicit solvation requested neutralization, but the built "
+                    f"System has net charge {system_net_charge_e!r} e. Check retained "
+                    "solute-ion and ligand formal charges before creating a new topo node."
+                )
+                om_result.setdefault("errors", []).append(message)
+                logger.error(message)
+                om_result["success"] = False
+
         if om_result.get("success"):
             _record_topology_build_stage(job_dir, node_id, "completed")
             result["system_xml"] = om_result["system_xml"]

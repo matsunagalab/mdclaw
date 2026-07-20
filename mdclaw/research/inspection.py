@@ -623,7 +623,9 @@ def inspect_molecules(
             "ions": {
                 "residue_names": ion_residue_names,
                 "classification": "ion_not_ligand",
-                "explicit_solvent_action": "kept_by_default",
+                "explicit_solvent_action": (
+                    "kept_by_default_unless_select_chains_is_used"
+                ),
                 "do_not_select_ions_with": [
                     "--include-ligand-ids",
                     "--include-ligand-resnames",
@@ -711,6 +713,8 @@ def inspect_molecules(
                 "label_asym_id" if use_label_ids else "auth_asym_id"
             ),
             "chains_by_type": action_chain_ids,
+            "select_chains_scope": "all_component_types",
+            "ion_chain_ids_when_selecting_chains": action_chain_ids["ion"],
             "standard_cleanup_tool": "prepare_complex",
         }
         modified_support = modified_nucleic_support_report(modified_nucleic_residues)

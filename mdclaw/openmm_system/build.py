@@ -182,8 +182,8 @@ def build_openmm_system(
         rigid_water: Pass-through to ``ForceField.createSystem``.
         hmr: When ``True`` (default), bakes ``hydrogenMass=4 amu`` into
              ``system.xml`` so downstream ``run_minimization`` /
-             ``run_equilibration`` / ``run_production`` invocations with the default ``hmr=True``
-             does not trip the modern-system contract check. Defaults
+             ``run_equilibration`` / ``run_production`` can inherit the
+             setting without tripping the modern-system contract check. Defaults
              match ``build_amber_system`` so a ``build_openmm_system →
              run_minimization → run_equilibration → run_production`` chain works without
              extra kwargs. Pass ``hmr=False`` to keep standard hydrogen

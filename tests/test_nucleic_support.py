@@ -107,6 +107,8 @@ def test_public_pdb_action_contract_uses_author_chain_for_ions(tmp_path):
     contract = result["action_contract"]
     assert contract["chain_id_namespace"] == "auth_asym_id"
     assert contract["chains_by_type"]["ion"] == ["A"]
+    assert contract["select_chains_scope"] == "all_component_types"
+    assert contract["ion_chain_ids_when_selecting_chains"] == ["A"]
 
 
 def test_inspect_molecules_reports_modified_nucleic_as_unsupported(tmp_path):

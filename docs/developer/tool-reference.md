@@ -257,7 +257,9 @@ signature, update the relevant section here and the matching skill examples.
   and membrane lipids.
 - `run_equilibration(...)`: restrained equilibration with an NVT heating stage
   and optional NPT density stage. In node mode topology inputs resolve from the
-  `topo` ancestor. New DAGs should parent `eq` from `min`; the minimized state
+  `topo` ancestor; omitted HMR and implicit-solvent settings inherit that
+  topology, with a 4 fs HMR or 2 fs non-HMR timestep default. New DAGs should
+  parent `eq` from `min`; the minimized state
   is then auto-resolved and coordinate minimization is skipped while low-
   temperature warmup remains in eq. Eq-chain restarts resolve from eq/prod
   ancestors.
@@ -265,7 +267,8 @@ signature, update the relevant section here and the matching skill examples.
   `--nvt-time-ns` / `--npt-time-ns`) for user-facing duration requests;
   explicit `nvt_steps` / `npt_steps` remain available for low-level
   reproducibility.
-- `run_production(...)`: production MD with HMR, state/checkpoint persistence,
+- `run_production(...)`: production MD with topology-inherited HMR/implicit
+  solvent, state/checkpoint persistence,
   DAG restart resolution, and timeline metadata. Accepts an optional custom
   force / CV bias via `custom_force_script` (an autograd-backed
   `energy(positions, ctx)` wrapped in `PythonTorchForce`; upstream deprecated

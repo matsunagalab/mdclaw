@@ -181,6 +181,8 @@ GUARDRAIL_CODES: dict[str, str] = {
     # --- solvation / box / membrane ---
     "explicit_solvent_box_dimensions_missing": "Build topology from a completed explicit-solvent solv node.",
     "explicit_ions_in_implicit_solvent": "Remove explicit ions before an implicit build, or use explicit/vacuum.",
+    "neutralization_charge_mismatch": "Fix retained ion or ligand charges, then rebuild solvation and topology on new nodes.",
+    "membrane_neutralization_failed": "Membrane charge evaluation or counter-ion placement failed; rebuild with enough bulk water.",
     "unsupported_ion_for_water_model": "Use a water model whose ion XML supports the retained bare ion.",
     "solvation_topology_water_model_mismatch": "Match the topology water model to the solvation step.",
     "packmol_packing_quality_failed": "Packmol packing quality failed; adjust box/tolerance and retry.",
@@ -193,7 +195,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "membrane_patch_build_invalid_output": "Membrane patch packmol build output is missing requested lipids.",
     "membrane_embedding_geometry_failed": "Membrane embedding geometry failed; inspect protein/bilayer placement.",
     "membrane_patch_invalid_input": "Input protein PDB for membrane embedding has no atoms.",
-    "net_charge_exception": "Exact net-charge evaluation raised; membrane written without protein-charge neutralization.",
+    "net_charge_exception": "Exact net-charge evaluation raised; membrane neutralization was stopped.",
     "membrane_patch_invalid_patch": "Cached membrane patch PDB has no atoms; refresh the cache.",
     "membrane_patch_lipid_missing_after_carve": "Tiled patch insertion removed all requested lipids; adjust carve padding.",
     "membrane_patch_state_missing_positions": "Membrane patch state export has no positions; rebuild the patch.",

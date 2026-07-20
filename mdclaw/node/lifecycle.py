@@ -456,6 +456,12 @@ def create_node(
             f"--job-dir {shlex.quote(str(jd))} --node-id {shlex.quote(node_id)}"
         ),
     }
+    # Include the same read-only preflight that next_command exposes. Agents
+    # can act on create_node's result without losing validation when they omit
+    # the separate discovery call.
+    from mdclaw.node.inputs import explain_node
+
+    result["preflight"] = explain_node(str(jd), node_id)
     if auto_parent_node_id is not None:
         result["auto_resolved_parent"] = auto_parent_node_id
     if study_context_missing:

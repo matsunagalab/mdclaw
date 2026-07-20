@@ -2,8 +2,7 @@
 
 Read `skills/common/implicit-solvent-contract.md` first for the supported models
 (HCT, OBC1, OBC2, GBn, GBn2; GBn2 recommended) and the build/run validation
-contract. Pass the same `--implicit-solvent <MODEL>` on the `prod` node that was
-baked into `system.xml` at the `topo` node.
+contract. `prod` inherits the GB model and HMR setting from the topology.
 
 ## System Configuration
 
@@ -53,7 +52,6 @@ mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
   --simulation-time-ns <user_specified> \
   --temperature-kelvin <T> \
   --pressure-bar 0 \
-  --implicit-solvent GBn2 \
   --output-frequency-ps 10.0
 ```
 
@@ -118,8 +116,8 @@ mdclaw --job-dir <job_dir> --node-id <obc2_prod_node_id> run_production \
 For long runs, multi-replicate sweeps, or fan-out across many systems, hand off
 to HPC execution instead of duplicating sbatch patterns here. Use the focused
 HPC guidance (`skills/hpc-run/submit-single.md`, `submit-array.md`,
-`prod-extension.md`, `monitor-recover.md`), and keep `--implicit-solvent <MODEL>`
-plus `--pressure-bar 0` in the job-script command.
+`prod-extension.md`, `monitor-recover.md`), and keep `--pressure-bar 0` in the
+job-script command.
 
 ---
 

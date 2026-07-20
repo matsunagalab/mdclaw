@@ -129,6 +129,8 @@ class TestCreateNode:
         assert result["node_id"] == "prep_001"
         assert Path(result["node_dir"]).exists()
         assert Path(result["artifacts_dir"]).exists()
+        assert result["preflight"]["node_id"] == result["node_id"]
+        assert result["preflight"]["status"] == "pending"
 
     def test_node_json_created(self, job_dir):
         result = create_node(str(job_dir), "prep")
@@ -3843,7 +3845,7 @@ class TestSourceStudyContext:
                 "source_bundle": rel_bundle,
             },
         )
-        create_node(jd, "prep", parent_node_ids=["source_001"])
+        created = create_node(jd, "prep", parent_node_ids=["source_001"])
 
         inputs = resolve_node_inputs(jd, "prep_001", "prep")
 
@@ -3872,6 +3874,8 @@ class TestSourceStudyContext:
             for candidate in explanation["required_action"]["candidates"]
         ] == ["candidate_001", "candidate_002"]
         assert "--source-structure-id" in explanation["missing_inputs"][0]
+        assert created["preflight"]["code"] == "source_candidate_selection_required"
+        assert created["preflight"]["ready_to_run"] is False
 
     def test_prepare_resolver_selects_explicit_source_candidate(self, job_dir):
         from mdclaw.source_bundle import build_source_bundle, write_source_bundle

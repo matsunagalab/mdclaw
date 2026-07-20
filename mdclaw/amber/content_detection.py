@@ -26,6 +26,7 @@ support; ligand parameterization is not a prep-stage mdclaw artifact.
 
 # Configure logging early to suppress noisy third-party logs
 import os
+import re
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -123,12 +124,12 @@ _PABLO_ION_RESNAME_RENAMES = {
     "CA2": "CA",
     "FE": "FE",
     "FE+": "FE",
-    "FE2": "FE",
+    "FE2": "FE2",
     "FE3": "FE",
     "MN": "MN",
     "MN2": "MN",
     "CU": "CU",
-    "CU1": "CU",
+    "CU1": "CU1",
     "CU2": "CU",
     "CO": "CO",
     "CO2": "CO",
@@ -140,21 +141,29 @@ def _normalize_pdb_chain_id(chain_id: Optional[str]) -> str:
 
 
 def _canonical_pablo_ion_resname(resname: str) -> Optional[str]:
-    return _PABLO_ION_RESNAME_RENAMES.get(str(resname or "").strip().upper())
+    stripped = str(resname or "").strip()
+    if stripped in STANDARD_BARE_ION_RESNAMES:
+        # This helper drives line-by-line sanitation, where a residue-level
+        # monoatomic check is impossible. Limit exact names to the curated
+        # alias table so RNA inosine (also named ``I``) is never rewritten as
+        # iodide. Full standard-ion recognition happens in
+        # _standard_bare_ion_resname after residue grouping.
+        return stripped if stripped in _PABLO_ION_RESNAME_RENAMES else None
+    return _PABLO_ION_RESNAME_RENAMES.get(stripped.upper())
 
 
 def _standard_bare_ion_resname(resname: str) -> Optional[str]:
     stripped = str(resname or "").strip()
-    canonical = _canonical_pablo_ion_resname(stripped)
-    if canonical is not None:
-        return canonical
     if stripped in STANDARD_BARE_ION_RESNAMES:
         return stripped
-    return None
+    return _canonical_pablo_ion_resname(stripped)
 
 
 def _ion_element_symbol(canonical_resname: str) -> str:
-    return canonical_resname[:1] + canonical_resname[1:].lower()
+    letters = re.sub(r"[^A-Za-z]", "", canonical_resname)
+    if letters.upper() == "IOD":
+        letters = "I"
+    return letters[:1].upper() + letters[1:2].lower()
 
 
 def _rewrite_pablo_ion_pdb_line(line: str) -> tuple[str, bool]:
@@ -177,7 +186,7 @@ def _rewrite_pablo_ion_pdb_line(line: str) -> tuple[str, bool]:
     an_key = raw_atom_name.strip().upper()
     new_resname = f"{canonical_res:>3}"
     new_atom = body[12:16]
-    if an_key in {rn_key, canonical_res}:
+    if an_key in {rn_key, canonical_res.upper()}:
         new_atom = f"{canonical_res:>4}"
     rebuilt = body[:12] + new_atom + body[16:17] + new_resname + body[20:]
     element = _ion_element_symbol(canonical_res)
