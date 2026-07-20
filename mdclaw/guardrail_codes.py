@@ -118,6 +118,8 @@ GUARDRAIL_CODES: dict[str, str] = {
     "ambiguous_ligand_residue_repair": "Ligand residue repair is ambiguous; specify the intended chemistry.",
 
     # --- glycans ---
+    "covalent_glycan_selection_incomplete": "Covalently linked glycans were not preserved; inspect chain selection and linkage mapping.",
+    "covalently_linked_glycan_chains_auto_included": "Continue with the covalently linked glycans added to the selected protein scope.",
     "glycan_forcefield_disabled": "Enable the glycan forcefield path to model glycans.",
     "glycan_linkage_mapping_failed": "Glycan linkage mapping failed; check glycosidic connectivity.",
     "unsupported_glycan_residue": "Glycan residue is unsupported; use a supported residue set.",

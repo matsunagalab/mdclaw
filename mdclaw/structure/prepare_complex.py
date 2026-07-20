@@ -284,6 +284,83 @@ def _parse_glycan_link_records(structure_path: Path) -> list[dict]:
     return out
 
 
+def _expand_covalently_linked_glycan_selection(
+    *,
+    select_chains: Optional[List[str]],
+    include_types: Optional[List[str]],
+    inspection: dict,
+    linkages: list[dict],
+) -> tuple[Optional[List[str]], list[dict], Optional[dict]]:
+    """Include glycan label chains covalently linked to selected proteins."""
+    if (include_types is not None and "glycan" not in include_types) or not linkages:
+        return select_chains, [], None
+    if select_chains is None:
+        return None, list(linkages), None
+
+    chains = inspection.get("chains", [])
+    selected_labels: set[str] = set()
+    for requested in select_chains:
+        label_hits = {
+            str(chain.get("chain_id"))
+            for chain in chains
+            if chain.get("chain_id") == requested
+        }
+        if label_hits:
+            selected_labels.update(label_hits)
+        else:
+            selected_labels.update(
+                str(chain.get("chain_id"))
+                for chain in chains
+                if chain.get("author_chain") == requested
+            )
+
+    selected_protein_authors = {
+        str(chain.get("author_chain"))
+        for chain in chains
+        if chain.get("chain_type") == "protein"
+        and str(chain.get("chain_id")) in selected_labels
+    }
+    selected_linkages = [
+        linkage
+        for linkage in linkages
+        if str((linkage.get("protein") or {}).get("chain"))
+        in selected_protein_authors
+    ]
+    linked_glycan_authors = {
+        str((linkage.get("glycan") or {}).get("chain"))
+        for linkage in selected_linkages
+    }
+    added_labels = sorted(
+        {
+            str(chain.get("chain_id"))
+            for chain in chains
+            if chain.get("chain_type") == "glycan"
+            and str(chain.get("author_chain")) in linked_glycan_authors
+            and str(chain.get("chain_id")) not in selected_labels
+        }
+    )
+    if not added_labels:
+        return select_chains, selected_linkages, None
+
+    adjustment = {
+        "code": "covalently_linked_glycan_chains_auto_included",
+        "message": (
+            "Glycan chain(s) covalently linked to selected protein chain(s) "
+            "were added."
+        ),
+        "selected_protein_author_chains": sorted(selected_protein_authors),
+        "added_chain_ids": added_labels,
+        "connection_ids": sorted(
+            {
+                str(linkage.get("connection_id"))
+                for linkage in selected_linkages
+                if linkage.get("connection_id")
+            }
+        ),
+    }
+    return list(select_chains) + added_labels, selected_linkages, adjustment
+
+
 def _remap_glycan_linkages(
     linkages: list[dict],
     protein_chain_map: dict,
@@ -860,6 +937,16 @@ def prepare_complex(
         from mdclaw.research.inspection import detect_ptm_sites
         detected_ptm_residues = detect_ptm_sites(str(structure_file))
         detected_glycan_linkages = _parse_glycan_link_records(Path(structure_file))
+        (
+            effective_select_chains,
+            selected_glycan_linkages,
+            glycan_selection_adjustment,
+        ) = _expand_covalently_linked_glycan_selection(
+            select_chains=select_chains,
+            include_types=include_types,
+            inspection=inspection,
+            linkages=detected_glycan_linkages,
+        )
 
         # Token optimization: Store only essential inspection info (not full chains/entities)
         result["inspection"] = {
@@ -951,7 +1038,7 @@ def prepare_complex(
         split_result = split_molecules(
             str(structure_file),
             output_dir=str(base_dir),
-            select_chains=select_chains,
+            select_chains=effective_select_chains,
             include_types=include_types,
             include_ligand_ids=include_ligand_ids,
             include_ligand_resnames=include_ligand_resnames,
@@ -959,6 +1046,14 @@ def prepare_complex(
             include_associated_ligands=include_associated_ligands,
             keep_crystal_waters=keep_crystal_waters,
         )
+        if glycan_selection_adjustment is not None:
+            split_result.setdefault("selection_adjustments", []).append(
+                glycan_selection_adjustment
+            )
+            split_result.setdefault("warnings", []).append(
+                glycan_selection_adjustment["code"] + ": "
+                + glycan_selection_adjustment["message"]
+            )
 
         # Adopt split_molecules output dir as our working dir
         if split_result["success"]:
@@ -1638,18 +1733,20 @@ def prepare_complex(
                             merge_chain_mapping=merge_result.get("chain_mapping", {}),
                         )
                         remapped_links, dropped_links = _remap_glycan_linkages(
-                            detected_glycan_linkages,
+                            selected_glycan_linkages,
                             protein_chain_map_for_glycans,
                             glycan_residue_mapping,
                         )
                         result["glycan_linkages"] = remapped_links
                         if dropped_links:
-                            result["warnings"].append(
-                                "Glycan LINK record(s) could not be mapped onto merged.pdb "
-                                "and will not be wired into the OpenMM topology by "
-                                f"build_amber_system: {dropped_links}"
-                            )
                             result["unmapped_glycan_linkages"] = dropped_links
+                            result["code"] = "covalent_glycan_selection_incomplete"
+                            result["errors"].append(
+                                "Covalently linked glycan component(s) could not be "
+                                "mapped onto merged.pdb: " + str(dropped_links)
+                            )
+                            result["overall_status"] = "failed"
+                            return result
                         glycan_linkages_json = base_dir / "glycan_linkages.json"
                         with open(glycan_linkages_json, "w") as f:
                             json.dump(remapped_links, f, indent=2)

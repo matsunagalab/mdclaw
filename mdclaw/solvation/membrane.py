@@ -739,6 +739,7 @@ def _equilibrate_membrane_patch(
         system_xml_file=topo["system_xml"],
         topology_pdb_file=topo["topology_pdb"],
         state_xml_file=topo["state_xml"],
+        restraint_force_constant=0.0,
         is_membrane=True,
         hmr=True,
         output_dir=str(out_dir / "patch_min"),

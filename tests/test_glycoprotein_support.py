@@ -161,6 +161,54 @@ def test_glycan_linkages_keep_pdb_link_fallback(tmp_path):
     assert links[0]["glycan"]["chain"] == "B"
 
 
+def test_selected_proteins_auto_include_covalently_linked_glycan_chains(tmp_path):
+    from mdclaw.structure.prepare_complex import (
+        _expand_covalently_linked_glycan_selection,
+        _parse_glycan_link_records,
+    )
+    from mdclaw.structure.split import _inspect_molecules_impl
+
+    source = _write_6ya2_like_mmcif(tmp_path)
+    inspection = _inspect_molecules_impl(str(source))
+    linkages = _parse_glycan_link_records(source)
+
+    selected, selected_links, adjustment = (
+        _expand_covalently_linked_glycan_selection(
+            select_chains=["A", "C", "G"],
+            include_types=["protein", "glycan"],
+            inspection=inspection,
+            linkages=linkages,
+        )
+    )
+
+    assert set(selected) == {"A", "B", "C", "D", "E", "F", "G", "H", "I"}
+    assert len(selected_links) == 6
+    assert adjustment["code"] == "covalently_linked_glycan_chains_auto_included"
+    assert adjustment["added_chain_ids"] == ["B", "D", "E", "F", "H", "I"]
+
+
+def test_glycan_selection_closure_respects_explicit_exclusion(tmp_path):
+    from mdclaw.structure.prepare_complex import (
+        _expand_covalently_linked_glycan_selection,
+        _parse_glycan_link_records,
+    )
+    from mdclaw.structure.split import _inspect_molecules_impl
+
+    source = _write_6ya2_like_mmcif(tmp_path)
+    selected, selected_links, adjustment = (
+        _expand_covalently_linked_glycan_selection(
+            select_chains=["A"],
+            include_types=["protein"],
+            inspection=_inspect_molecules_impl(str(source)),
+            linkages=_parse_glycan_link_records(source),
+        )
+    )
+
+    assert selected == ["A"]
+    assert selected_links == []
+    assert adjustment is None
+
+
 def test_inspect_molecules_classifies_glycan_not_ligand(tmp_path):
     from mdclaw.structure.split import _inspect_molecules_impl
 

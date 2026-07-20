@@ -480,11 +480,19 @@ def run_equilibration(
             topology_pdb_file=str(topology_pdb_path),
             state_xml_file=str(state_xml_path) if state_xml_path else None,
         )
-        restraint_selection = select_restraint_atoms(
-            xml_inputs.topology,
-            restraint_atoms,
-            chain_identity_map_file=_chain_identity_map_file,
-        )
+        if restraint_force_constant > 0:
+            restraint_selection = select_restraint_atoms(
+                xml_inputs.topology,
+                restraint_atoms,
+                chain_identity_map_file=_chain_identity_map_file,
+            )
+        else:
+            restraint_selection = {
+                "atom_indices": [],
+                "counts_by_component": {},
+                "selection_source": "disabled",
+                "warnings": [],
+            }
         result["warnings"].extend(restraint_selection["warnings"])
         restraint_indices = restraint_selection["atom_indices"]
         result["restraint_count"] = len(restraint_indices)

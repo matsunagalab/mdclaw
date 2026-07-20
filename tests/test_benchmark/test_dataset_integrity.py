@@ -248,8 +248,8 @@ def test_p14_minimized_glycan_check_accepts_glycam_residue_names():
     prepared_unexpected = checks["no_unrequested_nonstandard_residues"]
     minimized_unexpected = checks["minimized_no_unrequested_nonstandard_residues"]
 
-    assert prepared_check["min_residue_counts"] == {"NAG": 1}
-    assert minimized_check["min_residue_counts"] == {"NAG": 1}
+    assert prepared_check["min_residue_counts"] == {"NAG": 8}
+    assert minimized_check["min_residue_counts"] == {"NAG": 8}
     assert {"0YB", "4YA", "4YB"}.issubset(
         set(minimized_check["residue_aliases"]["NAG"])
     )

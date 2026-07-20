@@ -38,7 +38,7 @@
         "check_id": "nag_glycan_retained",
         "check_type": "structure_component_rescan",
         "min_residue_counts": {
-          "NAG": 1
+          "NAG": 8
         },
         "residue_aliases": {
           "NAG": [
@@ -133,7 +133,7 @@
         "check_id": "minimized_nag_glycan_retained",
         "check_type": "minimized_structure_component_rescan",
         "min_residue_counts": {
-          "NAG": 1
+          "NAG": 8
         },
         "minimized_structure_manifest_path": "outputs.minimized_structure",
         "residue_aliases": {

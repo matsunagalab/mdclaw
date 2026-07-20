@@ -33,6 +33,8 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `continue_from_invalid_node_type` | continue-from must reference a valid node type. |
 | `continue_from_not_prod` | continue-from must reference a prod node. |
 | `continue_from_parents_conflict` | continue-from conflicts with the given parents; resolve one. |
+| `covalent_glycan_selection_incomplete` | Covalently linked glycans were not preserved; inspect chain selection and linkage mapping. |
+| `covalently_linked_glycan_chains_auto_included` | Continue with the covalently linked glycans added to the selected protein scope. |
 | `empty_ligand_resname_selection` | Provide at least one ligand resname or drop ligand from --include-types. |
 | `equilibration_restraint_atoms_invalid` | Provide a valid restraint atom selection. |
 | `equilibration_time_step_conflict` | Resolve the equilibration time-step conflict (HMR vs dt). |

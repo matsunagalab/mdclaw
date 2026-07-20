@@ -1231,6 +1231,8 @@ def test_equilibrate_membrane_patch_disables_pablo_auto_download(
     monkeypatch,
 ):
     captured: dict = {}
+    minimized: dict = {}
+    equilibrated: dict = {}
     patch = tmp_path / "patch.pdb"
     patch.write_text(_patch_pdb_text([("PA", "P", "P"), ("PC", "N", "N")]))
     state = tmp_path / "state.xml"
@@ -1246,10 +1248,12 @@ def test_equilibrate_membrane_patch_disables_pablo_auto_download(
             "warnings": [],
         }
 
-    def fake_minimize(**_kwargs):
+    def fake_minimize(**kwargs):
+        minimized.update(kwargs)
         return {"success": True, "state_file": str(state), "warnings": []}
 
-    def fake_equilibrate(**_kwargs):
+    def fake_equilibrate(**kwargs):
+        equilibrated.update(kwargs)
         return {
             "success": True,
             "state_file": str(state),
@@ -1300,6 +1304,8 @@ def test_equilibrate_membrane_patch_disables_pablo_auto_download(
 
     assert result["success"] is True
     assert captured["pablo_auto_download"] is False
+    assert minimized["restraint_force_constant"] == 0.0
+    assert equilibrated["restraint_force_constant"] == 0.0
 
 
 def test_compute_membrane_net_charge_disables_pablo_auto_download(
