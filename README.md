@@ -4,83 +4,143 @@
 
 # MDClaw
 
-MDClaw provides skills and CLIs for vibe-MD (Molecular Dynamics) simulations and autonomous
-scientific investigation in the Amber/OpenMM ecosystem. It helps an AI agent
-turn scientific intent into reproducible atomistic work: prepare systems, run
-equilibration and production MD, analyze trajectories, branch hypotheses, and
-package evidence with provenance.
+MDClaw provides agent skills and CLI tools for molecular dynamics (MD) and
+autonomous scientific investigation in the Amber/OpenMM ecosystem. It helps an
+AI agent turn scientific intent into reproducible atomistic work: plan a study,
+prepare systems, run MD, analyze trajectories, branch hypotheses, and package
+evidence with provenance.
 
-## What MDClaw Can Do
+MDClaw is not one hidden end-to-end planner. Its responsibilities are explicit:
 
-- Turn a scientific question into a study plan (observables and decision
-  criteria) that organizes one or more job DAGs, then, when requested, advance
-  them to a named stage or an evidence-backed scientific answer.
-- Prepare MD systems from PDB IDs, AlphaFold/UniProt entries, or local
-  structure files.
-- Generate monomer conformational source ensembles from MD surrogate models
-  such as BioEmu, then hand selected candidates to the standard MD workflow.
-- Inspect chains, ligands, waters, ions, glycans, DNA/RNA, and modified
-  residues before committing to a setup.
-- Clean structures, preserve selected ligands when safe, solvate systems, and
-  assign Amber/OpenMM force fields.
-- Build OpenMM-ready topology artifacts, then run equilibration and production
-  MD with restartable state files.
-- Branch workflows for mutations, PTMs, ligand choices, solvent models,
-  temperatures, seeds, and protocols.
-- Run locally, through containers, or on SLURM/HPC systems.
-- Analyze trajectories and package reproducible evidence, provenance, figures,
-  and Methods-style reports.
-- Evaluate MD agents with the included MDPrepBench / MDStudyBench datasets and scorer.
+- **Skills** translate scientific intent into an MD procedure.
+- **CLI tools** execute concrete operations and record their outputs.
+- **A durable DAG** is the source of truth for progress, artifacts, failures,
+  branching, and re-entry by another agent.
+
+## How It Works
+
+Every run is a small study, even when it contains only one system. A study can
+hold one or more job DAGs, and each job follows the same artifact handoff:
+
+```text
+source -> prep -> solv -> topo -> min -> eq -> prod -> analyze
+```
+
+The CLI manages node state and passes artifacts between stages. A later agent
+can use `inspect_job` to resume from completed work, `explain_node` to validate
+the next node before execution, and `trace_failure` to choose a new recovery
+branch without rewriting terminal history.
+
+The request controls how far the agent proceeds. MDClaw can stop after planning
+or any named stage, or continue through analysis when the user explicitly asks
+for an evidence-backed scientific answer. It does not treat a plan as permission
+to run every stage or submit HPC jobs.
 
 ## Install / Deploy
 
-MDClaw has two independent layers. Setting them up separately avoids most
-deployment confusion:
+MDClaw needs two things:
 
-1. **Skills** — portable text under `skills/` that your agent reads. Installed
-   by your agent entry point.
-2. **MD runtime** — the `mdclaw` CLI plus AmberTools/OpenMM, provided by a conda
-   env, a Singularity/Apptainer SIF, a Docker image, or a local install.
+1. **Agent skills** from `skills/`, unless you use the CLI directly.
+2. **One scientific runtime** containing the `mdclaw` CLI, AmberTools, OpenMM,
+   and the Python dependencies.
 
-Pick an entry point (it installs the skills), then make one runtime available:
+### Fastest Setup From A Checkout
 
-| Agent | Install skills with | Runtime |
-|---|---|---|
-| Claude Code plugin | `/plugin install mdclaw@mdclaw` | Plugin hook auto-picks conda/SIF/Docker |
-| Pi | `pi install git:github.com/matsunagalab/mdclaw@main` | One runtime (below) |
-| Codex, OpenCode, repo-local agents | `scripts/install-agent-skills.sh` | One runtime (below) |
-| Direct CLI / development | (skills optional) | conda env (below) |
-
-### Runtime
-
-Everything except the plugin needs one runtime. The two common setups:
+Install Singularity/Apptainer or Docker first. For Conda instead, create the
+environment under [Choose One Runtime](#choose-one-runtime) before running this
+block; the setup script will detect and reuse it.
 
 ```bash
-# skills + conda (local dev / workstation) — also installs the mdclaw CLI
-conda env create -f environment.yml
+git clone https://github.com/matsunagalab/mdclaw.git
+cd mdclaw
 
-# skills + SIF (HPC)
-export MDCLAW_SIF=/path/to/mdclaw.sif
+# Expose the skills to repo-local agent harnesses.
+scripts/install-agent-skills.sh
+
+# Reuse a conda env named mdclaw, or pull the matching SIF/Docker image.
+scripts/setup-container.sh
+
+# Make the runtime-selecting wrapper available in this shell.
+export PATH="$PWD/bin:$PATH"
+
+mdclaw --version
+mdclaw --list-json bootstrap_md_workflow
+scripts/mdclaw-doctor.sh
 ```
 
-`bin/mdclaw` then auto-selects a runtime per call, in order: `MDCLAW_RUNTIME`
-override, conda env `mdclaw`, SIF (`MDCLAW_SIF`), Docker
-(`ghcr.io/matsunagalab/mdclaw`), then `mdclaw` on `PATH`. It binds the current
-working directory at the same absolute path inside containers, so run `mdclaw`
-from your project or job directory and paths resolve the same on host, Docker,
-and Singularity/Apptainer.
+`scripts/setup-container.sh` does not rebuild anything. It reuses an existing
+`mdclaw` conda environment; otherwise it downloads the version-matched runtime
+from `ghcr.io/matsunagalab/mdclaw` using Singularity/Apptainer or Docker.
 
-Verify a checkout with `scripts/mdclaw-doctor.sh`. Full deployment matrix and
-per-harness detail live in `docs/agents/deployment.md`; container specifics in
+### Install Skills For Your Agent
+
+| Agent or use case | Skill setup | Runtime setup |
+|---|---|---|
+| Claude Code plugin | `/plugin marketplace add matsunagalab/mdclaw`, then `/plugin install mdclaw@mdclaw` | Session-start hook runs the packaged-runtime setup |
+| Pi | `pi install git:github.com/matsunagalab/mdclaw@main` | Provide one runtime below; Pi installs skills only |
+| Codex, OpenCode, generic repo-local agents | `scripts/install-agent-skills.sh` | Provide one runtime below |
+| Direct CLI or development | Skills are optional | Use Conda or a packaged runtime below |
+
+The installer creates discovery mirrors under `.agents/skills`,
+`.claude/skills`, and `.codex/skills`; `skills/` remains the only source of
+truth. Use `scripts/install-agent-skills.sh --copy` on filesystems that do not
+support symlinks.
+
+### Choose One Runtime
+
+**Conda: local development or a controlled workstation**
+
+```bash
+conda env create -f environment.yml
+export MDCLAW_RUNTIME=conda
+export PATH="$PWD/bin:$PATH"
+mdclaw --list-json bootstrap_md_workflow
+```
+
+`environment.yml` installs this checkout in editable mode. The wrapper invokes
+it with `conda run`, so activation is optional.
+
+**Singularity/Apptainer SIF: recommended for Linux HPC**
+
+```bash
+singularity pull mdclaw.sif \
+  docker://ghcr.io/matsunagalab/mdclaw:latest
+export MDCLAW_SIF="$PWD/mdclaw.sif"
+export MDCLAW_RUNTIME=singularity
+export PATH="$PWD/bin:$PATH"
+mdclaw --list-json bootstrap_md_workflow
+```
+
+Use `apptainer pull` and `MDCLAW_RUNTIME=apptainer` instead when that is the
+installed command.
+
+**Docker: desktop or workstation container runtime**
+
+```bash
+docker pull ghcr.io/matsunagalab/mdclaw:latest
+export MDCLAW_RUNTIME=docker
+export MDCLAW_DOCKER_IMAGE=ghcr.io/matsunagalab/mdclaw:latest
+export PATH="$PWD/bin:$PATH"
+mdclaw --list-json bootstrap_md_workflow
+```
+
+`bin/mdclaw` selects exactly one runtime for each call. The order is an explicit
+`MDCLAW_RUNTIME=conda|singularity|apptainer|docker` override, then conda env
+`mdclaw`, SIF, Docker, and finally a local `mdclaw` executable. Set the override
+when more than one is installed and you need predictable selection. Container
+calls bind the current working directory at the same absolute path, so run from
+the study/project directory and keep inputs below it.
+
+Troubleshooting and less common deployment layouts are in
+`docs/agents/deployment.md`; image and SIF details are in
 `docs/developer/container.md`.
 
 ### AI Model Backends (BioEmu, Boltz-2)
 
-BioEmu (MD surrogate ensembles) and Boltz-2 (structure prediction, pinned to
-2.2.1) are heavy AI models with their own Torch/CUDA stacks. They are **not**
-part of the core runtime and are **not** baked into the container image. A
-generic `VenvBackend` registry installs each into an isolated venv on first use,
-keeping it out of the conda `mdclaw` environment:
+BioEmu (monomer conformational ensembles) and Boltz-2 (structure prediction,
+pinned to 2.2.1) are optional. They are **not** in the core conda environment or
+container because their Torch/CUDA stacks are independent. Install only the
+backend you need:
 
 ```bash
 mdclaw setup_model_backend --model bioemu --device cuda
@@ -88,11 +148,6 @@ mdclaw setup_model_backend --model boltz  --device cuda
 mdclaw check_model_backend  --model bioemu
 mdclaw check_model_backend  --model boltz
 ```
-
-Backends declare capabilities (`supports_sampling`, `supports_prediction`)
-rather than being hard-wired by name, so callers dispatch on what a model can do
-and predictors stay swappable. `setup_surrogate_backend` /
-`check_surrogate_backend` remain as `bioemu`-defaulted aliases.
 
 On a read-only SIF, point `MDCLAW_SURROGATE_DIR` at a writable (ideally shared)
 filesystem and bind-mount it so the venv and model weight caches persist.
@@ -186,49 +241,58 @@ request explicitly asks for it.
 | `docs/developer/` | Architecture, CLI internals, testing, release, and tool references. |
 | `tests/` | Unit, smoke, benchmark, and integration tests. |
 
-## What MDClaw Can And Cannot Do
+## Supported Capabilities
 
-### Can Do
+| Area | Current support |
+|---|---|
+| Study and workflow | Minimal one-system plans and multi-job comparative studies; resumable per-job DAGs; immutable completed/failed nodes; explicit branches for variants and recovery. |
+| Structure sources | PDB, AlphaFold/UniProt, and local PDB/mmCIF; biological assemblies and multi-model source bundles; optional source generation with Boltz-2, BioEmu, and MODELLER. |
+| Inspection and selection | Proteins, DNA/RNA, ligands, waters, bare ions, glycans, PTMs, chain identity, source candidates, and covalent protein-glycan connectivity before preparation. |
+| Protein and nucleic force fields | Amber ff19SB by default (ff14SB available), standard DNA OL15, and standard RNA OL3. Nucleic terminal charge corrections are derived from the selected force-field XML. |
+| Ligands, glycans, and PTMs | Noncovalent small molecules through GAFF2 with OpenFF NAGL charges and AM1-BCC fallback; covalently linked glycans through GLYCAM; SEP/TPO/PTR phosphorylation parameters. |
+| Solvent and membranes | Explicit water (ff19SB + OPC, 15 A buffer, and 0.15 M salt by default), implicit solvent, vacuum, and Lipid21 membranes. The patch-tile membrane path supports selected neutral and anionic mixtures, including POPC/POPG, and derives lipid templates and charges from the active XML files. |
+| Simulation | Standalone minimization, staged NVT/NPT equilibration, production MD, HMR (4 fs production default), XML-state restart, extensions, replicates, and optional PythonTorchForce custom bias/CV scripts. |
+| Analysis and evidence | Trajectory concatenation/fitting, RMSD, RMSF, distances, contact frequencies, Q values, equilibration detection, custom-result registration, provenance reports, Methods-style reports, and study-level evidence packages. |
+| Execution | Local Conda, Docker, Singularity/Apptainer SIF, explicit SLURM submission/monitoring, and homogeneous job arrays. |
+| Evaluation | Agent-agnostic MDPrepBench and MDStudyBench runners, public task packaging, raw-artifact validation, and scoring. |
 
-- Protein systems with Amber ff19SB (ff14SB available) in OpenMM.
-- Explicit solvent, defaulting to OPC, a 15 A buffer, and 0.15 M salt, with
-  neutralizing and excess ions.
-- Standard DNA/RNA through the OL15/OL3 XMLs.
-- Small-molecule ligands via openmmforcefields `GAFFTemplateGenerator` (GAFF2),
-  with OpenFF NAGL partial charges and AM1-BCC as fallback.
-- Phosphoserine / phosphothreonine / phosphotyrosine PTMs (SEP/TPO/PTR), with
-  `phosaa` parameters auto-loaded in `build_amber_system`.
-- Membrane embedding (patch-tile backend, Lipid21) for PC / PE / cholesterol
-  compositions.
-- Mutations, glycan/glycoprotein inspection, and multi-model / assembly /
-  prediction source bundles that resolve to one prepared candidate.
-- Minimization, multi-stage equilibration, and HMR production (4 fs default)
-  with XML-state restart and extension.
-- Branching variants: mutants, ligands, protocols, temperatures, and seeds.
-- AI structure input: Boltz-2 prediction and BioEmu conformational ensembles
-  (isolated model backends).
-- Local, container (Docker, Singularity/Apptainer SIF), and SLURM/HPC execution,
-  plus trajectory analysis and reproducible evidence packaging.
+Support is fail-closed where MDClaw can check the contract. Ambiguous molecule
+selection, missing force-field templates, inconsistent charges, invalid DAG
+parents, or incomplete topology artifacts return stable error codes and preserve
+the failed node for provenance instead of silently continuing.
 
-### Cannot Do (Out Of Scope Or Guarded)
+## Boundaries And Non-Goals
 
-- Modified / non-standard DNA/RNA bases: inspection reports them as unsupported
-  and topology generation stops with a structured code rather than silently
-  mapping them to ordinary nucleotides.
-- PTMs beyond SEP/TPO/PTR (phospho-histidine, O-GlcNAc, acetylation,
-  methylation, ubiquitination, lipidation, and user-selectable phosphate
-  protonation states) are deferred.
-- Anionic lipid mixtures such as `DOPE:DOPG` pack and build a valid topology but
-  currently segfault during equilibration, so they are excluded from the
-  defaults.
-- Unsafe or ambiguous force-field conversion and parameterization paths are
-  deliberately guarded: tools return structured error codes instead of silently
-  building a dubious system.
-- Multiple independent structural source roots in one job are out of scope,
-  because they make input resolution and system identity ambiguous. Compare
-  variants by branching within one job DAG instead.
-- Not a general-purpose engine for arbitrary force fields, CHARMM-native setups,
-  coarse-grained models, polarizable force fields, or QM/MM.
+- **No unrequested end-to-end execution.** A plan records intent; it is not
+  permission to run production, analysis, or HPC submission. The current
+  request sets the stopping point. Long studies can be handed to another agent
+  and resumed from the DAG.
+- **Modified DNA/RNA is not supported by the standard MD-ready topology path.**
+  Inspection stops before an unsafe ordinary-nucleotide substitution. The
+  legacy modXNA helper is experimental and does not make that path supported;
+  a user-supplied OpenMM System/ForceField escape hatch remains possible.
+- **PTM coverage is deliberately narrow.** Phospho-histidine, O-GlcNAc,
+  acetylation, methylation, ubiquitination, lipidation, and selectable phosphate
+  protonation states are not turnkey workflows.
+- **Specialized chemistry still needs an explicit model.** MDClaw does not
+  automatically create covalent-ligand parameters, bonded metal-center models,
+  or general organometallic chemistry. Supported bare structural ions are
+  checked against the selected water/ion force-field templates.
+- **Force-field scope is Amber/OpenMM, not universal.** Arbitrary force fields,
+  CHARMM-native preparation, coarse-grained or polarizable models, and QM/MM are
+  outside the standard workflow.
+- **Advanced sampling and free-energy methods are not turnkey pipelines.** The
+  custom-force interface can run a user-defined bias, but MDClaw does not yet
+  provide complete alchemical FEP/TI, replica-exchange, metadynamics, or
+  umbrella-sampling/PMF campaign automation and validation.
+- **One job has one structural source identity.** Its source bundle may contain
+  many candidates, but `prep` selects one. Put independent starting systems in
+  separate study jobs; branch a prepared job for mutations, ligands, protocols,
+  temperatures, or seeds.
+- **Guardrails are not scientific proof.** Passing topology, charge, energy,
+  and artifact checks does not establish convergence, adequate sampling, or a
+  biological conclusion. Those require appropriate controls, replicates,
+  analysis, and expert review.
 
 ## Benchmarking
 
