@@ -170,8 +170,8 @@ PHOSPHO_RESNAMES = {"SEP", "TPO", "PTR"}
 
 # Standard nucleic-acid residue names supported by the openmmforcefields
 # Amber DNA/RNA bundles (e.g. ``amber/DNA.OL15.xml``, ``amber/RNA.OL3.xml``).
-STANDARD_DNA_RESNAMES = {"DA", "DC", "DG", "DT", "DI"}
-STANDARD_RNA_RESNAMES = {"A", "C", "G", "U", "I"}
+STANDARD_DNA_RESNAMES = {"DA", "DC", "DG", "DT"}
+STANDARD_RNA_RESNAMES = {"A", "C", "G", "U"}
 STANDARD_NUCLEIC_RESNAMES = STANDARD_DNA_RESNAMES | STANDARD_RNA_RESNAMES
 
 # Elements supported by GAFF/GAFF2 for parameterization.

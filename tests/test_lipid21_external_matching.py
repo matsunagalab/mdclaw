@@ -32,6 +32,15 @@ def test_lipid21_external_pair_filter_accepts_single_tail_type_lipids():
     assert _lipid21_external_pair_allowed(_atom("PGR", "C11", "3"), _atom("OL", "C12", "3"))
 
 
+def test_lipid21_external_pair_filter_uses_sphingomyelin_xml_bonds():
+    assert _lipid21_external_pair_allowed(
+        _atom("SPM", "C1", "1"), _atom("SA", "C12", "1")
+    )
+    assert _lipid21_external_pair_allowed(
+        _atom("SPM", "C11", "1"), _atom("PA", "C12", "1")
+    )
+
+
 def test_lipid21_external_pair_filter_rejects_cross_chemistry_links():
     # Tail-tail: two acyl C12 link atoms must not bond to each other.
     assert not _lipid21_external_pair_allowed(

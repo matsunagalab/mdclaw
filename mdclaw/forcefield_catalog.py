@@ -370,11 +370,11 @@ LIPID_XML: dict[str, str] = {
 }
 
 OPENMM_APP_LIPID_XML: dict[str, str] = {
-    # OpenMM app-data variant with whole-lipid POPC/POPE/CHL1 templates.
+    # Whole-lipid Lipid21 templates shipped by openmmforcefields.
     # Keep this separate from LIPID_XML: the openmmforcefields-shipped
     # amber/lipid21.xml uses modular PA/PC/PE/OL/CHL residues and remains the
     # canonical path for packmol-memgen outputs in that representation.
-    "lipid21_full": "amber19/lipid21.xml",
+    "lipid21_full": "amber/lipid21_merged.xml",
 }
 
 GLYCAN_XML: dict[str, str] = {

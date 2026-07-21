@@ -15,10 +15,8 @@ from mdclaw._common import (
     create_guardrail_result,
     normalize_choice,
 )
-from mdclaw.chemistry_constants import (
-    STANDARD_DNA_RESNAMES,
-    STANDARD_RNA_RESNAMES,
-)
+from mdclaw.forcefield_catalog import LIPID_XML, OPENMM_APP_LIPID_XML
+from mdclaw.forcefield_templates import load_lipid_template_contract
 
 OPENMM_FALLBACK_WATER_MAP = {
     "tip3p": "tip3p.xml",
@@ -27,20 +25,6 @@ OPENMM_FALLBACK_WATER_MAP = {
 }
 OPENMM_FALLBACK_WATER_MODELS = set(OPENMM_FALLBACK_WATER_MAP)
 
-TERMINAL_DNA_RESNAMES = {
-    f"{base}{suffix}"
-    for base in STANDARD_DNA_RESNAMES
-    for suffix in ("3", "5", "N")
-}
-TERMINAL_RNA_RESNAMES = {
-    f"{base}{suffix}"
-    for base in STANDARD_RNA_RESNAMES
-    for suffix in ("3", "5", "N")
-}
-NUCLEIC_RESNAME_KIND = {
-    **{resname: "DNA" for resname in STANDARD_DNA_RESNAMES | TERMINAL_DNA_RESNAMES},
-    **{resname: "RNA" for resname in STANDARD_RNA_RESNAMES | TERMINAL_RNA_RESNAMES},
-}
 MEMBRANE_BACKENDS = {
     "packmol-memgen": "packmol-memgen",
     "packmol_memgen": "packmol-memgen",
@@ -72,52 +56,36 @@ MEMBRANE_CACHE_MODES = {
 # (e.g. local conda vs. the source-built container).
 PATCH_CACHE_SCHEMA_VERSION = 2
 
-# packmol-memgen Lipid21 phospholipids are split into head/tail fragments that
-# share a residue number and must be carved as one lipid.
-PATCH_LIPID21_FRAGMENT_RESNAMES = {
-    "PA", "PC", "PE", "PGR", "PG", "PS", "PSER", "OL",
-}
-PATCH_STEROL_RESNAMES = {"CHL", "CHL1"}
 PATCH_WATER_RESNAMES = {"HOH", "WAT", "SOL", "TIP3", "OPC", "T3P", "T4E"}
 PATCH_ION_RESNAMES = {"NA", "K", "CL", "Na+", "Cl-", "K+"}
-# Lipid21 splits each lipid into head-group + acyl-tail fragment residues, so a
-# packed patch never contains a residue literally named e.g. "DPPC".  Patch
-# validation checks that the discriminating head-group fragment for each
-# requested lipid is present, so map lipid names to their Lipid21 head-group
-# residue(s).  Unlisted names fall back to matching their own name.
-PATCH_LIPID_ALIAS_RESNAMES = {
-    # phosphatidylcholine (PC head)
-    "POPC": {"POPC", "PC"},
-    "DOPC": {"DOPC", "PC"},
-    "DPPC": {"DPPC", "PC"},
-    "DMPC": {"DMPC", "PC"},
-    "DSPC": {"DSPC", "PC"},
-    "DLPC": {"DLPC", "PC"},
-    # phosphatidylethanolamine (PE head)
-    "POPE": {"POPE", "PE"},
-    "DOPE": {"DOPE", "PE"},
-    "DPPE": {"DPPE", "PE"},
-    # phosphatidylglycerol (PGR head)
-    "POPG": {"POPG", "PGR", "PG", "OPG"},
-    "DOPG": {"DOPG", "PGR", "PG", "OPG"},
-    "DPPG": {"DPPG", "PGR", "PG", "OPG"},
-    # phosphatidylserine (PS head)
-    "POPS": {"POPS", "PS", "PSER"},
-    "DOPS": {"DOPS", "PS", "PSER"},
-    # cholesterol
-    "CHL1": {"CHL1", "CHL"},
-    "CHL": {"CHL", "CHL1"},
-}
-PATCH_KNOWN_LIPID_RESNAMES = (
-    PATCH_LIPID21_FRAGMENT_RESNAMES
-    | PATCH_STEROL_RESNAMES
-    | {
-        resname
-        for aliases in PATCH_LIPID_ALIAS_RESNAMES.values()
-        for resname in aliases
+
+
+def lipid21_template_contract():
+    """Return Lipid21 residue roles declared by the shipped XML files."""
+    return load_lipid_template_contract(
+        LIPID_XML["lipid21"],
+        OPENMM_APP_LIPID_XML["lipid21_full"],
+    )
+
+
+def patch_lipid_alias_resnames(lipid: str) -> frozenset[str]:
+    """Map a packmol lipid name to its force-field head template."""
+    name = str(lipid).strip().upper()
+    aliases = {name}
+    if name in {"CHL", "CHL1"}:
+        return frozenset({"CHL", "CHL1"})
+    suffix_to_head = {
+        "PC": "PC",
+        "PE": "PE",
+        "PG": "PGR",
+        "PS": "PS",
+        "PA": "PH-",
+        "SM": "SPM",
     }
-)
-PATCH_LIPID_HEADGROUP_RESNAMES = PATCH_KNOWN_LIPID_RESNAMES - {"OL", "CHL", "CHL1"}
+    head = suffix_to_head.get(name[-2:])
+    if head in lipid21_template_contract().head_names:
+        aliases.add(head)
+    return frozenset(aliases)
 
 # Small patch defaults. A ~40 A square patch converges fast in packmol even for
 # cholesterol mixtures and tiles cleanly after PBC equilibration.

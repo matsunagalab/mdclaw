@@ -44,9 +44,9 @@ from mdclaw._common import (  # noqa: E402
 from mdclaw.chemistry_constants import (  # noqa: E402
     PHOSPHO_RESNAMES,
     STANDARD_BARE_ION_RESNAMES,
-    STANDARD_DNA_RESNAMES,
-    STANDARD_RNA_RESNAMES,
 )
+from mdclaw.forcefield_catalog import DNA_XML, RNA_XML  # noqa: E402
+from mdclaw.forcefield_templates import nucleic_residue_name_map  # noqa: E402
 
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()
@@ -234,6 +234,8 @@ def _scan_pdb_ion_residue_names(path: Path) -> list[str]:
 
 def detect_nucleic_content(pdb_path: Path) -> dict:
     """Detect standard and unsupported nucleic residues in a PDB input."""
+    dna_resnames = set(nucleic_residue_name_map(DNA_XML["OL15"]))
+    rna_resnames = set(nucleic_residue_name_map(RNA_XML["OL3"]))
     residues: dict[tuple[str, str, str], dict[str, Any]] = {}
     for line in pdb_path.read_text().splitlines():
         if not line.startswith(("ATOM", "HETATM")):
@@ -260,11 +262,11 @@ def detect_nucleic_content(pdb_path: Path) -> dict:
         if resname in STANDARD_PROTEIN_RESIDUES:
             has_protein = True
             continue
-        if resname in STANDARD_DNA_RESNAMES:
+        if resname in dna_resnames:
             standard_names.add(resname)
             subtypes.add("dna")
             continue
-        if resname in STANDARD_RNA_RESNAMES:
+        if resname in rna_resnames:
             standard_names.add(resname)
             subtypes.add("rna")
             continue

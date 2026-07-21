@@ -13,6 +13,7 @@ from mdclaw.chemistry_constants import (
     STANDARD_BARE_ION_RESNAMES,
 )
 from mdclaw.solvation.pdb_identity import (
+    _auto_lipid_packmol_charge_pdb_delta,
     _auto_metal_ion_packmol_charge_pdb_delta,
     _auto_nucleic_packmol_charge_pdb_delta,
     _ligand_chemistry_packmol_charge_pdb_delta,
@@ -183,7 +184,7 @@ def test_auto_nucleic_packmol_charge_delta_counts_standard_segments(tmp_path):
     assert [segment["charge_pdb_delta"] for segment in report["segments"]] == [1, 1]
 
 
-def test_auto_nucleic_packmol_charge_delta_skips_terminal_named_segments(tmp_path):
+def test_auto_nucleic_packmol_charge_delta_accepts_complete_terminal_names(tmp_path):
     pdb = tmp_path / "dna_terminal_named.pdb"
     pdb.write_text(
         "".join(
@@ -198,8 +199,93 @@ def test_auto_nucleic_packmol_charge_delta_skips_terminal_named_segments(tmp_pat
 
     report = _auto_nucleic_packmol_charge_pdb_delta(pdb)
 
+    assert report["success"] is True
     assert report["charge_pdb_delta"] == 0
-    assert report["segments"][0]["skipped_reason"] == "terminal_residue_names_present"
+    assert report["segments"][0]["naming_mode"] == "explicit_terminal_names"
+
+
+def test_auto_nucleic_packmol_charge_delta_handles_singletons(tmp_path):
+    ordinary = tmp_path / "ordinary_single.pdb"
+    ordinary.write_text(_pdb_atom(1, "P", "DA", "A", 1, "P") + "END\n")
+    explicit = tmp_path / "explicit_single.pdb"
+    explicit.write_text(_pdb_atom(1, "P", "DAN", "A", 1, "P") + "END\n")
+
+    ordinary_report = _auto_nucleic_packmol_charge_pdb_delta(ordinary)
+    explicit_report = _auto_nucleic_packmol_charge_pdb_delta(explicit)
+
+    assert ordinary_report["charge_pdb_delta"] == 1
+    assert ordinary_report["segments"][0]["selected_template_names"] == ["DAN"]
+    assert explicit_report["charge_pdb_delta"] == 0
+
+
+def test_auto_nucleic_packmol_charge_delta_rejects_partial_terminal_names(tmp_path):
+    pdb = tmp_path / "partial_terminal_names.pdb"
+    pdb.write_text(
+        _pdb_atom(1, "P", "DC5", "A", 1, "P")
+        + _pdb_atom(2, "P", "DG", "A", 2, "P")
+        + _pdb_atom(3, "P", "DA", "A", 3, "P")
+        + "END\n"
+    )
+
+    report = _auto_nucleic_packmol_charge_pdb_delta(pdb)
+
+    assert report["success"] is False
+    assert report["code"] == "forcefield_template_contract_mismatch"
+
+
+def _pdb_4char_residue(serial, atom, resname, chain, resseq, element):
+    return (
+        f"HETATM{serial:5d} {atom:<4} {resname:<4}{chain:1}{resseq:4d}    "
+        f"{0.0:8.3f}{0.0:8.3f}{0.0:8.3f}  1.00  0.00          {element:>2}\n"
+    )
+
+
+def test_auto_lipid_charge_delta_uses_modular_template_charges(tmp_path):
+    pdb = tmp_path / "modular_lipids.pdb"
+    groups = [
+        (1, ["PA", "PGR", "OL"]),
+        (2, ["PA", "PS", "OL"]),
+        (3, ["PA", "PH-", "OL"]),
+        (4, ["SA", "SPM", "PA"]),
+    ]
+    serial = 1
+    lines = []
+    for resseq, names in groups:
+        for name in names:
+            lines.append(_pdb_hetatm(serial, "C", name, "M", resseq, "C"))
+            serial += 1
+    pdb.write_text("".join(lines) + "END\n")
+
+    report = _auto_lipid_packmol_charge_pdb_delta(pdb)
+
+    assert report["success"] is True
+    assert report["charge_pdb_delta"] == -3
+    assert [entry["charge_pdb_delta"] for entry in report["lipids"]] == [
+        -1,
+        -1,
+        -1,
+        0,
+    ]
+
+
+def test_auto_lipid_charge_delta_uses_full_template_charges(tmp_path):
+    pdb = tmp_path / "full_lipids.pdb"
+    pdb.write_text(
+        _pdb_4char_residue(1, "P", "DOPG", "M", 1, "P")
+        + _pdb_4char_residue(2, "P", "POPS", "M", 2, "P")
+        + _pdb_4char_residue(3, "P", "DOPC", "M", 3, "P")
+        + "END\n"
+    )
+
+    report = _auto_lipid_packmol_charge_pdb_delta(pdb)
+
+    assert report["success"] is True
+    assert report["charge_pdb_delta"] == -2
+    assert {entry["residue_names"][0] for entry in report["lipids"]} == {
+        "DOPG",
+        "POPS",
+        "DOPC",
+    }
 
 
 def test_auto_nucleic_packmol_charge_delta_respects_ter_records(tmp_path):

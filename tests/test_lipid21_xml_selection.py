@@ -30,6 +30,13 @@ def test_lipid21_xml_selection_detects_full_residue_lipid_names(tmp_path: Path):
     assert _select_lipid21_xml_key_for_pdb(pdb) == "lipid21_full"
 
 
+def test_lipid21_xml_selection_covers_all_full_residue_families(tmp_path: Path):
+    pdb = tmp_path / "full_lipid_families.pdb"
+    _write_pdb(pdb, ["DOPC", "DOPG", "POPS", "DAPA", "SDPS"])
+
+    assert _select_lipid21_xml_key_for_pdb(pdb) == "lipid21_full"
+
+
 def test_lipid21_xml_selection_keeps_modular_lipid21_default(tmp_path: Path):
     pdb = tmp_path / "modular_lipids.pdb"
     _write_pdb(pdb, ["PA", "PC", "PE", "OL", "CHL"])

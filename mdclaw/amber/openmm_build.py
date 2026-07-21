@@ -51,6 +51,10 @@ from mdclaw._common import (  # noqa: E402
 )
 from mdclaw._lock import file_lock  # noqa: E402
 from mdclaw import forcefield_catalog as _ff_catalog  # noqa: E402
+from mdclaw.forcefield_templates import (  # noqa: E402
+    load_lipid_template_contract,
+    load_residue_templates,
+)
 from mdclaw import _topology_pablo  # noqa: E402
 
 # Initialize working directory (use absolute path for conda run compatibility)
@@ -381,23 +385,11 @@ from mdclaw.amber.topology_bonds import _patch_ligand_molecule_internal_bonds, _
 from mdclaw.amber.topology_validation import _build_topology_validation_report, _unique_messages  # noqa: E402
 
 
-# Lipid21 builds each glycerophospholipid from a head-group residue plus two
-# acyl-tail residues. The head group dangles two external bonds (``C11`` for the
-# sn-1 tail, ``C21`` for the sn-2 tail), and every acyl tail dangles one
-# external bond from its ``C12``. A valid inter-residue lipid bond therefore
-# connects a head-group link atom to a tail link atom, regardless of which
-# specific acyl tail sits at sn-1/sn-2. Enumerating only the POPC/POPE
-# combinations (PA at sn-1, OL at sn-2) wrongly rejected single-tail-type
-# lipids such as DPPC (PA/PA), DOPC (OL/OL) and PG/PS head groups.
-_LIPID21_HEAD_RESNAMES = {"PC", "PE", "PGR", "PS", "PH-", "PA-"}
-_LIPID21_HEAD_LINK_ATOMS = {"C11", "C21"}
-_LIPID21_TAIL_RESNAMES = {
-    "PA", "OL", "ST", "MY", "LAL", "DHA", "AR", "SA", "LEO", "LEN"
-}
-_LIPID21_TAIL_LINK_ATOMS = {"C12"}
-_LIPID21_EXTERNAL_RESNAMES = _LIPID21_HEAD_RESNAMES | _LIPID21_TAIL_RESNAMES
-_LIPID21_MODULAR_RESNAMES = _LIPID21_EXTERNAL_RESNAMES | {"CHL"}
-_LIPID21_FULL_RESNAMES = {"POPC", "POPE", "CHL1"}
+def _lipid21_contract():
+    return load_lipid_template_contract(
+        _ff_catalog.LIPID_XML["lipid21"],
+        _ff_catalog.OPENMM_APP_LIPID_XML["lipid21_full"],
+    )
 
 
 def _pdb_residue_names_4char(pdb_path: Path) -> set[str]:
@@ -426,7 +418,7 @@ def _pdb_residue_names_4char(pdb_path: Path) -> set[str]:
 def _select_lipid21_xml_key_for_pdb(pdb_path: Path) -> str:
     """Choose the Lipid21 XML variant matching the PDB lipid representation."""
     residue_names = _pdb_residue_names_4char(pdb_path)
-    if residue_names & _LIPID21_FULL_RESNAMES:
+    if residue_names & _lipid21_contract().full_names:
         return "lipid21_full"
     return "lipid21"
 
@@ -436,7 +428,10 @@ def _lipid21_external_key(atom: Any) -> tuple[str, str] | None:
     residue_name = getattr(getattr(atom, "residue", None), "name", None)
     atom_name = getattr(atom, "name", None)
     key = (residue_name, atom_name)
-    if residue_name in _LIPID21_EXTERNAL_RESNAMES:
+    template = load_residue_templates(
+        _ff_catalog.LIPID_XML["lipid21"]
+    ).get(residue_name)
+    if template is not None and atom_name in template.external_bond_atoms:
         return key
     return None
 
@@ -468,12 +463,8 @@ def _lipid21_head_tail_link(
     at either position, so the rule is structural rather than an enumeration of
     specific head/tail residue pairs.
     """
-    return (
-        head_key[0] in _LIPID21_HEAD_RESNAMES
-        and head_key[1] in _LIPID21_HEAD_LINK_ATOMS
-        and tail_key[0] in _LIPID21_TAIL_RESNAMES
-        and tail_key[1] in _LIPID21_TAIL_LINK_ATOMS
-    )
+    contract = _lipid21_contract()
+    return head_key[0] in contract.head_names and tail_key[0] in contract.tail_names
 
 
 def _same_residue_identity(atom_a: Any, atom_b: Any) -> bool:
@@ -713,11 +704,23 @@ def _run_openmmforcefields_build(
     dna_name = _resolve_dna_name_from_libraries(nucleic_libraries)
     rna_name = _resolve_rna_name_from_libraries(nucleic_libraries)
     glycan_name = _resolve_glycan_name_from_library(glycan_library)
+    lipid_residue_names = _pdb_residue_names_4char(pdb_path) if is_membrane else set()
+    lipid_contract = _lipid21_contract()
+    if (
+        lipid_residue_names & lipid_contract.full_names
+        and lipid_residue_names & lipid_contract.modular_names
+    ):
+        result["code"] = "forcefield_template_contract_mismatch"
+        result["errors"].append(
+            "The membrane PDB mixes modular and whole-residue Lipid21 "
+            "representations. Rebuild it using one representation."
+        )
+        return result
     lipid_name = _select_lipid21_xml_key_for_pdb(pdb_path) if is_membrane else None
     if lipid_name == "lipid21_full":
         result["topology_notes"].append(
-            "Detected whole-lipid POPC/POPE/CHL1 residue names; using the "
-            "OpenMM app-data Lipid21 XML with full-residue templates."
+            "Detected whole-lipid residue names; using the Lipid21 XML with "
+            "full-residue templates."
         )
 
     if canon_implicit and canon_implicit not in _ff_catalog.IMPLICIT_SOLVENT_XML:
@@ -1354,7 +1357,7 @@ def _run_openmmforcefields_build(
                 if atom is not None:
                     label = f"{atom.residue.name}#{atom.residue.id}.{atom.name}"
                     unbonded_externals.append(label)
-                    if atom.residue.name in _LIPID21_EXTERNAL_RESNAMES:
+                    if atom.residue.name in _lipid21_contract().external_names:
                         unbonded_lipid21_externals.append(label)
         patch_summary["unpaired_external_atom_count"] = len(unbonded_externals)
         patch_summary["unpaired_lipid21_external_atom_count"] = len(

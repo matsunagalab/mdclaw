@@ -23,11 +23,8 @@ from mdclaw._common import (  # noqa: E402
     setup_logger,
 )
 
-from mdclaw.chemistry_constants import (  # noqa: E402
-    STANDARD_DNA_RESNAMES,
-    STANDARD_NUCLEIC_RESNAMES,
-    STANDARD_RNA_RESNAMES,
-)
+from mdclaw.forcefield_catalog import DNA_XML, RNA_XML  # noqa: E402
+from mdclaw.forcefield_templates import nucleic_residue_name_map  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -52,12 +49,15 @@ def classify_nucleic_residues(
 ) -> dict:
     """Classify standard DNA/RNA residue sets without treating them as ligands."""
     names = {name.strip().upper() for name in residue_names if name}
-    standard_dna = names & STANDARD_DNA_RESNAMES
-    standard_rna = names & STANDARD_RNA_RESNAMES
+    dna_resnames = set(nucleic_residue_name_map(DNA_XML["OL15"]))
+    rna_resnames = set(nucleic_residue_name_map(RNA_XML["OL3"]))
+    standard_resnames = dna_resnames | rna_resnames
+    standard_dna = names & dna_resnames
+    standard_rna = names & rna_resnames
     polymer_is_nucleic = _polymer_type_suggests_nucleic(polymer_type)
     residue_pattern_is_nucleic = bool(names) and (
-        names <= STANDARD_NUCLEIC_RESNAMES
-        or bool((standard_dna | standard_rna) and (names - STANDARD_NUCLEIC_RESNAMES))
+        names <= standard_resnames
+        or bool((standard_dna | standard_rna) and (names - standard_resnames))
     )
     is_nucleic = polymer_is_nucleic or residue_pattern_is_nucleic
 
@@ -72,11 +72,11 @@ def classify_nucleic_residues(
     else:
         subtype = None
 
-    modified = sorted(names - STANDARD_NUCLEIC_RESNAMES) if is_nucleic else []
+    modified = sorted(names - standard_resnames) if is_nucleic else []
     return {
         "is_nucleic": is_nucleic,
         "subtype": subtype,
-        "standard_residue_names": sorted(names & STANDARD_NUCLEIC_RESNAMES),
+        "standard_residue_names": sorted(names & standard_resnames),
         "modified_residue_names": modified,
     }
 

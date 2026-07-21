@@ -42,11 +42,9 @@ from mdclaw._common import ensure_directory, sha256_file
 from mdclaw._lock import file_lock
 from mdclaw.solvation.constants import (
     PATCH_CACHE_SCHEMA_VERSION,
-    PATCH_KNOWN_LIPID_RESNAMES,
-    PATCH_LIPID21_FRAGMENT_RESNAMES,
-    PATCH_LIPID_ALIAS_RESNAMES,
-    PATCH_LIPID_HEADGROUP_RESNAMES,
     PATCH_WATER_RESNAMES,
+    lipid21_template_contract,
+    patch_lipid_alias_resnames,
 )
 
 CallableRunner = Callable[..., Any]
@@ -265,9 +263,13 @@ def _periodic_mean(values: list[float], box_length: float) -> Optional[float]:
 
 def _lipid_headgroup_z_values(atoms: list[PDBAtom]) -> list[float]:
     """Return lipid headgroup z coordinates suitable for midplane estimation."""
+    headgroup_names = (
+        lipid21_template_contract().head_names
+        | (lipid21_template_contract().full_names - {"CHL1"})
+    )
     zs: list[float] = []
     for atom in atoms:
-        if atom.resname not in PATCH_LIPID_HEADGROUP_RESNAMES:
+        if atom.resname not in headgroup_names:
             continue
         name = atom.atom_name.upper()
         if name.startswith(("P", "N")):
@@ -288,7 +290,7 @@ def _estimate_patch_membrane_center_z(
     lipid_zs = [
         atom.z
         for atom in atoms
-        if atom.resname in PATCH_KNOWN_LIPID_RESNAMES
+        if atom.resname in lipid21_template_contract().known_names
     ]
     if lipid_zs:
         return _periodic_mean(lipid_zs, box_c)
@@ -581,7 +583,7 @@ def _split_composition(value: str) -> list[str]:
 def _requested_lipid_resnames(lipids: str) -> dict[str, set[str]]:
     requested: dict[str, set[str]] = {}
     for lipid in _split_composition(lipids):
-        requested[lipid] = PATCH_LIPID_ALIAS_RESNAMES.get(lipid, {lipid})
+        requested[lipid] = set(patch_lipid_alias_resnames(lipid))
     return requested
 
 
@@ -675,10 +677,11 @@ def _patch_molecule_ids(atoms: list[PDBAtom]) -> list[int]:
     carved lipid does not leave orphan fragments, but keep neighboring lipids on
     the same chain separate.
     """
+    fragment_names = lipid21_template_contract().fragment_names
     molecule_by_key: dict[tuple, int] = {}
     ids: list[int] = []
     for atom in atoms:
-        is_lipid_fragment = atom.resname in PATCH_LIPID21_FRAGMENT_RESNAMES
+        is_lipid_fragment = atom.resname in fragment_names
         if is_lipid_fragment:
             key = ("lipid", atom.chain_id, atom.resseq, atom.insertion_code)
         else:

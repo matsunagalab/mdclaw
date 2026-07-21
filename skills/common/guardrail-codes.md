@@ -43,6 +43,8 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `file_not_found` | Verify the path and rerun only after the file exists. |
 | `forcefield_extra_xml_used` | Extra forcefield XML was applied; confirm it is intended. |
 | `forcefield_obsolete_blocked` | Selected forcefield is obsolete; use a supported one. |
+| `forcefield_template_contract_mismatch` | Use residue names and fragments that form complete templates in the selected forcefield. |
+| `forcefield_template_contract_unavailable` | Restore the selected forcefield XML before continuing. |
 | `forcefield_water_blocked` | Use a supported forcefield/water pair, usually ff19SB + opc. |
 | `forcefield_water_legacy_warning` | Legacy water model detected; prefer the modern pairing. |
 | `forcefield_water_not_preferred` | Water model is allowed but not preferred; prefer opc with ff19SB. |

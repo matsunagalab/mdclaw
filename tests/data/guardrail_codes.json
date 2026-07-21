@@ -34,6 +34,8 @@
   "file_not_found",
   "forcefield_extra_xml_used",
   "forcefield_obsolete_blocked",
+  "forcefield_template_contract_mismatch",
+  "forcefield_template_contract_unavailable",
   "forcefield_water_blocked",
   "forcefield_water_legacy_warning",
   "forcefield_water_not_preferred",

@@ -28,6 +28,7 @@ from mdclaw.solvation.constants import (
     _normalize_water_model_name,
 )
 from mdclaw.solvation.pdb_identity import (
+    _auto_lipid_packmol_charge_pdb_delta,
     _auto_metal_ion_packmol_charge_pdb_delta,
     _auto_nucleic_packmol_charge_pdb_delta,
     _ligand_chemistry_packmol_charge_pdb_delta,
@@ -479,6 +480,7 @@ def solvate_structure(
     shutil.copy(pdb_path, input_copy)
 
     auto_charge_delta_report = {
+        "success": True,
         "charge_pdb_delta": 0,
         "segments": [],
         "applied_segment_count": 0,
@@ -487,11 +489,64 @@ def solvate_structure(
     try:
         auto_charge_delta_report = _auto_nucleic_packmol_charge_pdb_delta(input_copy)
     except Exception as exc:  # noqa: BLE001
-        result["warnings"].append(
-            "Could not evaluate automatic nucleic-acid charge_pdb_delta "
-            f"for packmol-memgen: {type(exc).__name__}: {exc}"
-        )
+        auto_charge_delta_report = {
+            "success": False,
+            "code": "forcefield_template_contract_unavailable",
+            "errors": [
+                "Could not read the nucleic force-field template contract: "
+                f"{type(exc).__name__}: {exc}"
+            ],
+            "charge_pdb_delta": 0,
+            "segments": [],
+            "reason": "force-field template contract unavailable",
+        }
     nucleic_charge_delta = int(auto_charge_delta_report.get("charge_pdb_delta", 0))
+
+    lipid_charge_delta_report = {
+        "success": True,
+        "charge_pdb_delta": 0,
+        "lipids": [],
+        "applied_lipid_count": 0,
+        "reason": "not evaluated",
+    }
+    try:
+        lipid_charge_delta_report = _auto_lipid_packmol_charge_pdb_delta(input_copy)
+    except Exception as exc:  # noqa: BLE001
+        lipid_charge_delta_report = {
+            "success": False,
+            "code": "forcefield_template_contract_unavailable",
+            "errors": [
+                "Could not read the lipid force-field template contract: "
+                f"{type(exc).__name__}: {exc}"
+            ],
+            "charge_pdb_delta": 0,
+            "lipids": [],
+            "reason": "force-field template contract unavailable",
+        }
+    lipid_charge_delta = int(lipid_charge_delta_report.get("charge_pdb_delta", 0))
+
+    contract_errors = [
+        error
+        for report in (auto_charge_delta_report, lipid_charge_delta_report)
+        if not report.get("success", False)
+        for error in report.get("errors", [])
+    ]
+    if contract_errors:
+        result["code"] = next(
+            (
+                report.get("code")
+                for report in (auto_charge_delta_report, lipid_charge_delta_report)
+                if not report.get("success", False) and report.get("code")
+            ),
+            "forcefield_template_contract_mismatch",
+        )
+        result["errors"].extend(contract_errors)
+        result["nucleic_charge_report"] = auto_charge_delta_report
+        result["lipid_charge_report"] = lipid_charge_delta_report
+        if _node_mode:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=result["errors"])
+        return result
 
     metal_charge_delta_report = {
         "charge_pdb_delta": 0,
@@ -525,11 +580,17 @@ def solvate_structure(
         )
     ligand_charge_delta = int(ligand_charge_delta_report.get("charge_pdb_delta", 0))
 
-    auto_charge_delta = nucleic_charge_delta + metal_charge_delta + ligand_charge_delta
+    auto_charge_delta = (
+        nucleic_charge_delta
+        + lipid_charge_delta
+        + metal_charge_delta
+        + ligand_charge_delta
+    )
     auto_charge_delta_applied = bool(salt and auto_charge_delta)
     _reasons = [
         r for r in (
             auto_charge_delta_report.get("reason"),
+            lipid_charge_delta_report.get("reason"),
             metal_charge_delta_report.get("reason"),
             ligand_charge_delta_report.get("reason"),
         )
@@ -539,12 +600,20 @@ def solvate_structure(
     result["auto_charge_pdb_delta_applied"] = auto_charge_delta_applied
     result["auto_charge_pdb_delta_reason"] = "; ".join(_reasons) or None
     result["nucleic_charge_segments"] = auto_charge_delta_report.get("segments", [])
+    result["nucleic_charge_report"] = auto_charge_delta_report
+    result["lipid_charge_delta"] = lipid_charge_delta
+    result["lipid_charge_entries"] = lipid_charge_delta_report.get("lipids", [])
+    result["lipid_charge_report"] = lipid_charge_delta_report
     result["metal_ion_charge_delta"] = metal_charge_delta
     result["metal_ion_charge_entries"] = metal_charge_delta_report.get("ions", [])
     result["ligand_charge_delta"] = ligand_charge_delta
     result["ligand_charge_delta_entries"] = ligand_charge_delta_report.get("ligands", [])
     result["parameters"]["auto_charge_pdb_delta"] = auto_charge_delta
     result["parameters"]["auto_charge_pdb_delta_applied"] = auto_charge_delta_applied
+    result["parameters"]["forcefield_charge_templates"] = {
+        "nucleic": auto_charge_delta_report.get("forcefield_xml"),
+        "lipid": lipid_charge_delta_report.get("forcefield_xml"),
+    }
 
     # Output file
     output_file = out_dir / f"{output_name}.pdb"
@@ -713,6 +782,10 @@ def solvate_structure(
                         "auto_charge_pdb_delta_applied"
                     ),
                     "ligand_charge_delta": result.get("ligand_charge_delta"),
+                    "lipid_charge_delta": result.get("lipid_charge_delta"),
+                    "forcefield_charge_templates": result.get("parameters", {}).get(
+                        "forcefield_charge_templates"
+                    ),
                     "total_atoms": result.get("statistics", {}).get("total_atoms"),
                 })
             update_job_summaries(job_dir, params={

@@ -240,7 +240,7 @@ def test_resolve_xml_bundle_with_full_residue_lipid21():
     assert xml_list == [
         "amber/protein.ff19SB.xml",
         "amber/opc_standard.xml",
-        "amber19/lipid21.xml",
+        "amber/lipid21_merged.xml",
     ]
 
 
@@ -253,7 +253,9 @@ def test_openmm_app_full_lipid21_templates_when_available():
     except ValueError as exc:
         pytest.skip(f"OpenMM app-data full Lipid21 XML not available: {exc}")
 
-    assert {"POPC", "POPE", "CHL1"} <= set(forcefield._templates)
+    assert {"DOPC", "DOPG", "POPS", "DAPA", "CHL1"} <= set(
+        forcefield._templates
+    )
 
 
 def test_resolve_xml_bundle_with_dna_rna_glycan():

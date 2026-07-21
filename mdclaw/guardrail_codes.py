@@ -175,6 +175,8 @@ GUARDRAIL_CODES: dict[str, str] = {
     "forcefield_water_recommended_alternative": "Switch to the recommended water model for this forcefield.",
     "forcefield_obsolete_blocked": "Selected forcefield is obsolete; use a supported one.",
     "forcefield_extra_xml_used": "Extra forcefield XML was applied; confirm it is intended.",
+    "forcefield_template_contract_mismatch": "Use residue names and fragments that form complete templates in the selected forcefield.",
+    "forcefield_template_contract_unavailable": "Restore the selected forcefield XML before continuing.",
     "unknown_water_model": "Use a known water model (e.g. opc, tip3p, tip4pew, spce).",
     "openmm_fallback_unsupported_water_model": "OpenMM fallback cannot make this water; install AmberTools or pick tip3p/tip4pew/spce.",
 

@@ -29,12 +29,13 @@ from mdclaw.solvation.constants import (
     MEMBRANE_BACKENDS,
     MEMBRANE_CACHE_MODES,
     PATCH_EQUIL_FORCEFIELD,
-    PATCH_LIPID_HEADGROUP_RESNAMES,
     PATCH_SIDE_ANGSTROM,
     _normalize_water_model_name,
+    lipid21_template_contract,
     patch_equilibration_params,
 )
 from mdclaw.solvation.pdb_identity import (
+    _auto_lipid_packmol_charge_pdb_delta,
     _auto_metal_ion_packmol_charge_pdb_delta,
     _auto_nucleic_packmol_charge_pdb_delta,
     _restore_packmol_solute_identity,
@@ -372,7 +373,10 @@ def _membrane_embedding_geometry_report(
     headgroup_atoms = [
         atom
         for atom in atoms
-        if atom["resname"] in PATCH_LIPID_HEADGROUP_RESNAMES
+        if atom["resname"] in (
+            lipid21_template_contract().head_names
+            | (lipid21_template_contract().full_names - {"CHL1"})
+        )
         and atom["name"].upper().startswith(("P", "N"))
     ]
     report = {
@@ -860,11 +864,18 @@ def _compute_membrane_net_charge(
 def _membrane_packmol_charge_delta(pdb_file: Path) -> dict:
     """Return retained-solute charge corrections for full packmol membrane builds."""
     nucleic = _auto_nucleic_packmol_charge_pdb_delta(pdb_file)
+    lipids = _auto_lipid_packmol_charge_pdb_delta(pdb_file)
     ions = _auto_metal_ion_packmol_charge_pdb_delta(pdb_file)
+    errors = list(nucleic.get("errors", [])) + list(lipids.get("errors", []))
     return {
+        "success": not errors,
+        "code": (nucleic.get("code") or lipids.get("code")) if errors else None,
+        "errors": errors,
         "charge_pdb_delta": int(nucleic.get("charge_pdb_delta", 0))
+        + int(lipids.get("charge_pdb_delta", 0))
         + int(ions.get("charge_pdb_delta", 0)),
         "nucleic": nucleic,
+        "lipids": lipids,
         "ions": ions,
     }
 
@@ -2163,20 +2174,32 @@ def embed_in_membrane(
         return result
 
     packmol_charge_report = {
+        "success": True,
         "charge_pdb_delta": 0,
         "nucleic": {},
+        "lipids": {},
         "ions": {},
     }
     if salt:
         try:
             packmol_charge_report = _membrane_packmol_charge_delta(input_copy)
         except Exception as exc:  # noqa: BLE001
-            result["code"] = "membrane_neutralization_failed"
+            result["code"] = "forcefield_template_contract_unavailable"
             result["errors"].append(
                 "Could not evaluate the retained-solute charge required for "
                 "membrane neutralization: "
                 f"{type(exc).__name__}: {exc}"
             )
+            if _node_mode:
+                from mdclaw._node import fail_node
+                fail_node(job_dir, node_id, errors=result["errors"])
+            return result
+        if not packmol_charge_report.get("success", False):
+            result["code"] = packmol_charge_report.get(
+                "code", "forcefield_template_contract_mismatch"
+            )
+            result["errors"].extend(packmol_charge_report.get("errors", []))
+            result["membrane_charge_delta_report"] = packmol_charge_report
             if _node_mode:
                 from mdclaw._node import fail_node
                 fail_node(job_dir, node_id, errors=result["errors"])
@@ -2190,6 +2213,10 @@ def embed_in_membrane(
     result["parameters"]["auto_charge_pdb_delta_applied"] = bool(
         salt and packmol_charge_delta
     )
+    result["parameters"]["forcefield_charge_templates"] = {
+        "nucleic": packmol_charge_report.get("nucleic", {}).get("forcefield_xml"),
+        "lipid": packmol_charge_report.get("lipids", {}).get("forcefield_xml"),
+    }
 
     try:
         # Build packmol-memgen command
@@ -2614,6 +2641,9 @@ def embed_in_membrane(
                     ),
                     "auto_charge_pdb_delta_applied": result.get(
                         "auto_charge_pdb_delta_applied"
+                    ),
+                    "forcefield_charge_templates": result.get("parameters", {}).get(
+                        "forcefield_charge_templates"
                     ),
                     "packing_quality": result.get("packing_quality"),
                     "membrane_backend": result.get("parameters", {}).get(

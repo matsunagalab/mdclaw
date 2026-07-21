@@ -93,6 +93,43 @@ def test_inspect_molecules_classifies_standard_dna_rna(tmp_path):
     assert summary["modified_nucleic_support_status"] == "not_detected"
 
 
+def test_nucleic_classification_accepts_forcefield_terminal_names():
+    from mdclaw.research.nucleic import classify_nucleic_residues
+
+    dna = classify_nucleic_residues({"DA5", "DG", "DC3"})
+    rna = classify_nucleic_residues({"AN"})
+
+    assert dna["subtype"] == "dna"
+    assert dna["modified_residue_names"] == []
+    assert rna["subtype"] == "rna"
+    assert rna["modified_residue_names"] == []
+
+
+def test_nucleic_normalization_restarts_after_ter_on_same_chain(tmp_path):
+    from mdclaw.structure.clean_protein import _normalize_nucleic_input_for_openmm
+
+    pdb = tmp_path / "two_rna_segments.pdb"
+    pdb.write_text(
+        "ATOM      1  P     A A   1       0.000   0.000   0.000  1.00  0.00           P\n"
+        "ATOM      2  OP1   A A   1       1.000   0.000   0.000  1.00  0.00           O\n"
+        "ATOM      3  C1'   A A   1       2.000   0.000   0.000  1.00  0.00           C\n"
+        "TER\n"
+        "ATOM      4  P     G A  10       0.000   1.000   0.000  1.00  0.00           P\n"
+        "ATOM      5  OP1   G A  10       1.000   1.000   0.000  1.00  0.00           O\n"
+        "ATOM      6  C1'   G A  10       2.000   1.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+
+    normalized, report = _normalize_nucleic_input_for_openmm(
+        pdb, "amber/RNA.OL3.xml"
+    )
+
+    assert report["applied"] is True
+    assert report["removed_atom_count"] == 4
+    assert " P     A A   1" not in normalized.read_text()
+    assert " P     G A  10" not in normalized.read_text()
+
+
 def test_public_pdb_action_contract_uses_author_chain_for_ions(tmp_path):
     from mdclaw.research.inspection import inspect_molecules
 

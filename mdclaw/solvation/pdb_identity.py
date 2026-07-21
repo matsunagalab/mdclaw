@@ -10,14 +10,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mdclaw.chemistry_constants import (
-    STANDARD_DNA_RESNAMES,
-    STANDARD_RNA_RESNAMES,
+from mdclaw.forcefield_catalog import (
+    DNA_XML,
+    LIPID_XML,
+    OPENMM_APP_LIPID_XML,
+    RNA_XML,
 )
-from mdclaw.solvation.constants import (
-    NUCLEIC_RESNAME_KIND,
-    TERMINAL_DNA_RESNAMES,
-    TERMINAL_RNA_RESNAMES,
+from mdclaw.forcefield_templates import (
+    load_lipid_template_contract,
+    load_nucleic_template_families,
+    load_residue_templates,
+    nucleic_residue_name_map,
 )
 
 
@@ -40,11 +43,12 @@ def _pdb_element(line: str) -> str:
     return "".join(ch for ch in atom if ch.isalpha())[:1].upper()
 
 
-def _pdb_residue_key(line: str) -> tuple[str, str, str]:
+def _pdb_residue_key(line: str) -> tuple[str, str, str, str]:
     chain_id = line[21:22].strip() if len(line) >= 22 else ""
     resseq = line[22:26].strip() if len(line) >= 26 else ""
     icode = line[26:27].strip() if len(line) >= 27 else ""
-    return chain_id, resseq, icode
+    resname = line[17:21].strip() if len(line) >= 21 else ""
+    return chain_id, resseq, icode, resname
 
 
 def _pdb_residue_label(residue: dict) -> str:
@@ -56,7 +60,7 @@ def _pdb_residue_label(residue: dict) -> str:
 
 def _iter_pdb_residues(path: Path) -> list[dict]:
     residues: list[dict] = []
-    current_key: tuple[str, str, str] | None = None
+    current_key: tuple[str, str, str, str] | None = None
     current: dict | None = None
     segment_break_before_next = False
 
@@ -74,13 +78,13 @@ def _iter_pdb_residues(path: Path) -> list[dict]:
         if key != current_key:
             if current is not None:
                 residues.append(current)
-            chain_id, resseq, icode = key
+            chain_id, resseq, icode, resname = key
             current_key = key
             current = {
                 "chain_id": chain_id,
                 "residue_number": resseq,
                 "insertion_code": icode,
-                "resname": line[17:20].strip() if len(line) >= 20 else "",
+                "resname": resname,
                 "atom_count": 0,
                 "atom_names": [],
                 "segment_break_before": segment_break_before_next,
@@ -95,32 +99,82 @@ def _iter_pdb_residues(path: Path) -> list[dict]:
     return residues
 
 
+_PACKMOL_NUCLEIC_ROLE_CHARGES = {
+    "DNA": {"internal": -1.0, "five_prime": -0.3079, "three_prime": -0.6921},
+    "RNA": {"internal": -1.0, "five_prime": -0.3081, "three_prime": -0.6919},
+}
+
+
 def _flush_nucleic_segment(
     segment: list[dict],
     *,
     kind: str,
+    forcefield_xml: str,
     segments: list[dict],
-) -> int:
+) -> tuple[int, list[str]]:
     if not segment:
-        return 0
+        return 0, []
 
     resnames = [residue["resname"] for residue in segment]
-    terminal_resnames = (
-        TERMINAL_DNA_RESNAMES if kind == "DNA" else TERMINAL_RNA_RESNAMES
-    )
-    standard_resnames = STANDARD_DNA_RESNAMES if kind == "DNA" else STANDARD_RNA_RESNAMES
-    terminal_names_present = sorted({name for name in resnames if name in terminal_resnames})
-
-    correction = 0
-    skipped_reason: str | None = None
-    if len(segment) < 2:
-        skipped_reason = "short_nucleic_segment"
-    elif terminal_names_present:
-        skipped_reason = "terminal_residue_names_present"
-    elif all(name in standard_resnames for name in resnames):
-        correction = 1
+    name_map = nucleic_residue_name_map(forcefield_xml)
+    templates = load_residue_templates(forcefield_xml)
+    families = [name_map[name] for name in resnames]
+    if len(segment) == 1:
+        roles = ["single"]
+        explicit_names = [families[0].single]
     else:
-        skipped_reason = "nonstandard_nucleic_residue_names"
+        roles = ["five_prime"] + ["internal"] * (len(segment) - 2) + ["three_prime"]
+        explicit_names = [families[0].five_prime]
+        explicit_names.extend(family.internal for family in families[1:-1])
+        explicit_names.append(families[-1].three_prime)
+
+    internal_names = [family.internal for family in families]
+    if resnames == internal_names:
+        naming_mode = "internal_names"
+    elif resnames == explicit_names:
+        naming_mode = "explicit_terminal_names"
+    else:
+        error = (
+            f"{kind} segment {_pdb_residue_label(segment[0])} to "
+            f"{_pdb_residue_label(segment[-1])} mixes or misplaces terminal "
+            "residue names. Use either ordinary base names throughout or a "
+            "complete 5'/3'/single terminal naming scheme."
+        )
+        segments.append({
+            "kind": kind,
+            "chain_id": segment[0]["chain_id"],
+            "start": _pdb_residue_label(segment[0]),
+            "end": _pdb_residue_label(segment[-1]),
+            "length": len(segment),
+            "residue_names": resnames,
+            "forcefield_xml": forcefield_xml,
+            "charge_pdb_delta": 0,
+            "code": "forcefield_template_contract_mismatch",
+            "error": error,
+        })
+        return 0, [error]
+
+    selected_template_names: list[str] = []
+    forcefield_charge = 0.0
+    packmol_charge = 0.0
+    for family, role in zip(families, roles):
+        template_name = getattr(family, role)
+        selected_template_names.append(template_name)
+        forcefield_charge += templates[template_name].net_charge
+        if naming_mode == "internal_names":
+            packmol_charge += _PACKMOL_NUCLEIC_ROLE_CHARGES[kind]["internal"]
+        elif role != "single":
+            packmol_charge += _PACKMOL_NUCLEIC_ROLE_CHARGES[kind][role]
+
+    raw_correction = forcefield_charge - packmol_charge
+    correction = int(round(raw_correction))
+    errors: list[str] = []
+    if abs(raw_correction - correction) > 1.0e-3:
+        errors.append(
+            f"{kind} terminal charge correction from {forcefield_xml} is not "
+            f"an integer ({raw_correction:+.6f}); packmol-memgen accepts only "
+            "integer charge_pdb_delta values."
+        )
 
     entry = {
         "kind": kind,
@@ -129,17 +183,26 @@ def _flush_nucleic_segment(
         "end": _pdb_residue_label(segment[-1]),
         "length": len(segment),
         "residue_names": resnames,
+        "selected_template_names": selected_template_names,
+        "naming_mode": naming_mode,
+        "forcefield_xml": forcefield_xml,
+        "forcefield_charge": forcefield_charge,
+        "packmol_estimated_charge": packmol_charge,
         "charge_pdb_delta": correction,
     }
-    if terminal_names_present:
-        entry["terminal_residue_names_present"] = terminal_names_present
-    if skipped_reason:
-        entry["skipped_reason"] = skipped_reason
+    if errors:
+        entry["code"] = "forcefield_template_contract_mismatch"
+        entry["error"] = errors[0]
     segments.append(entry)
-    return correction
+    return correction, errors
 
 
-def _auto_nucleic_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
+def _auto_nucleic_packmol_charge_pdb_delta(
+    pdb_path: Path,
+    *,
+    dna_xml: str = DNA_XML["OL15"],
+    rna_xml: str = RNA_XML["OL3"],
+) -> dict:
     """Return packmol-memgen charge delta needed for standard nucleic termini.
 
     packmol-memgen estimates standard DA/DC/DG/DT/A/C/G/U residues as -1 each.
@@ -147,15 +210,21 @@ def _auto_nucleic_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
     charge unit less negative overall. Pass that difference through
     ``--charge_pdb_delta`` instead of rewriting final PDB residue names.
     """
+    xml_by_kind = {"DNA": dna_xml, "RNA": rna_xml}
+    kind_by_resname = {
+        **{name: "DNA" for name in nucleic_residue_name_map(dna_xml)},
+        **{name: "RNA" for name in nucleic_residue_name_map(rna_xml)},
+    }
     residues = _iter_pdb_residues(pdb_path)
     segments: list[dict] = []
     current_segment: list[dict] = []
     current_kind: str | None = None
     current_chain: str | None = None
     charge_delta = 0
+    errors: list[str] = []
 
     for residue in residues:
-        kind = NUCLEIC_RESNAME_KIND.get(residue["resname"])
+        kind = kind_by_resname.get(residue["resname"])
         if (
             kind is None
             or current_kind is None
@@ -164,11 +233,14 @@ def _auto_nucleic_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
             or residue.get("segment_break_before")
         ):
             if current_segment and current_kind is not None:
-                charge_delta += _flush_nucleic_segment(
+                segment_delta, segment_errors = _flush_nucleic_segment(
                     current_segment,
                     kind=current_kind,
+                    forcefield_xml=xml_by_kind[current_kind],
                     segments=segments,
                 )
+                charge_delta += segment_delta
+                errors.extend(segment_errors)
             current_segment = []
             current_kind = None
             current_chain = None
@@ -181,23 +253,145 @@ def _auto_nucleic_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
         current_chain = residue["chain_id"]
 
     if current_segment and current_kind is not None:
-        charge_delta += _flush_nucleic_segment(
+        segment_delta, segment_errors = _flush_nucleic_segment(
             current_segment,
             kind=current_kind,
+            forcefield_xml=xml_by_kind[current_kind],
             segments=segments,
         )
+        charge_delta += segment_delta
+        errors.extend(segment_errors)
 
     applied_segments = [
         segment for segment in segments if int(segment.get("charge_pdb_delta", 0)) != 0
     ]
     return {
+        "success": not errors,
+        "code": "forcefield_template_contract_mismatch" if errors else None,
+        "errors": errors,
         "charge_pdb_delta": int(charge_delta),
         "segments": segments,
+        "forcefield_xml": xml_by_kind,
         "applied_segment_count": len(applied_segments),
         "reason": (
-            f"standard nucleic termini: {len(applied_segments)} segment(s) x +1"
+            f"force-field nucleic termini: {len(applied_segments)} corrected segment(s)"
             if applied_segments
             else "no standard nucleic terminal correction needed"
+        ),
+    }
+
+
+def _lipid_residue_group_key(residue: dict) -> tuple[str, str, str]:
+    return (
+        str(residue.get("chain_id") or ""),
+        str(residue.get("residue_number") or ""),
+        str(residue.get("insertion_code") or ""),
+    )
+
+
+def _auto_lipid_packmol_charge_pdb_delta(
+    pdb_path: Path,
+    *,
+    modular_xml: str = LIPID_XML["lipid21"],
+    full_xml: str = OPENMM_APP_LIPID_XML["lipid21_full"],
+) -> dict:
+    """Return retained-lipid charges omitted by packmol-memgen."""
+    contract = load_lipid_template_contract(modular_xml, full_xml)
+    modular_templates = load_residue_templates(modular_xml)
+    full_templates = load_residue_templates(full_xml)
+    residues = _iter_pdb_residues(pdb_path)
+    full_residues = [
+        residue for residue in residues if residue["resname"] in contract.full_names
+    ]
+    grouped: dict[tuple[str, str, str], list[dict]] = {}
+    for residue in residues:
+        if residue["resname"] in contract.modular_names:
+            grouped.setdefault(_lipid_residue_group_key(residue), []).append(residue)
+    lipid_groups = [
+        group
+        for group in grouped.values()
+        if any(
+            residue["resname"] in contract.head_names
+            or residue["resname"] == "CHL"
+            for residue in group
+        )
+    ]
+    errors: list[str] = []
+    lipids: list[dict] = []
+
+    if lipid_groups and full_residues:
+        errors.append(
+            "The input mixes modular and whole-residue Lipid21 representations; "
+            "one OpenMM Lipid21 XML cannot parameterize both representations."
+        )
+
+    for residue in full_residues:
+        charge = full_templates[residue["resname"]].net_charge
+        rounded = int(round(charge))
+        if abs(charge - rounded) > 1.0e-3:
+            errors.append(
+                f"Lipid template {residue['resname']} in {full_xml} has "
+                f"non-integral net charge {charge:+.6f}."
+            )
+        lipids.append({
+            "residue": _pdb_residue_label(residue),
+            "residue_names": [residue["resname"]],
+            "representation": "full",
+            "forcefield_xml": full_xml,
+            "forcefield_charge": charge,
+            "packmol_estimated_charge": 0.0,
+            "charge_pdb_delta": rounded,
+        })
+
+    for group in lipid_groups:
+        names = [residue["resname"] for residue in group]
+        heads = [name for name in names if name in contract.head_names]
+        tails = [name for name in names if name in contract.tail_names]
+        zero_external = [
+            name
+            for name in names
+            if name not in contract.head_names and name not in contract.tail_names
+        ]
+        complete_sterol = len(names) == 1 and names[0] == "CHL"
+        complete_fragmented = (
+            len(heads) == 1 and len(tails) == 2 and not zero_external
+        )
+        if not (complete_sterol or complete_fragmented):
+            errors.append(
+                f"Lipid21 fragments at {_pdb_residue_label(group[0])} do not "
+                f"form one complete lipid: {names}."
+            )
+        charge = sum(modular_templates[name].net_charge for name in names)
+        rounded = int(round(charge))
+        if abs(charge - rounded) > 1.0e-3:
+            errors.append(
+                f"Lipid21 fragments {names} in {modular_xml} have non-integral "
+                f"net charge {charge:+.6f}."
+            )
+        lipids.append({
+            "residue": _pdb_residue_label(group[0]),
+            "residue_names": names,
+            "representation": "modular",
+            "forcefield_xml": modular_xml,
+            "forcefield_charge": charge,
+            "packmol_estimated_charge": 0.0,
+            "charge_pdb_delta": rounded,
+        })
+
+    charge_delta = sum(int(lipid["charge_pdb_delta"]) for lipid in lipids)
+    applied = [lipid for lipid in lipids if lipid["charge_pdb_delta"]]
+    return {
+        "success": not errors,
+        "code": "forcefield_template_contract_mismatch" if errors else None,
+        "errors": errors,
+        "charge_pdb_delta": charge_delta,
+        "lipids": lipids,
+        "applied_lipid_count": len(applied),
+        "forcefield_xml": {"modular": modular_xml, "full": full_xml},
+        "reason": (
+            f"force-field lipid charges: {len(applied)} corrected lipid(s)"
+            if applied
+            else "no retained lipid charge correction needed"
         ),
     }
 
@@ -230,28 +424,30 @@ _NEUTRAL_HISTIDINE_RESNAMES = {"HIS", "HID", "HIE", "HSD", "HSE"}
 # recognize (its `charged` table only covers ASP/GLU/LYS/ARG/HIP and the
 # phospho variants). Deprotonated metal-coordinating cysteine (CYM) is the
 # common case: each CYM is truly -1 but packmol counts it as neutral, so the
-# system is left one charge too positive per CYM. Anionic-lipid head groups
-# (Lipid21 POPG head residue "PGR", POPS "PGR"/"PSER") are included so this
-# helper also corrects charged-lipid solutes when it runs on membrane inputs.
+# system is left one charge too positive per CYM. Lipids are evaluated from the
+# selected Lipid21 XML by ``_auto_lipid_packmol_charge_pdb_delta``.
 # Values are (true_formal_charge - packmol_estimated_charge).
 _PACKMOL_UNRECOGNIZED_RESIDUE_DELTAS: dict[str, int] = {
     "CYM": -1,
-    "PGR": -1,
-    "PSER": -1,
 }
 
-_PACKMOL_CHARGE_TRACKING_RESNAMES = (
-    set(_PACKMOL_RECOGNIZED_ION_CHARGES)
-    | set(_PACKMOL_RECOGNIZED_RESIDUE_CHARGES)
-    | set(STANDARD_DNA_RESNAMES)
-    | set(STANDARD_RNA_RESNAMES)
-    | set(TERMINAL_DNA_RESNAMES)
-    | set(TERMINAL_RNA_RESNAMES)
-    | {
+def _packmol_charge_tracking_resnames() -> set[str]:
+    nucleic_names = {
+        name
+        for xml in (DNA_XML["OL15"], RNA_XML["OL3"])
+        for family in load_nucleic_template_families(xml).values()
+        for name in (family.internal, family.five_prime, family.three_prime)
+    }
+    return (
+        set(_PACKMOL_RECOGNIZED_ION_CHARGES)
+        | set(_PACKMOL_RECOGNIZED_RESIDUE_CHARGES)
+        | nucleic_names
+        | {"OHE"}
+        | {
         "PTR", "SEP", "TPO", "Y1P", "S1P", "T1P",
         "H1D", "H2D", "H1E", "H2E", "NME", "ACE",
-    }
-)
+        }
+    )
 
 
 def _atom_names(residue: dict) -> set[str]:
@@ -292,6 +488,7 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
     from mdclaw.chemistry_constants import BARE_ION_CHARGES
 
     residues = _iter_pdb_residues(pdb_path)
+    charge_tracking_resnames = _packmol_charge_tracking_resnames()
     ions: list[dict] = []
     charge_delta = 0
     packmol_charge_track: str | None = None
@@ -301,7 +498,7 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
         atom_count = residue.get("atom_count", 0)
         track_resseq = _packmol_charge_tracking_resseq(residue)
         packmol_counts_this_residue = (
-            resname in _PACKMOL_CHARGE_TRACKING_RESNAMES
+            resname in charge_tracking_resnames
             and packmol_charge_track != track_resseq
         )
         if packmol_counts_this_residue:

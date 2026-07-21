@@ -27,10 +27,10 @@ from typing import Optional, Dict, Any  # noqa: E402
 
 from pdbfixer import PDBFixer  # noqa: E402
 from openmm.app import PDBFile  # noqa: E402
-from mdclaw.chemistry_constants import STANDARD_NUCLEIC_RESNAMES  # noqa: E402
 from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,
 )
+from mdclaw.forcefield_templates import nucleic_residue_name_map  # noqa: E402
 from mdclaw.research.nucleic import (  # noqa: E402
     MODIFIED_NUCLEIC_UNSUPPORTED_MESSAGE,
     classify_nucleic_residues,
@@ -100,6 +100,7 @@ def _pdb_chain_residue_key(line: str) -> tuple[str, str, str]:
 
 def _normalize_nucleic_input_for_openmm(
     input_path: Path,
+    forcefield_xml: str,
 ) -> tuple[Path, dict[str, Any]]:
     """Normalize standard nucleic termini to templates shipped with OpenMM.
 
@@ -119,25 +120,35 @@ def _normalize_nucleic_input_for_openmm(
         "code": None,
     }
     lines = input_path.read_text(encoding="utf-8").splitlines()
-    first_residue_by_chain: dict[str, tuple[str, str, str]] = {}
+    template_resnames = set(nucleic_residue_name_map(forcefield_xml))
+    first_residue_keys: set[tuple[str, str, str]] = set()
     first_residue_names: dict[tuple[str, str, str], str] = {}
     first_residue_atoms: dict[tuple[str, str, str], set[str]] = {}
+    segment_chain: str | None = None
+    segment_first: tuple[str, str, str] | None = None
 
     for line in lines:
+        if line.startswith("TER"):
+            segment_chain = None
+            segment_first = None
+            continue
         if not line.startswith(PDB_ATOM_RECORD_PREFIXES):
             continue
         key = _pdb_chain_residue_key(line)
         chain_id = key[0]
-        if chain_id not in first_residue_by_chain:
-            first_residue_by_chain[chain_id] = key
+        if segment_first is None or chain_id != segment_chain:
+            segment_chain = chain_id
+            segment_first = key
+            first_residue_keys.add(key)
             first_residue_names[key] = _pdb_residue_name(line)
-        if first_residue_by_chain[chain_id] == key:
+        if segment_first == key:
             first_residue_atoms.setdefault(key, set()).add(_pdb_atom_name(line).upper())
 
     residues_to_normalize = {
         key
         for key, atom_names in first_residue_atoms.items()
-        if first_residue_names.get(key) in STANDARD_NUCLEIC_RESNAMES
+        if key in first_residue_keys
+        and first_residue_names.get(key) in template_resnames
         and "P" in atom_names
         and bool(atom_names & _NUCLEIC_5P_TERMINAL_PHOSPHATE_OXYGENS)
     }
@@ -1177,7 +1188,8 @@ def _prepare_standard_nucleic(
         result["atom_count_before"] = _pdb_atom_count(input_path)
         result["hydrogen_count_before"] = _pdb_hydrogen_count(input_path)
         modeller_input_path, normalization_report = _normalize_nucleic_input_for_openmm(
-            input_path
+            input_path,
+            forcefield_xml,
         )
         result["input_normalization"] = normalization_report
         if normalization_report.get("applied"):
