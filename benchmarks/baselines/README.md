@@ -50,23 +50,20 @@ Expected behavior:
 
 ## `study_literature_guess_no_md.py` (MDStudyBench)
 
-Writes a confident comparative-MD submission for a scientific-answer task
-(S01/S02/S04/S05) that reports the correct literature direction but ships fake
-trajectories (a DCD magic header over junk bytes) and no real paired mutation.
+For the standard v0.4 S01 task, writes a confident grounded-v2 submission that
+reports a supplied literature outcome, a prospective-looking intent, and the
+correct public construct, but ships fake trajectories and no harness-attested
+production. Legacy task IDs retain the older v0.3 shape.
 
 Expected behavior:
 
-- Scored zero on the comparative scientific-answer tasks. StudyBench binds the
-  scientific answer to real artifacts: the `trajectory_rescan` and
-  `paired_mutation_topology` hard-fail gates are recomputed from the submitted
-  trajectories/topologies, so a garbage trajectory clamps `weighted_total` to 0
-  even when the declared direction matches the experimental truth. This is the
-  StudyBench discrimination floor — a credible solver must run real comparative
-  MD, not guess the textbook answer.
+- Classified as `invalid_execution` with zero scientific-answer credit. The v2
+  scorer reloads raw trajectories and requires prospective harness lineage, so
+  matching the held-out outcome cannot compensate for missing MD evidence.
 
-All four study tasks require real comparative MD; the
-`tests/test_benchmark/_fake_study_submissions.py` builder shows the expected
-submission shape (index-aligned `outputs.trajectories` / `outputs.topology`).
+The active S01 task requires a real prospective pressure comparison; the
+`tests/test_benchmark/_fake_study_submissions.py` builder shows the v2
+`analysis_intent` / `study_index` / `evidence_report` shape.
 
 ## Intended comparison set
 

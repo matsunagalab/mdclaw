@@ -9,11 +9,11 @@ a compact operator summary, exactly like the prep driver.
 Study defaults differ from the prep driver in two ways, both overridable:
 
 - Per-task walltime is ``0``, i.e. "use each task's declared
-  ``time_limit_minutes``" (all four tasks = 1440 min / 24 h). Pass an explicit
+  ``time_limit_minutes``" (the v0.4 standard S01 is 1440 min / 24 h). Pass an explicit
   ``--max-walltime-minutes-per-task`` to override with a smaller fixed cap.
-- Judge mode is ``llm_judge`` because every study task is scored by the LLM
-  judge (the scorer auto-runs it on tasks that declare ``llm_judge_rubrics``),
-  so the recorded ``run_config.json`` label matches what actually scores the run.
+- Judge mode is ``deterministic``. The S01 pilot uses three non-compensating
+  gates computed from runner-certified MD, evaluator-recomputed evidence, and
+  held-out truth. Legacy extended tasks may still opt into their v1 judge path.
 
 Example:
 
@@ -47,8 +47,7 @@ def _with_study_defaults(argv: list[str]) -> list[str]:
         # 0 => the shared runner falls back to each task's time_limit_minutes.
         argv = ["--max-walltime-minutes-per-task", "0", *argv]
     if not _has_flag(argv, "--judge-mode"):
-        # Study tasks are scored by the LLM judge; label the run accordingly.
-        argv = ["--judge-mode", "llm_judge", *argv]
+        argv = ["--judge-mode", "deterministic", *argv]
     return argv
 
 

@@ -1,24 +1,24 @@
 {
   "agent_independent": true,
   "benchmark_type": "artifact_based_agent_benchmark",
-  "benchmark_version": "MDStudyBench-v0.2",
-  "evaluation_unit": "submission_artifacts",
+  "benchmark_version": "MDStudyBench-v0.4",
+  "evaluation_unit": "runner_certified_study_bundle",
   "families": {
     "scientific_answer_battery": {
       "display_name": "Scientific Answer Battery",
-      "intent": "Evaluate whether an agent can plan and execute small comparative MD studies, extract quantitative evidence, and answer a scientific question with calibrated confidence. The battery spans loss-of-function (destabilizing, weakened binding), gain-of-function (stabilizing), and ligand-affinity directions so a constant prior cannot win.",
+      "intent": "Evaluate whether an agent can prospectively plan an MD study, obtain runner-certified confirmatory MD, and derive the task-owned deterministic conclusion from evaluator-recomputed evidence before comparison with held-out experimental truth. Structural sources and sampling remain agent-selected.",
       "score_axis": "scientific_answer",
       "task_ids": [
-        "S01_stability_t4l_l99a",
-        "S02_ppi_hotspot_barnase_d39a",
-        "S03_stability_nuclease_h124l",
-        "S04_affinity_t4l_l99a_alkylbenzene"
+        "S01_pressure_hydration_t4l_l99a"
       ]
     }
   },
   "notes": [
     "Study-level suite in the MDAgentBench benchmark family.",
-    "Tasks focus on scientific question answering and auditable study bundles, not system preparation alone.",
+    "Tasks focus on open-planning scientific question answering and auditable study bundles, not system preparation alone.",
+    "The v0.4 S01 pilot reports three non-compensating gates: valid_execution, claim_supported, and truth_agreement. grounded_correct@1 is their conjunction.",
+    "S01 is non-primary while the runner-owned OpenMM adapter and blind feasibility are calibrated.",
+    "S02-S04 remain available in an extended experimental tier while their thermodynamic estimands and native free-energy verification contracts are recalibrated.",
     "Preparation-only workflow tasks live in MDPrepBench."
   ],
   "public_private_split": {
@@ -36,13 +36,32 @@
       "tasks/<task_id>/submission_checklist.md"
     ]
   },
-  "released": "2026-06-30",
+  "released": "2026-07-21",
   "schema_version": "1.0",
-  "task_count": 4,
+  "task_count": 1,
   "task_ids": [
-    "S01_stability_t4l_l99a",
-    "S02_ppi_hotspot_barnase_d39a",
-    "S03_stability_nuclease_h124l",
-    "S04_affinity_t4l_l99a_alkylbenzene"
-  ]
+    "S01_pressure_hydration_t4l_l99a"
+  ],
+  "tiers": {
+    "pilot": {
+      "display_name": "S01 Pilot",
+      "release_status": "experimental",
+      "primary_leaderboard": false,
+      "task_ids": [
+        "S01_pressure_hydration_t4l_l99a"
+      ],
+      "intent": "Establish and calibrate the shared three-gate evaluation contract before any task enters a primary leaderboard."
+    },
+    "extended": {
+      "display_name": "Extended / Experimental",
+      "release_status": "experimental",
+      "primary_leaderboard": false,
+      "task_ids": [
+        "S02_ppi_hotspot_barnase_d39a",
+        "S03_stability_nuclease_h124l",
+        "S04_affinity_t4l_l99a_alkylbenzene"
+      ],
+      "intent": "Research tasks retained for migration and calibration; they are excluded from the primary leaderboard until task-specific thermodynamic evidence is independently recomputable and feasible within budget."
+    }
+  }
 }

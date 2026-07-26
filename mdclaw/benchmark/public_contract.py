@@ -17,6 +17,7 @@ _PUBLIC_METRIC_CHECKS = {
     "json_allowed_values": ("allowed_values", "allowed_values"),
 }
 _MANIFEST_FIXED_OUTPUT_FIELDS = {
+    "analysis_intent.json": "analysis_intent",
     "metrics.json": "metrics",
     "provenance.json": "provenance",
     "evidence_report.json": "evidence_report",
@@ -25,6 +26,7 @@ _MANIFEST_FIXED_OUTPUT_FIELDS = {
     "prepared_structure.pdb": "prepared_structure",
     "minimized_structure.pdb": "minimized_structure",
     "minimization_report.json": "minimization_report",
+    "study_index.json": "study_index",
 }
 
 
@@ -409,6 +411,114 @@ def manifest_contract(task: Task) -> dict[str, Any]:
             f"outputs.{field}": min_count
             for field, min_count in sorted(list_requirements.items())
         }
+    if task.evaluation_protocol == "grounded_correct_v1":
+        contract["paired_study_index"] = {
+            "manifest_path": "outputs.study_index",
+            "required_roles": ["reference", "variant"],
+            "exactly_one_system_per_role": True,
+            "minimum_replicas_per_system": 1,
+            "replica_artifacts": {
+                "topology": "required relative path",
+                "trajectory": (
+                    "exactly one of trajectory or trajectory_segments is required"
+                ),
+            },
+            "all_declared_replica_artifacts_must_exist": True,
+            "private_scorer_raw_trajectory_acceptance": {
+                "minimum_frames_per_replica": 5,
+                "finite_coordinates": True,
+                "internal_motion_after_rigid_body_alignment": True,
+            },
+            "source_is_agent_selected": True,
+        }
+    elif task.evaluation_protocol == "grounded_correct_v2":
+        contract["prospective_study"] = {
+            "analysis_intent_manifest_path": "outputs.analysis_intent",
+            "study_index_manifest_path": "outputs.study_index",
+            "evidence_report_manifest_path": "outputs.evidence_report",
+            "study_index_schema_version": "2.0",
+            "systems": {
+                "system_id": "globally unique",
+                "source": "agent-selected and documented",
+                "conditions": "structured physical conditions",
+                "runs": "one or more exploratory or confirmatory runs",
+            },
+            "comparisons": {
+                "comparison_id": "globally unique",
+                "reference_system_ids": "one or more declared system IDs",
+                "variant_system_ids": "one or more disjoint system IDs",
+            },
+            "run_lineage": {
+                "production_event_id": (
+                    "every confirmatory run must match exactly one successful "
+                    "benchmark-runner execution event"
+                ),
+                "phase": "confirmatory runs must be runner-certified",
+                "trajectory_hashes": (
+                    "submitted confirmatory trajectory bytes must match the "
+                    "runner-owned output SHA-256"
+                ),
+                "topology_input_hash": (
+                    "submitted topology bytes must match the runner-owned "
+                    "immutable input SHA-256"
+                ),
+            },
+            "confirmatory_lineage": {
+                "phase": "confirmatory",
+                "intent_id": "must match analysis_intent.intent_id",
+                "production_event_id": (
+                    "must match a successful runner-certified production event"
+                ),
+                "ordering": (
+                    "the runner freezes the exact analysis_intent.json bytes "
+                    "before starting confirmatory production"
+                ),
+            },
+            "runner_execution": {
+                "adapter": (
+                    task.scientific_target.execution_adapter
+                    if task.scientific_target is not None
+                    else None
+                ),
+                "request": (
+                    "create pending MDClaw prod nodes and write the structured "
+                    "request_file named by "
+                    "task_instructions.confirmatory_execution"
+                ),
+                "agent_must_not_run_confirmatory_nodes": True,
+                "result": (
+                    "after runner continuation, use only artifacts certified in "
+                    "task_instructions.confirmatory_execution.result_file"
+                ),
+                "generic_stage_wrapper_is_not_execution_attestation": True,
+                "attestation_scope": {
+                    "production_runtime_matches_frozen_base_system": True,
+                    "base_system_construction_attested": False,
+                    "runtime_environment_attested": False,
+                    "diagnostics": [
+                        "base_system_construction_unattested",
+                        "runtime_environment_unattested",
+                    ],
+                },
+            },
+            "exploratory_runs_may_not_support_resolved_claims": True,
+            "confirmatory_sampling_policy": {
+                "region_water_occupancy@1": (
+                    "Resolved support requires ordinary equilibrium "
+                    "trajectories with no declared enhanced sampling and no "
+                    "runner-detected production-time force beyond the frozen "
+                    "base System except the required barostat. Explicit "
+                    "biased/enhanced-sampling metadata makes the evidence "
+                    "support-ineligible because v0.4 has no weight-aware "
+                    "native occupancy verifier."
+                ),
+                "exploration": (
+                    "Biased or enhanced sampling may be used for exploratory "
+                    "runs, which cannot support a resolved claim."
+                ),
+            },
+            "source_and_plan_are_agent_selected": True,
+        }
     return contract
 
 
@@ -419,7 +529,17 @@ def manifest_output_field_requirements(task: Task) -> list[str]:
         for relative in task.required_outputs
         if relative in _MANIFEST_FIXED_OUTPUT_FIELDS
     ]
-    if task.primary_score == "scientific_answer":
+    if task.evaluation_protocol == "grounded_correct_v1":
+        fields.append("outputs.study_index")
+    elif task.evaluation_protocol == "grounded_correct_v2":
+        fields.extend(
+            [
+                "outputs.analysis_intent",
+                "outputs.study_index",
+                "outputs.evidence_report",
+            ]
+        )
+    elif task.primary_score == "scientific_answer":
         fields.extend(["outputs.trajectories", "outputs.topology"])
     elif task.primary_score == "evidence_communication":
         fields.extend(["outputs.methods", "outputs.decision_log"])
@@ -438,7 +558,12 @@ def submission_blueprint(task: Task) -> dict[str, Any]:
             "status": "completed",
             "outputs": outputs,
         },
-        "provenance_minimum": {
+    }
+    if (
+        task.evaluation_protocol != "grounded_correct_v2"
+        or "provenance.json" in task.required_outputs
+    ):
+        blueprint["provenance_minimum"] = {
             "schema_version": "1.0",
             "generated_by": {"tool": "agent"},
             "task_id": task.task_id,
@@ -449,8 +574,7 @@ def submission_blueprint(task: Task) -> dict[str, Any]:
                     "md5": "<md5 hash>",
                 }
             ],
-        },
-    }
+        }
     if "metrics" in outputs or public_metric_requirements(task):
         metrics_minimum: dict[str, Any] = {
             "schema_version": "1.0",
@@ -465,6 +589,10 @@ def submission_blueprint(task: Task) -> dict[str, Any]:
         blueprint["metrics_minimum"] = metrics_minimum
     if "evidence_report" in outputs:
         blueprint["evidence_report_minimum"] = _evidence_report_blueprint(task)
+    if "analysis_intent" in outputs:
+        blueprint["analysis_intent_minimum"] = _analysis_intent_blueprint(task)
+    if "study_index" in outputs:
+        blueprint["study_index_minimum"] = _study_index_blueprint(task)
     if "minimization_report" in outputs:
         blueprint["minimization_report_minimum"] = {
             "schema_version": "1.0",
@@ -499,7 +627,22 @@ def submission_checklist(task: Task) -> list[str]:
             "manifest.outputs paths are relative and stay inside submission/",
             "every required_outputs file exists in submission/",
         ]
-    if task.primary_score == PREPARATION_SCORE_AXIS:
+    if task.evaluation_protocol == "grounded_correct_v2":
+        checks.extend(
+            [
+                "create pending MDClaw prod nodes for every confirmatory run; "
+                "do not execute those nodes as the evaluated agent",
+                "write analysis_intent.json, then write the structured "
+                "task_instructions.confirmatory_execution.request_file and exit",
+                "after runner continuation, read "
+                "task_instructions.confirmatory_execution.result_file and use "
+                "only its certified outputs for confirmatory evidence",
+                "the runner-owned OpenMM/MDClaw ledger, not agent-authored "
+                "provenance or stage-wrapper records, is the confirmatory "
+                "execution source of truth",
+            ]
+        )
+    elif task.primary_score == PREPARATION_SCORE_AXIS:
         if any(
             check.check_type == "provenance_execution_evidence"
             and check.require_harness_record
@@ -556,13 +699,68 @@ def submission_checklist(task: Task) -> list[str]:
             "manifest.outputs lists real artifact paths for: "
             + ", ".join(sorted(manifest_list_output_requirements(task)))
         )
+    if task.evaluation_protocol == "grounded_correct_v1":
+        checks.append(
+            "study_index.json declares exactly one reference and one variant "
+            "system, at least one replica for each, and every topology and "
+            "trajectory segment used as evidence. The public preflight checks "
+            "this declaration and path shape; the private scorer then requires "
+            "each joined replica to contain at least 5 finite frames with "
+            "internal motion after rigid-body alignment"
+        )
+    elif task.evaluation_protocol == "grounded_correct_v2":
+        checks.extend(
+            [
+                "analysis_intent.json states the public estimand, primary "
+                "analyses, outcome mappings, uncertainty/equivalence rules, "
+                "and principal alternative explanations",
+                "the primary estimand analysis exactly matches the task-owned "
+                "verifier, outcome mapping, decision rule, and fixed observable "
+                "parameters",
+                "each confirmatory study_index run records the frozen intent_id "
+                "and matching runner production_event_id; submitted topology "
+                "and trajectory bytes match the runner-owned hashes",
+                "region_water_occupancy@1 confirmatory support uses ordinary "
+                "equilibrium trajectories with no declared enhanced sampling "
+                "and no runner-detected production-time force beyond the "
+                "frozen base System except the required barostat",
+                "region_water_occupancy@1 uses exactly the task-owned mapped "
+                "construct-position-99 CB center and 0.45 nm periodic "
+                "water-oxygen counting radius across all comparison runs",
+                "the S01 pilot attests production relative to the frozen base "
+                "System but reports base-system construction and dependency "
+                "runtime as explicitly unattested diagnostics",
+                "study_index comparisons use structured system IDs and match all "
+                "conditions except the declared intervention",
+                "every evidence item links to an intent, primary analysis, "
+                "comparison, versioned verifier, and raw artifacts",
+                "prior_expectation is separate from md_verdict and cannot support it",
+            ]
+        )
+        if (
+            task.scientific_target is not None
+            and task.scientific_target.required_control_verifiers
+        ):
+            checks.append(
+                "resolved verdicts cite raw validity-control evidence for: "
+                + ", ".join(
+                    task.scientific_target.required_control_verifiers
+                )
+            )
     evidence_keys = _evidence_required_keys(task)
     if evidence_keys:
         checks.append(
             "evidence_report.json contains required evidence keys: "
             + ", ".join(evidence_keys)
         )
-    observable_names = _reported_observable_names(task)
+    observable_names = (
+        []
+        if task.evaluation_protocol in {
+            "grounded_correct_v1",
+            "grounded_correct_v2",
+        }
+        else _reported_observable_names(task)
+    )
     if observable_names:
         checks.append(
             "evidence_report.observables reports wt_value/mutant_value (and an "
@@ -744,6 +942,30 @@ def public_submission_contract(
         "submission_lifecycle": submission_lifecycle(task),
         "submission_checklist": submission_checklist(task),
     }
+    if task.evaluation_protocol is not None:
+        contract["evaluation_protocol"] = task.evaluation_protocol
+    if task.scientific_target is not None:
+        contract["scientific_target"] = task.scientific_target.model_dump()
+    if task.evaluation_protocol == "grounded_correct_v1":
+        contract["native_evidence_metric_spec"] = (
+            _grounded_native_evidence_metric_spec()
+        )
+    elif task.evaluation_protocol == "grounded_correct_v2":
+        contract["truth_blind_verifier_contract"] = {
+            "implementation": "tools/study_evidence_v2.py",
+            "identity_implementation": "tools/study_identity_v2.py",
+            "preregistration_implementation": "tools/preregistration_v2.py",
+            "execution_implementation": "tools/study_execution_v2.py",
+            "parity": (
+                "Public preflight and private scoring execute the same "
+                "truth-blind verifier sources. Harness-only attestation remains "
+                "pending during solver-side preflight."
+            ),
+            "native_metric_ids": [
+                "region_water_occupancy@1",
+                "folded_state_retention@1",
+            ],
+        }
     if task.primary_score != PREPARATION_SCORE_AXIS:
         contract["normalized_outputs"] = list(task.required_outputs)
         contract["manifest_contract"] = manifest_contract(task)
@@ -808,6 +1030,7 @@ def _agent_required_outputs(task: Task) -> list[str]:
 def _manifest_output_blueprint(task: Task) -> dict[str, Any]:
     outputs: dict[str, Any] = {}
     fixed_outputs = {
+        "analysis_intent.json": ("analysis_intent", "analysis_intent.json"),
         "metrics.json": ("metrics", "metrics.json"),
         "provenance.json": ("provenance", "provenance.json"),
         "evidence_report.json": ("evidence_report", "evidence_report.json"),
@@ -819,6 +1042,7 @@ def _manifest_output_blueprint(task: Task) -> dict[str, Any]:
             "minimization_report",
             "minimization_report.json",
         ),
+        "study_index.json": ("study_index", "study_index.json"),
         "wt_prepared_structure.pdb": (
             "parent_prepared_structure",
             "wt_prepared_structure.pdb",
@@ -831,6 +1055,16 @@ def _manifest_output_blueprint(task: Task) -> dict[str, Any]:
 
     for field, min_count in manifest_list_output_requirements(task).items():
         outputs[field] = _manifest_list_example(field, min_count)
+    if task.evaluation_protocol == "grounded_correct_v1":
+        outputs["study_index"] = "study_index.json"
+    elif task.evaluation_protocol == "grounded_correct_v2":
+        outputs.update(
+            {
+                "analysis_intent": "analysis_intent.json",
+                "study_index": "study_index.json",
+                "evidence_report": "evidence_report.json",
+            }
+        )
     return outputs
 
 
@@ -861,6 +1095,16 @@ def manifest_list_output_requirements(task: Task) -> dict[str, int]:
         ):
             field = check.manifest_path.split(".", 1)[1]
             outputs[field] = max(outputs.get(field, 0), int(check.min_count or 1))
+    if task.evaluation_protocol in {
+        "grounded_correct_v1",
+        "grounded_correct_v2",
+    }:
+        # Legacy checks may still mention the flat arrays during a staged task
+        # migration. Grounded protocols have one source of truth for run
+        # artifacts: study_index.json.
+        outputs.pop("topology", None)
+        outputs.pop("trajectories", None)
+        return outputs
     if task.primary_score == "scientific_answer":
         for check in task.scoring.deterministic_checks:
             for attribute in (
@@ -960,6 +1204,115 @@ def _requirement_placeholder(item: dict[str, Any]) -> Any:
 
 
 def _evidence_report_blueprint(task: Task) -> dict[str, Any]:
+    if task.evaluation_protocol == "grounded_correct_v2":
+        outcomes = (
+            list(task.scientific_target.allowed_outcomes)
+            if task.scientific_target is not None
+            else ["<task-specific outcome>"]
+        )
+        required_controls = (
+            list(task.scientific_target.required_control_verifiers)
+            if task.scientific_target is not None
+            else []
+        )
+        cited_ids = ["primary-hydration"]
+        evidence_items: list[dict[str, Any]] = [
+            {
+                "id": "primary-hydration",
+                "intent_id": "intent-1",
+                "analysis_id": "primary-analysis",
+                "comparison_id": "primary-comparison",
+                "verifier_id": "region_water_occupancy@1",
+                "claim_role": "direct_estimator",
+                "estimand_link": "<why this measures the public estimand>",
+                "reported": {"estimate": "<number>", "unit": "water_count"},
+                "uncertainty": "<number or structured interval>",
+                "artifacts": ["analysis/primary.json"],
+            }
+        ]
+        if "folded_state_retention@1" in required_controls:
+            cited_ids.append("folded-state-control")
+            evidence_items.append(
+                {
+                    "id": "folded-state-control",
+                    "intent_id": "intent-1",
+                    "analysis_id": "folded-state-control",
+                    "comparison_id": "primary-comparison",
+                    "verifier_id": "folded_state_retention@1",
+                    "claim_role": "validity_control",
+                    "estimand_link": "<why the target requires this control>",
+                    "reported": {"folded_state_retained": "<boolean>"},
+                    "uncertainty": "<number or structured interval>",
+                    "artifacts": ["analysis/folded-state.json"],
+                }
+            )
+        return {
+            "schema_version": "2.0",
+            "task_id": task.task_id,
+            "prior_expectation": {
+                "outcome": {"one_of": [*outcomes, None]},
+                "confidence": "<number from 0.0 to 1.0, or null>",
+                "sources": [],
+                "rationale": "<optional; never used as MD support>",
+            },
+            "md_verdict": {
+                "status": {"one_of": ["resolved", "unresolved"]},
+                "outcome": {"one_of": [*outcomes, None]},
+                "basis": {
+                    "one_of": [
+                        "direct_estimator",
+                        "validated_proxy",
+                        "mechanistic_only",
+                        "insufficient",
+                    ]
+                },
+                "confidence": "<number from 0.0 to 1.0>",
+                "cited_evidence_ids": cited_ids,
+                "unresolved_reasons": [],
+            },
+            "evidence": evidence_items,
+            "reasoning": "<MD-only inference from verified evidence>",
+            "limitations": ["<sampling or interpretation limitation>"],
+        }
+    if task.evaluation_protocol == "grounded_correct_v1":
+        return {
+            "schema_version": "1.0",
+            "task_id": task.task_id,
+            "conclusion": {
+                "direction": "<task-specific direction>",
+                "evidence_status": {
+                    "one_of": ["supported", "inconclusive", "contradicted"],
+                },
+                "confidence": "<number from 0.0 to 1.0>",
+            },
+            "evidence": [
+                {
+                    "id": "<optional stable evidence id>",
+                    "metric": {"one_of": ["ca_rmsf", "contact_count"]},
+                    "selection": "<atoms used for both systems>",
+                    "selection_b": "<optional second atom selection>",
+                    "contact_cutoff_nm": "<optional positive cutoff>",
+                    "reference": "<number>",
+                    "variant": "<number>",
+                    "uncertainty": (
+                        "<number or {reference: number, variant: number}>"
+                    ),
+                    "unit": (
+                        "<ca_rmsf: nm (angstrom/Å accepted and converted); "
+                        "contact_count: count>"
+                    ),
+                }
+            ],
+            "reasoning": (
+                "<how the submitted MD evidence supports, contradicts, or is "
+                "insufficient for the conclusion>"
+            ),
+            "prior_knowledge": (
+                "<optional literature or prior knowledge, kept separate from "
+                "the MD-grounded reasoning>"
+            ),
+            "limitations": ["<sampling and interpretation limitation>"],
+        }
     evidence: dict[str, Any] = {
         "schema_version": "1.0",
         "task_id": task.task_id,
@@ -986,6 +1339,317 @@ def _evidence_report_blueprint(task: Task) -> dict[str, Any]:
     for key in _evidence_required_keys(task):
         _set_nested(evidence, key, _evidence_placeholder(key))
     return evidence
+
+
+def _analysis_intent_blueprint(task: Task) -> dict[str, Any]:
+    target = task.scientific_target
+    estimand = (
+        target.estimand
+        if target is not None
+        else "<copy the public target estimand exactly>"
+    )
+    outcomes = (
+        list(target.allowed_outcomes)
+        if target is not None
+        else ["<outcome-a>", "<outcome-b>"]
+    )
+    primary_contract = (
+        target.primary_evidence_contract if target is not None else None
+    )
+    if primary_contract is not None:
+        fixed = primary_contract.fixed_observable_parameters
+        positions = fixed.get("cavity_reference_positions", [])
+        atom_names = fixed.get("cavity_atom_names", [])
+        observable_parameters: dict[str, Any] = {
+            "region_selection": (
+                "<MDTraj selection resolving exactly to public construct "
+                f"positions {positions} and atom names {atom_names}>"
+            )
+        }
+        observable_parameters.update(
+            fixed
+        )
+        verifier_id = primary_contract.verifier_id
+        outcome_mapping = dict(primary_contract.outcome_mapping)
+        decision_rule = primary_contract.decision_rule.model_dump(
+            exclude_none=True
+        )
+    else:
+        observable_parameters = {
+            "region_selection": (
+                "<MDTraj selection resolving only to the same mapped, compact "
+                "protein atom set in every comparison run; maximum selected-"
+                "region radius 0.75 nm>"
+            ),
+            "radius_nm": "<positive number <= 0.60>",
+            "discard_initial_frames": "<nonnegative integer>",
+            "n_blocks": ">= 3",
+        }
+        observable_parameters.update(
+            {
+                "initialization_convergence_tolerance": (
+                    "<nonnegative number>"
+                ),
+                "periodic": "<boolean; normally true for solvated MD>",
+            }
+        )
+        verifier_id = "region_water_occupancy@1"
+        outcome_mapping = {
+            "increase": outcomes[0] if outcomes else "<outcome>",
+            "decrease": outcomes[1] if len(outcomes) > 1 else "<outcome>",
+            "equivalent": outcomes[-1] if outcomes else "<outcome>",
+            "unresolved": "unresolved",
+        }
+        decision_rule = {
+            "kind": "equivalence_ci",
+            "confidence_level": 0.95,
+            "equivalence_margin": "<finite positive water-count margin>",
+            "unit": "water_count",
+            "parameters": {},
+        }
+    analyses: list[dict[str, Any]] = [
+        {
+            "analysis_id": "primary-analysis",
+            "analysis_role": "estimand",
+            "comparison_id": "primary-comparison",
+            "verifier_id": verifier_id,
+            "observable": {
+                "parameters": observable_parameters
+            },
+            "outcome_mapping": outcome_mapping,
+            "decision_rule": decision_rule,
+            "estimand_link": "<why this analysis estimates the target>",
+            "alternative_explanations": ["<principal confounder>"],
+        }
+    ]
+    required_controls = (
+        list(task.scientific_target.required_control_verifiers)
+        if task.scientific_target is not None
+        else []
+    )
+    if "folded_state_retention@1" in required_controls:
+        control_contract = next(
+            (
+                item
+                for item in (
+                    task.scientific_target.control_evidence_contracts
+                    if task.scientific_target is not None
+                    else []
+                )
+                if item.verifier_id == "folded_state_retention@1"
+            ),
+            None,
+        )
+        control_parameters = (
+            dict(control_contract.fixed_observable_parameters)
+            if control_contract is not None
+            else {
+                "selection": "protein and name CA",
+                "maximum_rmsd_nm": "<= 0.5",
+                "maximum_initial_rg_nm": "<= 3.0",
+                "minimum_retained_fraction": ">= 0.8",
+                "discard_initial_frames": "<nonnegative integer>",
+                "n_blocks": ">= 3",
+            }
+        )
+        control_mapping = (
+            dict(control_contract.outcome_mapping)
+            if control_contract is not None
+            else {"pass": "retained", "fail": "unresolved"}
+        )
+        control_rule = (
+            control_contract.decision_rule.model_dump(exclude_none=True)
+            if control_contract is not None
+            else {
+                "kind": "custom",
+                "confidence_level": 0.95,
+                "parameters": {"plugin": "folded_state_retention@1"},
+            }
+        )
+        analyses.append(
+            {
+                "analysis_id": "folded-state-control",
+                "analysis_role": "validity_control",
+                "comparison_id": "primary-comparison",
+                "verifier_id": "folded_state_retention@1",
+                "observable": {
+                    "parameters": control_parameters
+                },
+                "outcome_mapping": control_mapping,
+                "decision_rule": control_rule,
+                "estimand_link": "Validity control for a folded-state estimand.",
+                "alternative_explanations": ["global unfolding"],
+            }
+        )
+    return {
+        "schema_version": "1.0",
+        "task_id": task.task_id,
+        "intent_id": "intent-1",
+        "target_estimand": estimand,
+        "primary_analyses": analyses,
+        "supersedes_intent_id": None,
+    }
+
+
+def _grounded_native_evidence_metric_spec() -> dict[str, Any]:
+    """Publish the exact v1 formulas used for truth-blind recomputation."""
+    return {
+        "version": "native_metrics_v1",
+        "replica_policy": (
+            "Every declared reference and variant replica is recomputed with "
+            "equal replica weight. Frames are split into up to five contiguous "
+            "blocks; role uncertainty combines within- and between-replica SEM."
+        ),
+        "report_agreement": {
+            "maximum_relative_error_per_role": 0.1,
+            "reported_delta_sign_must_match": True,
+            "acceptance": (
+                "At least one native evidence item must agree and be verified. "
+                "Mismatched items remain visible but cannot be cited as support."
+            ),
+        },
+        "ca_rmsf": {
+            "canonical_unit": "nm",
+            "formula": (
+                "For each block, select evidence.selection, rigidly align those "
+                "selected atoms to the block's first frame, compute per-atom "
+                "MDTraj RMSF, then average across selected atoms and blocks."
+            ),
+            "alignment_selection": "evidence.selection (native_metrics_v1)",
+        },
+        "contact_count": {
+            "canonical_unit": "count",
+            "formula": (
+                "Remove hydrogen atoms from evidence.selection and selection_b; "
+                "for every frame count Cartesian atom pairs whose MDTraj distance "
+                "is below contact_cutoff_nm (default 0.45 nm), then average by "
+                "block and replica."
+            ),
+            "default_contact_cutoff_nm": 0.45,
+        },
+        "custom_metrics": (
+            "Accepted as unverified supplemental evidence and never sufficient "
+            "on their own for grounded_correct."
+        ),
+    }
+
+
+def _study_index_blueprint(task: Task) -> dict[str, Any]:
+    if task.evaluation_protocol == "grounded_correct_v2":
+        conditions = (
+            task.scientific_target.required_conditions
+            if task.scientific_target is not None
+            else {}
+        )
+        return {
+            "schema_version": "2.0",
+            "task_id": task.task_id,
+            "conditions": conditions,
+            "systems": [
+                {
+                    "system_id": "reference-condition",
+                    "source": {
+                        "type": "<pdb, prediction, model, or other>",
+                        "id": "<agent-selected source identifier>",
+                        "metadata": {},
+                    },
+                    "conditions": {
+                        "temperature_k": "<number>",
+                        "ph": "<number>",
+                        "pressure_mpa": "<reference pressure>",
+                    },
+                    "runs": [
+                        {
+                            "run_id": "reference-confirm-1",
+                            "phase": "confirmatory",
+                            "intent_id": "intent-1",
+                            "production_event_id": "prod-reference-confirm-1",
+                            "topology": "systems/reference/topology.pdb",
+                            "trajectory": "systems/reference/confirm-1.dcd",
+                            "metadata": {"sampling_mode": "unbiased"},
+                        }
+                    ],
+                },
+                {
+                    "system_id": "variant-condition",
+                    "source": {
+                        "type": "<pdb, prediction, model, or other>",
+                        "id": "<agent-selected source identifier>",
+                        "metadata": {},
+                    },
+                    "conditions": {
+                        "temperature_k": "<number>",
+                        "ph": "<number>",
+                        "pressure_mpa": "<test pressure>",
+                    },
+                    "runs": [
+                        {
+                            "run_id": "variant-confirm-1",
+                            "phase": "confirmatory",
+                            "intent_id": "intent-1",
+                            "production_event_id": "prod-variant-confirm-1",
+                            "topology": "systems/variant/topology.pdb",
+                            "trajectory": "systems/variant/confirm-1.dcd",
+                            "metadata": {"sampling_mode": "unbiased"},
+                        }
+                    ],
+                },
+            ],
+            "comparisons": [
+                {
+                    "comparison_id": "primary-comparison",
+                    "reference_system_ids": ["reference-condition"],
+                    "variant_system_ids": ["variant-condition"],
+                    "metadata": {"matched_except": ["pressure_mpa"]},
+                }
+            ],
+        }
+    return {
+        "schema_version": "1.0",
+        "task_id": task.task_id,
+        "conditions": {
+            "temperature_kelvin": "<agent-selected or task-required value>",
+            "pressure_bar": "<agent-selected value>",
+            "ph": "<agent-selected or task-required value>",
+            "ionic_strength_molar": "<agent-selected value>",
+            "force_field": "<agent-selected model>",
+            "water_model": "<agent-selected model>",
+        },
+        "systems": [
+            {
+                "role": "reference",
+                "source": {
+                    "type": "<pdb, prediction, model, or other>",
+                    "id": "<agent-selected source identifier>",
+                    "metadata": {},
+                },
+                "replicas": [
+                    {
+                        "replica_id": "reference-1",
+                        "topology": "systems/reference/topology.pdb",
+                        "trajectory": "systems/reference/replica-1.dcd",
+                    }
+                ],
+            },
+            {
+                "role": "variant",
+                "source": {
+                    "type": "<pdb, prediction, model, or other>",
+                    "id": "<agent-selected source identifier>",
+                    "metadata": {},
+                },
+                "replicas": [
+                    {
+                        "replica_id": "variant-1",
+                        "topology": "systems/variant/topology.pdb",
+                        "trajectory_segments": [
+                            "systems/variant/replica-1-part-1.dcd",
+                        ],
+                    }
+                ],
+            },
+        ],
+    }
 
 
 def _observables_blueprint(task: Task) -> list[dict[str, Any]]:

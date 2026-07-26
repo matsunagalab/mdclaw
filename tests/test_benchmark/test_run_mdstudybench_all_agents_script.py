@@ -10,7 +10,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "benchmarks" / "tools" / "run_mdstudybench_all_agents.py"
-TASK_ID = "S01_stability_t4l_l99a"
+TASK_ID = "S01_pressure_hydration_t4l_l99a"
 
 
 def test_run_mdstudybench_all_agents_dry_run_uses_study_defaults(
@@ -42,9 +42,9 @@ def test_run_mdstudybench_all_agents_dry_run_uses_study_defaults(
     )
     assert summary["success"] is True
     assert summary["benchmark"] == "MDStudyBench"
-    assert summary["judge_mode"] == "llm_judge"
+    assert summary["judge_mode"] == "deterministic"
     assert summary["max_walltime_minutes_per_task"] == 0
     command = summary["runs"][0]["command"]
     assert "--dataset-dir benchmarks/mdstudybench" in command
-    assert "--judge-mode llm_judge" in command
+    assert "--judge-mode deterministic" in command
     assert "--max-walltime-minutes-per-task 0" in command

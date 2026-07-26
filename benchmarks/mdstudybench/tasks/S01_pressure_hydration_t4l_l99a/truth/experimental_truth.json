@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "task_id": "S01_pressure_hydration_t4l_l99a",
+  "expected_outcome": "increased_hydration",
+  "estimand": {
+    "system": "folded T4 lysozyme C54T/C97A/L99A",
+    "temperature_k": 300.0,
+    "ph": 7.0,
+    "reference_pressure_mpa": 0.1,
+    "test_pressure_mpa": 200.0,
+    "quantity": "test minus reference equilibrium internal-cavity hydration"
+  },
+  "experimental_anchors": {
+    "reference_mean_cavity_waters": [
+      0.0,
+      0.5
+    ],
+    "test_mean_cavity_waters": [
+      1.5,
+      2.5
+    ],
+    "high_pressure_filled_cluster_size": [
+      3,
+      5
+    ],
+    "maximum_cavity_volume_change_fraction": 0.03,
+    "folded_state_required": true
+  },
+  "sources": [
+    {
+      "citation": "Collins MD, Hummer G, Quillin ML, Matthews BW, Gruner SM. Proc Natl Acad Sci USA. 2005;102:16668-16671.",
+      "doi": "10.1073/pnas.0508224102",
+      "pmid": "16269539"
+    },
+    {
+      "citation": "Nucci NV et al. Proc Natl Acad Sci USA. 2014;111:13846-13851.",
+      "pmid": "25201963"
+    }
+  ],
+  "note": "Experimental anchors calibrate curation and judge review but are not a canonical PDB, cavity definition, hydration metric, or required simulation method. Official truth comparison uses expected_outcome only after evidence grounding."
+}

@@ -1,5 +1,100 @@
 {
   "$defs": {
+    "AnalysisDecisionRule": {
+      "additionalProperties": true,
+      "description": "A preregistered rule for turning one observable into a verdict.",
+      "properties": {
+        "confidence_level": {
+          "default": 0.95,
+          "exclusiveMaximum": 1.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Confidence Level",
+          "type": "number"
+        },
+        "equivalence_margin": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Equivalence Margin"
+        },
+        "kind": {
+          "enum": [
+            "directional_ci",
+            "equivalence_ci",
+            "custom"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": true,
+          "title": "Parameters",
+          "type": "object"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "AnalysisDecisionRule",
+      "type": "object"
+    },
+    "ControlEvidenceContractV2": {
+      "additionalProperties": false,
+      "description": "Task-owned semantics for one required validity control.",
+      "properties": {
+        "decision_rule": {
+          "$ref": "#/$defs/AnalysisDecisionRule"
+        },
+        "fixed_observable_parameters": {
+          "additionalProperties": true,
+          "title": "Fixed Observable Parameters",
+          "type": "object"
+        },
+        "outcome_mapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Outcome Mapping",
+          "type": "object"
+        },
+        "verifier_id": {
+          "minLength": 1,
+          "title": "Verifier Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "verifier_id",
+        "outcome_mapping",
+        "decision_rule"
+      ],
+      "title": "ControlEvidenceContractV2",
+      "type": "object"
+    },
     "DeterministicCheck": {
       "additionalProperties": false,
       "description": "One deterministic, re-runnable check.\n\nEach check_type interprets the optional fields differently. The scoring\nlayer dispatches on ``check_type`` and applies the relevant fields.",
@@ -273,7 +368,8 @@
             "structure_geometry_quality",
             "metrics_caption_consistency",
             "direction_grounding",
-            "observable_recompute_consistency"
+            "observable_recompute_consistency",
+            "v2_entity_condition_comparison"
           ],
           "title": "Check Type",
           "type": "string"
@@ -282,6 +378,18 @@
           "default": 0.6,
           "title": "Clash Overlap Fraction",
           "type": "number"
+        },
+        "comparison_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Comparison Id"
         },
         "contact_cutoff_nm": {
           "default": 0.45,
@@ -454,6 +562,21 @@
           ],
           "default": null,
           "title": "Lipid Residue Names"
+        },
+        "matched_except": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Matched Except"
         },
         "max_angle_outliers": {
           "anyOf": [
@@ -783,6 +906,18 @@
           "default": null,
           "title": "Mutant Topology Manifest Path"
         },
+        "mutation_resseq": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mutation Resseq"
+        },
         "observable_metric": {
           "anyOf": [
             {
@@ -822,6 +957,34 @@
           ],
           "default": null,
           "title": "Observable Selection B"
+        },
+        "reference_changed_residue_element_counts": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Changed Residue Element Counts"
+        },
+        "reference_changed_residue_heavy_atom_count": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Changed Residue Heavy Atom Count"
         },
         "reference_pdb": {
           "anyOf": [
@@ -1386,6 +1549,34 @@
           "default": null,
           "title": "Trajectory Path"
         },
+        "variant_changed_residue_element_counts": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Variant Changed Residue Element Counts"
+        },
+        "variant_changed_residue_heavy_atom_count": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Variant Changed Residue Heavy Atom Count"
+        },
         "water_residue_names": {
           "anyOf": [
             {
@@ -1769,6 +1960,145 @@
       "title": "IntegrityCheck",
       "type": "object"
     },
+    "PrimaryEvidenceContractV2": {
+      "additionalProperties": false,
+      "description": "Task-owned rule for converting one recomputed estimand into an outcome.\n\nThe agent still chooses structures and how to allocate sampling above any\npublished adequacy floor. The benchmark owns the observable semantics,\ndirection mapping, and statistical boundary so a solver cannot obtain a\npreferred answer by redefining the measurement after seeing data.",
+      "properties": {
+        "decision_rule": {
+          "$ref": "#/$defs/AnalysisDecisionRule"
+        },
+        "fixed_observable_parameters": {
+          "additionalProperties": true,
+          "title": "Fixed Observable Parameters",
+          "type": "object"
+        },
+        "outcome_mapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Outcome Mapping",
+          "type": "object"
+        },
+        "verifier_id": {
+          "minLength": 1,
+          "title": "Verifier Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "verifier_id",
+        "outcome_mapping",
+        "decision_rule"
+      ],
+      "title": "PrimaryEvidenceContractV2",
+      "type": "object"
+    },
+    "ScientificTarget": {
+      "additionalProperties": false,
+      "description": "Public scientific meaning for a grounded-correct-v2 task.\n\nThis specifies the estimand, conditions, and minimal common evidence\nsemantics, not a canonical structure or full simulation protocol.",
+      "properties": {
+        "allowed_outcomes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Outcomes",
+          "type": "array"
+        },
+        "claim_type": {
+          "minLength": 1,
+          "title": "Claim Type",
+          "type": "string"
+        },
+        "control_evidence_contracts": {
+          "items": {
+            "$ref": "#/$defs/ControlEvidenceContractV2"
+          },
+          "title": "Control Evidence Contracts",
+          "type": "array"
+        },
+        "entity": {
+          "additionalProperties": true,
+          "title": "Entity",
+          "type": "object"
+        },
+        "estimand": {
+          "minLength": 1,
+          "title": "Estimand",
+          "type": "string"
+        },
+        "execution_adapter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Execution Adapter"
+        },
+        "neutral_outcome": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Neutral Outcome"
+        },
+        "neutral_requires_equivalence": {
+          "default": true,
+          "title": "Neutral Requires Equivalence",
+          "type": "boolean"
+        },
+        "primary_evidence_contract": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PrimaryEvidenceContractV2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "question": {
+          "minLength": 1,
+          "title": "Question",
+          "type": "string"
+        },
+        "required_conditions": {
+          "additionalProperties": true,
+          "title": "Required Conditions",
+          "type": "object"
+        },
+        "required_control_verifiers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Control Verifiers",
+          "type": "array"
+        },
+        "unresolved_outcome": {
+          "minLength": 1,
+          "title": "Unresolved Outcome",
+          "type": "string"
+        }
+      },
+      "required": [
+        "question",
+        "estimand",
+        "claim_type",
+        "allowed_outcomes",
+        "unresolved_outcome"
+      ],
+      "title": "ScientificTarget",
+      "type": "object"
+    },
     "TaskReference": {
       "properties": {
         "doi": {
@@ -1899,6 +2229,22 @@
       "default": null,
       "title": "Environment Type"
     },
+    "evaluation_protocol": {
+      "anyOf": [
+        {
+          "enum": [
+            "grounded_correct_v1",
+            "grounded_correct_v2"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Evaluation Protocol"
+    },
     "evaluation_target": {
       "anyOf": [
         {
@@ -1984,6 +2330,17 @@
       "default": "1.0",
       "title": "Schema Version",
       "type": "string"
+    },
+    "scientific_target": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ScientificTarget"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "scoring": {
       "$ref": "#/$defs/TaskScoring"

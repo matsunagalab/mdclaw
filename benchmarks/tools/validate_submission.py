@@ -132,7 +132,7 @@ def validate_submission(
             warnings=[],
             checks=[],
         )
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         return _result(
             success=False,
             task_id=task_id,
@@ -287,7 +287,7 @@ def _validate_manifest_contract(
             "skipped": False,
             "errors": ["missing required output manifest.json"],
         }
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         return {
             "name": "completed_manifest_contract",
             "passed": False,
@@ -317,6 +317,7 @@ def _validate_manifest_contract(
     completed_status = rules.get("completed_status", "completed")
     required_fields = rules.get("required_manifest_output_fields") or []
     list_fields = rules.get("required_manifest_list_fields") or {}
+    v2_result: dict[str, Any] | None = None
     if status == completed_status:
         for json_path in required_fields:
             if not isinstance(json_path, str):
@@ -362,13 +363,461 @@ def _validate_manifest_contract(
                         f"needs at least {min_count} item(s)"
                     )
 
-    return {
+        paired_rules = rules.get("paired_study_index")
+        if isinstance(paired_rules, dict):
+            errors.extend(
+                _paired_study_index_errors(
+                    submission_dir=submission_dir,
+                    manifest=manifest,
+                    rules=paired_rules,
+                    task_id=task_id,
+                )
+            )
+        if contract.get("evaluation_protocol") == "grounded_correct_v1":
+            errors.extend(
+                _grounded_evidence_report_errors(
+                    submission_dir=submission_dir,
+                    manifest=manifest,
+                    task_id=task_id,
+                )
+            )
+        elif contract.get("evaluation_protocol") == "grounded_correct_v2":
+            v2_result = _grounded_v2_public_checks(
+                submission_dir=submission_dir,
+                manifest=manifest,
+                contract=contract,
+                task_id=task_id,
+            )
+            errors.extend(v2_result.get("errors") or [])
+        else:
+            v2_result = None
+
+    result = {
         "name": "completed_manifest_contract",
         "passed": not errors,
         "skipped": False,
         "status": status,
         "errors": errors,
     }
+    if status == completed_status and v2_result is not None:
+        result["v2_truth_blind_checks"] = v2_result
+    return result
+
+
+def _grounded_v2_public_checks(
+    *,
+    submission_dir: Path,
+    manifest: dict[str, Any],
+    contract: dict[str, Any],
+    task_id: str,
+) -> dict[str, Any]:
+    """Run the same truth-blind v2 sources shipped to the private scorer."""
+
+    errors: list[str] = []
+    payloads: dict[str, dict[str, Any]] = {}
+    relative_paths: dict[str, str] = {}
+    for field in ("analysis_intent", "study_index", "evidence_report"):
+        relative, found = _json_path_value(manifest, f"outputs.{field}")
+        if not found or not isinstance(relative, str) or not relative.strip():
+            errors.append(f"missing required output field: outputs.{field}")
+            continue
+        reason = _invalid_relative_path_reason(relative)
+        if reason:
+            errors.append(f"invalid outputs.{field} path {relative!r}: {reason}")
+            continue
+        try:
+            payload = json.loads((submission_dir / relative).read_text())
+        except FileNotFoundError:
+            errors.append(f"outputs.{field} file not found: {relative}")
+            continue
+        except (json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"outputs.{field} is not valid JSON: {exc}")
+            continue
+        if not isinstance(payload, dict):
+            errors.append(f"outputs.{field} must contain a JSON object")
+            continue
+        payloads[field] = payload
+        relative_paths[field] = relative
+    if len(payloads) != 3:
+        return {
+            "passed": False,
+            "errors": errors,
+            "harness_checks_pending": True,
+        }
+
+    try:
+        try:
+            from preregistration_v2 import verify_preregistration_v2
+            from study_evidence_v2 import build_verified_evidence_packet_v2
+            from study_identity_v2 import verify_v2_study_identity
+        except ImportError:
+            from mdclaw.benchmark.preregistration_v2 import (
+                verify_preregistration_v2,
+            )
+            from mdclaw.benchmark.study_evidence_v2 import (
+                build_verified_evidence_packet_v2,
+            )
+            from mdclaw.benchmark.study_identity_v2 import (
+                verify_v2_study_identity,
+            )
+    except ImportError as exc:
+        return {
+            "passed": False,
+            "errors": [f"v2 public verifier module unavailable: {exc}"],
+            "harness_checks_pending": True,
+        }
+
+    scientific_target = contract.get("scientific_target")
+    if not isinstance(scientific_target, dict):
+        errors.append("public contract requires scientific_target for v2")
+        scientific_target = {}
+    identity = verify_v2_study_identity(
+        submission_dir=submission_dir,
+        scientific_target=scientific_target,
+        study_index=payloads["study_index"],
+    )
+    preregistration = verify_preregistration_v2(
+        submission_dir=submission_dir,
+        scientific_target=scientific_target,
+        study_index=payloads["study_index"],
+        evidence_report=payloads["evidence_report"],
+        analysis_intent=payloads["analysis_intent"],
+        analysis_intent_file=relative_paths["analysis_intent"],
+        harness_record=None,
+    )
+    evidence_packet = build_verified_evidence_packet_v2(
+        submission_dir,
+        payloads["study_index"],
+        payloads["evidence_report"],
+        analysis_intent=payloads["analysis_intent"],
+        preregistration_certificate=preregistration,
+        registered_plan_sha256=preregistration.get("analysis_intent_sha256"),
+        scientific_target=scientific_target,
+    )
+    if not identity.get("entity_condition_valid"):
+        errors.extend(
+            f"v2 entity/condition: {message}"
+            for message in identity.get("errors", [])
+        )
+    if not preregistration.get("authored_contract_valid"):
+        errors.extend(
+            f"v2 preregistration [{item.get('code', 'invalid')}]: "
+            f"{item.get('message', '')}"
+            for item in preregistration.get("authored_errors", [])
+            if isinstance(item, dict)
+        )
+    packet_summary = evidence_packet.get("summary")
+    if not isinstance(packet_summary, dict) or not packet_summary.get(
+        "artifact_valid"
+    ):
+        errors.append(
+            "v2 raw evidence artifacts did not pass the shared verifier"
+        )
+    verdict = payloads["evidence_report"].get("md_verdict")
+    if isinstance(verdict, dict) and verdict.get("status") == "resolved":
+        cited = {
+            value
+            for value in verdict.get("cited_evidence_ids") or []
+            if isinstance(value, str) and value
+        }
+        packet_items = {
+            str(item.get("id")): item
+            for item in evidence_packet.get("evidence") or []
+            if isinstance(item, dict) and item.get("id") is not None
+        }
+        for evidence_id in sorted(cited):
+            item = packet_items.get(evidence_id)
+            public_reason_codes = {
+                str(code)
+                for code in (item or {}).get("reason_codes") or []
+            } - {
+                "preregistration_certificate_missing",
+                "preregistration_not_attested",
+                "evidence_not_attested",
+                "runner_runtime_missing",
+                "reference_confirmatory_time_insufficient",
+                "variant_confirmatory_time_insufficient",
+            }
+            if (
+                item is None
+                or item.get("raw_recomputed") is None
+                or item.get("statistical_status") != "resolved"
+                or public_reason_codes
+            ):
+                errors.append(
+                    f"v2 cited evidence {evidence_id!r} is not publicly "
+                    "support-eligible; reason_codes="
+                    f"{sorted(public_reason_codes)}"
+                )
+    return {
+        "passed": not errors,
+        "errors": errors,
+        "harness_checks_pending": True,
+        "entity_condition": identity,
+        "preregistration": preregistration,
+        "verified_evidence": evidence_packet,
+    }
+
+
+def _paired_study_index_errors(
+    *,
+    submission_dir: Path,
+    manifest: dict[str, Any],
+    rules: dict[str, Any],
+    task_id: str,
+) -> list[str]:
+    """Validate the public role-based paired-study index without private data."""
+    manifest_path = str(rules.get("manifest_path") or "outputs.study_index")
+    relative, found = _json_path_value(manifest, manifest_path)
+    if not found or not isinstance(relative, str) or not relative.strip():
+        return [f"missing required output field in manifest: {manifest_path}"]
+    reason = _invalid_relative_path_reason(relative)
+    if reason:
+        return [f"invalid paired study index path {relative!r}: {reason}"]
+
+    index_path = submission_dir / relative
+    try:
+        payload = json.loads(index_path.read_text())
+    except FileNotFoundError:
+        return [f"paired study index file not found: {relative}"]
+    except (json.JSONDecodeError, ValueError) as exc:
+        return [f"paired study index is not valid JSON: {exc}"]
+    if not isinstance(payload, dict):
+        return ["paired study index must contain a JSON object"]
+
+    errors: list[str] = []
+    if payload.get("task_id") != task_id:
+        errors.append(
+            f"study_index.task_id={payload.get('task_id')!r} differs from {task_id!r}"
+        )
+    systems = payload.get("systems")
+    if not isinstance(systems, list):
+        return errors + ["study_index.systems must be a list"]
+
+    required_roles = [
+        str(role) for role in (rules.get("required_roles") or ["reference", "variant"])
+    ]
+    for role in required_roles:
+        count = sum(
+            1 for system in systems
+            if isinstance(system, dict) and system.get("role") == role
+        )
+        if count != 1:
+            errors.append(
+                f"study_index requires exactly one system with role={role!r}; found {count}"
+            )
+
+    seen_replica_ids: set[str] = set()
+    minimum = int(rules.get("minimum_replicas_per_system") or 1)
+    for system_index, system in enumerate(systems):
+        prefix = f"study_index.systems[{system_index}]"
+        if not isinstance(system, dict):
+            errors.append(f"{prefix} must be a JSON object")
+            continue
+        role = system.get("role")
+        if role not in required_roles:
+            errors.append(
+                f"{prefix}.role must be one of {required_roles}; found {role!r}"
+            )
+        source = system.get("source")
+        if not isinstance(source, dict) or not isinstance(source.get("type"), str):
+            errors.append(f"{prefix}.source.type must be a non-empty string")
+        elif not source["type"].strip():
+            errors.append(f"{prefix}.source.type must be a non-empty string")
+        replicas = system.get("replicas")
+        if not isinstance(replicas, list) or len(replicas) < minimum:
+            errors.append(f"{prefix}.replicas needs at least {minimum} item(s)")
+            continue
+        for replica_index, replica in enumerate(replicas):
+            rprefix = f"{prefix}.replicas[{replica_index}]"
+            if not isinstance(replica, dict):
+                errors.append(f"{rprefix} must be a JSON object")
+                continue
+            replica_id = replica.get("replica_id")
+            if not isinstance(replica_id, str) or not replica_id.strip():
+                errors.append(f"{rprefix}.replica_id must be a non-empty string")
+            elif replica_id in seen_replica_ids:
+                errors.append(f"{rprefix}.replica_id is duplicated: {replica_id!r}")
+            else:
+                seen_replica_ids.add(replica_id)
+
+            trajectory = replica.get("trajectory")
+            segments = replica.get("trajectory_segments")
+            has_trajectory = isinstance(trajectory, str) and bool(trajectory.strip())
+            has_segments = isinstance(segments, list) and bool(segments)
+            if has_trajectory == has_segments:
+                errors.append(
+                    f"{rprefix} requires exactly one of trajectory or trajectory_segments"
+                )
+            paths: list[Any] = [replica.get("topology")]
+            if has_trajectory:
+                paths.append(trajectory)
+            if has_segments:
+                paths.extend(segments)
+            for item in paths:
+                if not isinstance(item, str) or not item.strip():
+                    errors.append(f"{rprefix} contains an invalid artifact path: {item!r}")
+                    continue
+                issue = _invalid_relative_path_reason(item)
+                if issue:
+                    errors.append(f"{rprefix} has unsafe artifact path {item!r}: {issue}")
+                elif not (submission_dir / item).is_file():
+                    errors.append(f"{rprefix} artifact not found: {item}")
+    return errors
+
+
+def _grounded_evidence_report_errors(
+    *,
+    submission_dir: Path,
+    manifest: dict[str, Any],
+    task_id: str,
+) -> list[str]:
+    """Validate the public, truth-free grounded evidence-report shape."""
+    relative, found = _json_path_value(manifest, "outputs.evidence_report")
+    if not found or not isinstance(relative, str) or not relative.strip():
+        return ["missing required output field in manifest: outputs.evidence_report"]
+    reason = _invalid_relative_path_reason(relative)
+    if reason:
+        return [f"invalid evidence report path {relative!r}: {reason}"]
+    try:
+        report = json.loads((submission_dir / relative).read_text())
+    except FileNotFoundError:
+        return [f"evidence report file not found: {relative}"]
+    except (json.JSONDecodeError, ValueError) as exc:
+        return [f"evidence report is not valid JSON: {exc}"]
+    if not isinstance(report, dict):
+        return ["evidence report must contain a JSON object"]
+
+    errors: list[str] = []
+    if report.get("task_id") != task_id:
+        errors.append(
+            f"evidence_report.task_id={report.get('task_id')!r} differs from "
+            f"{task_id!r}"
+        )
+    conclusion = report.get("conclusion")
+    if not isinstance(conclusion, dict):
+        errors.append("evidence_report.conclusion must be a JSON object")
+    else:
+        direction = conclusion.get("direction")
+        if not isinstance(direction, str) or not direction.strip():
+            errors.append("evidence_report.conclusion.direction must be non-empty")
+        if conclusion.get("evidence_status") not in {
+            "supported",
+            "inconclusive",
+            "contradicted",
+        }:
+            errors.append(
+                "evidence_report.conclusion.evidence_status must be supported, "
+                "inconclusive, or contradicted"
+            )
+        confidence = conclusion.get("confidence")
+        if not _finite_number(confidence) or not 0.0 <= float(confidence) <= 1.0:
+            errors.append(
+                "evidence_report.conclusion.confidence must be finite in [0,1]"
+            )
+
+    evidence = report.get("evidence")
+    supported_metric_count = 0
+    seen_ids: set[str] = set()
+    if not isinstance(evidence, list) or not evidence:
+        errors.append("evidence_report.evidence must be a non-empty list")
+    else:
+        for index, item in enumerate(evidence):
+            prefix = f"evidence_report.evidence[{index}]"
+            if not isinstance(item, dict):
+                errors.append(f"{prefix} must be a JSON object")
+                continue
+            identifier = item.get("id")
+            if identifier is not None:
+                if not isinstance(identifier, str) or not identifier.strip():
+                    errors.append(f"{prefix}.id must be a non-empty string")
+                elif identifier in seen_ids:
+                    errors.append(f"{prefix}.id is duplicated: {identifier!r}")
+                else:
+                    seen_ids.add(identifier)
+            metric = item.get("metric")
+            if not isinstance(metric, str) or not metric.strip():
+                errors.append(f"{prefix}.metric must be a non-empty string")
+            elif metric in {"ca_rmsf", "contact_count"}:
+                supported_metric_count += 1
+            selection = item.get("selection")
+            if not isinstance(selection, str) or not selection.strip():
+                errors.append(f"{prefix}.selection must be a non-empty string")
+            for field in ("reference", "variant"):
+                if not _finite_number(item.get(field)):
+                    errors.append(f"{prefix}.{field} must be a finite number")
+            uncertainty = item.get("uncertainty")
+            if isinstance(uncertainty, dict):
+                if not uncertainty or not all(
+                    _finite_number(value) and float(value) >= 0
+                    for value in uncertainty.values()
+                ):
+                    errors.append(
+                        f"{prefix}.uncertainty values must be finite and nonnegative"
+                    )
+            elif not _finite_number(uncertainty) or float(uncertainty) < 0:
+                errors.append(
+                    f"{prefix}.uncertainty must be finite and nonnegative"
+                )
+            unit = str(item.get("unit") or "").strip().lower()
+            if metric == "ca_rmsf" and unit not in {
+                "",
+                "nm",
+                "nanometer",
+                "nanometers",
+                "nanometre",
+                "nanometres",
+                "a",
+                "å",
+                "angstrom",
+                "angstroms",
+            }:
+                errors.append(f"{prefix}.unit is not supported for ca_rmsf")
+            if metric == "contact_count" and unit not in {
+                "",
+                "count",
+                "counts",
+                "dimensionless",
+                "1",
+            }:
+                errors.append(f"{prefix}.unit is not supported for contact_count")
+            if metric == "contact_count":
+                selection_b = item.get("selection_b")
+                if not isinstance(selection_b, str) or not selection_b.strip():
+                    errors.append(
+                        f"{prefix}.selection_b is required for contact_count"
+                    )
+                cutoff = item.get("contact_cutoff_nm", 0.45)
+                if not _finite_number(cutoff) or float(cutoff) <= 0:
+                    errors.append(
+                        f"{prefix}.contact_cutoff_nm must be positive and finite"
+                    )
+        if supported_metric_count < 1:
+            errors.append(
+                "evidence_report requires at least one scorer-recomputable "
+                "ca_rmsf or contact_count item"
+            )
+
+    reasoning = report.get("reasoning")
+    if not isinstance(reasoning, str) or not reasoning.strip():
+        errors.append("evidence_report.reasoning must be non-empty")
+    limitations = report.get("limitations")
+    if not isinstance(limitations, list) or not limitations or not all(
+        isinstance(item, str) and item.strip() for item in limitations
+    ):
+        errors.append(
+            "evidence_report.limitations must be a non-empty list of strings"
+        )
+    return errors
+
+
+def _finite_number(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, ValueError):
+        return False
 
 
 def _json_path_value(payload: Any, json_path: str) -> tuple[Any, bool]:

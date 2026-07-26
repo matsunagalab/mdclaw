@@ -1,34 +1,26 @@
 # MDStudyBench Task Specs
 
-These files are the compact maintenance source for MDStudyBench task contracts.
-The scorer-facing files remain `tasks/<task_id>/task.json`; benchmark agents
-and harnesses should continue to use those canonical task files.
+The active generator builds only the S01 v2 pilot. S02-S04 remain frozen
+`grounded_correct_v1` fixtures in `tasks/` and are not regenerated.
 
-Shared study requirements live in `defaults.json`:
+`defaults.json` contains the shared submission files, held-out truth check, and
+reject policy. The S01 task spec owns the scientific target and the deterministic
+primary-evidence contract:
 
-- common required outputs
-- artifact-integrity checks (evidence byte floor, template markers, evidence
-  completeness, trajectory artifact floor and signatures, citation pool, and
-  harness-backed provenance execution evidence)
-- the `comparative_md_evidence` deterministic check bundle (real WT/mutant
-  trajectory load gates plus self-reported metadata, all weight-0 gates)
-- common score axes, the ground-truth direction check, and the reject policy
+- native verifier;
+- direction-to-outcome mapping;
+- confidence and equivalence rule;
+- fixed observable semantics and minimum sampling adequacy;
+- task-owned validity-control semantics; and
+- certified execution adapter.
 
-Each `tasks/<task_id>.json` contains only the task-specific metadata,
-ground-truth direction, and deterministic checks. The
-`{"$bundle": "comparative_md_evidence"}` placeholder is expanded into the shared
-comparative-MD gates during generation. Per-task checks such as
-`paired_mutation_topology` (which pins the wild-type -> mutant substitution) stay
-in the task spec because they vary per system.
+It does not own a structure, PDB ID, preparation workflow, replica layout, or
+sampling strategy above the published minimum adequacy floor. Those remain
+agent choices.
 
-After editing specs, regenerate canonical task files from the repository root:
+After changing the pilot spec, regenerate and check the canonical task:
 
 ```bash
-conda run -n mdclaw python benchmarks/mdstudybench/scripts/generate_tasks.py
-```
-
-Check for drift without rewriting files:
-
-```bash
-conda run -n mdclaw python benchmarks/mdstudybench/scripts/generate_tasks.py --check
+PYTHONPATH="$PWD" python benchmarks/mdstudybench/scripts/generate_tasks.py
+PYTHONPATH="$PWD" python benchmarks/mdstudybench/scripts/generate_tasks.py --check
 ```

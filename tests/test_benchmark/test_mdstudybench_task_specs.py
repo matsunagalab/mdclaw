@@ -31,21 +31,147 @@ def test_mdstudybench_task_specs_regenerate_committed_task_json():
         Task.model_validate(generated)
 
 
-def test_mdstudybench_comparative_tasks_use_shared_md_evidence_bundle():
+def test_mdstudybench_v04_specs_use_prospective_grounded_contract():
     dataset = _read_json(DATASET_DIR / "dataset.json")
+    defaults = _read_json(SPEC_DIR / "defaults.json")
+
+    assert dataset["benchmark_version"] == "MDStudyBench-v0.4"
+    assert dataset["task_ids"] == ["S01_pressure_hydration_t4l_l99a"]
+    assert dataset["tiers"]["pilot"]["task_ids"] == dataset["task_ids"]
+    assert dataset["tiers"]["pilot"]["primary_leaderboard"] is False
+    assert dataset["tiers"]["pilot"]["release_status"] == "experimental"
+    assert dataset["tiers"]["extended"]["primary_leaderboard"] is False
+    assert dataset["tiers"]["extended"]["release_status"] == "experimental"
+    assert defaults["task_defaults"]["evaluation_protocol"] == (
+        "grounded_correct_v2"
+    )
+    assert defaults["required_outputs"] == [
+        "manifest.json",
+        "analysis_intent.json",
+        "study_index.json",
+        "evidence_report.json",
+    ]
+    assert "deterministic_check_bundles" not in defaults
+
+    integrity_types = {
+        check["check_type"]
+        for check in defaults["scoring_defaults"]["integrity_checks"]
+    }
+    assert "citation_pool" not in integrity_types
+    assert "manifest_artifact_floor" not in integrity_types
+    assert "trajectory_file_signature" not in integrity_types
 
     for task_id in dataset["task_ids"]:
         spec = _read_json(SPEC_DIR / "tasks" / f"{task_id}.json")
         checks = spec["scoring"]["deterministic_checks"]
-        has_bundle = {"$bundle": "comparative_md_evidence"} in checks
-
-        comparative = {
-            "S01_stability_t4l_l99a",
-            "S02_ppi_hotspot_barnase_d39a",
-            "S03_stability_nuclease_h124l",
-            "S04_affinity_t4l_l99a_alkylbenzene",
+        checks_by_type = {
+            check["check_type"]: check
+            for check in checks
         }
-        if task_id in comparative:
-            assert has_bundle, task_id
-        else:
-            assert not has_bundle, task_id
+
+        assert "public_source" not in spec, task_id
+        assert not any("$bundle" in check for check in checks), task_id
+        assert checks_by_type == {}, task_id
+
+        generated = build_task_payload(defaults, spec)
+        assert generated["evaluation_protocol"] == "grounded_correct_v2"
+        target = generated["scientific_target"]
+        assert target["claim_type"] == "dynamic_equilibrium"
+        assert target["neutral_requires_equivalence"] is True
+        assert target["neutral_outcome"] == "no_material_change"
+        assert target["required_control_verifiers"] == [
+            "folded_state_retention@1"
+        ]
+        assert target["execution_adapter"] == "mdclaw_openmm@1"
+        assert target["primary_evidence_contract"] == {
+            "verifier_id": "region_water_occupancy@1",
+            "outcome_mapping": {
+                "increase": "increased_hydration",
+                "decrease": "decreased_hydration",
+                "equivalent": "no_material_change",
+                "unresolved": "unresolved",
+            },
+            "decision_rule": {
+                "kind": "equivalence_ci",
+                "confidence_level": 0.95,
+                "equivalence_margin": 0.1,
+                "unit": "water_count",
+            },
+            "fixed_observable_parameters": {
+                "cavity_anchor_reference_position": 99,
+                "cavity_reference_positions": [99],
+                "cavity_atom_names": ["CB"],
+                "radius_nm": 0.45,
+                "initialization_convergence_tolerance": 0.5,
+                "discard_initial_fraction": 0.2,
+                "n_blocks": 5,
+                "periodic": True,
+                "minimum_confirmatory_time_ns_per_condition": 10.0,
+                "minimum_effective_sample_size_per_condition": 5.0,
+                "minimum_round_trips_per_condition": 2,
+            },
+        }
+        assert target["control_evidence_contracts"] == [
+            {
+                "verifier_id": "folded_state_retention@1",
+                "outcome_mapping": {
+                    "pass": "retained",
+                    "fail": "unresolved",
+                },
+                "decision_rule": {
+                    "kind": "custom",
+                    "confidence_level": 0.95,
+                    "parameters": {
+                        "plugin": "folded_state_retention@1",
+                    },
+                },
+                "fixed_observable_parameters": {
+                    "selection": "protein and name CA",
+                    "alignment_selection": "protein and name CA",
+                    "measurement_selection": "protein and name CA",
+                    "maximum_rmsd_nm": 0.3,
+                    "maximum_initial_rg_nm": 2.5,
+                    "minimum_retained_fraction": 0.9,
+                    "discard_initial_fraction": 0.2,
+                    "n_blocks": 5,
+                },
+            }
+        ]
+        assert "llm_judge_rubrics" not in generated["scoring"]
+        assert target["entity"]["expected_protein_copy_count"] == 1
+        assert generated["scoring"]["ground_truth_checks"][0][
+            "submission_path"
+        ] == "md_verdict.outcome"
+        required_evidence = next(
+            check
+            for check in generated["scoring"]["integrity_checks"]
+            if check["check_type"] == "evidence_completeness"
+        )["required_keys"]
+        assert "evidence" in required_evidence
+        assert "reasoning" in required_evidence
+        assert "md_verdict.cited_evidence_ids" in required_evidence
+
+
+def test_mdstudybench_public_prompts_do_not_pin_plan_or_source_anchor():
+    task_id = "S01_pressure_hydration_t4l_l99a"
+    prompt = (DATASET_DIR / "tasks" / task_id / "prompt.md").read_text()
+    normalized = " ".join(prompt.split())
+
+    assert "No PDB ID, chain ID, source structure, or sampling plan is preferred" in normalized
+    assert "Use exactly one primary estimand analysis" in normalized
+    assert "analysis_intent.json" in prompt
+    assert "study_index.json" in prompt
+    assert "prior_expectation" in prompt
+    assert "held-out experimental truth" in normalized
+    assert "Do not run confirmatory production yourself" in normalized
+    assert "cavity_anchor_reference_position" in prompt
+    assert "mdclaw_openmm@1" in prompt
+    for private_anchor in (
+        "1L90",
+        "2B6X",
+        "pnas.0508224102",
+        "25201963",
+        "reference_mean_cavity_waters",
+        "test_mean_cavity_waters",
+    ):
+        assert private_anchor not in prompt, (task_id, private_anchor)

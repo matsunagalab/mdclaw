@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "task_id": "S01_pressure_hydration_t4l_l99a",
+  "purpose": "Private curation anchors and feasibility references; not an allowlist for agent structural sources or methods.",
+  "entity": {
+    "uniprot_id": "P00720",
+    "construct_mutations": [
+      "C54T",
+      "C97A",
+      "L99A"
+    ]
+  },
+  "structural_anchors": [
+    {
+      "pdb_id": "1L90",
+      "condition": "ambient-pressure L99A source used by the reference MD study"
+    },
+    {
+      "pdb_id": "2B6X",
+      "condition": "200 MPa crystallographic member of the pressure series"
+    }
+  ],
+  "feasibility_anchor": {
+    "pressure_mpa": [
+      0.1,
+      100.0,
+      200.0
+    ],
+    "initial_cavity_occupancies": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "reference_production_ns_range": [
+      1.0,
+      1.7
+    ],
+    "note": "These values describe the curator paper and do not constrain a submitted plan."
+  }
+}

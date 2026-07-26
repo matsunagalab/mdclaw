@@ -24,7 +24,7 @@ DATASET_DIR = REPO_ROOT / "benchmarks" / "mdprepbench"
 STUDY_DATASET_DIR = REPO_ROOT / "benchmarks" / "mdstudybench"
 TASK_ID = "P11_prep_site_protonation_t4l_glu11"
 MEMBRANE_TASK_ID = "P18_prep_membrane_mixed_lipids"
-STUDY_TASK_ID = "S03_stability_nuclease_h124l"
+STUDY_TASK_ID = "S01_pressure_hydration_t4l_l99a"
 
 
 def test_prep_score_api_has_no_normalization_bypass():
@@ -741,16 +741,60 @@ progress_file.write_text(json.dumps({
         "prod_001": {"node_type": "prod", "status": "completed"},
     }
 }))
+_fake_study_submissions.GENERATORS[args.task_id](
+    Path(args.submission_dir), run_id=args.run_id, mode="honest"
+)
+
+submission_dir = Path(args.submission_dir)
 stage_wrapper = os.environ["MDCLAW_BENCHMARK_STAGE_WRAPPER"]
-for stage in ("source", "prep", "prod", "analysis", "report"):
+for stage in ("source", "prep"):
     subprocess.run(
         [sys.executable, stage_wrapper, "--stage", stage, "--",
          sys.executable, "-c", "pass"],
         check=True,
     )
-_fake_study_submissions.GENERATORS[args.task_id](
-    Path(args.submission_dir), run_id=args.run_id, mode="honest"
+
+intent_path = submission_dir / "analysis_intent.json"
+intent = json.loads(intent_path.read_text())
+subprocess.run(
+    [sys.executable, stage_wrapper, "--stage", "register_analysis_intent",
+     "--intent-file", str(intent_path)],
+    check=True,
 )
+study_index = json.loads((submission_dir / "study_index.json").read_text())
+for system in study_index["systems"]:
+    for run in system["runs"]:
+        command = [
+            sys.executable, stage_wrapper, "--stage", "prod",
+            "--phase", run["phase"],
+            "--event-id", run["production_event_id"],
+        ]
+        if run["phase"] == "confirmatory":
+            command.extend(["--intent-id", intent["intent_id"]])
+        command.extend(
+            ["--input-artifact", str(submission_dir / run["topology"])]
+        )
+        trajectories = run.get("trajectory_segments") or [run["trajectory"]]
+        staged_pairs = []
+        for trajectory in trajectories:
+            artifact = submission_dir / trajectory
+            staged = artifact.with_name(artifact.name + ".staged")
+            artifact.replace(staged)
+            command.extend(["--artifact", str(artifact)])
+            staged_pairs.extend([str(staged), str(artifact)])
+        command.extend([
+            "--", sys.executable, "-c",
+            "import shutil,sys; [shutil.copyfile(sys.argv[i], sys.argv[i+1]) "
+            "for i in range(1, len(sys.argv), 2)]",
+            *staged_pairs,
+        ])
+        subprocess.run(command, check=True)
+for stage in ("analysis", "report"):
+    subprocess.run(
+        [sys.executable, stage_wrapper, "--stage", stage, "--",
+         sys.executable, "-c", "pass"],
+        check=True,
+    )
 """.lstrip()
     )
     output_dir = tmp_path / "benchmark_runs"
@@ -773,23 +817,33 @@ _fake_study_submissions.GENERATORS[args.task_id](
         env={"PYTHONPATH": str(REPO_ROOT)},
     )
 
-    assert result["success"], result
+    # This test exercises process supervision. Its synthetic DCDs are copied
+    # through the generic stage wrapper, so they deliberately lack the
+    # runner-owned execution ledger required for official v2 credit.
+    assert result["success"] is False
+    assert result["tasks"][0]["exit_code"] == 0
+    assert result["score"]["failed_task_count"] == 1
     task_run_dir = (
         output_dir
         / "study_supervised_continuation"
         / "tasks"
         / STUDY_TASK_ID
     )
+    _assert_v2_generic_wrapper_rejected(task_run_dir)
     agent_run = json.loads((task_run_dir / "agent_run.json").read_text())
     assert [attempt["phase"] for attempt in agent_run["agent_attempts"]] == [
         "solve",
+        "study_continuation",
         "study_continuation",
     ]
     first_attempt = agent_run["agent_attempts"][0]
     assert first_attempt["background_processes_detected"]
     assert first_attempt["background_wait_seconds"] > 0
-    assert agent_run["agent_finalization_retry_count"] == 1
-    assert agent_run["finalization"]["harness_status"] == "ok"
+    assert agent_run["agent_finalization_retry_count"] == 2
+    assert agent_run["finalization"]["harness_status"] == "failed"
+    assert agent_run["finalization"]["failure_class"] == (
+        "confirmatory_analysis_pending"
+    )
 
 
 def test_run_benchmark_agent_classifies_running_mdclaw_work_as_incomplete(
@@ -813,8 +867,8 @@ job_dir = Path(os.environ["MDCLAW_BENCHMARK_WORK_DIR"]) / "study" / "jobs" / "ma
 job_dir.mkdir(parents=True, exist_ok=True)
 (job_dir / "progress.json").write_text(json.dumps({
     "nodes": {
-        "source_001": {"node_type": "source", "status": "completed"},
-        "topo_001": {"node_type": "topo", "status": "running"},
+        "source_001": {"type": "source", "status": "completed"},
+        "topo_001": {"type": "topo", "status": "running"},
     }
 }))
 Path(args.submission_dir).mkdir(parents=True, exist_ok=True)
@@ -845,6 +899,7 @@ Path(args.submission_dir).mkdir(parents=True, exist_ok=True)
     assert finalization["failure_class"] == "incomplete_running_work"
     assert finalization["contract_status"] == "failed"
     assert finalization["mdclaw_progress"]["active_nodes"][0]["node_id"] == "topo_001"
+    assert finalization["mdclaw_progress"]["active_nodes"][0]["node_type"] == "topo"
     summary = result["score"]["summary"]["summary"]
     assert summary["task_scores"][0]["harness_status"] == "failed"
     assert summary["task_scores"][0]["failure_class"] == "incomplete_running_work"
@@ -1384,6 +1439,19 @@ def test_summary_uses_custom_dataset_dir_for_missing_scores(tmp_path: Path):
             }
         )
     )
+    (run_dir / "tasks" / task_id / "harness_execution.json").write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "stage": "agent_run",
+                        "exit_code": 124,
+                        "walltime_seconds": 120.0,
+                    }
+                ]
+            }
+        )
+    )
 
     result = benchmark_run.summarize_benchmark_run(str(run_dir))
 
@@ -1392,6 +1460,7 @@ def test_summary_uses_custom_dataset_dir_for_missing_scores(tmp_path: Path):
     assert summary["n_tasks"] == 1
     assert summary["n_failed_tasks"] == 1
     assert summary["scores"]["preparation"] == 0.0
+    assert summary["runtime"]["total_walltime_minutes"] == 2.0
 
 
 def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
@@ -1519,8 +1588,10 @@ def test_prepare_benchmark_run_can_pin_mdclaw_runtime(tmp_path: Path):
     assert run_config["mdclaw_runtime"] == "sif"
     wrapper_text = wrapper.read_text()
     assert "RUNTIME=sif" in wrapper_text
-    assert "--bind \"$REPO_ROOT:$REPO_ROOT\"" in wrapper_text
-    assert "PYTHONPATH=\"$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}\"" in wrapper_text
+    assert "SOURCE_ROOT=" in wrapper_text
+    assert "RUNTIME_ROOT=" in wrapper_text
+    assert "--bind \"$SOURCE_ROOT:$SOURCE_ROOT\"" in wrapper_text
+    assert "PYTHONPATH=\"$SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}\"" in wrapper_text
     assert "python -m mdclaw._cli" in wrapper_text
 
 
@@ -1588,6 +1659,20 @@ def _agent_run_record(task_run_dir: Path) -> dict:
     raise AssertionError("no agent_run harness record found")
 
 
+def _assert_v2_generic_wrapper_rejected(task_run_dir: Path) -> None:
+    score_payload = json.loads((task_run_dir / "score.json").read_text())
+    score = score_payload.get("score", score_payload)
+    verdict = score["study_verdict"]
+    diagnostics = verdict["diagnostics"]
+    assert verdict["result_class"] == "invalid_execution"
+    assert verdict["valid_execution"] is False
+    assert verdict["claim_supported"] is False
+    assert verdict["truth_agreement"] is None
+    assert diagnostics["execution_attested"] is False
+    assert diagnostics["preregistration_valid"] is False
+    assert diagnostics["raw_recomputed"] is True
+
+
 def test_run_benchmark_agent_study_time_limit_and_operator_override(tmp_path: Path):
     """Study tasks default to their declared limit while allowing an explicit
     shorter operator cap for smoke and development runs."""
@@ -1600,6 +1685,7 @@ def test_run_benchmark_agent_study_time_limit_and_operator_override(tmp_path: Pa
     fake_agent.write_text(
         """
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -1613,17 +1699,60 @@ parser.add_argument("--run-id", required=True)
 parser.add_argument("--task-id", required=True)
 args = parser.parse_args()
 
+_fake_study_submissions.GENERATORS[args.task_id](
+    Path(args.submission_dir), run_id=args.run_id, mode="honest"
+)
+
+submission_dir = Path(args.submission_dir)
 stage_wrapper = os.environ["MDCLAW_BENCHMARK_STAGE_WRAPPER"]
-for stage in ("source", "prep", "prod", "analysis", "report"):
+for stage in ("source", "prep"):
     subprocess.run(
         [sys.executable, stage_wrapper, "--stage", stage, "--",
          sys.executable, "-c", "pass"],
         check=True,
     )
 
-_fake_study_submissions.GENERATORS[args.task_id](
-    Path(args.submission_dir), run_id=args.run_id, mode="honest"
+intent_path = submission_dir / "analysis_intent.json"
+intent = json.loads(intent_path.read_text())
+subprocess.run(
+    [sys.executable, stage_wrapper, "--stage", "register_analysis_intent",
+     "--intent-file", str(intent_path)],
+    check=True,
 )
+study_index = json.loads((submission_dir / "study_index.json").read_text())
+for system in study_index["systems"]:
+    for run in system["runs"]:
+        command = [
+            sys.executable, stage_wrapper, "--stage", "prod",
+            "--phase", run["phase"],
+            "--event-id", run["production_event_id"],
+        ]
+        if run["phase"] == "confirmatory":
+            command.extend(["--intent-id", intent["intent_id"]])
+        command.extend(
+            ["--input-artifact", str(submission_dir / run["topology"])]
+        )
+        trajectories = run.get("trajectory_segments") or [run["trajectory"]]
+        staged_pairs = []
+        for trajectory in trajectories:
+            artifact = submission_dir / trajectory
+            staged = artifact.with_name(artifact.name + ".staged")
+            artifact.replace(staged)
+            command.extend(["--artifact", str(artifact)])
+            staged_pairs.extend([str(staged), str(artifact)])
+        command.extend([
+            "--", sys.executable, "-c",
+            "import shutil,sys; [shutil.copyfile(sys.argv[i], sys.argv[i+1]) "
+            "for i in range(1, len(sys.argv), 2)]",
+            *staged_pairs,
+        ])
+        subprocess.run(command, check=True)
+for stage in ("analysis", "report"):
+    subprocess.run(
+        [sys.executable, stage_wrapper, "--stage", stage, "--",
+         sys.executable, "-c", "pass"],
+        check=True,
+    )
 """.lstrip()
     )
     command = (
@@ -1633,7 +1762,7 @@ _fake_study_submissions.GENERATORS[args.task_id](
     )
     output_dir = tmp_path / "benchmark_runs"
 
-    # no operator cap -> use S03's declared time_limit_minutes (1440)
+    # no operator cap -> use S01's declared time_limit_minutes (1440)
     result = benchmark_run.run_benchmark_agent(
         output_dir=str(output_dir),
         run_id="study_timelimit_default",
@@ -1645,11 +1774,15 @@ _fake_study_submissions.GENERATORS[args.task_id](
         max_walltime_minutes_per_task=0,
         env={"PYTHONPATH": str(REPO_ROOT)},
     )
-    assert result["success"], result
+    assert result["success"] is False
+    assert result["tasks"][0]["exit_code"] == 0
     record = _agent_run_record(
         output_dir / "study_timelimit_default" / "tasks" / STUDY_TASK_ID
     )
     assert record["walltime_limit_minutes"] == 1440
+    _assert_v2_generic_wrapper_rejected(
+        output_dir / "study_timelimit_default" / "tasks" / STUDY_TASK_ID
+    )
     assert result["tasks"][0]["agent_instruction"]["runtime_budget"] == {
         "declared_time_limit_minutes": 1440,
         "operator_cap_minutes": None,
@@ -1668,11 +1801,15 @@ _fake_study_submissions.GENERATORS[args.task_id](
         max_walltime_minutes_per_task=5,
         env={"PYTHONPATH": str(REPO_ROOT)},
     )
-    assert result["success"], result
+    assert result["success"] is False
+    assert result["tasks"][0]["exit_code"] == 0
     record = _agent_run_record(
         output_dir / "study_timelimit_capped" / "tasks" / STUDY_TASK_ID
     )
     assert record["walltime_limit_minutes"] == 5
+    _assert_v2_generic_wrapper_rejected(
+        output_dir / "study_timelimit_capped" / "tasks" / STUDY_TASK_ID
+    )
     assert result["tasks"][0]["agent_instruction"]["runtime_budget"] == {
         "declared_time_limit_minutes": 1440,
         "operator_cap_minutes": 5,
@@ -1684,14 +1821,14 @@ def test_prepare_benchmark_run_records_studybench_version(tmp_path: Path):
     output_dir = tmp_path / "benchmark_runs"
     prepared = benchmark_run.prepare_benchmark_run(
         output_dir=str(output_dir),
-        run_id="studybench_s03",
+        run_id="studybench_s01",
         dataset_dir=str(STUDY_DATASET_DIR),
         task_ids=[STUDY_TASK_ID],
         execution_mode="dry_run",
     )
 
     assert prepared["success"], prepared
-    run_dir = output_dir / "studybench_s03"
+    run_dir = output_dir / "studybench_s01"
     run_config = json.loads((run_dir / "run_config.json").read_text())
     agent_tasks = json.loads((run_dir / "agent_tasks.json").read_text())
     contract = json.loads(
@@ -1703,7 +1840,7 @@ def test_prepare_benchmark_run_records_studybench_version(tmp_path: Path):
         ).read_text()
     )
 
-    assert run_config["benchmark_version"] == "MDStudyBench-v0.2"
+    assert run_config["benchmark_version"] == "MDStudyBench-v0.4"
     assert run_config["dataset_dir"] == str(STUDY_DATASET_DIR)
     assert agent_tasks["dataset_dir"] == str(STUDY_DATASET_DIR)
     assert "agent_prompt" in agent_tasks["tasks"][0]
@@ -1711,7 +1848,12 @@ def test_prepare_benchmark_run_records_studybench_version(tmp_path: Path):
     packaging = agent_tasks["tasks"][0]["submission_packaging"]
     assert packaging["standalone_packager"] is None
     assert "scored as written" in packaging["usage"]
-    assert "manifest-declared matching topologies" in packaging["writes"]
+    assert "study_index.json" in packaging["writes"]
+    assert (
+        "all system topologies and exploratory/confirmatory trajectories "
+        "declared by study_index"
+        in packaging["writes"]
+    )
     assert contract["primary_score"] == "scientific_answer"
     assert "topology_output_shape" not in contract["manifest_contract"]
 

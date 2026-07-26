@@ -37,6 +37,18 @@
     },
     "SubmissionOutputs": {
       "properties": {
+        "analysis_intent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Analysis Intent"
+        },
         "checkpoints": {
           "items": {
             "type": "string"
@@ -158,6 +170,18 @@
           ],
           "default": null,
           "title": "Source Selection"
+        },
+        "study_index": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Study Index"
         },
         "topology": {
           "items": {

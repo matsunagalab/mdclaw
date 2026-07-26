@@ -794,6 +794,8 @@ class TestMDSimulationServer:
         assert result["platform"] is not None
         assert Path(result["trajectory_file"]).stat().st_size > 0
         assert Path(result["energy_file"]).stat().st_size > 0
+        assert Path(result["runtime_system_file"]).stat().st_size > 0
+        assert Path(result["integrator_file"]).stat().st_size > 0
 
     def test_run_production_custom_force_positional_restraint(self, small_pdb, tmp_path):
         """Custom-force script (positional restraint) runs and logs bias energy."""

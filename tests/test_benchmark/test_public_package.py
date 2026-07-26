@@ -18,6 +18,16 @@ DATASET_DIR = REPO_ROOT / "benchmarks" / "mdprepbench"
 STUDY_DATASET_DIR = REPO_ROOT / "benchmarks" / "mdstudybench"
 
 
+def _walk_keys(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield key
+            yield from _walk_keys(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_keys(child)
+
+
 def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
     out_dir = tmp_path / "public_mdprepbench"
     result = cli.export_benchmark_public_package(
@@ -129,7 +139,9 @@ def test_export_private_package_contains_evaluator_material(tmp_path: Path):
     )
 
 
-def test_export_private_package_omits_agent_material_for_studybench(tmp_path: Path):
+def test_export_private_package_keeps_public_prompt_for_private_evaluation(
+    tmp_path: Path,
+):
     out_dir = tmp_path / "private_mdstudybench"
     result = cli.export_benchmark_private_package(
         dataset_dir=str(STUDY_DATASET_DIR),
@@ -140,12 +152,15 @@ def test_export_private_package_omits_agent_material_for_studybench(tmp_path: Pa
     truth_file = (
         out_dir
         / "tasks"
-        / "S01_stability_t4l_l99a"
+        / "S01_pressure_hydration_t4l_l99a"
         / "truth"
         / "experimental_truth.json"
     )
     assert truth_file.is_file()
-    assert not list(out_dir.glob("tasks/*/prompt.md"))
+    prompts = list(out_dir.glob("tasks/*/prompt.md"))
+    assert len(prompts) == 1
+    assert not list(out_dir.glob("tasks/*/submission_contract.json"))
+    assert not list(out_dir.glob("tasks/*/submission_checklist.md"))
 
 
 def test_export_public_package_exposes_p01_metric_contract(tmp_path: Path):
@@ -504,23 +519,41 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
 
     assert result["success"], result
     dataset = json.loads((out_dir / "dataset.json").read_text())
-    assert dataset["benchmark_version"] == "MDStudyBench-v0.2"
-    assert result["task_count"] == 4
+    marker = json.loads(
+        (out_dir / ".md-benchmark-public-export.json").read_text()
+    )
+    assert "dataset_dir" not in marker
+    assert str(STUDY_DATASET_DIR.resolve()) not in json.dumps(marker)
+    assert dataset["benchmark_version"] == "MDStudyBench-v0.4"
+    assert dataset["task_ids"] == ["S01_pressure_hydration_t4l_l99a"]
+    assert dataset["tiers"]["pilot"]["task_ids"] == dataset["task_ids"]
+    assert dataset["tiers"]["pilot"]["primary_leaderboard"] is False
+    assert dataset["tiers"]["extended"]["primary_leaderboard"] is False
+    assert result["task_count"] == 1
     assert (out_dir / "schemas" / "submission_manifest.schema.json").is_file()
+    assert (out_dir / "tools" / "preregistration_v2.py").is_file()
+    assert (out_dir / "tools" / "study_evidence_v2.py").is_file()
+    assert (out_dir / "tools" / "study_identity_v2.py").is_file()
+    assert (out_dir / "tools" / "study_execution_v2.py").is_file()
+    public_readme = (out_dir / "README.md").read_text()
+    assert "structured study index" in public_readme
+    assert "prospective analysis intent" in public_readme
+    assert "outputs.trajectories" not in public_readme
 
     contract = json.loads(
         (
             out_dir
             / "tasks"
-            / "S01_stability_t4l_l99a"
+            / "S01_pressure_hydration_t4l_l99a"
             / "submission_contract.json"
         ).read_text()
     )
     assert contract["primary_score"] == "scientific_answer"
+    assert contract["evaluation_protocol"] == "grounded_correct_v2"
     assert contract["required_outputs"] == [
         "manifest.json",
-        "metrics.json",
-        "provenance.json",
+        "analysis_intent.json",
+        "study_index.json",
         "evidence_report.json",
     ]
     assert contract["manifest_contract"][
@@ -529,43 +562,166 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
     assert set(
         contract["manifest_contract"]["required_manifest_output_fields"]
     ) == {
-        "outputs.metrics",
-        "outputs.provenance",
+        "outputs.analysis_intent",
+        "outputs.study_index",
         "outputs.evidence_report",
-        "outputs.topology",
-        "outputs.trajectories",
     }
-    assert contract["manifest_contract"]["required_manifest_list_fields"] == {
-        "outputs.topology": 2,
-        "outputs.trajectories": 2,
+    assert "required_manifest_list_fields" not in contract["manifest_contract"]
+    prospective = contract["manifest_contract"]["prospective_study"]
+    assert prospective["source_and_plan_are_agent_selected"] is True
+    assert prospective["exploratory_runs_may_not_support_resolved_claims"] is True
+    assert prospective["confirmatory_lineage"]["intent_id"] == (
+        "must match analysis_intent.intent_id"
+    )
+    assert prospective["runner_execution"]["adapter"] == "mdclaw_openmm@1"
+    assert prospective["runner_execution"][
+        "agent_must_not_run_confirmatory_nodes"
+    ] is True
+    assert prospective["runner_execution"]["attestation_scope"] == {
+        "production_runtime_matches_frozen_base_system": True,
+        "base_system_construction_attested": False,
+        "runtime_environment_attested": False,
+        "diagnostics": [
+            "base_system_construction_unattested",
+            "runtime_environment_unattested",
+        ],
     }
+    assert "SHA-256" in prospective["run_lineage"]["trajectory_hashes"]
     assert "topology_output_shape" not in contract["manifest_contract"]
     assert "minimized_structure.pdb" not in contract["required_outputs"]
-    assert (out_dir / "tasks" / "S01_stability_t4l_l99a" / "submission_checklist.md").is_file()
-    assert contract["submission_blueprint"]["manifest_minimum"]["outputs"][
-        "trajectories"
-    ] == [
-        "trajectories/trajectory_1.dcd",
-        "trajectories/trajectory_2.dcd",
+    assert (
+        out_dir
+        / "tasks"
+        / "S01_pressure_hydration_t4l_l99a"
+        / "submission_checklist.md"
+    ).is_file()
+    outputs = contract["submission_blueprint"]["manifest_minimum"]["outputs"]
+    assert outputs["study_index"] == "study_index.json"
+    assert outputs["analysis_intent"] == "analysis_intent.json"
+    assert "trajectories" not in outputs
+    assert "topology" not in outputs
+    study_index = contract["submission_blueprint"]["study_index_minimum"]
+    assert [system["system_id"] for system in study_index["systems"]] == [
+        "reference-condition",
+        "variant-condition",
     ]
-    assert contract["submission_blueprint"]["manifest_minimum"]["outputs"][
-        "topology"
-    ] == [
-        "topology/topology_1.pdb",
-        "topology/topology_2.pdb",
+    assert all(
+        system["runs"][0]["phase"] == "confirmatory"
+        for system in study_index["systems"]
+    )
+    analysis_intent = contract["submission_blueprint"][
+        "analysis_intent_minimum"
     ]
-    assert contract["submission_blueprint"]["metrics_minimum"]["md_analysis"][
-        "production_time_ns"
-    ] == ">= 1.0"
+    assert analysis_intent["target_estimand"] == contract["scientific_target"][
+        "estimand"
+    ]
+    assert {
+        analysis["verifier_id"]
+        for analysis in analysis_intent["primary_analyses"]
+    } == {"region_water_occupancy@1", "folded_state_retention@1"}
+    hydration_analysis = next(
+        analysis
+        for analysis in analysis_intent["primary_analyses"]
+        if analysis["verifier_id"] == "region_water_occupancy@1"
+    )
+    assert hydration_analysis["outcome_mapping"] == contract[
+        "scientific_target"
+    ]["primary_evidence_contract"]["outcome_mapping"]
+    primary_decision_rule = contract["scientific_target"][
+        "primary_evidence_contract"
+    ]["decision_rule"]
+    assert hydration_analysis["decision_rule"] == {
+        key: value
+        for key, value in primary_decision_rule.items()
+        if key != "model_config"
+    }
+    hydration_parameters = hydration_analysis["observable"]["parameters"]
+    fixed_primary_parameters = contract["scientific_target"][
+        "primary_evidence_contract"
+    ]["fixed_observable_parameters"]
+    assert {
+        key: hydration_parameters[key]
+        for key in fixed_primary_parameters
+    } == fixed_primary_parameters
+    assert hydration_parameters["radius_nm"] == 0.45
+    assert hydration_parameters["cavity_reference_positions"] == [99]
+    assert hydration_parameters["cavity_atom_names"] == ["CB"]
+    assert "public construct positions [99]" in hydration_parameters[
+        "region_selection"
+    ]
+    folded_analysis = next(
+        analysis
+        for analysis in analysis_intent["primary_analyses"]
+        if analysis["verifier_id"] == "folded_state_retention@1"
+    )
+    control_contract = contract["scientific_target"][
+        "control_evidence_contracts"
+    ][0]
+    assert folded_analysis["outcome_mapping"] == control_contract[
+        "outcome_mapping"
+    ]
+    assert folded_analysis["decision_rule"] == {
+        key: value
+        for key, value in control_contract["decision_rule"].items()
+        if key != "model_config" and value is not None
+    }
+    assert folded_analysis["observable"]["parameters"] == control_contract[
+        "fixed_observable_parameters"
+    ]
+    evidence = contract["submission_blueprint"]["evidence_report_minimum"]
+    assert evidence["md_verdict"]["status"]["one_of"] == [
+        "resolved",
+        "unresolved",
+    ]
+    assert evidence["md_verdict"]["outcome"]["one_of"] == [
+        "increased_hydration",
+        "decreased_hydration",
+        "no_material_change",
+        None,
+    ]
+    assert evidence["evidence"][0]["verifier_id"] == (
+        "region_water_occupancy@1"
+    )
+    assert evidence["evidence"][1]["verifier_id"] == (
+        "folded_state_retention@1"
+    )
+    assert contract["scientific_target"]["entity"][
+        "expected_protein_copy_count"
+    ] == 1
+    public_keys = {str(key) for key in _walk_keys(contract)}
+    assert "expected_protein_copy_count" in public_keys
+    assert {
+        "expected_outcome",
+        "expected_direction",
+        "expected_answer",
+        "ground_truth",
+        "ground_truth_checks",
+        "experimental_anchors",
+        "scoring",
+        "references",
+    }.isdisjoint(public_keys)
+    assert "ca_rmsf_near_99" not in json.dumps(contract)
     assert any(
-        "source, prep, prod, analysis, report" in item
+        "pending MDClaw prod nodes" in item
+        for item in contract["submission_checklist"]
+    )
+    assert any(
+        "runner-owned OpenMM/MDClaw ledger" in item
         for item in contract["submission_checklist"]
     )
     assert "supervised" in contract["submission_lifecycle"]["background_policy"]
     checklist = (
         out_dir
         / "tasks"
-        / "S01_stability_t4l_l99a"
+        / "S01_pressure_hydration_t4l_l99a"
         / "submission_checklist.md"
     ).read_text()
-    assert "outputs.topology" in checklist
+    assert "outputs.analysis_intent" in checklist
+    assert "outputs.study_index" in checklist
+    assert "outputs.topology" not in checklist
+    assert "folded_state_retention@1" in checklist
+    assert "0.45 nm periodic" in checklist
+    assert "no runner-detected production-time force" in checklist
+    assert "base-system construction and dependency runtime" in checklist
+    assert not (out_dir / "tasks" / "S01_pressure_hydration_t4l_l99a" / "task.json").exists()
+    assert not (out_dir / "tasks" / "S01_pressure_hydration_t4l_l99a" / "truth").exists()

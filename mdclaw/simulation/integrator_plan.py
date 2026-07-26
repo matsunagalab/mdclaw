@@ -126,6 +126,10 @@ def _record_production_node_result(
             "checkpoint": _node_artifact_path(result.get("checkpoint_file")),
             "state": _node_artifact_path(result.get("state_file")),
             "energy": _node_artifact_path(result.get("energy_file")),
+            "runtime_system": _node_artifact_path(
+                result.get("runtime_system_file")
+            ),
+            "integrator": _node_artifact_path(result.get("integrator_file")),
         }
         # Custom-force provenance + CV log artifacts (only when a bias ran).
         if custom_force_script_artifact:

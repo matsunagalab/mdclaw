@@ -1,7 +1,7 @@
 # MDAgentBench Suite Design
 
 This design has been promoted into two focused benchmark suites:
-`MDPrepBench-v0.3` for preparation workflows and `MDStudyBench-v0.2` for the
+`MDPrepBench-v0.3` for preparation workflows and `MDStudyBench-v0.4` for the
 scientific question / study-bundle tasks. The long-term goal is to keep
 MDAgentBench organized around these two main suites:
 
@@ -16,17 +16,17 @@ tasks rather than the intellectual center of the benchmark.
 
 ## Design Position
 
-The main benchmark target should not be "did short MD reproduce experiment" as
-a single score. That is too strong and confounds agent quality with convergence,
-force-field limits, and observability. The better target is:
+The study benchmark target is not agreement with one curator-authored plan. A
+PDB choice or full sampling schedule has no defensible unique answer. The
+scientific observable and a minimum evidence-adequacy floor may nevertheless
+need to be task-owned so every solver answers the same question. The target is:
 
-> For experimentally validated scientific questions, evaluate how well the
-> agent designs the MD study, executes or stages the required artifacts,
-> analyzes evidence, forms a conclusion, and calibrates uncertainty against the
-> known experimental direction.
+> Can the agent prospectively plan and execute an MD study whose independently
+> recomputed confirmatory evidence logically supports a conclusion that agrees
+> with held-out experimental truth?
 
-This keeps experimental truth as the anchor while avoiding a brittle
-"same-result-or-zero" benchmark.
+Planning quality is therefore evaluated through its scientific consequences,
+not by matching a canonical workflow.
 
 ## Suite A: Preparation Workflow Battery
 
@@ -212,47 +212,43 @@ or agent-authored evidence axis.
 
 ## Suite B: Scientific MD Reasoning
 
-Current size: **4 tasks** in `benchmarks/mdstudybench/` (`MDStudyBench-v0.2`),
-all uniform-load comparative-MD scientific-answer tasks. This suite should stay
-small: roughly **3-5 carefully curated tasks** is enough unless a new task covers
-a genuinely distinct scientific-answer pattern. Use experimental truth as the
-anchor, but score the workflow in layers:
+`MDStudyBench-v0.4` has one experimental S01 pilot and three retained v1
+migration fixtures. There is no primary leaderboard task yet. The suite should
+stay small unless a new task adds a genuinely distinct, feasibility-tested
+scientific-answer pattern.
 
-1. Study design: correct systems, controls, mutations, apo/holo state,
-   replicates, and observables.
-2. Preparation/execution artifacts: evidence that required systems were staged
-   or run.
-3. Analysis: metrics are present and relevant to the question.
-4. Evidence consistency: conclusion agrees with the submitted metrics and
-   figures.
-5. Experimental direction: direction agrees with hidden experimental truth.
-6. Calibration: confidence and limitations are appropriate for short MD.
+The v2 primary outcome is the conjunction `valid_execution AND claim_supported
+AND truth_agreement`. These three gates are non-compensating and produce one
+binary primary score. An unresolved study and an unsupported claim both receive
+zero, while remaining distinct diagnostics.
 
-Recommended scoring split:
+The public task specifies the scientific entity, estimand, comparison,
+conditions, measurement semantics, minimum evidence adequacy, and budget.
+Structural sources, preparation, exploratory sampling, replica allocation, and
+the confirmatory allocation above that minimum remain agent-selected. Planning
+is not scored by matching a curator workflow. Instead, an agent registers its
+analysis before confirmatory production and is evaluated through the scientific
+consequences of that plan.
 
-- 25% study design and controls.
-- 20% artifact completeness and provenance.
-- 20% analysis metrics and internal consistency.
-- 20% experimental truth direction.
-- 15% calibration, limitations, and report quality.
-
-This intentionally makes truth direction important but not the sole gate.
+Prior knowledge is allowed but is kept separate from the MD verdict. Held-out
+truth is introduced only after truth-blind execution and claim verification.
+The reported taxonomy is `grounded_correct`, `grounded_wrong`,
+`unsupported_claim`, `unresolved`, or `invalid_execution`. No LLM judge
+contributes to the v2 primary score.
 
 ### Current Scientific Tasks
 
-| ID | Question class | Candidate source | Truth direction | Scoring note | Priority |
-|---|---|---|---|---|---:|
-| S01 | Monomer stability calibration | T4L WT vs L99A | destabilizing | Real trajectories, local consistency evidence, calibrated direction, and overclaim control. | 1 |
-| S02 | PPI hotspot mutation | Barnase-barstar barstar-D39A | weakened_binding | Require interface observables and uncertainty calibration. | 1 |
-| S03 | Stabilizing mutation | Staph nuclease H124L | stabilizing | Breaks the "mutations destabilize" prior; tests direction discrimination, not bias. | 1 |
-| S04 | Protein-ligand affinity trend | T4L L99A benzene vs n-butylbenzene | stronger_binding | Adds the affinity-direction pattern; paired ligand-swap comparison. | 1 |
+| Tier | ID | Question class | Public comparison | Status |
+|---|---|---|---|---|
+| Pilot | `S01_pressure_hydration_t4l_l99a` | Dynamic equilibrium | Internal-cavity hydration at 200 MPa versus 0.1 MPa in folded T4L C54T/C97A/L99A, 300 K with a fixed pH-7 protonation model | Experimental |
+| Extended | `S02_ppi_hotspot_barnase_d39a` | PPI mutation thermodynamics | barstar D39A versus WT barnase-barstar | Experimental |
+| Extended | `S03_stability_nuclease_h124l` | Folding thermodynamics | staphylococcal nuclease H124L versus WT | Experimental |
+| Extended | `S04_affinity_t4l_l99a_alkylbenzene` | Ligand-binding thermodynamics | n-butylbenzene versus benzene in T4L L99A | Experimental |
 
-The v0.2 set deliberately spans destabilizing, weakened-binding, stabilizing,
-and ligand-affinity directions so a constant prior scores zero on at least two
-tasks. Do not expand MDStudyBench just to increase task count; future additions
-should replace weaker tasks or add a clearly distinct pattern (e.g. a pKa /
-protonation shift, an allostery apo-vs-holo change, or a compact multi-mutation
-ranking task).
+S02-S04 are excluded from primary aggregation until their estimands have native,
+artifact-recomputable thermodynamic evidence contracts and independent
+feasibility runs. The former T4L L99A folding-stability S01 is retained only as
+a v0.3 regression fixture.
 
 ## Experimental-Truth Source Pools
 
@@ -292,11 +288,10 @@ agent tasks.
    - simple script baseline,
    - LLM-only/no-run baseline,
    - one external MD tool/harness when available.
-6. Keep MDStudyBench compact: `MDStudyBench-v0.2` is at 4 uniform-load
-   comparative-MD tasks spanning the destabilizing / weakened-binding /
-   stabilizing / ligand-affinity directions. Run real reference submissions for
-   S01-S04 and validate the truth-direction calibration before adding any
-   further task.
+6. Keep MDStudyBench compact: `MDStudyBench-v0.4` has one standard,
+   feasibility-gated task. Promote an extended task only after its target
+   estimand is independently recomputable and a blinded reference run shows it
+   is resolvable within the declared budget.
 
 ### Current Prep Implementation Status
 
@@ -340,57 +335,60 @@ Still to do:
 
 ### Current Study Implementation Status
 
-Implemented (`MDStudyBench-v0.2`):
+Implemented (`MDStudyBench-v0.4`):
 
-- Four uniform-load comparative-MD tasks: S01 (destabilizing, T4L L99A), S02
-  (weakened binding, barstar D39A), S03 (stabilizing, nuclease H124L), S04
-  (stronger binding, benzene vs n-butylbenzene affinity trend). The direction
-  set defeats a constant prior.
-- Scientific-answer correctness is bound to real artifacts: `trajectory_rescan`
-  (WT + mutant) and `paired_mutation_topology` are weight-0 hard-fail gates, so
-  garbage/copied trajectories or an absent/wrong mutation clamp the score to 0
-  even when the declared direction is correct.
-- The `scientific_answer` axis is a three-way weighted mean rather than a bare
-  direction match: ground-truth direction (0.35), `direction_grounding` (0.35),
-  and `observable_recompute_consistency` (0.30). The scorer recomputes each
-  task's discriminating observable (Cα RMSF or interface/ligand-cavity contact
-  count) from the submitted trajectories; grounding compares the sign of that
-  observable against the agent's *claimed* direction (internal consistency, not
-  the hidden truth), with an inconclusive band that gives neutral credit for
-  honestly reporting a non-separating result, while consistency verifies the
-  agent's reported observable values against the recomputed ones. Effect: a
-  data-faithful conclusion that disagrees with the literature keeps grounding +
-  consistency credit (~0.65), whereas a literature guess with fabricated numbers
-  and unsupported sign is capped near the 0.35 direction-match weight. Magnitude
-  is intentionally not scored.
-- S02 corrected to mutate barstar D39 (barnase residue 39 is a lysine).
-- S01 truth corrected to the pH-3.0 folding ΔΔG ≈ 5.0 kcal/mol (the earlier 4.6
-  was the benzene→cavity binding ΔG; 2.6–2.7 belongs to L46A/L121A).
-- The LLM judge is refocused onto qualitative rubrics (`reasoning_logic`,
-  `confidence_calibration`, `overclaim_detection`); numeric grounding moved to
-  the deterministic checks above. Its rubric scores are aggregated into the
-  secondary `evidence_communication` axis.
-- Uniform 24 h (`time_limit_minutes: 1440`) wall-clock budget with no prescribed
-  simulation length: MD planning (production length, replicate count) is part of
-  the task.
-- Trajectory signatures accept DCD/XTC/TRR/HDF5/NetCDF, not DCD only.
-- A `study_literature_guess_no_md` fabrication baseline establishes the
-  discrimination floor; honest/wrong/fabricated fixtures and per-gate tests cover
-  the scorer.
+- The pilot tier contains the pressure-dependent T4L L99A cavity-hydration
+  task; S02-S04 are explicitly extended and non-primary.
+- `scientific_target` defines the public estimand, entity, conditions, allowed
+  resolved outcomes, neutral equivalence outcome, required validity controls,
+  and unresolved outcome without prescribing a workflow.
+- The task owns the primary native verifier, outcome mapping, equivalence rule,
+  exact cavity observable, minimum sampling adequacy, and folded-state control.
+  `analysis_intent.json` must reproduce that contract before confirmatory
+  production.
+- `study_index.json` generalizes paired roles into named systems, comparisons,
+  run phases, intent IDs, and runner event lineage.
+- The benchmark runner preflights paired inputs and requested physical time,
+  freezes the intent and an adapter-source snapshot, executes pending MDClaw
+  production nodes, and verifies the live OpenMM System, Integrator, State,
+  trajectory, energy log, steps, conditions, topology mapping, and artifact
+  hashes.
+- Public and private paths use the same truth-blind evidence verifier. Private
+  scoring adds held-out truth only after execution and claim support pass.
+- S01 verifies the full public construct sequence, measures water oxygens within
+  0.45 nm of mapped L99A CB, requires at least 10 ns and ESS 5 per condition,
+  fixes an all-protein-CA folded-state control, applies the fixed
+  confidence/equivalence rule, and rejects unresolved initialization as support.
+- Biased or enhanced trajectories may guide exploration, but the v0.4 native
+  occupancy verifier requires ordinary confirmatory trajectories with no
+  declared enhanced sampling and no runner-detected production-time force
+  beyond the frozen base System except the required barostat. It does not yet
+  attest how that agent-chosen base System was constructed.
+- The v2 primary score is the deterministic conjunction of `valid_execution`,
+  `claim_supported`, and `truth_agreement`; unresolved receives zero.
 
 Still to do:
 
-- Run real MDClaw reference submissions for S01-S04 (real comparative MD)
-  and record them as runnable evidence.
-- Tune the per-task observable selections and the `inconclusive_sigma` /
-  `tolerance_fraction` thresholds against real MDClaw runs (they ship at sensible
-  defaults, editable per task in `task_specs`).
+- Run the new S01 blindly with the current OpenMM stack and confirm that pressure
+  response, wet/dry transitions, folded-state retention, and initialization
+  sensitivity are observable within the budget before freezing the release.
+- Add artifact-recomputable free-energy and thermodynamic evidence contracts
+  before promoting S02-S04 from the extended tier.
+- Harden the runner/solver isolation boundary before promoting S01 to a primary
+  leaderboard.
+- Add independently recomputable generic metrics only when real submissions need
+  them; do not turn that metric list into a prescribed analysis plan.
+- Add engine-specific adapters beyond the released OpenMM/MDClaw path when
+  Amber/GROMACS benchmark runs are needed.
 
 ## What Not To Do Yet
 
 - Do not make LLM judge responsible for chemistry that can be checked from
   artifacts.
-- Do not score scientific tasks as "experiment matched = pass, otherwise fail."
+- Do not score agreement with a canonical PDB, replica count, or exact sampling
+  plan. Fix only the observable and evidence floor required to make outcomes
+  comparable.
+- Do not let experimental agreement compensate for missing MD grounding.
 - Do not expose `task.json`, hidden truth, scorer prompts, or reference poses to
   evaluated agents.
 - Do not require MDClaw-internal artifact names in the public prompt; prep

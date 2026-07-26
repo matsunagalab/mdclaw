@@ -376,6 +376,8 @@ def run_production(
         "platform": None,
         "device_index": None,
         "checkpoint_file": None,
+        "runtime_system_file": None,
+        "integrator_file": None,
         "restarted_from": None,
         "steps_completed": None,
         "start_step": None,
@@ -438,7 +440,7 @@ def run_production(
         )
         from openmm import (
             LangevinMiddleIntegrator, MonteCarloBarostat,
-            MonteCarloMembraneBarostat, Platform,
+            MonteCarloMembraneBarostat, Platform, XmlSerializer,
         )
         from openmm.unit import (
             nanometer, kelvin, picosecond, femtoseconds, bar,
@@ -656,6 +658,33 @@ def run_production(
                 result["random_seed_restart_offset"] = max(
                     1, int(restart_seed_step or 0)
                 )
+
+        # Preserve the exact live objects used to construct the Context.  The
+        # topology artifact's base system.xml intentionally has no runtime
+        # barostat; these files let an evaluator verify the actual ensemble,
+        # thermostat/integrator settings, and bias forces from serialized
+        # OpenMM objects instead of trusting argument-derived metadata.
+        runtime_system_file = out_dir / "runtime_system.xml"
+        integrator_file = out_dir / "integrator.xml"
+        integrator_file.write_text(XmlSerializer.serialize(integrator))
+        result["integrator_file"] = str(integrator_file)
+        try:
+            runtime_system_file.write_text(XmlSerializer.serialize(system))
+        except Exception as exc:  # noqa: BLE001 - plugin serialization boundary
+            if _custom_force_loaded is None:
+                raise
+            # PythonTorchForce may contain a Python callable that OpenMM cannot
+            # pickle. Custom-force production remains supported, but such a run
+            # intentionally cannot satisfy MDStudyBench's serializable,
+            # no-production-bias confirmatory adapter.
+            runtime_system_file.unlink(missing_ok=True)
+            result["warnings"].append(
+                "Live runtime System could not be serialized because the "
+                f"custom force is not serializable: {type(exc).__name__}: "
+                f"{exc}"
+            )
+        else:
+            result["runtime_system_file"] = str(runtime_system_file)
 
         # Platform selection
         PLATFORM_MAP = {"cuda": "CUDA", "opencl": "OpenCL", "cpu": "CPU", "reference": "Reference"}

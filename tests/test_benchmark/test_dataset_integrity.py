@@ -326,15 +326,30 @@ def test_p18_lipid_contract_checks_mixed_species_without_exact_ratio():
 def test_studybench_dataset_json_matches_task_directories():
     dataset = json.loads((STUDY_DATASET_DIR / "dataset.json").read_text())
     task_ids = dataset["task_ids"]
-    task_dirs = sorted(
+    task_dirs = {
         path.name
         for path in (STUDY_DATASET_DIR / "tasks").iterdir()
         if path.is_dir() and (path / "task.json").is_file()
-    )
+    }
+    tiers = dataset["tiers"]
+    pilot_ids = tiers["pilot"]["task_ids"]
+    extended_ids = tiers["extended"]["task_ids"]
 
-    assert dataset["benchmark_version"] == "MDStudyBench-v0.2"
-    assert dataset["task_count"] == len(task_ids) == 4
-    assert sorted(task_ids) == task_dirs
+    assert dataset["benchmark_version"] == "MDStudyBench-v0.4"
+    assert dataset["task_count"] == len(task_ids) == 1
+    assert task_ids == ["S01_pressure_hydration_t4l_l99a"]
+    assert pilot_ids == task_ids
+    assert tiers["pilot"]["primary_leaderboard"] is False
+    assert tiers["pilot"]["release_status"] == "experimental"
+    assert extended_ids == [
+        "S02_ppi_hotspot_barnase_d39a",
+        "S03_stability_nuclease_h124l",
+        "S04_affinity_t4l_l99a_alkylbenzene",
+    ]
+    assert tiers["extended"]["primary_leaderboard"] is False
+    assert tiers["extended"]["release_status"] == "experimental"
+    assert set(pilot_ids).isdisjoint(extended_ids)
+    assert set(pilot_ids + extended_ids).issubset(task_dirs)
     assert (
         "tasks/<task_id>/submission_checklist.md"
         in dataset["public_private_split"]["public"]
@@ -382,13 +397,27 @@ def test_studybench_contracts_and_prompts_define_study_boundary():
         assert task.task_id == task_id
         assert task.primary_score in axes
         assert set(task.secondary_scores).issubset(axes)
-        assert "Use this prompt as the task statement" in prompt
+        assert "Scientific question" in prompt
         assert "do not read" in prompt.lower()
         assert "truth/" in prompt
         assert "scorer/" in prompt
         assert "input/" not in prompt
         assert "truth" not in payload
-        assert not any(str(key).startswith("expected_") for key in _walk_keys(payload))
+        payload_keys = {str(key) for key in _walk_keys(payload)}
+        # Public entity-validation fields may describe the expected construct;
+        # they are not the held-out scientific answer.
+        assert payload["scientific_target"]["entity"][
+            "expected_protein_copy_count"
+        ] == 1
+        assert "expected_protein_copy_count" in payload_keys
+        assert {
+            "expected_outcome",
+            "expected_direction",
+            "expected_answer",
+            "expected_verdict",
+            "ground_truth",
+            "experimental_anchors",
+        }.isdisjoint(payload_keys)
 
         for rel_path in task.required_outputs:
             assert rel_path in prompt, f"{task_id} prompt omits output {rel_path}"
@@ -399,14 +428,8 @@ def test_studybench_contracts_and_prompts_define_study_boundary():
             )
 
 
-def test_studybench_integrity_is_strict_without_prep_topology_requirements():
+def test_studybench_v2_integrity_uses_prospective_grounded_contract():
     dataset = json.loads((STUDY_DATASET_DIR / "dataset.json").read_text())
-    comparative_tasks = {
-        "S01_stability_t4l_l99a",
-        "S02_ppi_hotspot_barnase_d39a",
-        "S03_stability_nuclease_h124l",
-        "S04_affinity_t4l_l99a_alkylbenzene",
-    }
 
     for task_id in dataset["task_ids"]:
         task = Task.model_validate_json(
@@ -420,22 +443,34 @@ def test_studybench_integrity_is_strict_without_prep_topology_requirements():
         }
 
         assert task.scoring.integrity_policy == "reject", task_id
-        assert "provenance_execution_evidence" in check_types, task_id
-        assert "topology_artifact_bundle" not in deterministic_types, task_id
-        assert "minimization_report_check" not in deterministic_types, task_id
+        assert task.evaluation_protocol == "grounded_correct_v2", task_id
+        assert task.required_outputs == [
+            "manifest.json",
+            "analysis_intent.json",
+            "study_index.json",
+            "evidence_report.json",
+        ]
+        # Generic command logs cannot prove real MD.  The official v2 scorer
+        # instead requires the task-owned runner adapter.
+        assert "provenance_execution_evidence" not in check_types, task_id
+        # v2 entity, condition, and allowed-outcome gates are assembled from
+        # the single manifest-declared truth-blind bundle.  Do not duplicate
+        # them as legacy fixed-path deterministic checks.
+        assert deterministic_types == set(), task_id
+        assert "manifest_artifact_floor" not in check_types, task_id
+        assert "trajectory_file_signature" not in check_types, task_id
+        assert "metrics.json" not in task.required_outputs, task_id
+        assert "provenance.json" not in task.required_outputs, task_id
+        assert task.scientific_target is not None
+        assert task.scientific_target.required_control_verifiers == [
+            "folded_state_retention@1"
+        ]
+        assert task.scientific_target.execution_adapter == "mdclaw_openmm@1"
+        assert task.scientific_target.primary_evidence_contract is not None
 
-        if task_id in comparative_tasks:
-            assert "manifest_artifact_floor" in check_types, task_id
-            assert "trajectory_file_signature" in check_types, task_id
-            assert "metrics.json" in task.required_outputs, task_id
-        else:
-            assert "manifest_artifact_floor" not in check_types, task_id
-            assert "trajectory_file_signature" not in check_types, task_id
-            assert "metrics.json" not in task.required_outputs, task_id
 
-
-def test_s01_short_md_contract_requires_calibrated_non_overclaimed_answer():
-    task_id = "S01_stability_t4l_l99a"
+def test_s01_open_planning_contract_requires_grounded_non_overclaimed_answer():
+    task_id = "S01_pressure_hydration_t4l_l99a"
     prompt = (STUDY_DATASET_DIR / "tasks" / task_id / "prompt.md").read_text()
     payload = json.loads(
         (STUDY_DATASET_DIR / "tasks" / task_id / "task.json").read_text()
@@ -450,26 +485,48 @@ def test_s01_short_md_contract_requires_calibrated_non_overclaimed_answer():
         ).read_text()
     )
 
-    combined = prompt + "\n" + payload["task_intent"]
+    combined = " ".join((prompt + "\n" + payload["task_intent"]).split())
 
-    assert "literature-calibrated" in combined
-    assert "short MD alone" in combined
-    assert "delta-delta-G" in combined
-    assert "consistency evidence" in combined
-    assert reference_pool["primary_reference"]["doi"] == "10.1126/science.1553543"
+    assert "pH 7.0" in combined
+    assert "0.1 MPa" in combined
+    assert "200 MPa" in combined
+    assert (
+        "No PDB ID, chain ID, source structure, or sampling plan is preferred"
+        in combined
+    )
+    assert "Use exactly one primary estimand analysis" in combined
+    assert "prior_expectation" in combined
+    assert "analysis_intent.json" in combined
+    assert "folded_state_retention@1" in combined
+    assert "runner-certified, explicit-solvent" in combined
+    assert "no production-time force added relative to the frozen base" in combined
+    assert "base_system_construction_unattested" in combined
+    assert "cavity_anchor_reference_position" in combined
+    assert "mdclaw_openmm@1" in combined
+    assert payload["scientific_target"]["neutral_outcome"] == (
+        "no_material_change"
+    )
+    assert reference_pool["entity"]["construct_mutations"] == [
+        "C54T",
+        "C97A",
+        "L99A",
+    ]
+    assert {anchor["pdb_id"] for anchor in reference_pool["structural_anchors"]} == {
+        "1L90",
+        "2B6X",
+    }
+    for private_anchor in ("1L90", "2B6X", "pnas.0508224102", "25201963"):
+        assert private_anchor not in prompt
 
 
 def test_list_benchmark_tasks_supports_studybench():
     result = cli.list_benchmark_tasks(str(STUDY_DATASET_DIR))
 
     assert result["success"], result
-    assert result["benchmark_version"] == "MDStudyBench-v0.2"
-    assert result["task_count"] == 4
+    assert result["benchmark_version"] == "MDStudyBench-v0.4"
+    assert result["task_count"] == 1
     assert {task["task_id"] for task in result["tasks"]} == {
-        "S01_stability_t4l_l99a",
-        "S02_ppi_hotspot_barnase_d39a",
-        "S03_stability_nuclease_h124l",
-        "S04_affinity_t4l_l99a_alkylbenzene",
+        "S01_pressure_hydration_t4l_l99a",
     }
 
 

@@ -736,7 +736,7 @@ def test_prep_normalization_preserves_existing_output_file(tmp_path: Path):
     assert out_path.read_text() == "user data\n"
 
 
-def test_study_answer_validation_requires_trajectory_manifest_outputs(
+def test_study_answer_validation_requires_role_based_study_index(
     tmp_path: Path,
 ):
     repo_root = Path(__file__).resolve().parents[2]
@@ -769,8 +769,9 @@ def test_study_answer_validation_requires_trajectory_manifest_outputs(
     result = validation.validate_submission(task_file, submission_dir)
 
     assert result["success"] is False
-    assert any("outputs.trajectories" in err for err in result["errors"])
-    assert any("outputs.topology" in err for err in result["errors"])
+    assert any("outputs.study_index" in err for err in result["errors"])
+    assert not any("outputs.trajectories" in err for err in result["errors"])
+    assert not any("outputs.topology" in err for err in result["errors"])
 
 
 def test_score_submission_rejects_manifest_output_path_escape(tmp_path: Path):

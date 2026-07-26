@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import platform
 import signal
@@ -132,7 +133,7 @@ _AGENT_DEFAULT_MODELS = {
 
 
 def _now_utc() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def _directory_sha256(root: Path) -> str:
@@ -628,12 +629,15 @@ def _write_stage_wrapper(
     default_task_id_literal = json.dumps(default_task_id)
     wrapper = '''#!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 
 DEFAULT_LOG_PATH = __DEFAULT_LOG_PATH__
@@ -645,28 +649,161 @@ parser = argparse.ArgumentParser(
     description="Run a command and append a measured MD benchmark stage record."
 )
 parser.add_argument("--stage", required=True)
+parser.add_argument(
+    "--phase",
+    choices=("exploratory", "confirmatory"),
+    help="Study phase for production or analysis records.",
+)
+parser.add_argument("--intent-id", default="")
+parser.add_argument(
+    "--event-id",
+    default="",
+    help="Stable ID referenced by study_index.json (generated when omitted).",
+)
+parser.add_argument(
+    "--intent-file",
+    default="",
+    help="Intent JSON to snapshot when --stage register_analysis_intent is used.",
+)
+parser.add_argument(
+    "--artifact",
+    action="append",
+    default=[],
+    help="Output artifact to hash after a successful command; repeat as needed.",
+)
+parser.add_argument(
+    "--input-artifact",
+    action="append",
+    default=[],
+    help=(
+        "Immutable input artifact to hash before and after the command; "
+        "repeat as needed."
+    ),
+)
 parser.add_argument("command", nargs=argparse.REMAINDER)
 args = parser.parse_args()
 command = list(args.command)
 if command and command[0] == "--":
     command = command[1:]
-if not command:
+is_intent_registration = args.stage == "register_analysis_intent"
+if not command and not is_intent_registration:
     parser.error("command is required after --")
+if is_intent_registration and not args.intent_file:
+    parser.error("--intent-file is required for register_analysis_intent")
+if args.phase == "confirmatory" and not args.intent_id:
+    parser.error("--intent-id is required for confirmatory records")
 
+
+def sha256_file(path_text):
+    path = Path(path_text)
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def artifact_snapshot(path_text):
+    path = Path(path_text)
+    snapshot = {"exists": False, "is_file": False}
+    try:
+        snapshot["exists"] = path.exists()
+        snapshot["is_file"] = path.is_file()
+        if snapshot["is_file"]:
+            snapshot["bytes"] = path.stat().st_size
+            snapshot["sha256"] = sha256_file(path)
+        elif snapshot["exists"]:
+            snapshot["error"] = "not a regular file"
+    except OSError as exc:
+        snapshot["error"] = str(exc)
+    return snapshot
+
+
+intent_sha256 = ""
+if args.intent_file:
+    intent_path = Path(args.intent_file)
+    if not intent_path.is_file():
+        parser.error(f"intent file not found: {intent_path}")
+    try:
+        intent_payload = json.loads(intent_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        parser.error(f"intent file is not valid JSON: {exc}")
+    file_intent_id = intent_payload.get("intent_id")
+    if not isinstance(file_intent_id, str) or not file_intent_id.strip():
+        parser.error("intent file requires a non-empty intent_id")
+    if args.intent_id and args.intent_id != file_intent_id:
+        parser.error("--intent-id differs from intent file intent_id")
+    args.intent_id = file_intent_id
+    intent_sha256 = sha256_file(intent_path)
+
+artifact_records = [
+    {
+        "path": str(Path(artifact_text)),
+        "before": artifact_snapshot(artifact_text),
+    }
+    for artifact_text in args.artifact
+]
+input_artifact_records = [
+    {
+        "path": str(Path(artifact_text)),
+        "before": artifact_snapshot(artifact_text),
+    }
+    for artifact_text in args.input_artifact
+]
 started = time.monotonic()
+started_at = datetime.now(timezone.utc).isoformat()
 exit_code = 127
 try:
-    completed = subprocess.run(command, check=False)
-    exit_code = int(completed.returncode)
+    if command:
+        completed = subprocess.run(command, check=False)
+        exit_code = int(completed.returncode)
+    else:
+        exit_code = 0
 finally:
     walltime = round(time.monotonic() - started, 6)
     record = {
+        "event_id": args.event_id or str(uuid.uuid4()),
         "stage": args.stage,
-        "command": " ".join(command),
+        "command": " ".join(command) if command else "register analysis intent",
         "exit_code": exit_code,
         "walltime_seconds": walltime,
+        "started_at": started_at,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
         "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
+    if args.phase:
+        record["phase"] = args.phase
+    if args.intent_id:
+        record["intent_id"] = args.intent_id
+    if intent_sha256:
+        record["intent_sha256"] = intent_sha256
+        record["intent_file"] = str(Path(args.intent_file))
+    for artifact in artifact_records:
+        after = artifact_snapshot(artifact["path"])
+        artifact["after"] = after
+        # Preserve the original post-command fields so existing harness-log
+        # readers remain compatible while new readers can audit before/after.
+        if isinstance(after.get("sha256"), str):
+            artifact["sha256"] = after["sha256"]
+            artifact["bytes"] = after["bytes"]
+        elif after.get("error"):
+            artifact["error"] = after["error"]
+        else:
+            artifact["error"] = "not a file after command"
+    if artifact_records:
+        record["artifacts"] = artifact_records
+    for artifact in input_artifact_records:
+        after = artifact_snapshot(artifact["path"])
+        artifact["after"] = after
+        if isinstance(after.get("sha256"), str):
+            artifact["sha256"] = after["sha256"]
+            artifact["bytes"] = after["bytes"]
+        elif after.get("error"):
+            artifact["error"] = after["error"]
+        else:
+            artifact["error"] = "not a file after command"
+    if input_artifact_records:
+        record["input_artifacts"] = input_artifact_records
     for env_name, key in (
         ("MDCLAW_BENCHMARK_RUN_ID", "run_id"),
         ("MDCLAW_BENCHMARK_TASK_ID", "task_id"),
@@ -713,22 +850,30 @@ def _normalize_mdclaw_runtime(mdclaw_runtime: str) -> str:
     return value
 
 
-def _write_mdclaw_runtime_wrapper(path: Path, *, mdclaw_runtime: str) -> None:
+def _write_mdclaw_runtime_wrapper(
+    path: Path,
+    *,
+    mdclaw_runtime: str,
+    source_root: Path | None = None,
+) -> None:
     """Write a task-local ``mdclaw`` wrapper pinned to one runtime family."""
     runtime = _normalize_mdclaw_runtime(mdclaw_runtime)
-    repo_root = shlex.quote(str(_REPO_ROOT))
+    source_root = (source_root or _REPO_ROOT).resolve()
+    source_root_text = shlex.quote(str(source_root))
+    runtime_root_text = shlex.quote(str(_REPO_ROOT.resolve()))
     wrapper = f'''#!/usr/bin/env bash
 set -euo pipefail
 
 RUNTIME={shlex.quote(runtime)}
-REPO_ROOT={repo_root}
+SOURCE_ROOT={source_root_text}
+RUNTIME_ROOT={runtime_root_text}
 
 if [[ "$RUNTIME" == "auto" ]]; then
   ENV_NAME="${{MDCLAW_CONDA_ENV:-mdclaw}}"
   HAS_SIF=0
   if [[ -n "${{MDCLAW_SIF:-}}" && -f "${{MDCLAW_SIF}}" ]]; then
     HAS_SIF=1
-  elif [[ -f "$REPO_ROOT/mdclaw.sif" ]]; then
+  elif [[ -f "$RUNTIME_ROOT/mdclaw.sif" ]]; then
     HAS_SIF=1
   fi
 
@@ -754,13 +899,13 @@ case "$RUNTIME" in
       exit 127
     }}
     ENV_NAME="${{MDCLAW_CONDA_ENV:-mdclaw}}"
-    export PYTHONPATH="$REPO_ROOT${{PYTHONPATH:+:$PYTHONPATH}}"
+    export PYTHONPATH="$SOURCE_ROOT${{PYTHONPATH:+:$PYTHONPATH}}"
     exec conda run --no-capture-output -n "$ENV_NAME" python -m mdclaw._cli "$@"
     ;;
   sif)
     SIF_PATH="${{MDCLAW_SIF:-}}"
     if [[ -z "$SIF_PATH" ]]; then
-      SIF_PATH="$REPO_ROOT/mdclaw.sif"
+      SIF_PATH="$RUNTIME_ROOT/mdclaw.sif"
     fi
     if [[ ! -f "$SIF_PATH" ]]; then
       echo "MDClaw runtime SIF requested, but no SIF was found." >&2
@@ -779,8 +924,8 @@ case "$RUNTIME" in
       NV_FLAG=(--nv)
     fi
     exec "$RUNNER" exec "${{NV_FLAG[@]}}" \
-      --bind "$REPO_ROOT:$REPO_ROOT" --pwd "$PWD" \
-      "$SIF_PATH" env PYTHONPATH="$REPO_ROOT${{PYTHONPATH:+:$PYTHONPATH}}" \
+      --bind "$SOURCE_ROOT:$SOURCE_ROOT" --pwd "$PWD" \
+      "$SIF_PATH" env PYTHONPATH="$SOURCE_ROOT${{PYTHONPATH:+:$PYTHONPATH}}" \
       python -m mdclaw._cli "$@"
     ;;
   docker)
@@ -798,7 +943,9 @@ case "$RUNTIME" in
       USER_FLAGS=(-u "$(id -u):$(id -g)")
     fi
     exec docker run --rm "${{GPU_FLAGS[@]}}" "${{USER_FLAGS[@]}}" \
-      -v "$PWD:$PWD" -w "$PWD" "$IMAGE" mdclaw "$@"
+      -v "$PWD:$PWD" -v "$SOURCE_ROOT:$SOURCE_ROOT:ro" -w "$PWD" \
+      -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONPATH="$SOURCE_ROOT" \
+      "$IMAGE" python -m mdclaw._cli "$@"
     ;;
   *)
     echo "Unsupported MDClaw runtime: $RUNTIME" >&2
@@ -809,6 +956,893 @@ esac
     ensure_directory(path.parent)
     _write_text(path, wrapper)
     path.chmod(0o755)
+
+
+def _execute_v2_confirmatory_request(
+    *,
+    task_id: str,
+    run_id: str,
+    private_dir: Path,
+    solver_task_dir: Path,
+    solver_work_dir: Path,
+    solver_submission: Path,
+    task_run_dir: Path,
+    mdclaw_wrapper_path: Path,
+    runner_source_path: Path,
+    runner_source_sha256: str,
+    run_env: dict[str, str],
+    task_started_wall: float,
+    timeout_seconds: Optional[float],
+) -> Optional[dict[str, Any]]:
+    """Freeze an S01 intent and execute its structured MD request as runner.
+
+    The evaluated agent creates pending MDClaw ``prod`` nodes and a small
+    ``confirmatory_request.json``.  It does not execute those nodes.  The
+    benchmark runner freezes the exact analysis-intent bytes, runs only the
+    released ``mdclaw_openmm@1`` adapter, and records a scorer-side ledger.
+    """
+
+    request_path = solver_task_dir / "confirmatory_request.json"
+    if not request_path.is_file():
+        return None
+    intent_path = solver_submission / "analysis_intent.json"
+    ledger_errors: list[dict[str, str]] = []
+    request = _read_json_object(request_path, ledger_errors, "confirmatory_request")
+    intent = _read_json_object(intent_path, ledger_errors, "analysis_intent")
+    task = _read_json_object(
+        private_dir / "tasks" / task_id / "task.json",
+        ledger_errors,
+        "private_task",
+    )
+    scientific_target = task.get("scientific_target")
+    if not isinstance(scientific_target, dict):
+        scientific_target = {}
+        ledger_errors.append(
+            {
+                "code": "scientific_target_missing",
+                "message": "grounded_correct_v2 task lacks scientific_target",
+            }
+        )
+    current_runner_source_sha256 = _directory_sha256(runner_source_path)
+    if (
+        not runner_source_sha256
+        or current_runner_source_sha256 != runner_source_sha256
+    ):
+        ledger_errors.append(
+            {
+                "code": "runner_source_hash_mismatch",
+                "message": (
+                    "the runner-owned MDClaw source snapshot changed after "
+                    "the benchmark began"
+                ),
+            }
+        )
+    ledger_errors.extend(
+        _v2_intent_freeze_errors(
+            task_id=task_id,
+            intent=intent,
+            scientific_target=scientific_target,
+        )
+    )
+    if request.get("task_id") != task_id:
+        ledger_errors.append(
+            {
+                "code": "confirmatory_request_task_mismatch",
+                "message": "confirmatory_request.task_id does not match the task",
+            }
+        )
+    runs = request.get("runs")
+    if not isinstance(runs, list) or not runs:
+        runs = []
+        ledger_errors.append(
+            {
+                "code": "confirmatory_request_runs_missing",
+                "message": "confirmatory_request.runs must be a non-empty list",
+            }
+        )
+    normalized_runs = _normalize_v2_confirmatory_requests(
+        runs,
+        solver_work_dir=solver_work_dir,
+        errors=ledger_errors,
+    )
+    minimum_duration_ns = (
+        scientific_target.get("primary_evidence_contract", {})
+        .get("fixed_observable_parameters", {})
+        .get("minimum_confirmatory_time_ns_per_condition", 0.0)
+    )
+    try:
+        minimum_duration_ns = float(minimum_duration_ns)
+    except (TypeError, ValueError):
+        minimum_duration_ns = 0.0
+        ledger_errors.append(
+            {
+                "code": "minimum_confirmatory_time_invalid",
+                "message": "public minimum confirmatory time is invalid",
+            }
+        )
+    for role in ("reference", "variant"):
+        role_duration = sum(
+            float(spec["simulation_time_ns"])
+            for spec in normalized_runs
+            if spec["condition_role"] == role
+        )
+        if role_duration < minimum_duration_ns:
+            ledger_errors.append(
+                {
+                    "code": f"{role}_requested_duration_insufficient",
+                    "message": (
+                        f"{role} requests {role_duration:g} ns; public minimum "
+                        f"is {minimum_duration_ns:g} ns"
+                    ),
+                }
+            )
+    _preflight_v2_pending_inputs(normalized_runs, ledger_errors)
+
+    frozen_at = _now_utc()
+    frozen_intent_path = task_run_dir / "frozen_analysis_intent.json"
+    intent_sha256: Optional[str] = None
+    if intent_path.is_file():
+        frozen_intent_path.write_bytes(intent_path.read_bytes())
+        intent_sha256 = hashlib.sha256(intent_path.read_bytes()).hexdigest()
+
+    events: list[dict[str, Any]] = []
+    from mdclaw.benchmark.study_execution_v2 import (
+        MDCLAW_OPENMM_ADAPTER,
+        RUNNER_EXECUTION_KIND,
+        inspect_mdclaw_production_node_v2,
+    )
+
+    if not ledger_errors and intent_sha256 is not None:
+        for index, spec in enumerate(normalized_runs):
+            remaining = None
+            if timeout_seconds is not None:
+                remaining = timeout_seconds - (
+                    time.monotonic() - task_started_wall
+                )
+                if remaining <= 0:
+                    ledger_errors.append(
+                        {
+                            "code": "confirmatory_execution_budget_exhausted",
+                            "message": "no task walltime remained for confirmatory MD",
+                        }
+                    )
+                    break
+            stdout_path = (
+                task_run_dir / f"confirmatory_{index + 1:03d}.stdout.log"
+            )
+            stderr_path = (
+                task_run_dir / f"confirmatory_{index + 1:03d}.stderr.log"
+            )
+            command = [
+                str(mdclaw_wrapper_path),
+                "run_production",
+                "--job-dir",
+                str(spec["job_dir"]),
+                "--node-id",
+                spec["node_id"],
+                "--simulation-time-ns",
+                str(spec["simulation_time_ns"]),
+                "--temperature-kelvin",
+                str(
+                    scientific_target.get("required_conditions", {}).get(
+                        "temperature_k", 300.0
+                    )
+                ),
+                "--pressure-bar",
+                str(
+                    10.0
+                    * float(
+                        scientific_target.get("required_conditions", {}).get(
+                            "reference_pressure_mpa"
+                            if spec["condition_role"] == "reference"
+                            else "test_pressure_mpa"
+                        )
+                    )
+                ),
+            ]
+            started_at = _now_utc()
+            started_wall = time.monotonic()
+            completed = _run_runner_owned_command(
+                command,
+                cwd=solver_task_dir.parent.parent,
+                env=run_env,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                timeout_seconds=remaining,
+            )
+            completed_at = _now_utc()
+            walltime = round(time.monotonic() - started_wall, 6)
+            if completed["exit_code"] != 0:
+                ledger_errors.append(
+                    {
+                        "code": "confirmatory_adapter_failed",
+                        "message": (
+                            f"runner confirmatory run {spec['run_id']!r} exited "
+                            f"{completed['exit_code']}"
+                        ),
+                    }
+                )
+            event = inspect_mdclaw_production_node_v2(
+                job_dir=spec["job_dir"],
+                node_id=spec["node_id"],
+                run_id=spec["run_id"],
+                production_event_id=spec["production_event_id"],
+                condition_role=spec["condition_role"],
+                scientific_target=scientific_target,
+                intent_sha256=intent_sha256,
+                started_at=started_at,
+                completed_at=completed_at,
+                walltime_seconds=walltime,
+            )
+            input_errors = _v2_preflight_input_binding_errors(
+                spec=spec,
+                event=event,
+            )
+            if input_errors:
+                event["reason_codes"] = list(
+                    dict.fromkeys(
+                        [
+                            *(event.get("reason_codes") or []),
+                            *input_errors,
+                        ]
+                    )
+                )
+                event["valid"] = False
+            event["adapter_exit_code"] = completed["exit_code"]
+            event["adapter_timed_out"] = completed["timed_out"]
+            event["runner_sequence"] = index + 1
+            event["stdout"] = str(stdout_path)
+            event["stderr"] = str(stderr_path)
+            events.append(event)
+            if event.get("valid") is not True:
+                ledger_errors.append(
+                    {
+                        "code": "confirmatory_node_inspection_failed",
+                        "message": (
+                            f"run {spec['run_id']!r}: "
+                            + ", ".join(event.get("reason_codes") or [])
+                        ),
+                    }
+                )
+
+    within_budget = bool(
+        timeout_seconds is None
+        or (time.monotonic() - task_started_wall) <= timeout_seconds
+    )
+    ledger = {
+        "schema_version": "1.0",
+        "kind": RUNNER_EXECUTION_KIND,
+        "recorded_by": "mdclaw_benchmark_runner",
+        "run_id": run_id,
+        "task_id": task_id,
+        "adapter_id": MDCLAW_OPENMM_ADAPTER,
+        "adapter_launcher": {
+            "path": str(mdclaw_wrapper_path.resolve()),
+            "sha256": hashlib.sha256(
+                mdclaw_wrapper_path.read_bytes()
+            ).hexdigest(),
+        },
+        "adapter_source": {
+            "path": str(runner_source_path.resolve()),
+            "sha256": current_runner_source_sha256,
+            "expected_sha256": runner_source_sha256,
+        },
+        "within_task_budget": within_budget,
+        "frozen_intent": {
+            "sha256": intent_sha256,
+            "frozen_at": frozen_at,
+            "runner_sequence": 0,
+            "private_copy": str(frozen_intent_path),
+        },
+        "request_sha256": (
+            hashlib.sha256(request_path.read_bytes()).hexdigest()
+            if request_path.is_file()
+            else None
+        ),
+        "events": events,
+        "success": bool(
+            intent_sha256
+            and within_budget
+            and events
+            and not ledger_errors
+            and all(event.get("valid") is True for event in events)
+        ),
+        "errors": ledger_errors,
+    }
+    _write_json(task_run_dir / "study_execution.json", ledger)
+    _write_json(
+        solver_task_dir / "confirmatory_execution.json",
+        {
+            "schema_version": "1.0",
+            "task_id": task_id,
+            "success": ledger["success"],
+            "frozen_intent_sha256": intent_sha256,
+            "events": events,
+            "errors": ledger_errors,
+            "next_step": (
+                "Use only these runner-produced artifacts for confirmatory "
+                "analysis, then finish submission/."
+            ),
+        },
+    )
+    return ledger
+
+
+def _v2_intent_freeze_errors(
+    *,
+    task_id: str,
+    intent: dict[str, Any],
+    scientific_target: dict[str, Any],
+) -> list[dict[str, str]]:
+    errors: list[dict[str, str]] = []
+    try:
+        from mdclaw.benchmark.models import AnalysisIntent
+
+        AnalysisIntent.model_validate(intent)
+    except Exception as exc:  # noqa: BLE001 -- authored JSON boundary
+        return [
+            {
+                "code": "analysis_intent_model_invalid",
+                "message": str(exc),
+            }
+        ]
+    if intent.get("task_id") != task_id:
+        errors.append(
+            {
+                "code": "analysis_intent_task_mismatch",
+                "message": "analysis_intent.task_id does not match the task",
+            }
+        )
+    if intent.get("target_estimand") != scientific_target.get("estimand"):
+        errors.append(
+            {
+                "code": "analysis_intent_estimand_mismatch",
+                "message": "analysis_intent target_estimand is not the public estimand",
+            }
+        )
+    analyses = intent.get("primary_analyses") or []
+    estimands = [
+        item
+        for item in analyses
+        if isinstance(item, dict)
+        and item.get("analysis_role", "estimand") == "estimand"
+    ]
+    contract = scientific_target.get("primary_evidence_contract")
+    if not isinstance(contract, dict) or len(estimands) != 1:
+        errors.append(
+            {
+                "code": "primary_estimand_contract_invalid",
+                "message": (
+                    "one estimand analysis and a public primary evidence "
+                    "contract are required"
+                ),
+            }
+        )
+        return errors
+    analysis = estimands[0]
+    if analysis.get("verifier_id") != contract.get("verifier_id"):
+        errors.append(
+            {
+                "code": "primary_verifier_mismatch",
+                "message": "estimand verifier differs from the public contract",
+            }
+        )
+    if analysis.get("outcome_mapping") != contract.get("outcome_mapping"):
+        errors.append(
+            {
+                "code": "task_outcome_mapping_mismatch",
+                "message": "outcome mapping differs from the public contract",
+            }
+        )
+    expected_rule = contract.get("decision_rule")
+    actual_rule = analysis.get("decision_rule")
+    if not _same_v2_decision_rule(actual_rule, expected_rule):
+        errors.append(
+            {
+                "code": "task_decision_rule_mismatch",
+                "message": "decision rule differs from the public contract",
+            }
+        )
+    fixed = contract.get("fixed_observable_parameters")
+    observable = analysis.get("observable")
+    parameters = _v2_observable_parameters(
+        observable if isinstance(observable, dict) else {}
+    )
+    if isinstance(fixed, dict):
+        for key, value in fixed.items():
+            if parameters.get(key) != value:
+                errors.append(
+                    {
+                        "code": "task_observable_parameter_mismatch",
+                        "message": (
+                            f"observable parameter {key!r} must equal {value!r}"
+                        ),
+                    }
+                )
+        unexpected = sorted(
+            set(parameters) - set(fixed) - {"region_selection"}
+        )
+        if unexpected:
+            errors.append(
+                {
+                    "code": "task_observable_parameters_unexpected",
+                    "message": (
+                        "primary observable has non-contract parameters "
+                        f"{unexpected!r}"
+                    ),
+                }
+            )
+    required_controls = {
+        value
+        for value in scientific_target.get("required_control_verifiers") or []
+        if isinstance(value, str)
+    }
+    supplied_controls = {
+        item.get("verifier_id")
+        for item in analyses
+        if isinstance(item, dict)
+        and item.get("analysis_role") == "validity_control"
+    }
+    if not required_controls <= supplied_controls:
+        errors.append(
+            {
+                "code": "required_control_analysis_missing",
+                "message": "analysis intent omits a required validity control",
+            }
+        )
+    for control_contract in (
+        scientific_target.get("control_evidence_contracts") or []
+    ):
+        if not isinstance(control_contract, dict):
+            continue
+        verifier_id = control_contract.get("verifier_id")
+        matching = [
+            item
+            for item in analyses
+            if isinstance(item, dict)
+            and item.get("analysis_role") == "validity_control"
+            and item.get("verifier_id") == verifier_id
+        ]
+        if len(matching) != 1:
+            errors.append(
+                {
+                    "code": "control_analysis_count_mismatch",
+                    "message": (
+                        f"task-owned control {verifier_id!r} requires exactly "
+                        "one validity-control analysis"
+                    ),
+                }
+            )
+            continue
+        control = matching[0]
+        if control.get("outcome_mapping") != control_contract.get(
+            "outcome_mapping"
+        ):
+            errors.append(
+                {
+                    "code": "task_control_outcome_mapping_mismatch",
+                    "message": (
+                        f"control {verifier_id!r} outcome mapping differs "
+                        "from the public contract"
+                    ),
+                }
+            )
+        if not _same_v2_decision_rule(
+            control.get("decision_rule"),
+            control_contract.get("decision_rule"),
+        ):
+            errors.append(
+                {
+                    "code": "task_control_decision_rule_mismatch",
+                    "message": (
+                        f"control {verifier_id!r} decision rule differs "
+                        "from the public contract"
+                    ),
+                }
+            )
+        control_parameters = _v2_observable_parameters(
+            control.get("observable")
+            if isinstance(control.get("observable"), dict)
+            else {}
+        )
+        for key, value in (
+            control_contract.get("fixed_observable_parameters") or {}
+        ).items():
+            if control_parameters.get(key) != value:
+                errors.append(
+                    {
+                        "code": "task_control_parameter_mismatch",
+                        "message": (
+                            f"control {verifier_id!r} parameter {key!r} must "
+                            f"equal {value!r}"
+                        ),
+                    }
+                )
+        unexpected_control_parameters = sorted(
+            set(control_parameters)
+            - set(
+                control_contract.get("fixed_observable_parameters") or {}
+            )
+        )
+        if unexpected_control_parameters:
+            errors.append(
+                {
+                    "code": "task_control_parameters_unexpected",
+                    "message": (
+                        f"control {verifier_id!r} has non-contract parameters "
+                        f"{unexpected_control_parameters!r}"
+                    ),
+                }
+            )
+    return errors
+
+
+def _normalize_v2_confirmatory_requests(
+    runs: list[Any],
+    *,
+    solver_work_dir: Path,
+    errors: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    seen_run_ids: set[str] = set()
+    seen_event_ids: set[str] = set()
+    seen_nodes: set[tuple[str, str]] = set()
+    for index, item in enumerate(runs):
+        if not isinstance(item, dict):
+            errors.append(
+                {
+                    "code": "confirmatory_request_item_invalid",
+                    "message": f"runs[{index}] must be an object",
+                }
+            )
+            continue
+        run_id = item.get("run_id")
+        event_id = item.get("production_event_id")
+        node_id = item.get("node_id")
+        role = item.get("condition_role")
+        raw_job_dir = item.get("job_dir")
+        simulation_time_ns = item.get("simulation_time_ns")
+        if not all(
+            isinstance(value, str) and value
+            for value in (run_id, event_id, node_id, raw_job_dir)
+        ) or role not in {"reference", "variant"} or (
+            isinstance(simulation_time_ns, bool)
+            or not isinstance(simulation_time_ns, (int, float))
+            or not math.isfinite(float(simulation_time_ns))
+            or float(simulation_time_ns) <= 0.0
+        ):
+            errors.append(
+                {
+                    "code": "confirmatory_request_fields_invalid",
+                    "message": (
+                        f"runs[{index}] requires run_id, production_event_id, "
+                        "condition_role, job_dir, node_id, and a positive "
+                        "simulation_time_ns"
+                    ),
+                }
+            )
+            continue
+        job_dir = Path(raw_job_dir)
+        if not job_dir.is_absolute():
+            job_dir = solver_work_dir / job_dir
+        job_dir = job_dir.resolve()
+        try:
+            job_dir.relative_to(solver_work_dir.resolve())
+        except ValueError:
+            errors.append(
+                {
+                    "code": "confirmatory_job_dir_outside_work_dir",
+                    "message": f"runs[{index}].job_dir must be under work_dir",
+                }
+            )
+            continue
+        if Path(node_id).name != node_id or "/" in node_id or "\\" in node_id:
+            errors.append(
+                {
+                    "code": "confirmatory_node_id_invalid",
+                    "message": f"runs[{index}].node_id is unsafe",
+                }
+            )
+            continue
+        node_json = job_dir / "nodes" / node_id / "node.json"
+        node = {}
+        try:
+            node = json.loads(node_json.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+        if (
+            not isinstance(node, dict)
+            or node.get("node_type") != "prod"
+            or node.get("status") != "pending"
+        ):
+            errors.append(
+                {
+                    "code": "confirmatory_node_not_pending_prod",
+                    "message": (
+                        f"runs[{index}] must reference a pending MDClaw prod node"
+                    ),
+                }
+            )
+            continue
+        if run_id in seen_run_ids or event_id in seen_event_ids:
+            errors.append(
+                {
+                    "code": "confirmatory_request_id_duplicate",
+                    "message": "run_id and production_event_id must be unique",
+                }
+            )
+            continue
+        node_key = (str(job_dir), node_id)
+        if node_key in seen_nodes:
+            errors.append(
+                {
+                    "code": "confirmatory_node_reused",
+                    "message": "each confirmatory run requires a distinct prod node",
+                }
+            )
+            continue
+        seen_run_ids.add(run_id)
+        seen_event_ids.add(event_id)
+        seen_nodes.add(node_key)
+        output.append(
+            {
+                "run_id": run_id,
+                "production_event_id": event_id,
+                "condition_role": role,
+                "job_dir": job_dir,
+                "node_id": node_id,
+                "simulation_time_ns": float(simulation_time_ns),
+            }
+        )
+    if {item["condition_role"] for item in output} != {"reference", "variant"}:
+        errors.append(
+            {
+                "code": "confirmatory_condition_pair_missing",
+                "message": "request requires reference and variant pressure runs",
+            }
+        )
+    return output
+
+
+def _preflight_v2_pending_inputs(
+    runs: list[dict[str, Any]],
+    errors: list[dict[str, str]],
+) -> None:
+    """Reject mismatched paired inputs before spending the MD budget."""
+
+    from mdclaw.node.inputs import resolve_node_inputs
+
+    paired_hashes: dict[str, set[str]] = {
+        "base_system": set(),
+        "topology": set(),
+    }
+    for spec in runs:
+        resolved = resolve_node_inputs(
+            str(spec["job_dir"]),
+            spec["node_id"],
+            "prod",
+        )
+        if resolved.get("input_resolution_error"):
+            errors.append(
+                {
+                    "code": "confirmatory_inputs_unresolved",
+                    "message": (
+                        f"run {spec['run_id']!r} production inputs do not resolve"
+                    ),
+                }
+            )
+            continue
+        resolved_inputs = (
+            (
+                "base_system",
+                "system_xml_file",
+                "confirmatory_base_system_missing",
+            ),
+            (
+                "topology",
+                "topology_pdb_file",
+                "confirmatory_topology_missing",
+            ),
+            (
+                "start_state",
+                "restart_from",
+                "confirmatory_start_state_missing",
+            ),
+        )
+        pinned_hashes: dict[str, str] = {}
+        for artifact_name, field, code in resolved_inputs:
+            path = (
+                resolved.get(field)
+                if field != "restart_from"
+                else resolved.get("restart_from")
+                or resolved.get("state_xml_file")
+            )
+            candidate = Path(path).resolve() if isinstance(path, str) else None
+            if candidate is None or not candidate.is_file():
+                errors.append(
+                    {
+                        "code": code,
+                        "message": (
+                            f"run {spec['run_id']!r} lacks resolved {field}"
+                        ),
+                    }
+                )
+            else:
+                digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+                pinned_hashes[artifact_name] = digest
+                if artifact_name in paired_hashes:
+                    paired_hashes[artifact_name].add(digest)
+        spec["preflight_input_sha256"] = pinned_hashes
+    if len(paired_hashes["base_system"]) > 1:
+        errors.append(
+            {
+                "code": "paired_chemistry_mismatch",
+                "message": (
+                    "paired confirmatory nodes must resolve the same "
+                    "base system.xml bytes"
+                ),
+            }
+        )
+    if len(paired_hashes["topology"]) > 1:
+        errors.append(
+            {
+                "code": "paired_topology_mismatch",
+                "message": (
+                    "paired confirmatory nodes must resolve byte-identical "
+                    "topology.pdb files"
+                ),
+            }
+        )
+
+
+def _v2_preflight_input_binding_errors(
+    *,
+    spec: dict[str, Any],
+    event: dict[str, Any],
+) -> list[str]:
+    """Bind the inspected production inputs to their pre-run bytes."""
+
+    pinned = spec.get("preflight_input_sha256")
+    observed = event.get("input_artifacts")
+    if not isinstance(pinned, dict) or not isinstance(observed, dict):
+        return ["confirmatory_preflight_input_binding_missing"]
+    errors: list[str] = []
+    for artifact_name in ("base_system", "topology", "start_state"):
+        observed_record = observed.get(artifact_name)
+        observed_hash = (
+            observed_record.get("sha256")
+            if isinstance(observed_record, dict)
+            else None
+        )
+        if (
+            not isinstance(pinned.get(artifact_name), str)
+            or observed_hash != pinned.get(artifact_name)
+        ):
+            errors.append(
+                f"confirmatory_{artifact_name}_changed_after_preflight"
+            )
+    return errors
+
+
+def _run_runner_owned_command(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    stdout_path: Path,
+    stderr_path: Path,
+    timeout_seconds: Optional[float],
+) -> dict[str, Any]:
+    process_kwargs: dict[str, Any] = {}
+    if os.name == "posix":
+        process_kwargs["preexec_fn"] = os.setsid
+    timed_out = False
+    with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            stdout=stdout,
+            stderr=stderr,
+            **process_kwargs,
+        )
+        try:
+            exit_code = int(process.wait(timeout=timeout_seconds))
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            exit_code = 124
+            _terminate_process_tree(process)
+            stderr.write(
+                "\n[mdclaw benchmark runner] confirmatory adapter timed out\n"
+            )
+    return {"exit_code": exit_code, "timed_out": timed_out}
+
+
+def _confirmatory_runner_env(base_env: dict[str, str]) -> dict[str, str]:
+    """Remove solver-controlled command lookup from confirmatory execution."""
+
+    trusted_path = (
+        "/opt/anaconda3/bin:/usr/local/sbin:/usr/local/bin:"
+        "/usr/sbin:/usr/bin:/sbin:/bin"
+    )
+    environment = dict(base_env)
+    environment["PATH"] = trusted_path
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    for key in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONSTARTUP",
+        "PYTHONINSPECT",
+        "BASH_ENV",
+        "ENV",
+        "LD_PRELOAD",
+        "MDCLAW_BENCHMARK_STAGE_WRAPPER",
+        "MDCLAW_BENCHMARK_MDCLAW",
+        "MDCLAW_BENCHMARK_HARNESS_LOG",
+    ):
+        environment.pop(key, None)
+    return environment
+
+
+def _read_json_object(
+    path: Path,
+    errors: list[dict[str, str]],
+    label: str,
+) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        errors.append(
+            {
+                "code": f"{label}_invalid",
+                "message": f"{label} is missing or invalid JSON: {exc}",
+            }
+        )
+        return {}
+    if not isinstance(payload, dict):
+        errors.append(
+            {
+                "code": f"{label}_invalid",
+                "message": f"{label} must contain a JSON object",
+            }
+        )
+        return {}
+    return payload
+
+
+def _same_v2_decision_rule(actual: Any, expected: Any) -> bool:
+    if not isinstance(actual, dict) or not isinstance(expected, dict):
+        return False
+    keys = {
+        "kind",
+        "confidence_level",
+        "equivalence_margin",
+        "unit",
+        "parameters",
+    }
+    return {
+        key: actual.get(key, {} if key == "parameters" else None)
+        for key in keys
+    } == {
+        key: expected.get(key, {} if key == "parameters" else None)
+        for key in keys
+    }
+
+
+def _v2_observable_parameters(observable: dict[str, Any]) -> dict[str, Any]:
+    nested = observable.get("parameters")
+    parameters = dict(nested) if isinstance(nested, dict) else {}
+    for key, value in observable.items():
+        if key not in {
+            "parameters",
+            "metric",
+            "name",
+            "unit",
+            "description",
+            "verifier_id",
+        } and key not in parameters:
+            parameters[key] = value
+    return parameters
 
 
 def _mdclaw_cli_instruction(
@@ -839,22 +1873,52 @@ def _mdclaw_cli_instruction(
 def _submission_packaging_instruction(
     public_dir: Path,
     primary_score: str,
+    evaluation_protocol: Optional[str] = None,
 ) -> dict[str, Any]:
     """Agent-visible final packaging contract for one task."""
     if primary_score in _STUDY_PRIMARY_SCORES:
-        writes = [
-            "manifest.json",
-            "provenance.json",
-            "evidence_report.json",
-        ]
-        if primary_score == "scientific_answer":
-            writes.extend([
-                "metrics.json",
-                "manifest-declared comparative trajectories",
-                "manifest-declared matching topologies",
-            ])
+        if (
+            primary_score == "scientific_answer"
+            and evaluation_protocol == "grounded_correct_v2"
+        ):
+            writes = [
+                "manifest.json",
+                "analysis_intent.json",
+                "study_index.json",
+                "evidence_report.json",
+                (
+                    "all system topologies and exploratory/confirmatory "
+                    "trajectories declared by study_index"
+                ),
+                "all raw analysis artifacts cited by evidence_report",
+            ]
         else:
-            writes.extend(["methods.md", "decision_log.jsonl"])
+            writes = [
+                "manifest.json",
+                "provenance.json",
+                "evidence_report.json",
+            ]
+            if primary_score == "scientific_answer":
+                writes.append("metrics.json")
+                if evaluation_protocol == "grounded_correct_v1":
+                    writes.extend([
+                        "study_index.json",
+                        (
+                            "all reference/variant replica topologies declared "
+                            "by study_index"
+                        ),
+                        (
+                            "all reference/variant trajectories declared by "
+                            "study_index"
+                        ),
+                    ])
+                else:
+                    writes.extend([
+                        "manifest-declared comparative trajectories",
+                        "manifest-declared matching topologies",
+                    ])
+            else:
+                writes.extend(["methods.md", "decision_log.jsonl"])
         return {
             "standalone_packager": None,
             "mdclaw_packager": None,
@@ -927,12 +1991,23 @@ def _task_primary_score(base_dir: Path, task_id: str) -> str:
         return "preparation"
 
 
+def _task_evaluation_protocol(base_dir: Path, task_id: str) -> Optional[str]:
+    """Read a task's optional evaluation protocol without exposing task JSON."""
+    try:
+        payload = json.loads((base_dir / "tasks" / task_id / "task.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    value = payload.get("evaluation_protocol")
+    return str(value) if isinstance(value, str) and value else None
+
+
 def _task_agent_prompt(
     task_id: str,
     instruction_file: Path,
     *,
     skills_available: bool = False,
     primary_score: str = "preparation",
+    evaluation_protocol: Optional[str] = None,
 ) -> str:
     """Short prompt intended for the evaluated task agent."""
     if primary_score == "preparation":
@@ -954,8 +2029,9 @@ def _task_agent_prompt(
         )
     # Artifact guidance is suite-aware: preparation tasks submit a raw OpenMM
     # artifact bundle the evaluator normalizes; study tasks author their own
-    # manifest/metrics/provenance/evidence and (for scientific-answer tasks)
-    # comparative trajectories, which are scored as written.
+    # manifest/evidence files named by their protocol and (for
+    # scientific-answer tasks) comparative trajectories, which are scored as
+    # written.
     if primary_score == "evidence_communication":
         artifact_guidance = (
             "You author every submission file yourself (scored as written, not "
@@ -963,13 +2039,32 @@ def _task_agent_prompt(
             "provenance.json, and decision_log.jsonl. "
         )
     elif primary_score == "scientific_answer":
-        artifact_guidance = (
-            "You author every submission file yourself (scored as written, not "
-            "regenerated): manifest.json, metrics.json, provenance.json, "
-            "evidence_report.json, plus comparative reference/variant production "
-            "trajectories under outputs.trajectories with matching topologies "
-            "under outputs.topology (reference first, variant second). "
-        )
+        if evaluation_protocol == "grounded_correct_v1":
+            artifact_guidance = (
+                "You author every submission file yourself (scored as written, "
+                "not regenerated): manifest.json, metrics.json, provenance.json, "
+                "evidence_report.json, and study_index.json. The study index "
+                "assigns every topology and trajectory segment to a named "
+                "reference or variant replica. "
+            )
+        elif evaluation_protocol == "grounded_correct_v2":
+            artifact_guidance = (
+                "You author every submission file yourself: manifest.json, "
+                "analysis_intent.json, study_index.json, evidence_report.json, "
+                "and all indexed raw/replayable artifacts. Keep prior_expectation "
+                "separate from the MD-only verdict. Confirmatory topology and "
+                "trajectory bytes must match confirmatory_execution.json; the "
+                "runner-owned copies and hashes are authoritative. "
+            )
+        else:
+            artifact_guidance = (
+                "You author every submission file yourself (scored as written, "
+                "not regenerated): manifest.json, metrics.json, provenance.json, "
+                "evidence_report.json, plus comparative reference/variant "
+                "production trajectories under outputs.trajectories with "
+                "matching topologies under outputs.topology (reference first, "
+                "variant second). "
+            )
     else:
         artifact_guidance = (
             "Put raw artifacts in submission/: "
@@ -995,10 +2090,26 @@ def _task_agent_prompt(
         "Bare `mdclaw ...` is auto-recorded; do not wrap it."
         if primary_score == "preparation"
         else (
+            "Run every production command listed in study_index through the "
+            "stage wrapper only when you want exploratory provenance. For "
+            "confirmatory work, create pending MDClaw prod nodes, write the "
+            "task_instructions.confirmatory_execution.request_file after "
+            "analysis_intent.json, and exit without running those nodes. The "
+            "runner freezes the intent, executes the certified adapter, and "
+            "resumes you with confirmatory_execution.result_file. "
+            if evaluation_protocol == "grounded_correct_v2"
+            else
             "For non-MDClaw commands, use the stage wrapper with the matching "
             "required stage from submission_contract.json. Bare `mdclaw ...` "
             "commands are recorded automatically, so do not double-wrap them."
         )
+    )
+    navigation_guidance = (
+        "Start with prompt_file and submission_checklist. Use "
+        "submission_contract.json only as a machine reference; inspect needed "
+        "keys, not the stage-wrapper source. "
+        if evaluation_protocol == "grounded_correct_v2"
+        else ""
     )
     return (
         f"# MD Benchmark Task Agent: {task_id}\n\n"
@@ -1007,6 +2118,7 @@ def _task_agent_prompt(
         f"Use MD. {skill_line}\n\n"
         "Read task_instructions.json, including submission_packaging, "
         "submission_preflight, and runtime_budget (the harness deadline). "
+        f"{navigation_guidance}"
         "Use work_dir for study/job/work files. Write final outputs only to "
         "exact submission_dir path, never work_dir/submission.\n\n"
         "Solve only this task. Do not inspect siblings, categorize suite, "
@@ -1581,7 +2693,7 @@ def _scan_mdclaw_progress(task_workspace_dir: Path) -> dict[str, Any]:
                 "progress_file": str(path),
                 "job_dir": str(path.parent),
                 "node_id": str(node_id),
-                "node_type": node.get("node_type"),
+                "node_type": node.get("node_type") or node.get("type"),
                 "status": status,
             }
             if status in active_statuses:
@@ -1682,7 +2794,10 @@ def _should_retry_agent_finalization(
     failure_class = finalization.get("failure_class")
     if failure_class == "background_processes":
         return False
-    if failure_class == "incomplete_running_work":
+    if failure_class in {
+        "incomplete_running_work",
+        "confirmatory_analysis_pending",
+    }:
         return allow_incomplete_work_retry
     progress = finalization.get("mdclaw_progress")
     if isinstance(progress, dict) and progress.get("active_node_count"):
@@ -1957,6 +3072,7 @@ def prepare_benchmark_run(
             "mdclaw-cli-only",
         }
         primary_score = _task_primary_score(dataset, task_id)
+        evaluation_protocol = _task_evaluation_protocol(dataset, task_id)
         declared_time_limit, is_study = _task_time_budget(dataset, task_id)
         effective_time_limit = _effective_task_walltime(
             declared_time_limit,
@@ -1968,7 +3084,22 @@ def prepare_benchmark_run(
             f"minimization: {stage_wrapper_path} --stage min -- <command>"
             if primary_score == "preparation"
             else (
-                f"{stage_wrapper_path} --stage <required_stage> -- <command>"
+                (
+                    f"{stage_wrapper_path} --stage prod --phase exploratory "
+                    "--event-id <stable-event-id> --input-artifact <topology> "
+                    "--artifact <trajectory> -- "
+                    "<exploratory-command>; "
+                    f"{stage_wrapper_path} --stage register_analysis_intent "
+                    "--intent-file <analysis_intent.json>; then "
+                    f"{stage_wrapper_path} --stage prod --phase confirmatory "
+                    "--intent-id <intent-id> --event-id <stable-event-id> "
+                    "--input-artifact <topology> --artifact "
+                    "<trajectory-or-segment> [--artifact <segment> ...] "
+                    "-- <production-command>; also record every other required "
+                    "stage from submission_contract.json"
+                )
+                if evaluation_protocol == "grounded_correct_v2"
+                else f"{stage_wrapper_path} --stage <required_stage> -- <command>"
             )
         )
         instruction = {
@@ -2009,6 +3140,7 @@ def prepare_benchmark_run(
             "submission_packaging": _submission_packaging_instruction(
                 public_dir,
                 primary_score,
+                evaluation_protocol,
             ),
             "submission_preflight": _submission_preflight_instruction(
                 public_dir,
@@ -2039,6 +3171,7 @@ def prepare_benchmark_run(
                 task_id,
                 task_instruction_path,
                 primary_score=primary_score,
+                evaluation_protocol=evaluation_protocol,
             ),
         )
         _write_json(task_run_dir / "harness_instructions.json", harness_instruction)
@@ -2544,6 +3677,18 @@ def _run_one_benchmark_agent_task(
     )
 
     primary_score = _task_primary_score(private_dir, task_id)
+    evaluation_protocol = _task_evaluation_protocol(private_dir, task_id)
+    runner_source_path = task_run_dir / "runner_source"
+    runner_source_sha256 = ""
+    if evaluation_protocol == "grounded_correct_v2":
+        if runner_source_path.exists():
+            shutil.rmtree(runner_source_path)
+        shutil.copytree(
+            _REPO_ROOT / "mdclaw",
+            runner_source_path / "mdclaw",
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+        runner_source_sha256 = _directory_sha256(runner_source_path)
     task_limit, is_study = _task_time_budget(private_dir, task_id)
     effective_walltime_minutes = _effective_task_walltime(
         task_limit,
@@ -2561,8 +3706,20 @@ def _run_one_benchmark_agent_task(
         "bare mdclaw commands are recorded automatically"
         if primary_score == "preparation"
         else (
-            f"{stage_wrapper_path} --stage <required_stage> -- <command>; "
-            "bare mdclaw commands are recorded automatically"
+            (
+                "Use the stage wrapper only for optional exploratory provenance. "
+                "For confirmatory evidence, write submission/analysis_intent.json "
+                f"and {solver_task_dir / 'confirmatory_request.json'}, then exit. "
+                "The runner freezes the intent and executes the listed pending "
+                "MDClaw prod nodes through mdclaw_openmm@1. On continuation, read "
+                f"{solver_task_dir / 'confirmatory_execution.json'} and analyze "
+                "only its certified outputs."
+            )
+            if evaluation_protocol == "grounded_correct_v2"
+            else (
+                f"{stage_wrapper_path} --stage <required_stage> -- <command>; "
+                "bare mdclaw commands are recorded automatically"
+            )
         )
     )
     instruction = {
@@ -2590,6 +3747,24 @@ def _run_one_benchmark_agent_task(
             "wrapper": str(stage_wrapper_path),
             "usage": stage_usage,
         },
+        "confirmatory_execution": (
+            {
+                "adapter": "mdclaw_openmm@1",
+                "request_file": str(
+                    solver_task_dir / "confirmatory_request.json"
+                ),
+                "result_file": str(
+                    solver_task_dir / "confirmatory_execution.json"
+                ),
+                "usage": (
+                    "Create pending MDClaw prod nodes but do not run them. "
+                    "Write the structured request after analysis_intent.json, "
+                    "then exit so the benchmark runner can freeze and execute it."
+                ),
+            }
+            if evaluation_protocol == "grounded_correct_v2"
+            else None
+        ),
         "mdclaw_cli": _mdclaw_cli_instruction(
             mdclaw_runtime=mdclaw_runtime,
             mdclaw_wrapper_path=mdclaw_wrapper_path,
@@ -2600,6 +3775,7 @@ def _run_one_benchmark_agent_task(
         "submission_packaging": _submission_packaging_instruction(
             public_dir,
             primary_score,
+            evaluation_protocol,
         ),
         "submission_preflight": _submission_preflight_instruction(
             public_dir,
@@ -2623,6 +3799,7 @@ def _run_one_benchmark_agent_task(
             task_instruction_path,
             skills_available=bool(agent_skills),
             primary_score=primary_score,
+            evaluation_protocol=evaluation_protocol,
         ),
     )
 
@@ -2825,10 +4002,59 @@ def _run_one_benchmark_agent_task(
             phase="solve",
         )
     ]
+    runner_wrapper_path = task_run_dir / "runner_bin" / "mdclaw"
+    if evaluation_protocol == "grounded_correct_v2":
+        # The solver-visible wrapper is writable by the evaluated process and
+        # is therefore provenance only. Recreate a private launcher from the
+        # released template after the solver exits, and remove its PATH from
+        # the confirmatory environment.
+        _write_mdclaw_runtime_wrapper(
+            runner_wrapper_path,
+            mdclaw_runtime=mdclaw_runtime,
+            source_root=runner_source_path,
+        )
+    runner_execution = (
+        _execute_v2_confirmatory_request(
+            task_id=task_id,
+            run_id=run_id,
+            private_dir=private_dir,
+            solver_task_dir=solver_task_dir,
+            solver_work_dir=solver_work_dir,
+            solver_submission=solver_submission,
+            task_run_dir=task_run_dir,
+            mdclaw_wrapper_path=runner_wrapper_path,
+            runner_source_path=runner_source_path,
+            runner_source_sha256=runner_source_sha256,
+            run_env=_confirmatory_runner_env(run_env),
+            task_started_wall=task_started_wall,
+            timeout_seconds=timeout_seconds,
+        )
+        if evaluation_protocol == "grounded_correct_v2"
+        else None
+    )
     records, finalization = _copy_submission_and_finalize(
         background_processes=agent_attempts[-1]["background_processes"]
     )
+    if evaluation_protocol == "grounded_correct_v2":
+        finalization["harness_status"] = "failed"
+        finalization["failure_class"] = "confirmatory_analysis_pending"
+        if runner_execution is not None and runner_execution.get("success") is True:
+            finalization.setdefault("warnings", []).append(
+                "Runner-certified confirmatory MD is ready; resume the agent "
+                "once to analyze it and finalize the evidence report."
+            )
+        else:
+            finalization.setdefault("warnings", []).append(
+                "The confirmatory request is missing or failed preflight; "
+                "resume the agent to correct it before runner execution."
+            )
+        _write_json(task_run_dir / "finalization.json", finalization)
     retry_limit = max(0, int(finalization_retries or 0))
+    if evaluation_protocol == "grounded_correct_v2":
+        # One continuation analyzes a successful initial request. Two are
+        # needed when the first continuation must repair the request before
+        # the runner can execute it.
+        retry_limit = max(2, retry_limit)
     retry_count = 0
     while retry_count < retry_limit and _should_retry_agent_finalization(
         finalization,
@@ -2889,6 +4115,55 @@ def _run_one_benchmark_agent_task(
         records, finalization = _copy_submission_and_finalize(
             background_processes=agent_attempts[-1]["background_processes"]
         )
+        runner_retryable = bool(
+            evaluation_protocol == "grounded_correct_v2"
+            and (
+                runner_execution is None
+                or (
+                    runner_execution.get("success") is not True
+                    and not runner_execution.get("events")
+                )
+            )
+        )
+        if runner_retryable:
+            _write_mdclaw_runtime_wrapper(
+                runner_wrapper_path,
+                mdclaw_runtime=mdclaw_runtime,
+                source_root=runner_source_path,
+            )
+            retried_execution = _execute_v2_confirmatory_request(
+                task_id=task_id,
+                run_id=run_id,
+                private_dir=private_dir,
+                solver_task_dir=solver_task_dir,
+                solver_work_dir=solver_work_dir,
+                solver_submission=solver_submission,
+                task_run_dir=task_run_dir,
+                mdclaw_wrapper_path=runner_wrapper_path,
+                runner_source_path=runner_source_path,
+                runner_source_sha256=runner_source_sha256,
+                run_env=_confirmatory_runner_env(run_env),
+                task_started_wall=task_started_wall,
+                timeout_seconds=timeout_seconds,
+            )
+            if retried_execution is not None:
+                runner_execution = retried_execution
+            finalization["harness_status"] = "failed"
+            finalization["failure_class"] = "confirmatory_analysis_pending"
+            if (
+                runner_execution is not None
+                and runner_execution.get("success") is True
+            ):
+                finalization.setdefault("warnings", []).append(
+                    "Runner-certified confirmatory MD is ready; resume the "
+                    "agent to analyze it and finalize the evidence report."
+                )
+            else:
+                finalization.setdefault("warnings", []).append(
+                    "The confirmatory request is still missing or invalid; "
+                    "correct it before runner execution."
+                )
+            _write_json(task_run_dir / "finalization.json", finalization)
 
     agent_session_transcripts = _copy_agent_session_files(
         session_dir=agent_session_dir,
@@ -2934,6 +4209,7 @@ def _run_one_benchmark_agent_task(
         "finalization": finalization,
         "agent_attempts": agent_records,
         "records": [*records, *agent_records],
+        "study_execution": runner_execution,
     }
     _write_json(harness_record_path, harness_payload)
     _write_json(
@@ -3049,7 +4325,9 @@ def summarize_benchmark_run(
     tasks_dir = rd / "tasks"
     for task_id in configured_task_ids:
         task_contract = _lookup_task_contract(task_id, cfg_payload)
-        score_path = tasks_dir / task_id / "score.json"
+        task_run_dir = tasks_dir / task_id
+        score_path = task_run_dir / "score.json"
+        failed_runtime = _measured_agent_runtime(task_run_dir)
         if score_path.is_file():
             try:
                 score_payload = json.loads(score_path.read_text())
@@ -3059,6 +4337,7 @@ def summarize_benchmark_run(
                     task_contract,
                     f"score.json invalid: {exc}",
                     run_id=str(cfg_payload.get("run_id") or rd.name),
+                    runtime=failed_runtime,
                 )
             else:
                 if not isinstance(score_payload, dict):
@@ -3067,6 +4346,7 @@ def summarize_benchmark_run(
                         task_contract,
                         "score.json did not contain a JSON object",
                         run_id=str(cfg_payload.get("run_id") or rd.name),
+                        runtime=failed_runtime,
                     )
         else:
             score_payload = _synthetic_failed_score(
@@ -3074,6 +4354,7 @@ def summarize_benchmark_run(
                 task_contract,
                 f"missing score.json for task {task_id}",
                 run_id=str(cfg_payload.get("run_id") or rd.name),
+                runtime=failed_runtime,
             )
         scores.append(score_payload)
         tasks.append(task_contract)
@@ -3124,6 +4405,7 @@ def summarize_benchmark_run(
         n_tasks=aggregate["n_tasks"],
         n_failed_tasks=aggregate["n_failed_tasks"],
         overall_score=aggregate["overall_score"],
+        grounded_correct_rate=aggregate.get("grounded_correct_rate", 0.0),
         scores=aggregate["scores"],
         capability_scores=aggregate.get("capability_scores", {}),
         task_scores=aggregate["task_scores"],
@@ -3162,6 +4444,32 @@ def _task_has_rubrics(task_file: Path) -> bool:
     except (OSError, json.JSONDecodeError):
         return False
     return bool(payload.get("scoring", {}).get("llm_judge_rubrics"))
+
+
+def _submission_has_judge_inputs(task_file: Path, submission_dir: Path) -> bool:
+    """Return whether the task's required authored files exist for judging.
+
+    The deterministic validator remains authoritative.  This inexpensive gate
+    only avoids spending an LLM call on an empty or plainly incomplete
+    submission that cannot possibly receive a scientific score.
+    """
+
+    try:
+        payload = json.loads(task_file.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    required = payload.get("required_outputs")
+    if not isinstance(required, list):
+        return True
+    for value in required:
+        if not isinstance(value, str) or not value.strip():
+            return False
+        relative = Path(value)
+        if relative.is_absolute() or ".." in relative.parts:
+            return False
+        if not (submission_dir / relative).is_file():
+            return False
+    return True
 
 
 def _finalize_manual_harness_record(
@@ -3247,9 +4555,20 @@ def _autorun_run_judges(
         task_file = dataset / "tasks" / task_id / "task.json"
         submission_dir = rd / "tasks" / task_id / "submission"
         out = rd / "tasks" / task_id / "llm_judge.json"
-        if out.is_file() or not submission_dir.is_dir():
+        if not submission_dir.is_dir():
             continue
         if not (task_file.is_file() and _task_has_rubrics(task_file)):
+            continue
+        if not _submission_has_judge_inputs(task_file, submission_dir):
+            continue
+        grounded = _task_evaluation_protocol(dataset, task_id) in {
+            "grounded_correct_v1",
+            "grounded_correct_v2",
+        }
+        # Legacy files remain reusable. Grounded decisions are instead
+        # regenerated so they are always bound to the current truth-blind
+        # evidence bundle hash.
+        if out.is_file() and not grounded:
             continue
         try:
             judge.run_llm_judge(
@@ -3274,8 +4593,56 @@ def score_benchmark_run(
     tasks run the LLM judge on the host before scoring. Deterministic runs never
     launch or consume an LLM judge, even if a stale judge file is present.
     """
-    config = _read_json_dict(Path(run_dir) / "run_config.json")
-    llm_judge_enabled = config.get("judge_mode", "deterministic") == "llm_judge"
+    # Preserve the direct-scorer infrastructure gate before touching run
+    # metadata. Host-side delegation performs the same check in its target
+    # runtime after the judge/finalization handoff.
+    if os.environ.get("MDCLAW_SCORE_INPROCESS"):
+        missing_dependencies = _missing_scorer_dependencies()
+        if missing_dependencies:
+            return {
+                "success": False,
+                "failure_class": "scorer_dependency_missing",
+                "errors": [
+                    "Scorer runtime is missing required dependencies: "
+                    + ", ".join(missing_dependencies)
+                ],
+            }
+
+    rd = Path(run_dir)
+    cfg_path = rd / "run_config.json"
+    if not cfg_path.is_file():
+        return {"success": False, "errors": [f"missing run_config.json under {rd}"]}
+    try:
+        cfg_payload = json.loads(cfg_path.read_text())
+    except json.JSONDecodeError as exc:
+        return {"success": False, "errors": [f"run_config.json invalid: {exc}"]}
+
+    selected_dataset_dir = (
+        dataset_dir
+        or cfg_payload.get("dataset_dir")
+        or _DEFAULT_DATASET_DIR
+    )
+    dataset = _resolve_dataset_dir(str(selected_dataset_dir))
+    run_id = str(cfg_payload.get("run_id") or rd.name)
+    task_ids = [str(t) for t in cfg_payload.get("task_ids", [])]
+    if not task_ids:
+        task_ids = _list_task_ids(str(dataset))
+
+    # The grounded judge hashes scorer-owned harness evidence. Materialize the
+    # append-only manual wrapper log before autorunning any judge so the judge
+    # and deterministic scorer see the same evidence bundle.
+    for task_id in task_ids:
+        task_run_dir = rd / "tasks" / task_id
+        if task_run_dir.is_dir():
+            _finalize_manual_harness_record(
+                task_run_dir,
+                run_id=run_id,
+                task_id=task_id,
+            )
+
+    llm_judge_enabled = (
+        cfg_payload.get("judge_mode", "deterministic") == "llm_judge"
+    )
     should_run_judge = run_judge and llm_judge_enabled
     if (
         should_run_judge
@@ -3308,26 +4675,6 @@ def score_benchmark_run(
             ],
         }
 
-    rd = Path(run_dir)
-    cfg_path = rd / "run_config.json"
-    if not cfg_path.is_file():
-        return {"success": False, "errors": [f"missing run_config.json under {rd}"]}
-    try:
-        cfg_payload = json.loads(cfg_path.read_text())
-    except json.JSONDecodeError as exc:
-        return {"success": False, "errors": [f"run_config.json invalid: {exc}"]}
-
-    selected_dataset_dir = (
-        dataset_dir
-        or cfg_payload.get("dataset_dir")
-        or _DEFAULT_DATASET_DIR
-    )
-    dataset = _resolve_dataset_dir(str(selected_dataset_dir))
-    run_id = str(cfg_payload.get("run_id") or rd.name)
-    task_ids = [str(t) for t in cfg_payload.get("task_ids", [])]
-    if not task_ids:
-        task_ids = _list_task_ids(str(dataset))
-
     from mdclaw.benchmark import cli as benchmark_cli
 
     task_results: list[dict[str, Any]] = []
@@ -3355,7 +4702,6 @@ def score_benchmark_run(
         task_judge = None
         if llm_judge_enabled:
             task_judge = str(judge_path) if judge_path.is_file() else llm_judge_file
-        _finalize_manual_harness_record(task_run_dir, run_id=run_id, task_id=task_id)
         result = benchmark_cli.validate_and_score_benchmark_submission(
             task_file=str(task_file),
             submission_dir=str(submission_dir),
@@ -3583,11 +4929,41 @@ def _synthetic_failed_score(
     message: str,
     *,
     run_id: str,
+    runtime: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     scores = {axis: None for axis in scoring.SCORE_AXES}
     primary = task_contract.get("primary_score")
     if primary in scores:
         scores[primary] = 0.0
+    evaluation_protocol = task_contract.get("evaluation_protocol")
+    grounded = evaluation_protocol in {
+        "grounded_correct_v1",
+        "grounded_correct_v2",
+    }
+    if evaluation_protocol == "grounded_correct_v2":
+        study_verdict = {
+            "enabled": True,
+            "evaluation_complete": False,
+            "valid_execution": False,
+            "claim_supported": False,
+            "truth_available": False,
+            "truth_agreement": None,
+            "grounded_correct": False,
+            "result_class": "invalid_execution",
+            "decision_reason_codes": [message],
+            "diagnostics": {},
+        }
+    else:
+        study_verdict = {
+            "enabled": grounded,
+            "evaluation_complete": False,
+            "valid_md": False,
+            "evidence_verified": False,
+            "reasoning_grounded": False,
+            "truth_correct": False,
+            "grounded_correct": False,
+            "decision_reasons": [message] if grounded else [],
+        }
     return {
         "schema_version": "1.0",
         "run_id": run_id,
@@ -3599,7 +4975,47 @@ def _synthetic_failed_score(
         "deterministic_checks": [],
         "ground_truth_checks": [],
         "llm_judge": {"enabled": False},
-        "runtime": {"walltime_minutes": 0.0, "tokens": 0, "gpu_hours": 0.0},
+        "study_verdict": study_verdict,
+        "runtime": runtime
+        or {"walltime_minutes": 0.0, "tokens": 0, "gpu_hours": 0.0},
         "integrity_warnings": [],
         "errors": [{"message": message}],
+    }
+
+
+def _measured_agent_runtime(task_run_dir: Path) -> dict[str, Any]:
+    """Recover measured agent time even when no score file was produced.
+
+    Failed and timed-out tasks often have no submission to score, but the
+    harness still owns an ``agent_run`` record.  Keeping that measurement in
+    the synthetic failed score prevents failed runs from appearing free in
+    run-level efficiency summaries.
+    """
+
+    harness = _read_json_dict(task_run_dir / "harness_execution.json")
+    records = harness.get("records")
+    seconds: list[float] = []
+    if isinstance(records, list):
+        for record in records:
+            if not isinstance(record, dict) or record.get("stage") != "agent_run":
+                continue
+            value = record.get("walltime_seconds")
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                continue
+            numeric = float(value)
+            if numeric >= 0.0 and numeric != float("inf"):
+                seconds.append(numeric)
+
+    if not seconds:
+        agent_run = _read_json_dict(task_run_dir / "agent_run.json")
+        value = agent_run.get("walltime_seconds")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            numeric = float(value)
+            if numeric >= 0.0 and numeric != float("inf"):
+                seconds.append(numeric)
+
+    return {
+        "walltime_minutes": sum(seconds) / 60.0,
+        "tokens": 0,
+        "gpu_hours": 0.0,
     }
