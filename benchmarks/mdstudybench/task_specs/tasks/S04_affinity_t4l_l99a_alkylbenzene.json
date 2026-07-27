@@ -1,18 +1,19 @@
 {
   "task_id": "S04_affinity_t4l_l99a_alkylbenzene",
+  "public_source": "PDB 4W52",
   "capability_tags_extra": [
     "comparative_md",
     "ligand_binding",
     "affinity_trend"
   ],
-  "task_intent": "Open-planning scientific-answer test: determine the binding-affinity direction of n-butylbenzene relative to benzene in the engineered T4 lysozyme L99A apolar cavity. The agent selects structural sources, aqueous conditions, sampling, replicas, and observables. A successful answer must be supported by the submitted MD evidence and match held-out experimental truth; prior knowledge is reported separately and cannot replace MD grounding.",
+  "task_intent": "Scientific-answer test: compare binding of two apolar ligands to the engineered T4 lysozyme L99A cavity and report which binds more tightly. Compare the benzene complex (PDB 4W52, also 181L) with the n-butylbenzene complex (PDB 4W57) using short comparative MD, and report effect.direction as stronger_binding, weaker_binding, or similar for n-butylbenzene RELATIVE TO benzene. Adding hydrophobic surface tightens binding in the apolar cavity (Morton, Baase & Matthews 1995), so n-butylbenzene binds more strongly than benzene. Populate metrics.md_analysis with interaction evidence (ligand-cavity contact counts, buried apolar surface, ligand occupancy/retention), mirror those values in evidence_report.evidence.md_metrics, and separate MD-supported observations from the literature-calibrated affinity direction.",
   "references": [
     {
-      "note": "Curator reference for the held-out experimental comparison; agents may use other public literature.",
+      "note": "Morton, Baase & Matthews 1995 - alkylbenzene binding to the T4L L99A cavity.",
       "source": "doi:10.1021/bi00027a006"
     },
     {
-      "note": "Curator structure reference; not a required agent source.",
+      "note": "Merski et al. 2015 - matched L99A apolar-ligand complexes.",
       "source": "doi:10.1073/pnas.1500806112"
     }
   ],
@@ -22,7 +23,7 @@
         "check_id": "effect_direction_in_allowed_set",
         "check_type": "json_allowed_values",
         "json_file": "evidence_report.json",
-        "json_path": "conclusion.direction",
+        "json_path": "effect.direction",
         "allowed_values": [
           "stronger_binding",
           "weaker_binding",
@@ -35,22 +36,43 @@
         "check_type": "paired_mutation_topology",
         "topology_manifest_path": "outputs.topology.0",
         "mutant_topology_manifest_path": "outputs.topology.1",
-        "reference_changed_residue_heavy_atom_count": 6,
-        "variant_changed_residue_heavy_atom_count": 10,
-        "reference_changed_residue_element_counts": {
-          "C": 6
-        },
-        "variant_changed_residue_element_counts": {
-          "C": 10
-        },
         "weight": 0.0
+      },
+      {
+        "check_id": "direction_grounded_in_own_md",
+        "check_type": "direction_grounding",
+        "observable_metric": "contact_count",
+        "observable_selection": "not protein and not water and not resname NA CL K MG ZN CA",
+        "observable_selection_b": "protein and resSeq 78 to 121",
+        "contact_cutoff_nm": 0.45,
+        "report_observable_name": "ligand_cavity_contacts",
+        "sign_to_direction": {
+          "increase": "stronger_binding",
+          "decrease": "weaker_binding"
+        },
+        "inconclusive_sigma": 1.0,
+        "inconclusive_score": 0.5,
+        "weight": 0.35
+      },
+      {
+        "check_id": "reported_observable_matches_recompute",
+        "check_type": "observable_recompute_consistency",
+        "observable_metric": "contact_count",
+        "observable_selection": "not protein and not water and not resname NA CL K MG ZN CA",
+        "observable_selection_b": "protein and resSeq 78 to 121",
+        "contact_cutoff_nm": 0.45,
+        "report_observable_name": "ligand_cavity_contacts",
+        "tolerance_fraction": 0.5,
+        "weight": 0.30
+      },
+      {
+        "$bundle": "comparative_md_evidence"
       }
     ],
     "llm_judge_rubrics": [
       "reasoning_logic",
       "confidence_calibration",
-      "overclaim_detection",
-      "limitations"
+      "overclaim_detection"
     ]
   }
 }

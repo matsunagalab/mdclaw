@@ -1,0 +1,81 @@
+{
+  "$defs": {
+    "ConfirmatoryRunPlanV2": {
+      "additionalProperties": false,
+      "description": "One pending production node requested for runner execution.",
+      "properties": {
+        "condition_role": {
+          "enum": [
+            "reference",
+            "variant"
+          ],
+          "title": "Condition Role",
+          "type": "string"
+        },
+        "job_dir": {
+          "minLength": 1,
+          "title": "Job Dir",
+          "type": "string"
+        },
+        "node_id": {
+          "minLength": 1,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "simulation_time_ns": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Simulation Time Ns"
+        }
+      },
+      "required": [
+        "run_id",
+        "condition_role",
+        "job_dir",
+        "node_id",
+        "simulation_time_ns"
+      ],
+      "title": "ConfirmatoryRunPlanV2",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The complete agent-authored input frozen before confirmatory MD.",
+  "properties": {
+    "runs": {
+      "items": {
+        "$ref": "#/$defs/ConfirmatoryRunPlanV2"
+      },
+      "title": "Runs",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "task_id": {
+      "minLength": 1,
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "runs"
+  ],
+  "title": "ConfirmatoryPlanV2",
+  "type": "object"
+}

@@ -359,7 +359,7 @@ def _inspect(job_dir: Path, node_id: str, *, condition_role: str) -> dict:
         production_event_id=f"{condition_role}-event",
         condition_role=condition_role,
         scientific_target=_scientific_target(),
-        intent_sha256="a" * 64,
+        plan_sha256="a" * 64,
         started_at="2026-07-27T00:01:00+00:00",
         completed_at="2026-07-27T00:01:01+00:00",
         walltime_seconds=1.0,

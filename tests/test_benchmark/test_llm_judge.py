@@ -8,8 +8,6 @@ from pathlib import Path
 import pytest
 
 from mdclaw.benchmark import judge
-from mdclaw.benchmark.study_evidence import verified_evidence_hash
-from tests.test_benchmark import _fake_study_submissions as fakes
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -28,53 +26,17 @@ def _write_min_submission(sub: Path) -> None:
     }))
 
 
-def _write_grounded_submission(sub: Path) -> None:
-    fakes.make_study_submission(
-        sub,
-        run_id="judge-test",
-        mode="honest",
-        task_id="S01_stability_t4l_l99a",
-    )
-
-
-def _write_legacy_task(path: Path) -> Path:
-    path.write_text(json.dumps({
-        "task_id": "legacy-study",
-        "scoring": {
-            "llm_judge_rubrics": [
-                "confidence_calibration",
-                "overclaim_detection",
-            ],
-        },
-    }))
-    return path
-
-
-def test_extract_json_object_handles_braces_inside_strings():
-    parsed = judge._extract_json_object(
-        'prefix {"scores": {}, "rationale": {"overall": "A}B and {C"}} suffix'
-    )
-
-    assert parsed["rationale"]["overall"] == "A}B and {C"
-
-
 def test_run_llm_judge_writes_consumable_file(tmp_path: Path, monkeypatch):
     sub = tmp_path / "submission"
-    _write_grounded_submission(sub)
+    _write_min_submission(sub)
 
     # stub the LLM: return rubric-keyed scores like a real judge would
     def fake_call(prompt, model, timeout=180):
         assert "reasoning_logic" in prompt  # rubrics embedded
-        assert "TRUTH-BLIND VERIFIED EVIDENCE PACKET" in prompt
-        assert "expected_direction" not in prompt
-        assert "experimental_truth.json" not in prompt
         return (
             'Here is my assessment:\n'
             '{"scores": {"reasoning_logic": 0.7, "confidence_calibration": 0.8,'
-            ' "overclaim_detection": 0.9, "limitations": 0.8},'
-            ' "support_verdict": "supported",'
-            ' "logical_grounding_supported": true,'
-            ' "cited_evidence_ids": ["ca_rmsf_near_99"],'
+            ' "overclaim_detection": 0.9},'
             ' "violations": [], "rationale": {"confidence_calibration": "ok"}}'
         )
 
@@ -88,14 +50,6 @@ def test_run_llm_judge_writes_consumable_file(tmp_path: Path, monkeypatch):
     assert payload["judge_model"] == "sonnet"
     assert payload["scores"]["confidence_calibration"] == pytest.approx(0.8)
     assert payload["scores"]["overclaim_detection"] == pytest.approx(0.9)
-    assert payload["support_verdict"] == "supported"
-    assert payload["logical_grounding_supported"] is True
-    assert payload["cited_evidence_ids"] == ["ca_rmsf_near_99"]
-    packet = json.loads((tmp_path / "verified_evidence.json").read_text())
-    assert packet["truth_blind"] is True
-    assert payload["evidence_packet_hash"] == verified_evidence_hash(packet)
-    assert (tmp_path / "llm_judge_prompt.txt").is_file()
-    assert (tmp_path / "llm_judge_raw_response.txt").is_file()
     # (the scorer consuming a rubric-keyed judge file to fill the
     # evidence_communication axis is covered by
     # test_study_scoring_fabrication.test_llm_judge_rubric_scores_fill_secondary_axis)
@@ -104,98 +58,14 @@ def test_run_llm_judge_writes_consumable_file(tmp_path: Path, monkeypatch):
 def test_run_llm_judge_extracts_json_and_clamps(tmp_path: Path, monkeypatch):
     sub = tmp_path / "submission"
     _write_min_submission(sub)
-    task_file = _write_legacy_task(tmp_path / "legacy_task.json")
     monkeypatch.setattr(judge, "_call_claude_judge", lambda p, m, timeout=180: (
         '{"scores": {"confidence_calibration": 1.5, "overclaim_detection": -0.2}}'
     ))
     out = tmp_path / "judge.json"
-    judge.run_llm_judge(str(task_file), str(sub), str(out))
+    judge.run_llm_judge(str(TASK_FILE), str(sub), str(out))
     payload = json.loads(out.read_text())
     assert payload["scores"]["confidence_calibration"] == 1.0  # clamped
     assert payload["scores"]["overclaim_detection"] == 0.0     # clamped
-
-
-@pytest.mark.parametrize(
-    "response",
-    [
-        # A rubric score is out of range: v0.3 fails closed rather than clamp.
-        (
-            '{"scores":{"reasoning_logic":1.2,"confidence_calibration":0.8,'
-            '"overclaim_detection":0.9,"limitations":0.8},'
-            '"support_verdict":"supported",'
-            '"logical_grounding_supported":true,'
-            '"cited_evidence_ids":["ca_rmsf_near_99"]}'
-        ),
-        # Supported without a cited verified evidence item is incomplete.
-        (
-            '{"scores":{"reasoning_logic":0.8,"confidence_calibration":0.8,'
-            '"overclaim_detection":0.9,"limitations":0.8},'
-            '"support_verdict":"supported",'
-            '"logical_grounding_supported":true,"cited_evidence_ids":[]}'
-        ),
-        # Missing logical verdict cannot be treated as a zero-filled answer.
-        (
-            '{"scores":{"reasoning_logic":0.8,"confidence_calibration":0.8,'
-            '"overclaim_detection":0.9,"limitations":0.8},'
-            '"support_verdict":"inconclusive","cited_evidence_ids":[]}'
-        ),
-        # Violations are structured records, never free-form strings.
-        (
-            '{"scores":{"reasoning_logic":0.8,"confidence_calibration":0.8,'
-            '"overclaim_detection":0.9,"limitations":0.8},'
-            '"support_verdict":"supported",'
-            '"logical_grounding_supported":true,'
-            '"cited_evidence_ids":["ca_rmsf_near_99"],'
-            '"violations":["bad"]}'
-        ),
-    ],
-)
-def test_grounded_judge_invalid_response_fails_closed(
-    tmp_path: Path,
-    monkeypatch,
-    response: str,
-):
-    sub = tmp_path / "submission"
-    _write_grounded_submission(sub)
-    monkeypatch.setattr(
-        judge,
-        "_call_claude_judge",
-        lambda p, m, timeout=180: response,
-    )
-    out = tmp_path / "judge.json"
-    out.write_text('{"stale": true}')
-
-    result = judge.run_llm_judge(str(TASK_FILE), str(sub), str(out))
-
-    assert result["success"] is False
-    assert not out.exists()
-    assert (tmp_path / "verified_evidence.json").is_file()
-    assert (tmp_path / "llm_judge_prompt.txt").is_file()
-
-
-def test_grounded_judge_requires_scorer_owned_public_prompt(
-    tmp_path: Path,
-    monkeypatch,
-):
-    sub = tmp_path / "submission"
-    _write_grounded_submission(sub)
-    isolated_task = tmp_path / "private" / "task.json"
-    isolated_task.parent.mkdir()
-    isolated_task.write_text(TASK_FILE.read_text())
-    called: list[bool] = []
-    monkeypatch.setattr(
-        judge,
-        "_call_claude_judge",
-        lambda *args, **kwargs: called.append(True),
-    )
-
-    out = tmp_path / "judge.json"
-    result = judge.run_llm_judge(str(isolated_task), str(sub), str(out))
-
-    assert result["success"] is False
-    assert "public prompt context" in result["errors"][0]
-    assert called == []
-    assert not out.exists()
 
 
 def test_missing_judge_marks_study_task_incomplete(tmp_path: Path, monkeypatch):

@@ -6,9 +6,10 @@ no curator-authored workflow or preferred PDB ID to imitate.
 
 The active dataset is `MDStudyBench-v0.4` under
 `benchmarks/mdstudybench/`. Its only active task is the experimental S01 pilot.
-S02-S04 remain frozen v1 migration fixtures and are excluded from aggregation.
+S02-S04 remain inactive legacy regression fixtures and are excluded from
+aggregation.
 
-## The shared evaluation rule
+## Primary result
 
 For `grounded_correct_v2`, the primary score is one bit:
 
@@ -18,136 +19,63 @@ grounded_correct = valid_execution
                    AND truth_agreement
 ```
 
-The gates do not compensate for one another:
+The gates do not compensate. The runner must have executed valid confirmatory
+MD, the fixed evaluator replay must support the claim, and only then is the
+supported outcome compared with held-out truth. The scorer distinguishes
+`grounded_correct`, `grounded_wrong`, `unsupported_claim`, `unresolved`, and
+`invalid_execution`. No LLM judge contributes to this primary result.
 
-- `valid_execution` means that the correct entity and paired conditions were
-  simulated through the benchmark runner's released OpenMM/MDClaw adapter,
-  after the exact analysis intent was frozen and within the task budget. In the
-  S01 pilot this attests the production runtime relative to the frozen base
-  System; it does not attest how that base System or the dependency runtime was
-  constructed.
-- `claim_supported` means that the evaluator can recompute the task-owned
-  estimand from the certified trajectories and that the recomputed result,
-  required controls, and reported outcome agree.
-- `truth_agreement` is evaluated only after the first two gates pass. It compares
-  the supported MD outcome with held-out experimental truth.
+## Open planning, fixed evaluation
 
-An unresolved result receives zero primary credit and is reported separately.
-This is intentionally strict: unresolved is scientifically preferable to an
-unsupported claim, but it has not answered the benchmark question.
+The agent chooses the structure, preparation, force field, water and
+protonation models, exploratory work, initial states, replicas, and allocation
+above the public sampling minimum. There is no reference plan, PDB rubric, or
+creativity score. A plan is evaluated through whether it produces valid,
+resolving evidence within the budget.
 
-The scorer reports one of:
+For comparability, the task fixes the scientific estimand, conditions, allowed
+outcomes, replayed observable, decision rule, validity control, and minimum
+evidence adequacy. S01 replays cavity-water occupancy and folded-state
+retention from the runner-certified trajectories. The exact public values live
+in the generated `submission_contract.json`; the agent does not repeat them in
+its plan or claim.
 
-- `grounded_correct`
-- `grounded_wrong`
-- `unsupported_claim`
-- `unresolved`
-- `invalid_execution`
+Public literature may guide planning, but it cannot substitute for the
+certified episode.
 
-No LLM judge is used in the v2 primary score.
+## Plan -> runner -> claim
 
-## What remains open
+S01 has two agent handoffs:
 
-The agent may choose the structural source, preparation method, force field,
-water model, fixed protonation microstate, initial states, replica allocation,
-sampling strategy, and exploratory analyses. Planning is not matched to a
-reference plan and is not rubric-scored.
+1. Prepare the study, create pending MDClaw production nodes, write
+   `confirmatory_plan.json`, and exit.
+2. The benchmark runner freezes the plan, validates the paired systems, and
+   executes the requested nodes through the certified adapter.
+3. On continuation, inspect the runner result, write `claim.json`, and exit.
 
-Those choices are evaluated through their consequences: can the chosen study
-produce valid, resolving evidence within the budget?
-
-Public literature may inform planning. A literature-derived expectation belongs
-under `prior_expectation`; it cannot support or upgrade `md_verdict`.
-
-## What the task fixes
-
-A v2 task owns the smallest common measurement contract needed for comparable
-scoring:
-
-- the scientific entity, estimand, conditions, and allowed outcomes;
-- one native verifier for the primary estimand;
-- the mapping from recomputed direction to reported outcome;
-- the confidence/equivalence rule;
-- the task-specific observable definition and minimum sampling adequacy; and
-- required validity-control definitions and thresholds.
-
-For S01, the primary verifier is `region_water_occupancy@1`. The task fixes the
-95% confidence rule, a 0.1-water equivalence margin, and the occupancy
-observable: water oxygens within 0.45 nm of the CB atom mapped to public
-construct position 99. The mapping is sequence-based, so this does not prescribe
-a chain label, author residue number, or PDB entry. S01 also fixes a 20% initial
-discard, five blocks, at least 10 runner-certified ns and ESS 5 per condition,
-and a simple initialization challenge (round trips or convergence from distinct
-starting occupancies). Replicate means are weighted by certified post-discard
-physical time rather than frame count.
-
-The folded-state control is also common: all protein CA atoms, 0.3 nm maximum
-RMSD, 2.5 nm maximum initial radius of gyration, and at least 0.9 retained
-fraction. This prevents a solver from relaxing the control after seeing the
-trajectory.
-
-The reported pH is a fixed protonation model chosen to represent pH 7.0. The
-current task does not simulate constant-pH dynamics.
-
-## Runner-certified confirmatory MD
-
-Generic command logs are useful provenance but do not prove that a trajectory
-came from MD. S01 therefore uses a two-phase runner workflow:
-
-1. The agent explores, prepares the systems, creates pending MDClaw `prod`
-   nodes, writes `analysis_intent.json`, and writes
-   `confirmatory_request.json`.
-2. The benchmark runner checks that requested durations total at least 10 ns per
-   condition and that paired nodes resolve the same base-system and topology
-   bytes. It then freezes the exact intent and executes only the requested
-   pending nodes through `mdclaw_openmm@1`, fixing temperature and pressure from
-   each condition role.
-3. The runner inspects the serialized live OpenMM `System`, `Integrator`, final
-   `State`, trajectory, energy log, node metadata, and artifact hashes.
-4. The agent resumes, analyzes only those certified outputs, and writes the
-   final study bundle.
-
-The adapter verifies, among other things:
-
-- explicit-solvent NPT production with no production-time force added relative
-  to the frozen base System except the required barostat;
-- a standard `MonteCarloBarostat` at 1 bar or 2000 bar;
-- `LangevinMiddleIntegrator` at 300 K;
-- a periodic, non-static trajectory with consistent particle counts;
-- positive and mutually consistent production steps;
-- exact topology, trajectory, state, live-system, and integrator lineage;
-- an exact non-barostat match between the base and live System, including force
-  parameters, particles, and constraints, plus topology-bond and particle-mass
-  consistency checks; and
-- the same base `system.xml` and byte-identical `topology.pdb` for both pressure
-  conditions.
-
-Agent-authored stage-wrapper records and synthetic DCD files cannot satisfy this
-gate. The runner uses a source snapshot taken before the solver starts and
-records its digest; a changed snapshot fails closed.
-
-This is deliberately a scoped attestation. The S01 pilot does not yet
-independently rebuild the agent-chosen base System from a runner-owned
-force-field recipe, and it does not pin the complete SIF, Docker, or conda
-dependency environment. The execution certificate therefore reports
-`base_system_construction_unattested` and
-`runtime_environment_unattested` as non-gating diagnostics. They must be
-closed before S01 can move from pilot to a primary leaderboard.
-
-The submission remains:
+File ownership is intentionally small:
 
 ```text
 submission/
-  manifest.json
-  analysis_intent.json
-  study_index.json
-  evidence_report.json
-  <certified topology, trajectory, and raw analysis artifacts>
+  confirmatory_plan.json       # agent
+  claim.json                   # agent
+  manifest.json                # runner
+  episode/
+    episode.json               # runner
+    artifacts/                 # runner
 ```
 
-`manifest.outputs.evidence_report` is the sole report authority.
-`analysis_intent.json`, `study_index.json`, and `evidence_report.json` must
-describe the same intent, runs, analyses, and evidence IDs.
+The agent must not create or edit the runner-owned files. The public export
+contains schemas for the two agent-authored files; preregistration,
+identity-checking, execution, and replay implementations remain evaluator
+internals.
+
+The runner verifies the relevant OpenMM production lineage, conditions,
+artifact hashes, paired topology and base-System bytes, and that the live
+production System differs from the frozen base only by the required barostat.
+This is a scoped attestation: S01 does not yet independently rebuild the
+agent-chosen base System or pin the complete dependency runtime. Those limits
+remain explicit diagnostics before leaderboard promotion.
 
 ## Release status
 

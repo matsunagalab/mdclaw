@@ -139,7 +139,7 @@ def test_export_private_package_contains_evaluator_material(tmp_path: Path):
     )
 
 
-def test_export_private_package_keeps_public_prompt_for_private_evaluation(
+def test_export_private_package_omits_public_prompt(
     tmp_path: Path,
 ):
     out_dir = tmp_path / "private_mdstudybench"
@@ -157,8 +157,7 @@ def test_export_private_package_keeps_public_prompt_for_private_evaluation(
         / "experimental_truth.json"
     )
     assert truth_file.is_file()
-    prompts = list(out_dir.glob("tasks/*/prompt.md"))
-    assert len(prompts) == 1
+    assert not list(out_dir.glob("tasks/*/prompt.md"))
     assert not list(out_dir.glob("tasks/*/submission_contract.json"))
     assert not list(out_dir.glob("tasks/*/submission_checklist.md"))
 
@@ -530,15 +529,24 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
     assert dataset["tiers"]["pilot"]["primary_leaderboard"] is False
     assert dataset["tiers"]["extended"]["primary_leaderboard"] is False
     assert result["task_count"] == 1
-    assert (out_dir / "schemas" / "submission_manifest.schema.json").is_file()
-    assert (out_dir / "tools" / "preregistration_v2.py").is_file()
-    assert (out_dir / "tools" / "study_evidence_v2.py").is_file()
-    assert (out_dir / "tools" / "study_identity_v2.py").is_file()
-    assert (out_dir / "tools" / "study_execution_v2.py").is_file()
+    assert (out_dir / "schemas" / "confirmatory_plan.schema.json").is_file()
+    assert (out_dir / "schemas" / "claim.schema.json").is_file()
+    assert not (
+        out_dir / "schemas" / "submission_manifest.schema.json"
+    ).exists()
+    assert not (out_dir / "tools" / "package_submission.py").exists()
+    assert (out_dir / "tools" / "validate_submission.py").is_file()
+    for internal_tool in (
+        "preregistration_v2.py",
+        "study_evidence_v2.py",
+        "study_identity_v2.py",
+        "study_execution_v2.py",
+    ):
+        assert not (out_dir / "tools" / internal_tool).exists()
     public_readme = (out_dir / "README.md").read_text()
-    assert "structured study index" in public_readme
-    assert "prospective analysis intent" in public_readme
-    assert "outputs.trajectories" not in public_readme
+    assert "confirmatory_plan.json" in public_readme
+    assert "claim.json" in public_readme
+    assert "runner generates `manifest.json`" in public_readme
 
     contract = json.loads(
         (
@@ -551,146 +559,73 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
     assert contract["primary_score"] == "scientific_answer"
     assert contract["evaluation_protocol"] == "grounded_correct_v2"
     assert contract["required_outputs"] == [
-        "manifest.json",
-        "analysis_intent.json",
-        "study_index.json",
-        "evidence_report.json",
+        "confirmatory_plan.json",
+        "claim.json",
     ]
-    assert contract["manifest_contract"][
-        "required_outputs_for_completed_submission"
-    ] == contract["required_outputs"]
-    assert set(
-        contract["manifest_contract"]["required_manifest_output_fields"]
-    ) == {
-        "outputs.analysis_intent",
-        "outputs.study_index",
-        "outputs.evidence_report",
-    }
-    assert "required_manifest_list_fields" not in contract["manifest_contract"]
-    prospective = contract["manifest_contract"]["prospective_study"]
-    assert prospective["source_and_plan_are_agent_selected"] is True
-    assert prospective["exploratory_runs_may_not_support_resolved_claims"] is True
-    assert prospective["confirmatory_lineage"]["intent_id"] == (
-        "must match analysis_intent.intent_id"
-    )
-    assert prospective["runner_execution"]["adapter"] == "mdclaw_openmm@1"
-    assert prospective["runner_execution"][
-        "agent_must_not_run_confirmatory_nodes"
-    ] is True
-    assert prospective["runner_execution"]["attestation_scope"] == {
-        "production_runtime_matches_frozen_base_system": True,
-        "base_system_construction_attested": False,
-        "runtime_environment_attested": False,
-        "diagnostics": [
-            "base_system_construction_unattested",
-            "runtime_environment_unattested",
+    assert "submission_manifest_schema" not in contract
+    assert contract["manifest_contract"] == {
+        "generated_by": {"tool": "mdclaw_benchmark_runner"},
+        "agent_authored": [
+            "confirmatory_plan.json",
+            "claim.json",
         ],
+        "runner_generated": [
+            "manifest.json",
+            "episode/episode.json",
+            "episode/artifacts/",
+        ],
+        "agent_must_not_write_runner_outputs": True,
     }
-    assert "SHA-256" in prospective["run_lineage"]["trajectory_hashes"]
-    assert "topology_output_shape" not in contract["manifest_contract"]
-    assert "minimized_structure.pdb" not in contract["required_outputs"]
-    assert (
-        out_dir
-        / "tasks"
-        / "S01_pressure_hydration_t4l_l99a"
-        / "submission_checklist.md"
-    ).is_file()
-    outputs = contract["submission_blueprint"]["manifest_minimum"]["outputs"]
-    assert outputs["study_index"] == "study_index.json"
-    assert outputs["analysis_intent"] == "analysis_intent.json"
-    assert "trajectories" not in outputs
-    assert "topology" not in outputs
-    study_index = contract["submission_blueprint"]["study_index_minimum"]
-    assert [system["system_id"] for system in study_index["systems"]] == [
-        "reference-condition",
-        "variant-condition",
-    ]
-    assert all(
-        system["runs"][0]["phase"] == "confirmatory"
-        for system in study_index["systems"]
+    assert contract["confirmatory_plan_schema"] == (
+        "../../schemas/confirmatory_plan.schema.json"
     )
-    analysis_intent = contract["submission_blueprint"][
-        "analysis_intent_minimum"
+    assert contract["claim_schema"] == "../../schemas/claim.schema.json"
+    assert contract["runner_episode_contract"]["agent_authored"] == [
+        "confirmatory_plan.json",
+        "claim.json",
     ]
-    assert analysis_intent["target_estimand"] == contract["scientific_target"][
-        "estimand"
+    assert contract["runner_episode_contract"]["runner_generated"] == [
+        "manifest.json",
+        "episode/episode.json",
+        "episode/artifacts/",
     ]
-    assert {
-        analysis["verifier_id"]
-        for analysis in analysis_intent["primary_analyses"]
-    } == {"region_water_occupancy@1", "folded_state_retention@1"}
-    hydration_analysis = next(
-        analysis
-        for analysis in analysis_intent["primary_analyses"]
-        if analysis["verifier_id"] == "region_water_occupancy@1"
-    )
-    assert hydration_analysis["outcome_mapping"] == contract[
-        "scientific_target"
-    ]["primary_evidence_contract"]["outcome_mapping"]
-    primary_decision_rule = contract["scientific_target"][
-        "primary_evidence_contract"
-    ]["decision_rule"]
-    assert hydration_analysis["decision_rule"] == {
-        key: value
-        for key, value in primary_decision_rule.items()
-        if key != "model_config"
+
+    blueprint = contract["submission_blueprint"]
+    assert set(blueprint) == {
+        "confirmatory_plan_minimum",
+        "claim_minimum",
+        "runner_generated",
     }
-    hydration_parameters = hydration_analysis["observable"]["parameters"]
-    fixed_primary_parameters = contract["scientific_target"][
-        "primary_evidence_contract"
-    ]["fixed_observable_parameters"]
-    assert {
-        key: hydration_parameters[key]
-        for key in fixed_primary_parameters
-    } == fixed_primary_parameters
-    assert hydration_parameters["radius_nm"] == 0.45
-    assert hydration_parameters["cavity_reference_positions"] == [99]
-    assert hydration_parameters["cavity_atom_names"] == ["CB"]
-    assert "public construct positions [99]" in hydration_parameters[
-        "region_selection"
-    ]
-    folded_analysis = next(
-        analysis
-        for analysis in analysis_intent["primary_analyses"]
-        if analysis["verifier_id"] == "folded_state_retention@1"
-    )
-    control_contract = contract["scientific_target"][
-        "control_evidence_contracts"
-    ][0]
-    assert folded_analysis["outcome_mapping"] == control_contract[
-        "outcome_mapping"
-    ]
-    assert folded_analysis["decision_rule"] == {
-        key: value
-        for key, value in control_contract["decision_rule"].items()
-        if key != "model_config" and value is not None
+    plan = blueprint["confirmatory_plan_minimum"]
+    assert {run["condition_role"] for run in plan["runs"]} == {
+        "reference",
+        "variant",
     }
-    assert folded_analysis["observable"]["parameters"] == control_contract[
-        "fixed_observable_parameters"
-    ]
-    evidence = contract["submission_blueprint"]["evidence_report_minimum"]
-    assert evidence["md_verdict"]["status"]["one_of"] == [
+    assert all(run["simulation_time_ns"] == 10.0 for run in plan["runs"])
+    claim = blueprint["claim_minimum"]
+    assert claim["status"]["one_of"] == [
         "resolved",
         "unresolved",
     ]
-    assert evidence["md_verdict"]["outcome"]["one_of"] == [
+    assert claim["outcome"]["one_of"] == [
         "increased_hydration",
         "decreased_hydration",
         "no_material_change",
         None,
     ]
-    assert evidence["evidence"][0]["verifier_id"] == (
-        "region_water_occupancy@1"
-    )
-    assert evidence["evidence"][1]["verifier_id"] == (
-        "folded_state_retention@1"
-    )
-    assert contract["scientific_target"]["entity"][
-        "expected_protein_copy_count"
-    ] == 1
+
+    lifecycle = contract["submission_lifecycle"]
+    assert "preflight_command_template" not in lifecycle
+    assert "No agent-side public preflight" in lifecycle["preflight_policy"]
+    assert "write claim.json, and exit" in lifecycle["exit_condition"]
     public_keys = {str(key) for key in _walk_keys(contract)}
-    assert "expected_protein_copy_count" in public_keys
     assert {
+        "analysis_intent",
+        "study_index",
+        "evidence_report",
+        "preregistration_implementation",
+        "identity_implementation",
+        "execution_implementation",
         "expected_outcome",
         "expected_direction",
         "expected_answer",
@@ -700,28 +635,17 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
         "scoring",
         "references",
     }.isdisjoint(public_keys)
-    assert "ca_rmsf_near_99" not in json.dumps(contract)
-    assert any(
-        "pending MDClaw prod nodes" in item
-        for item in contract["submission_checklist"]
-    )
-    assert any(
-        "runner-owned OpenMM/MDClaw ledger" in item
-        for item in contract["submission_checklist"]
-    )
-    assert "supervised" in contract["submission_lifecycle"]["background_policy"]
+
     checklist = (
         out_dir
         / "tasks"
         / "S01_pressure_hydration_t4l_l99a"
         / "submission_checklist.md"
     ).read_text()
-    assert "outputs.analysis_intent" in checklist
-    assert "outputs.study_index" in checklist
-    assert "outputs.topology" not in checklist
-    assert "folded_state_retention@1" in checklist
-    assert "0.45 nm periodic" in checklist
-    assert "no runner-detected production-time force" in checklist
-    assert "base-system construction and dependency runtime" in checklist
-    assert not (out_dir / "tasks" / "S01_pressure_hydration_t4l_l99a" / "task.json").exists()
-    assert not (out_dir / "tasks" / "S01_pressure_hydration_t4l_l99a" / "truth").exists()
+    assert "`confirmatory_plan.json`" in checklist
+    assert "`claim.json`" in checklist
+    assert "## Manifest Outputs" not in checklist
+    assert "No agent-side public preflight" in checklist
+    task_dir = out_dir / "tasks" / "S01_pressure_hydration_t4l_l99a"
+    assert not (task_dir / "task.json").exists()
+    assert not (task_dir / "truth").exists()

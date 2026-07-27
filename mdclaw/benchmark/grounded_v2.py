@@ -1,22 +1,42 @@
-"""Shared truth-blind assembly for MDStudyBench grounded-correct-v2.
+"""Direct, deterministic evaluation for the MDStudyBench v2 pilot.
 
-Judge and scorer both consume the exact bundle returned here.  The bundle has
-no ground-truth argument and deliberately excludes the report's open-book
-``prior_expectation`` field.
+The runner owns the manifest, frozen confirmatory plan, episode ledger, and
+episode artifacts.  The agent owns only the plan before execution and the claim
+after execution.  This module verifies that custody boundary, replays the fixed
+S01 analysis from the runner-owned artifacts, and returns the three quantities
+used by official scoring: valid execution, supported claim, and its recomputed
+outcome.  Held-out truth is deliberately not accepted here.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from mdclaw.benchmark.preregistration_v2 import verify_preregistration_v2
-from mdclaw.benchmark.study_evidence_v2 import (
-    build_verified_evidence_packet_v2,
-)
-from mdclaw.benchmark.study_identity_v2 import verify_v2_study_identity
+from mdclaw.benchmark.models import ClaimV2, ConfirmatoryPlanV2
+from mdclaw.benchmark.study_evidence_v2 import replay_episode_v2
+from mdclaw.benchmark.study_identity_v2 import verify_episode_identity_v2
+
+
+_EPISODE_KIND = "mdstudybench_runner_episode_v2"
+_RUNNER = "mdclaw_benchmark_runner"
+_OUTPUTS = {
+    "confirmatory_plan": "confirmatory_plan.json",
+    "claim": "claim.json",
+    "episode": "episode/episode.json",
+}
+_INPUT_ARTIFACTS = {"base_system", "topology", "start_state"}
+_OUTPUT_ARTIFACTS = {
+    "trajectory",
+    "state",
+    "energy",
+    "runtime_system",
+    "integrator",
+}
 
 
 def build_truth_blind_bundle_v2(
@@ -25,509 +45,539 @@ def build_truth_blind_bundle_v2(
     scientific_target: dict[str, Any],
     harness_record: Any = None,
 ) -> dict[str, Any]:
-    """Load one submission and bind its truth-blind v2 certificates."""
+    """Evaluate one runner-finalized v2 submission without held-out truth.
+
+    The historical function name remains as a call-site convenience; the
+    returned value is now a flat deterministic evaluation, not a judge packet.
+    """
 
     root = Path(submission_dir).resolve()
-    errors: list[str] = []
-    manifest = _read_json(root / "manifest.json", errors, "manifest")
-    outputs = manifest.get("outputs") if isinstance(manifest, dict) else None
+    execution_errors: list[str] = []
+    claim_errors: list[str] = []
+    manifest = _read_json(root / "manifest.json", "manifest", execution_errors)
+    outputs = manifest.get("outputs")
     if not isinstance(outputs, dict):
-        outputs = {}
-        errors.append("manifest_outputs_missing")
+        execution_errors.append("manifest_outputs_invalid")
+        outputs = _OUTPUTS
+    else:
+        if any(
+            outputs.get(field) != _OUTPUTS[field]
+            for field in ("confirmatory_plan", "episode")
+        ):
+            execution_errors.append("manifest_execution_outputs_invalid")
+        if (
+            outputs.get("claim") != _OUTPUTS["claim"]
+            or set(outputs) != set(_OUTPUTS)
+        ):
+            claim_errors.append("manifest_claim_output_invalid")
+    generated_by = manifest.get("generated_by")
+    if (
+        not isinstance(generated_by, dict)
+        or generated_by.get("tool") != _RUNNER
+    ):
+        execution_errors.append("manifest_runner_custody_missing")
+    if manifest.get("status") != "completed":
+        execution_errors.append("manifest_not_completed")
 
-    intent, intent_relative = _declared_json(
-        root, outputs, "analysis_intent", "analysis_intent.json", errors
+    plan, plan_path = _declared_json(
+        root,
+        outputs,
+        "confirmatory_plan",
+        execution_errors,
     )
-    study_index, _ = _declared_json(
-        root, outputs, "study_index", "study_index.json", errors
+    claim, _claim_path = _declared_json(
+        root,
+        outputs,
+        "claim",
+        claim_errors,
     )
-    evidence_report, _ = _declared_json(
-        root, outputs, "evidence_report", "evidence_report.json", errors
+    episode, episode_path = _declared_json(
+        root,
+        outputs,
+        "episode",
+        execution_errors,
     )
+    episode_root = episode_path.parent if episode_path is not None else root
 
-    identity = verify_v2_study_identity(
-        submission_dir=root,
+    plan_model: ConfirmatoryPlanV2 | None = None
+    claim_model: ClaimV2 | None = None
+    try:
+        plan_model = ConfirmatoryPlanV2.model_validate(plan)
+    except Exception:
+        execution_errors.append("confirmatory_plan_invalid")
+    try:
+        claim_model = ClaimV2.model_validate(claim)
+    except Exception:
+        claim_errors.append("claim_invalid")
+
+    task_id = manifest.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        execution_errors.append("manifest_task_id_missing")
+        task_id = ""
+    for label, payload in (("plan", plan), ("episode", episode)):
+        if payload.get("task_id") != task_id:
+            execution_errors.append(f"{label}_task_id_mismatch")
+    if claim.get("task_id") != task_id:
+        claim_errors.append("claim_task_id_mismatch")
+    if isinstance(harness_record, dict):
+        if harness_record.get("task_id") not in {None, task_id}:
+            execution_errors.append("harness_task_id_mismatch")
+        if harness_record.get("run_id") not in {None, manifest.get("run_id")}:
+            execution_errors.append("harness_run_id_mismatch")
+
+    plan_hash = _sha256(plan_path) if plan_path is not None else None
+    if plan_hash is None:
+        execution_errors.append("confirmatory_plan_hash_unavailable")
+    allowed_outcomes = {
+        value
+        for value in scientific_target.get("allowed_outcomes") or []
+        if isinstance(value, str) and value
+    }
+    if (
+        claim_model is not None
+        and claim_model.status == "resolved"
+        and claim_model.outcome not in allowed_outcomes
+    ):
+        claim_errors.append("claim_outcome_not_allowed")
+
+    episode_errors, execution_diagnostics = _validate_episode(
+        episode_root=episode_root,
+        episode=episode,
+        plan=(
+            plan_model.model_dump()
+            if plan_model is not None
+            else plan
+        ),
+        plan_hash=plan_hash,
         scientific_target=scientific_target,
-        study_index=study_index,
-    )
-    preregistration = verify_preregistration_v2(
-        submission_dir=root,
-        scientific_target=scientific_target,
-        study_index=study_index,
-        evidence_report=evidence_report,
-        analysis_intent=intent,
-        analysis_intent_file=intent_relative,
+        manifest=manifest,
         harness_record=harness_record,
     )
-    evidence_packet = build_verified_evidence_packet_v2(
-        root,
-        study_index,
-        evidence_report,
-        analysis_intent=intent,
-        preregistration_certificate=preregistration,
-        registered_plan_sha256=preregistration.get("analysis_intent_sha256"),
+    identity = verify_episode_identity_v2(
+        episode_root=episode_root,
+        episode=episode,
+        scientific_target=scientific_target,
+    )
+    replay = replay_episode_v2(
+        episode_root=episode_root,
+        episode=episode,
         scientific_target=scientific_target,
     )
 
-    packet_summary = evidence_packet.get("summary")
-    if not isinstance(packet_summary, dict):
-        packet_summary = {}
-    evidence_items = evidence_packet.get("evidence")
-    if not isinstance(evidence_items, list):
-        evidence_items = []
-    raw_ids = [
-        str(item.get("id"))
-        for item in evidence_items
-        if isinstance(item, dict)
-        and item.get("id") is not None
-        and item.get("raw_recomputed") is not None
-    ]
-    eligible_ids = [
-        str(item.get("id"))
-        for item in evidence_items
-        if isinstance(item, dict)
-        and item.get("id") is not None
-        and item.get("support_eligible") is True
-    ]
-    control_summary = _required_control_summary(
-        scientific_target=scientific_target,
-        evidence_items=evidence_items,
-        evidence_report=evidence_report,
-        analysis_intent=intent,
+    valid_execution = bool(
+        plan_model is not None
+        and not execution_errors
+        and not episode_errors
+        and identity.get("valid") is True
+        and replay.get("artifact_valid") is True
     )
-    claim_support = _deterministic_claim_support(
-        scientific_target=scientific_target,
-        evidence_items=evidence_items,
-        evidence_report=evidence_report,
-        analysis_intent=intent,
-        required_controls=control_summary,
-    )
-    bundle: dict[str, Any] = {
-        "schema_version": "2.0",
-        "kind": "mdstudybench_truth_blind_bundle_v2",
-        "truth_blind": True,
-        "scientific_target": scientific_target,
-        "analysis_intent": intent,
-        "agent_report": _judge_report_projection(evidence_report),
-        "entity_condition_certificate": identity,
-        "preregistration_certificate": preregistration,
-        "verified_evidence": evidence_packet,
-        "claim_support_certificate": claim_support,
-        "summary": {
-            "artifact_valid": bool(packet_summary.get("artifact_valid")),
-            "entity_condition_valid": bool(
-                identity.get("entity_condition_valid")
-            ),
-            "execution_attested": bool(
-                preregistration.get("execution_attested")
-            ),
-            "preregistration_valid": bool(
-                preregistration.get("preregistration_valid")
-            ),
-            "required_controls_evaluated": control_summary["evaluated"],
-            "required_controls_passed": control_summary["passed"],
-            "required_control_results": control_summary["results"],
-            "raw_recomputed_evidence_ids": sorted(set(raw_ids)),
-            "support_eligible_evidence_ids": sorted(set(eligible_ids)),
-            "claim_supported": claim_support["claim_supported"],
-            "recomputed_outcome": claim_support["recomputed_outcome"],
-            "agent_outcome": claim_support["agent_outcome"],
-        },
-        "errors": sorted(set(errors)),
-    }
-    bundle["bundle_hash"] = truth_blind_bundle_hash_v2(bundle)
-    return _json_safe(bundle)
-
-
-def truth_blind_bundle_hash_v2(bundle: dict[str, Any]) -> str:
-    payload = dict(bundle)
-    payload.pop("bundle_hash", None)
-    canonical = json.dumps(
-        _json_safe(payload),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(canonical).hexdigest()
-
-
-def _required_control_summary(
-    *,
-    scientific_target: dict[str, Any],
-    evidence_items: list[Any],
-    evidence_report: dict[str, Any],
-    analysis_intent: dict[str, Any],
-) -> dict[str, Any]:
-    raw_required = scientific_target.get("required_control_verifiers")
-    required = [
-        value.strip()
-        for value in raw_required or []
-        if isinstance(value, str) and value.strip()
-    ]
-    report_items = _unique_report_evidence_by_id(evidence_report)
-    analysis_roles = _analysis_roles_by_id(analysis_intent)
-    verdict = evidence_report.get("md_verdict")
-    if not isinstance(verdict, dict):
-        verdict = {}
-    resolved = verdict.get("status") == "resolved"
-    cited_ids = {
-        value.strip()
-        for value in verdict.get("cited_evidence_ids") or []
-        if isinstance(value, str) and value.strip()
-    }
-    verified_by_id = {
-        str(item.get("id")): item
-        for item in evidence_items
-        if isinstance(item, dict) and item.get("id") is not None
-    }
-    cited_estimands = [
-        verified_by_id[evidence_id]
-        for evidence_id in sorted(cited_ids)
-        if evidence_id in verified_by_id
-        and analysis_roles.get(
-            str(report_items.get(evidence_id, {}).get("analysis_id"))
-        )
-        == "estimand"
-    ]
-
-    results: list[dict[str, Any]] = []
-    for verifier_id in required:
-        matching = [
-            item
-            for item in evidence_items
-            if isinstance(item, dict) and item.get("verifier_id") == verifier_id
-        ]
-        declared_controls = [
-            item
-            for item in matching
-            if report_items.get(str(item.get("id")), {}).get("claim_role")
-            == "validity_control"
-            and analysis_roles.get(
-                str(
-                    report_items.get(str(item.get("id")), {}).get(
-                        "analysis_id"
-                    )
-                )
-            )
-            == "validity_control"
-        ]
-        linkages: list[dict[str, Any]] = []
-        if resolved:
-            cited_controls = [
-                item
-                for item in declared_controls
-                if str(item.get("id")) in cited_ids
-            ]
-            for estimand in cited_estimands:
-                scope = _verified_evidence_scope(estimand)
-                scoped_controls = [
-                    item
-                    for item in cited_controls
-                    if scope is not None
-                    and _verified_evidence_scope(item) == scope
-                ]
-                evaluated_items = [
-                    item for item in scoped_controls if _control_evaluated(item)
-                ]
-                linkages.append(
-                    {
-                        "estimand_evidence_id": str(estimand.get("id")),
-                        "intent_id": scope[0] if scope is not None else None,
-                        "comparison_id": scope[1] if scope is not None else None,
-                        "confirmatory_run_ids": (
-                            list(scope[2]) if scope is not None else []
-                        ),
-                        "control_evidence_ids": sorted(
-                            str(item.get("id")) for item in scoped_controls
-                        ),
-                        "evaluated": bool(evaluated_items),
-                        "passed": any(
-                            _control_passed(item, verifier_id)
-                            for item in evaluated_items
-                        ),
-                    }
-                )
-            evaluated = bool(linkages) and all(
-                linkage["evaluated"] for linkage in linkages
-            )
-            passed = evaluated and all(
-                linkage["passed"] for linkage in linkages
-            )
-        else:
-            # An unresolved verdict may use a failed validity control as evidence
-            # for justified abstention.  Preserve the diagnostic, study-wide
-            # evaluation used by that path; scope binding is mandatory only for
-            # a resolved estimand claim.
-            evaluated_items = [
-                item for item in declared_controls if _control_evaluated(item)
-            ]
-            evaluated = bool(evaluated_items)
-            passed = any(
-                _control_passed(item, verifier_id) for item in evaluated_items
-            )
-        results.append(
-            {
-                "verifier_id": verifier_id,
-                "evaluated": evaluated,
-                "passed": passed,
-                "evidence_ids": sorted(
-                    str(item.get("id"))
-                    for item in declared_controls
-                    if item.get("id") is not None
-                ),
-                "estimand_control_linkages": linkages,
-            }
-        )
-    return {
-        "evaluated": all(result["evaluated"] for result in results),
-        "passed": all(result["passed"] for result in results),
-        "results": results,
-    }
-
-
-def _deterministic_claim_support(
-    *,
-    scientific_target: dict[str, Any],
-    evidence_items: list[Any],
-    evidence_report: dict[str, Any],
-    analysis_intent: dict[str, Any],
-    required_controls: dict[str, Any],
-) -> dict[str, Any]:
-    """Map evaluator-recomputed S01 evidence to the agent claim without an LLM."""
-
-    reason_codes: list[str] = []
-    verdict = evidence_report.get("md_verdict")
-    if not isinstance(verdict, dict):
-        verdict = {}
-    status = verdict.get("status")
-    verdict_basis = verdict.get("basis")
-    agent_outcome = (
-        verdict.get("outcome")
-        if isinstance(verdict.get("outcome"), str)
+    claim_outcome = (
+        claim_model.outcome
+        if claim_model is not None and claim_model.status == "resolved"
         else None
     )
-    contract = scientific_target.get("primary_evidence_contract")
-    if not isinstance(contract, dict):
-        reason_codes.append("primary_evidence_contract_missing")
-        contract = {}
-    verifier_id = contract.get("verifier_id")
-    mapping = contract.get("outcome_mapping")
-    if not isinstance(mapping, dict):
-        mapping = {}
-        reason_codes.append("task_outcome_mapping_missing")
-
-    cited_ids = {
-        value.strip()
-        for value in verdict.get("cited_evidence_ids") or []
-        if isinstance(value, str) and value.strip()
-    }
-    report_items = _unique_report_evidence_by_id(evidence_report)
-    analysis_roles = _analysis_roles_by_id(analysis_intent)
-    candidates = [
-        item
-        for item in evidence_items
-        if isinstance(item, dict)
-        and str(item.get("id")) in cited_ids
-        and item.get("verifier_id") == verifier_id
-        and analysis_roles.get(
-            str(report_items.get(str(item.get("id")), {}).get("analysis_id"))
-        )
-        == "estimand"
-    ]
-    if status != "resolved":
-        reason_codes.append("md_verdict_unresolved")
-    if status == "resolved" and verdict_basis != "direct_estimator":
-        reason_codes.append("md_verdict_basis_ineligible")
-    if len(candidates) != 1:
-        reason_codes.append("primary_evidence_count_mismatch")
-
-    primary = candidates[0] if len(candidates) == 1 else {}
-    primary_report = report_items.get(str(primary.get("id")), {})
-    claim_role = primary_report.get("claim_role")
-    raw = primary.get("raw_recomputed")
-    if not isinstance(raw, dict):
-        raw = {}
-    estimate_direction = raw.get("estimate_direction")
-    recomputed_outcome = (
-        mapping.get(estimate_direction)
-        if isinstance(estimate_direction, str)
-        else None
-    )
-    if primary and primary.get("support_eligible") is not True:
-        reason_codes.append("primary_evidence_not_support_eligible")
-    if primary and claim_role != "direct_estimator":
-        reason_codes.append("primary_evidence_claim_role_ineligible")
-    if recomputed_outcome is None:
-        reason_codes.append("recomputed_outcome_unavailable")
-    if status == "resolved" and agent_outcome != recomputed_outcome:
-        reason_codes.append("claim_outcome_mismatch")
-    if required_controls.get("evaluated") is not True:
-        reason_codes.append("required_controls_not_evaluated")
-    elif required_controls.get("passed") is not True:
-        reason_codes.append("required_controls_not_passed")
-
+    recomputed_outcome = replay.get("recomputed_outcome")
+    control_passed = replay.get("control_passed") is True
     claim_supported = bool(
-        status == "resolved"
-        and verdict_basis == "direct_estimator"
-        and len(candidates) == 1
-        and primary.get("support_eligible") is True
-        and claim_role == "direct_estimator"
-        and recomputed_outcome is not None
-        and agent_outcome == recomputed_outcome
-        and required_controls.get("evaluated") is True
-        and required_controls.get("passed") is True
-        and not reason_codes
+        valid_execution
+        and claim_model is not None
+        and not claim_errors
+        and claim_model.status == "resolved"
+        and replay.get("support_ready") is True
+        and control_passed
+        and isinstance(recomputed_outcome, str)
+        and claim_outcome == recomputed_outcome
     )
+
+    reason_codes = [
+        *execution_errors,
+        *claim_errors,
+        *episode_errors,
+        *list(identity.get("reason_codes") or []),
+        *list(replay.get("reason_codes") or []),
+    ]
+    if claim_model is not None:
+        if claim_model.status == "unresolved":
+            reason_codes.append("claim_unresolved")
+        elif claim_outcome != recomputed_outcome:
+            reason_codes.append("claim_outcome_mismatch")
+    if replay.get("support_ready") is not True:
+        reason_codes.append("replay_not_support_ready")
+    if not control_passed:
+        reason_codes.append("folded_state_control_not_passed")
+
     return {
-        "schema_version": "1.0",
-        "kind": "mdstudybench_deterministic_claim_support_v2",
-        "truth_blind": True,
-        "evaluated": status in {"resolved", "unresolved"},
+        "valid_execution": valid_execution,
         "claim_supported": claim_supported,
-        "primary_evidence_id": (
-            str(primary.get("id")) if primary.get("id") is not None else None
-        ),
-        "verifier_id": verifier_id,
-        "claim_role": claim_role,
-        "estimate_direction": estimate_direction,
         "recomputed_outcome": recomputed_outcome,
-        "agent_outcome": agent_outcome,
-        "md_verdict_basis": verdict_basis,
-        "required_controls_passed": (
-            required_controls.get("passed") is True
-        ),
+        "claim_outcome": claim_outcome,
+        "control_passed": control_passed,
         "reason_codes": list(dict.fromkeys(reason_codes)),
+        "diagnostics": {
+            "claim_status": (
+                claim_model.status if claim_model is not None else None
+            ),
+            "execution": execution_diagnostics,
+            "identity": identity.get("diagnostics") or {},
+            "replay": replay.get("diagnostics") or {},
+        },
+        "plan_hash": plan_hash,
     }
 
 
-def _unique_report_evidence_by_id(
-    evidence_report: dict[str, Any],
-) -> dict[str, dict[str, Any]]:
-    raw_items = evidence_report.get("evidence")
-    if not isinstance(raw_items, list):
-        return {}
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for item in raw_items:
-        if not isinstance(item, dict):
-            continue
-        evidence_id = item.get("id")
-        if not isinstance(evidence_id, str) or not evidence_id.strip():
-            continue
-        grouped.setdefault(evidence_id.strip(), []).append(item)
-    return {
-        evidence_id: items[0]
-        for evidence_id, items in grouped.items()
-        if len(items) == 1
-    }
+def _validate_episode(
+    *,
+    episode_root: Path,
+    episode: dict[str, Any],
+    plan: dict[str, Any],
+    plan_hash: str | None,
+    scientific_target: dict[str, Any],
+    manifest: dict[str, Any],
+    harness_record: Any,
+) -> tuple[list[str], dict[str, Any]]:
+    errors: list[str] = []
+    if not isinstance(harness_record, dict):
+        errors.append("harness_record_missing")
+        harness_episode = None
+    else:
+        harness_episode = harness_record.get("study_episode")
+    if harness_episode != episode:
+        errors.append("harness_episode_mismatch")
 
-
-def _analysis_roles_by_id(
-    analysis_intent: dict[str, Any],
-) -> dict[str, str]:
-    raw_analyses = analysis_intent.get("primary_analyses")
-    if not isinstance(raw_analyses, list):
-        return {}
-    grouped: dict[str, list[str]] = {}
-    for analysis in raw_analyses:
-        if not isinstance(analysis, dict):
-            continue
-        analysis_id = analysis.get("analysis_id")
-        if not isinstance(analysis_id, str) or not analysis_id.strip():
-            continue
-        role = analysis.get("analysis_role", "estimand")
-        if role not in {"estimand", "validity_control"}:
-            continue
-        grouped.setdefault(analysis_id.strip(), []).append(role)
-    return {
-        analysis_id: roles[0]
-        for analysis_id, roles in grouped.items()
-        if len(roles) == 1
-    }
-
-
-def _verified_evidence_scope(
-    item: dict[str, Any],
-) -> tuple[str, str, tuple[str, ...]] | None:
-    intent_id = item.get("intent_id")
-    comparison_id = item.get("comparison_id")
-    run_ids = item.get("confirmatory_run_ids")
-    if (
-        not isinstance(intent_id, str)
-        or not intent_id.strip()
-        or not isinstance(comparison_id, str)
-        or not comparison_id.strip()
-        or not isinstance(run_ids, list)
+    for key, expected in (
+        ("kind", _EPISODE_KIND),
+        ("recorded_by", _RUNNER),
+        ("adapter_id", scientific_target.get("execution_adapter")),
+        ("task_id", manifest.get("task_id")),
+        ("run_id", manifest.get("run_id")),
+        ("plan_sha256", plan_hash),
     ):
-        return None
-    normalized_run_ids = tuple(
-        sorted(
+        if episode.get(key) != expected:
+            errors.append(f"episode_{key}_mismatch")
+    if episode.get("within_task_budget") is not True:
+        errors.append("episode_budget_not_attested")
+    if episode.get("success") is not True:
+        errors.append("episode_unsuccessful")
+    if episode.get("errors") != []:
+        errors.append("episode_errors_present")
+    frozen_at = _timestamp(episode.get("frozen_at"))
+    if frozen_at is None:
+        errors.append("episode_frozen_at_invalid")
+    launcher = episode.get("adapter_launcher")
+    source = episode.get("adapter_source")
+    if not isinstance(launcher, dict) or not _sha256_value(
+        launcher.get("sha256")
+    ):
+        errors.append("adapter_launcher_hash_invalid")
+    if (
+        not isinstance(source, dict)
+        or not _sha256_value(source.get("sha256"))
+        or source.get("sha256") != source.get("expected_sha256")
+    ):
+        errors.append("adapter_source_hash_mismatch")
+
+    raw_plan_runs = plan.get("runs")
+    if not isinstance(raw_plan_runs, list):
+        raw_plan_runs = []
+    plan_runs = {
+        run.get("run_id"): run
+        for run in raw_plan_runs
+        if isinstance(run, dict)
+        and isinstance(run.get("run_id"), str)
+        and run.get("run_id")
+    }
+    raw_events = episode.get("events")
+    if not isinstance(raw_events, list) or not raw_events:
+        errors.append("episode_events_missing")
+        raw_events = []
+    event_groups: dict[str, list[dict[str, Any]]] = {}
+    for event in raw_events:
+        if not isinstance(event, dict):
+            errors.append("episode_event_invalid")
+            continue
+        run_id = event.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            errors.append("episode_event_run_id_missing")
+            continue
+        event_groups.setdefault(run_id, []).append(event)
+    if set(event_groups) != set(plan_runs):
+        errors.append("episode_plan_run_set_mismatch")
+
+    conditions = scientific_target.get("required_conditions")
+    if not isinstance(conditions, dict):
+        conditions = {}
+    primary = scientific_target.get("primary_evidence_contract")
+    fixed = (
+        primary.get("fixed_observable_parameters")
+        if isinstance(primary, dict)
+        else {}
+    )
+    if not isinstance(fixed, dict):
+        fixed = {}
+    minimum_duration = _finite_number(
+        fixed.get("minimum_confirmatory_time_ns_per_condition")
+    )
+    minimum_duration = minimum_duration or 0.0
+    duration_by_role = {"reference": 0.0, "variant": 0.0}
+    topology_hashes: set[str] = set()
+    base_system_hashes: set[str] = set()
+    trajectory_hashes: list[str] = []
+    event_diagnostics: list[dict[str, Any]] = []
+
+    for run_id, plan_run in plan_runs.items():
+        matches = event_groups.get(run_id, [])
+        if len(matches) != 1:
+            errors.append("episode_event_not_unique")
+            continue
+        event = matches[0]
+        sequence = event.get("runner_sequence")
+        expected_event_id = (
+            f"runner-prod-{sequence:03d}"
+            if isinstance(sequence, int) and not isinstance(sequence, bool)
+            else None
+        )
+        event_errors: list[str] = []
+        for key, expected in (
+            ("condition_role", plan_run.get("condition_role")),
+            ("node_id", plan_run.get("node_id")),
+            ("plan_sha256", plan_hash),
+            ("adapter_id", scientific_target.get("execution_adapter")),
+            ("production_event_id", expected_event_id),
+            ("adapter_exit_code", 0),
+            ("adapter_timed_out", False),
+            ("valid", True),
+        ):
+            if event.get(key) != expected:
+                event_errors.append(f"event_{key}_mismatch")
+        if event.get("reason_codes") != []:
+            event_errors.append("event_reason_codes_present")
+        scope = event.get("attestation_scope")
+        if (
+            not isinstance(scope, dict)
+            or scope.get("production_runtime_matches_frozen_base_system")
+            is not True
+        ):
+            event_errors.append("event_runtime_scope_unattested")
+        started = _timestamp(event.get("started_at"))
+        completed = _timestamp(event.get("completed_at"))
+        if (
+            frozen_at is None
+            or started is None
+            or completed is None
+            or started <= frozen_at
+            or completed < started
+        ):
+            event_errors.append("event_time_order_invalid")
+
+        inputs, input_errors = _validate_artifact_group(
+            episode_root,
+            event.get("input_artifacts"),
+            _INPUT_ARTIFACTS,
+            "input",
+        )
+        outputs, output_errors = _validate_artifact_group(
+            episode_root,
+            event.get("output_artifacts"),
+            _OUTPUT_ARTIFACTS,
+            "output",
+        )
+        event_errors.extend(input_errors)
+        event_errors.extend(output_errors)
+        if digest := inputs.get("topology"):
+            topology_hashes.add(digest)
+        if digest := inputs.get("base_system"):
+            base_system_hashes.add(digest)
+        if digest := outputs.get("trajectory"):
+            trajectory_hashes.append(digest)
+
+        runtime = event.get("runtime")
+        runtime_errors = _validate_runtime(
+            runtime,
+            role=str(plan_run.get("condition_role") or ""),
+            requested_duration=plan_run.get("simulation_time_ns"),
+            scientific_target=scientific_target,
+        )
+        event_errors.extend(runtime_errors)
+        duration = (
+            _finite_number(runtime.get("duration_ns"))
+            if isinstance(runtime, dict)
+            else None
+        )
+        role = plan_run.get("condition_role")
+        if role in duration_by_role and duration is not None:
+            duration_by_role[role] += duration
+        errors.extend(event_errors)
+        event_diagnostics.append(
             {
-                run_id.strip()
-                for run_id in run_ids
-                if isinstance(run_id, str) and run_id.strip()
+                "run_id": run_id,
+                "condition_role": role,
+                "reason_codes": list(dict.fromkeys(event_errors)),
+                "runtime": runtime if isinstance(runtime, dict) else {},
             }
         )
-    )
-    if not normalized_run_ids:
-        return None
-    return intent_id.strip(), comparison_id.strip(), normalized_run_ids
 
+    if len(topology_hashes) != 1:
+        errors.append("paired_topology_hash_mismatch")
+    if len(base_system_hashes) != 1:
+        errors.append("paired_base_system_hash_mismatch")
+    if len(set(trajectory_hashes)) != len(trajectory_hashes):
+        errors.append("duplicate_trajectory_bytes")
+    for role, duration in duration_by_role.items():
+        if duration < minimum_duration:
+            errors.append(f"{role}_confirmatory_time_insufficient")
+    sequences = [
+        event.get("runner_sequence")
+        for event in raw_events
+        if isinstance(event, dict)
+    ]
+    if (
+        any(
+            isinstance(sequence, bool) or not isinstance(sequence, int)
+            for sequence in sequences
+        )
+        or sorted(sequences) != list(range(1, len(raw_events) + 1))
+    ):
+        errors.append("runner_sequence_invalid")
 
-def _control_evaluated(item: dict[str, Any]) -> bool:
-    return item.get("artifact_valid") is True and isinstance(
-        item.get("raw_recomputed"), dict
-    )
-
-
-def _control_passed(item: dict[str, Any], verifier_id: str) -> bool:
-    if not _control_evaluated(item) or item.get("support_eligible") is not True:
-        return False
-    if verifier_id == "folded_state_retention@1":
-        return item["raw_recomputed"].get("folded_state_retained") is True
-    return True
-
-
-def _judge_report_projection(report: dict[str, Any]) -> dict[str, Any]:
-    """Select report material while structurally excluding prior knowledge."""
-
-    return {
-        key: _json_safe(report[key])
-        for key in ("md_verdict", "evidence", "reasoning", "limitations")
-        if key in report
+    return list(dict.fromkeys(errors)), {
+        "episode_bound_to_harness": harness_episode == episode,
+        "event_count": len(raw_events),
+        "duration_ns_by_role": duration_by_role,
+        "events": event_diagnostics,
     }
+
+
+def _validate_artifact_group(
+    root: Path,
+    payload: Any,
+    required: set[str],
+    label: str,
+) -> tuple[dict[str, str], list[str]]:
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return {}, [f"event_{label}_artifacts_invalid"]
+    if set(payload) != required:
+        errors.append(f"event_{label}_artifact_set_mismatch")
+    hashes: dict[str, str] = {}
+    for key in sorted(required):
+        record = payload.get(key)
+        if not isinstance(record, dict):
+            errors.append(f"event_{label}_{key}_record_missing")
+            continue
+        relative = record.get("path")
+        path = _safe_file(root, relative)
+        if path is None:
+            errors.append(f"event_{label}_{key}_file_missing")
+            continue
+        digest = _sha256(path)
+        if record.get("sha256") != digest:
+            errors.append(f"event_{label}_{key}_hash_mismatch")
+        if record.get("bytes") != path.stat().st_size:
+            errors.append(f"event_{label}_{key}_size_mismatch")
+        hashes[key] = digest
+    return hashes, errors
+
+
+def _validate_runtime(
+    runtime: Any,
+    *,
+    role: str,
+    requested_duration: Any,
+    scientific_target: dict[str, Any],
+) -> list[str]:
+    if not isinstance(runtime, dict):
+        return ["event_runtime_missing"]
+    errors: list[str] = []
+    if runtime.get("engine") != "OpenMM":
+        errors.append("runtime_engine_mismatch")
+    if runtime.get("adapter_id") != scientific_target.get("execution_adapter"):
+        errors.append("runtime_adapter_mismatch")
+    if runtime.get("integrator_class") != "LangevinMiddleIntegrator":
+        errors.append("runtime_integrator_mismatch")
+    if runtime.get("barostat_class") != "MonteCarloBarostat":
+        errors.append("runtime_barostat_mismatch")
+    if (
+        runtime.get("base_system_canonical_sha256")
+        != runtime.get("runtime_without_barostat_canonical_sha256")
+    ):
+        errors.append("runtime_base_system_mismatch")
+    conditions = scientific_target.get("required_conditions")
+    if not isinstance(conditions, dict):
+        conditions = {}
+    expected_temperature = _finite_number(conditions.get("temperature_k"))
+    expected_pressure_mpa = _finite_number(
+        conditions.get(
+            "reference_pressure_mpa"
+            if role == "reference"
+            else "test_pressure_mpa"
+        )
+    )
+    for key in ("integrator_temperature_k", "barostat_temperature_k"):
+        observed = _finite_number(runtime.get(key))
+        if (
+            expected_temperature is None
+            or observed is None
+            or not math.isclose(
+                observed,
+                expected_temperature,
+                rel_tol=0.0,
+                abs_tol=1.0e-6,
+            )
+        ):
+            errors.append(f"runtime_{key}_mismatch")
+    pressure_bar = _finite_number(runtime.get("pressure_bar"))
+    if (
+        expected_pressure_mpa is None
+        or pressure_bar is None
+        or not math.isclose(
+            pressure_bar,
+            10.0 * expected_pressure_mpa,
+            rel_tol=0.0,
+            abs_tol=1.0e-6,
+        )
+    ):
+        errors.append("runtime_pressure_mismatch")
+    duration = _finite_number(runtime.get("duration_ns"))
+    requested = _finite_number(requested_duration)
+    if (
+        duration is None
+        or requested is None
+        or not math.isclose(
+            duration,
+            requested,
+            rel_tol=1.0e-6,
+            abs_tol=1.0e-9,
+        )
+    ):
+        errors.append("runtime_duration_mismatch")
+    frame_count = runtime.get("trajectory_frame_count")
+    if (
+        isinstance(frame_count, bool)
+        or not isinstance(frame_count, int)
+        or frame_count < 2
+    ):
+        errors.append("runtime_trajectory_frame_count_invalid")
+    return errors
 
 
 def _declared_json(
     root: Path,
     outputs: dict[str, Any],
     field: str,
-    fallback: str,
     errors: list[str],
-) -> tuple[dict[str, Any], str]:
-    relative = outputs.get(field, fallback)
-    if not isinstance(relative, str) or not relative.strip():
-        errors.append(f"outputs_{field}_missing")
-        return {}, fallback
-    relative = relative.strip()
-    path = (root / relative).resolve()
-    try:
-        path.relative_to(root)
-    except ValueError:
-        errors.append(f"outputs_{field}_path_escape")
-        return {}, relative
-    return _read_json(path, errors, field), relative
+) -> tuple[dict[str, Any], Path | None]:
+    relative = outputs.get(field)
+    path = _safe_file(root, relative)
+    if path is None:
+        errors.append(f"{field}_missing_or_unsafe")
+        return {}, None
+    return _read_json(path, field, errors), path
 
 
-def _read_json(
-    path: Path, errors: list[str], label: str
-) -> dict[str, Any]:
+def _read_json(path: Path, label: str, errors: list[str]) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text())
-    except FileNotFoundError:
-        errors.append(f"{label}_missing")
-        return {}
-    except (json.JSONDecodeError, ValueError):
+    except (OSError, json.JSONDecodeError, ValueError):
         errors.append(f"{label}_invalid_json")
         return {}
     if not isinstance(payload, dict):
@@ -536,5 +586,48 @@ def _read_json(
     return payload
 
 
-def _json_safe(value: Any) -> Any:
-    return json.loads(json.dumps(value, sort_keys=True, default=str, allow_nan=False))
+def _safe_file(root: Path, relative: Any) -> Path | None:
+    if not isinstance(relative, str) or not relative:
+        return None
+    candidate = Path(relative)
+    if candidate.is_absolute():
+        return None
+    try:
+        path = (root / candidate).resolve()
+        path.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    return path if path.is_file() else None
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256_value(value: Any) -> bool:
+    return bool(
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None

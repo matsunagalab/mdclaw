@@ -212,10 +212,10 @@ or agent-authored evidence axis.
 
 ## Suite B: Scientific MD Reasoning
 
-`MDStudyBench-v0.4` has one experimental S01 pilot and three retained v1
-migration fixtures. There is no primary leaderboard task yet. The suite should
-stay small unless a new task adds a genuinely distinct, feasibility-tested
-scientific-answer pattern.
+`MDStudyBench-v0.4` has one experimental S01 pilot and three inactive legacy
+regression fixtures. There is no primary leaderboard task yet. The suite
+should stay small unless a new task adds a genuinely distinct,
+feasibility-tested scientific-answer pattern.
 
 The v2 primary outcome is the conjunction `valid_execution AND claim_supported
 AND truth_agreement`. These three gates are non-compensating and produce one
@@ -226,8 +226,8 @@ The public task specifies the scientific entity, estimand, comparison,
 conditions, measurement semantics, minimum evidence adequacy, and budget.
 Structural sources, preparation, exploratory sampling, replica allocation, and
 the confirmatory allocation above that minimum remain agent-selected. Planning
-is not scored by matching a curator workflow. Instead, an agent registers its
-analysis before confirmatory production and is evaluated through the scientific
+is not scored by matching a curator workflow. Instead, an agent submits pending
+production nodes before confirmatory MD and is evaluated through the scientific
 consequences of that plan.
 
 Prior knowledge is allowed but is kept separate from the MD verdict. Held-out
@@ -271,10 +271,9 @@ agent tasks.
 
 ## Implementation Roadmap
 
-1. Keep the public package prompt-only and agent-neutral: expose
-   `prompt.md` plus `submission_contract.json`; keep `task.json`, truth files,
-   and scorer details private to the harness. This is the current export
-   behavior.
+1. Keep the public package small: expose the prompt, submission contract,
+   checklist, and schemas for agent-authored files; keep `task.json`, truth,
+   runner implementation, and scorer implementation private.
 2. Run MDClaw as the reference baseline on each prep task and save expected
    artifact patterns for debugging scorer failures. Start with P01, P02, P03,
    P11, P24, and P25 because they exercise the main new contract surfaces.
@@ -344,17 +343,15 @@ Implemented (`MDStudyBench-v0.4`):
   and unresolved outcome without prescribing a workflow.
 - The task owns the primary native verifier, outcome mapping, equivalence rule,
   exact cavity observable, minimum sampling adequacy, and folded-state control.
-  `analysis_intent.json` must reproduce that contract before confirmatory
-  production.
-- `study_index.json` generalizes paired roles into named systems, comparisons,
-  run phases, intent IDs, and runner event lineage.
-- The benchmark runner preflights paired inputs and requested physical time,
-  freezes the intent and an adapter-source snapshot, executes pending MDClaw
-  production nodes, and verifies the live OpenMM System, Integrator, State,
-  trajectory, energy log, steps, conditions, topology mapping, and artifact
-  hashes.
-- Public and private paths use the same truth-blind evidence verifier. Private
-  scoring adds held-out truth only after execution and claim support pass.
+  Agents consume that contract rather than duplicating it.
+- The only agent-authored files are `confirmatory_plan.json` before production
+  and `claim.json` after runner continuation. The runner owns the manifest,
+  episode ledger, and certified artifacts.
+- The benchmark runner preflights paired pending nodes and requested physical
+  time, freezes the plan, executes those nodes, and records the production
+  lineage needed for deterministic replay.
+- Private scoring adds held-out truth only after valid execution and claim
+  support pass.
 - S01 verifies the full public construct sequence, measures water oxygens within
   0.45 nm of mapped L99A CB, requires at least 10 ns and ESS 5 per condition,
   fixes an all-protein-CA folded-state control, applies the fixed

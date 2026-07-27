@@ -1,21 +1,4 @@
-"""Truth-blind evidence verification for the MDStudyBench v2 protocol.
-
-This module is intentionally independent from :mod:`study_evidence`, which is
-the released v1 verifier.  It consumes only submission-owned declarations and
-raw artifacts; neither task contracts nor held-out truth are accepted as
-arguments.
-
-The v2 verifier makes two distinctions that v1 did not need:
-
-* only runs linked to a preregistered, ``confirmatory`` analysis may support a
-  conclusion; and
-* recomputing a number is distinct from deciding that the number is eligible
-  scientific support.
-
-Native metrics are installed in a small registry.  Each result exposes the raw
-recomputation, per-run values, a statistical status, and stable reason codes.
-Unknown metrics remain visible but are never silently trusted.
-"""
+"""Fixed S01 trajectory replay for runner-owned MDStudyBench v2 episodes."""
 
 from __future__ import annotations
 
@@ -26,7 +9,7 @@ import statistics
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Iterator
 
 
 _MIN_FRAMES_PER_RUN = 5
@@ -35,58 +18,14 @@ _MIN_BLOCKS = 3
 _MIN_ALIGNED_COORDINATE_RANGE_NM = 1.0e-5
 _MAX_REGION_SELECTION_RADIUS_NM = 0.75
 _MAX_REGION_WATER_RADIUS_NM = 0.60
-_CONFIRMATORY_PHASE = "confirmatory"
-_WEIGHT_AWARE_METRIC_IDS: frozenset[str] = frozenset()
-
-# These declarations are deliberately narrow.  The verifier must not infer a
-# biased protocol from an unfamiliar method name, but it must also not treat an
-# explicitly biased/enhanced run as an ordinary equilibrium trajectory.
-_BIASED_SAMPLING_FLAG_KEYS = frozenset({
-    "bias_applied",
-    "biased",
-    "biased_sampling",
-    "enhanced_sampling",
-    "requires_reweighting",
-    "reweighting_required",
-})
-_SAMPLING_MODE_KEYS = frozenset({
-    "bias_method",
-    "enhanced_sampling_method",
-    "sampling_method",
-    "sampling_mode",
-})
-_BIASED_SAMPLING_MODES = frozenset({
-    "abf",
-    "accelerated_md",
-    "adaptive_biasing_force",
-    "biased",
-    "enhanced",
-    "enhanced_sampling",
-    "gamd",
-    "gaussian_accelerated_md",
-    "metadynamics",
-    "nonequilibrium_steering",
-    "steered",
-    "steered_md",
-    "umbrella",
-    "umbrella_sampling",
-    "weighted_ensemble",
-    "well_tempered_metadynamics",
-})
 
 
 @dataclass(frozen=True)
 class _RunSpec:
     run_id: str
-    system_id: str
     role: str
-    phase: str
-    intent_id: str | None
     topology: str | None
     trajectories: tuple[str, ...]
-    production_event_id: str | None
-    declared_starting_occupancy: float | None
-    metadata: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -102,633 +41,172 @@ class MetricContext:
     runner_runtime: dict[str, dict[str, Any]]
 
 
-MetricVerifier = Callable[[MetricContext], dict[str, Any]]
-
-
-class EvidenceMetricRegistry:
-    """Registry of versioned native evidence verifiers.
-
-    Metric identifiers include their semantic version (for example,
-    ``region_water_occupancy@1``).  Re-registering an identifier is rejected so
-    an evaluator cannot silently change a released formula.
-    """
-
-    def __init__(self) -> None:
-        self._verifiers: dict[str, MetricVerifier] = {}
-
-    def register(self, metric_id: str, verifier: MetricVerifier) -> None:
-        identifier = str(metric_id).strip()
-        if not identifier or "@" not in identifier:
-            raise ValueError("metric_id must be a non-empty versioned identifier")
-        if identifier in self._verifiers:
-            raise ValueError(f"metric already registered: {identifier}")
-        self._verifiers[identifier] = verifier
-
-    def resolve(self, metric_id: str) -> MetricVerifier | None:
-        return self._verifiers.get(str(metric_id).strip())
-
-    def metric_ids(self) -> tuple[str, ...]:
-        return tuple(sorted(self._verifiers))
-
-
-NATIVE_METRIC_REGISTRY = EvidenceMetricRegistry()
-
-
-def build_verified_evidence_packet_v2(
-    submission_dir: str | Path,
-    study_index: dict[str, Any],
-    evidence_report: dict[str, Any],
+def replay_episode_v2(
     *,
-    analysis_intent: dict[str, Any],
-    preregistration_certificate: dict[str, Any] | None = None,
-    preregistration_valid: bool | None = None,
-    registered_plan_sha256: str | None = None,
-    scientific_target: dict[str, Any] | None = None,
-    registry: EvidenceMetricRegistry | None = None,
-) -> dict[str, Any]:
-    """Build a truth-blind packet from declared runs and raw artifacts.
-
-    The analysis intent, study index, evidence report, and raw artifacts are
-    submission-owned.  The preregistration certificate is harness-owned and is
-    the only accepted source of execution ordering.  In particular, timestamps
-    declared inside the submission never establish prospective eligibility.
-
-    ``registered_plan_sha256`` is the SHA-256 of the exact registered
-    ``analysis_intent.json`` bytes.  It is compared with the raw-file digest in
-    the harness certificate; the intent dictionary is deliberately not
-    canonicalised and re-hashed here.
-    """
-    root = Path(submission_dir).resolve()
-    metric_registry = registry or NATIVE_METRIC_REGISTRY
-    trusted_target = (
-        scientific_target if isinstance(scientific_target, dict) else {}
-    )
-    errors: list[str] = []
-    warnings: list[str] = []
-
-    if not isinstance(study_index, dict):
-        study_index = {}
-        errors.append("study_index_not_object")
-    if not isinstance(evidence_report, dict):
-        evidence_report = {}
-        errors.append("evidence_report_not_object")
-    if not isinstance(analysis_intent, dict):
-        analysis_intent = {}
-        errors.append("analysis_intent_not_object")
-    if preregistration_certificate is not None and not isinstance(
-        preregistration_certificate, dict
-    ):
-        preregistration_certificate = None
-        errors.append("preregistration_certificate_not_object")
-
-    task_ids = {
-        str(value).strip()
-        for value in (
-            study_index.get("task_id"),
-            analysis_intent.get("task_id"),
-            evidence_report.get("task_id"),
-        )
-        if isinstance(value, str) and value.strip()
-    }
-    if len(task_ids) > 1:
-        errors.append("task_id_mismatch")
-
-    runs, run_errors = _normalise_runs(study_index)
-    errors.extend(run_errors)
-    comparisons, comparison_errors = _normalise_comparisons(study_index)
-    errors.extend(comparison_errors)
-    artifacts, artifact_errors = _inspect_artifacts(root, runs)
-    errors.extend(artifact_errors)
-    duplicates = _duplicate_artifacts(artifacts)
-
-    loaded_runs, load_diagnostics = _load_confirmatory_runs(root, runs)
-    registration = _registration_summary(
-        preregistration_certificate,
-        analysis_intent=analysis_intent,
-        preregistration_valid=preregistration_valid,
-        registered_plan_sha256=registered_plan_sha256,
-    )
-    analyses = _primary_analyses(analysis_intent)
-
-    verified_items: list[dict[str, Any]] = []
-    raw_items = evidence_report.get("evidence")
-    if not isinstance(raw_items, list):
-        raw_items = []
-        errors.append("evidence_items_missing")
-    for index, raw_item in enumerate(raw_items):
-        item = raw_item if isinstance(raw_item, dict) else {}
-        result = _verify_evidence_item(
-            root=root,
-            item=item,
-            index=index,
-            runs=runs,
-            comparisons=comparisons,
-            loaded_runs=loaded_runs,
-            load_diagnostics=load_diagnostics,
-            artifacts=artifacts,
-            analysis_intent=analysis_intent,
-            analyses=analyses,
-            registration=registration,
-            scientific_target=trusted_target,
-            registry=metric_registry,
-        )
-        verified_items.append(result)
-    evidence_id_counts: dict[str, int] = {}
-    for result in verified_items:
-        evidence_id_counts[result["id"]] = evidence_id_counts.get(result["id"], 0) + 1
-    for result in verified_items:
-        if evidence_id_counts[result["id"]] <= 1:
-            continue
-        _append_reason(
-            result["reason_codes"],
-            result["reason_details"],
-            "duplicate_evidence_id",
-            f"evidence id {result['id']!r} is not unique",
-        )
-        result["support_eligible"] = False
-    verified_items.sort(key=lambda result: (result["id"], result["analysis_id"]))
-
-    public_runs = [
-        {
-            "run_id": run.run_id,
-            "system_id": run.system_id,
-            "phase": run.phase or None,
-            "intent_id": run.intent_id,
-            "production_event_id": run.production_event_id,
-            "topology": run.topology,
-            "trajectories": list(run.trajectories),
-            "load_status": load_diagnostics.get(run.run_id, {}).get(
-                "status", "not_loaded"
-            ),
-            "load_errors": load_diagnostics.get(run.run_id, {}).get("errors", []),
-            "topology_sha256": load_diagnostics.get(run.run_id, {}).get(
-                "topology_sha256"
-            ),
-        }
-        for run in sorted(runs, key=lambda candidate: candidate.run_id)
-    ]
-    artifact_valid = bool(verified_items) and all(
-        bool(item["artifact_valid"]) for item in verified_items
-    )
-    scoped_duplicate_detected = any(
-        "duplicate_confirmatory_trajectory" in item["reason_codes"]
-        for item in verified_items
-    )
-    packet: dict[str, Any] = {
-        "schema_version": "2.0",
-        "kind": "mdstudybench_verified_evidence_v2",
-        "truth_blind": True,
-        "task_id": next(iter(task_ids)) if len(task_ids) == 1 else None,
-        "md_verdict": _submitted_conclusion(evidence_report),
-        "agent_report": _agent_report_projection(evidence_report),
-        "preregistration": registration,
-        "native_metric_registry": list(metric_registry.metric_ids()),
-        "runs": public_runs,
-        "artifacts": sorted(
-            artifacts,
-            key=lambda artifact: (
-                artifact["kind"], artifact["run_id"], artifact["path"]
-            ),
-        ),
-        "duplicates": duplicates,
-        "evidence": verified_items,
-        "summary": {
-            "declared_run_count": len(runs),
-            "confirmatory_run_count": sum(
-                run.phase == _CONFIRMATORY_PHASE for run in runs
-            ),
-            "loadable_confirmatory_run_count": len(loaded_runs),
-            "artifact_valid": artifact_valid,
-            "support_eligible_evidence_ids": [
-                item["id"] for item in verified_items if item["support_eligible"]
-            ],
-            "duplicate_trajectory_detected": scoped_duplicate_detected,
-            "preregistration_linked": bool(registration.get("intent_id")),
-            "preregistration_receipt_status": registration.get("receipt_status"),
-        },
-        "errors": sorted(set(errors)),
-        "warnings": sorted(set(warnings)),
-    }
-    packet = _json_safe(packet)
-    packet["packet_hash"] = verified_evidence_hash_v2(packet)
-    return packet
-
-
-def verified_evidence_hash_v2(packet: dict[str, Any]) -> str:
-    """Return a stable SHA-256, excluding an existing self-hash field."""
-    payload = dict(packet)
-    payload.pop("packet_hash", None)
-    canonical = json.dumps(
-        _json_safe(payload),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(canonical).hexdigest()
-
-
-def _verify_evidence_item(
-    *,
-    root: Path,
-    item: dict[str, Any],
-    index: int,
-    runs: list[_RunSpec],
-    comparisons: dict[str, dict[str, Any]],
-    loaded_runs: dict[str, Any],
-    load_diagnostics: dict[str, dict[str, Any]],
-    artifacts: list[dict[str, Any]],
-    analysis_intent: dict[str, Any],
-    analyses: dict[str, dict[str, Any]],
-    registration: dict[str, Any],
+    episode_root: str | Path,
+    episode: dict[str, Any],
     scientific_target: dict[str, Any],
-    registry: EvidenceMetricRegistry,
 ) -> dict[str, Any]:
-    evidence_id = _text(item.get("id")) or f"evidence_{index + 1}"
-    intent_id = _text(item.get("intent_id")) or ""
-    analysis_id = _text(item.get("analysis_id")) or ""
-    comparison_id = _text(item.get("comparison_id")) or ""
-    evidence_verifier_id = _text(item.get("verifier_id"))
-    reason_codes: list[str] = []
-    reason_details: list[dict[str, str]] = []
+    """Replay the fixed S01 estimand and folded-state control from an episode."""
 
-    if not _text(item.get("id")):
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "evidence_id_missing",
-            "v2 evidence requires a stable id for preregistration linkage",
-        )
-    if not intent_id:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "evidence_intent_id_missing",
-            "evidence does not declare intent_id",
-        )
-    if not analysis_id:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "analysis_id_missing",
-            "evidence does not declare analysis_id",
-        )
-    if not comparison_id:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "comparison_id_missing",
-            "evidence does not declare comparison_id",
-        )
+    root = Path(episode_root).resolve()
+    reasons: list[str] = []
+    raw_events = episode.get("events")
+    if not isinstance(raw_events, list) or not raw_events:
+        raw_events = []
+        reasons.append("replay_events_missing")
 
-    registered_intent_id = _text(analysis_intent.get("intent_id"))
-    if not registered_intent_id:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "analysis_intent_id_missing",
-            "analysis_intent does not declare intent_id",
-        )
-    elif intent_id != registered_intent_id:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "evidence_intent_mismatch",
-            "evidence intent_id differs from the registered analysis intent",
-        )
-
-    analysis = analyses.get(analysis_id)
-    if analysis is None:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "analysis_not_preregistered",
-            f"analysis id {analysis_id!r} is absent from primary_analyses",
-        )
-        analysis_verifier_id = None
-        observable: dict[str, Any] = {}
-    else:
-        registered_comparison_id = _text(analysis.get("comparison_id"))
-        if comparison_id != registered_comparison_id:
-            _append_reason(
-                reason_codes,
-                reason_details,
-                "analysis_comparison_mismatch",
-                "evidence comparison differs from the primary analysis",
+    runs: list[_RunSpec] = []
+    runner_runtime: dict[str, dict[str, Any]] = {}
+    for event in raw_events:
+        if not isinstance(event, dict):
+            reasons.append("replay_event_invalid")
+            continue
+        run_id = _text(event.get("run_id"))
+        role = _text(event.get("condition_role"))
+        inputs = event.get("input_artifacts")
+        outputs = event.get("output_artifacts")
+        topology = _artifact_relative_path(inputs, "topology")
+        trajectory = _artifact_relative_path(outputs, "trajectory")
+        if run_id is None:
+            reasons.append("replay_run_id_missing")
+            continue
+        if role not in {"reference", "variant"}:
+            reasons.append("replay_condition_role_invalid")
+            continue
+        if topology is None:
+            reasons.append(f"{run_id}:topology_missing")
+        if trajectory is None:
+            reasons.append(f"{run_id}:trajectory_missing")
+        runs.append(
+            _RunSpec(
+                run_id=run_id,
+                role=role,
+                topology=topology,
+                trajectories=((trajectory,) if trajectory is not None else ()),
             )
-        analysis_verifier_id = _text(analysis.get("verifier_id"))
-        raw_observable = analysis.get("observable")
-        observable = raw_observable if isinstance(raw_observable, dict) else {}
+        )
+        runtime = event.get("runtime")
+        runner_runtime[run_id] = runtime if isinstance(runtime, dict) else {}
 
-    if (
-        analysis_verifier_id
-        and evidence_verifier_id
-        and analysis_verifier_id != evidence_verifier_id
-    ):
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "verifier_id_mismatch",
-            "evidence verifier_id differs from the primary analysis",
+    if len({run.run_id for run in runs}) != len(runs):
+        reasons.append("replay_run_id_duplicate")
+    if {run.role for run in runs} != {"reference", "variant"}:
+        reasons.append("replay_condition_roles_missing")
+    loaded, load_diagnostics = _load_confirmatory_runs(root, runs)
+    for run in runs:
+        for error in load_diagnostics.get(run.run_id, {}).get("errors") or []:
+            reasons.append(f"{run.run_id}:{error}")
+    artifact_valid = bool(
+        runs
+        and len(loaded) == len(runs)
+        and all(
+            not (load_diagnostics.get(run.run_id, {}).get("errors") or [])
+            for run in runs
         )
-    verifier_id = analysis_verifier_id or evidence_verifier_id or ""
-    if not verifier_id:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "verifier_id_missing",
-            "neither primary analysis nor evidence declares verifier_id",
-        )
-
-    if "metric" in item:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "report_verifier_override_forbidden",
-            "the evidence report cannot override the native verifier",
-        )
-    if _parameters(item):
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "report_parameters_override_forbidden",
-            "native-verifier parameters must come from analysis_intent.observable",
-        )
-
-    if not registration.get("certificate_supplied"):
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "preregistration_certificate_missing",
-            "no harness-owned preregistration certificate was supplied",
-        )
-    elif not registration.get("preregistration_valid"):
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "preregistration_not_attested",
-            "the harness certificate does not attest prospective execution",
-        )
-    certificate_intent_id = _text(registration.get("intent_id"))
-    if certificate_intent_id and intent_id != certificate_intent_id:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "certificate_intent_mismatch",
-            "evidence intent_id differs from the certificate intent_id",
-        )
-    if registration.get("receipt_status") == "hash_mismatch":
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "preregistration_receipt_hash_mismatch",
-            "registered raw-file digest differs from the certificate digest",
-        )
-    if evidence_id not in set(registration.get("attested_evidence_ids", [])):
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "evidence_not_attested",
-            "the certificate does not attest this evidence item and intent linkage",
-        )
-
-    comparison = comparisons.get(comparison_id)
-    selected: list[_RunSpec] = []
-    if comparison is None:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "comparison_not_declared",
-            f"comparison id {comparison_id!r} is absent from study_index",
-        )
-    else:
-        reference_system_ids = set(comparison["reference_system_ids"])
-        variant_system_ids = set(comparison["variant_system_ids"])
-        for run in runs:
-            if run.phase != _CONFIRMATORY_PHASE or run.intent_id != intent_id:
-                continue
-            role = None
-            if run.system_id in reference_system_ids:
-                role = "reference"
-            elif run.system_id in variant_system_ids:
-                role = "variant"
-            if role is not None:
-                selected.append(replace(run, role=role))
-        selected.sort(key=lambda run: run.run_id)
-
-    by_id = {run.run_id: run for run in runs}
-    requested_ids = _string_list(
-        item.get("confirmatory_run_ids", item.get("run_ids"))
     )
-    selected_ids = {run.run_id for run in selected}
-    unknown_ids = [run_id for run_id in requested_ids if run_id not in by_id]
-    if unknown_ids:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "confirmatory_run_unknown",
-            "unknown run ids: " + ", ".join(sorted(unknown_ids)),
-        )
-    nonconfirmatory_requested = [
-        run_id
-        for run_id in requested_ids
-        if run_id in by_id and by_id[run_id].phase != _CONFIRMATORY_PHASE
-    ]
-    if nonconfirmatory_requested:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "run_not_confirmatory",
-            "non-confirmatory run ids were requested: "
-            + ", ".join(sorted(nonconfirmatory_requested)),
-        )
-    if requested_ids and set(requested_ids) != selected_ids:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "confirmatory_run_subset_forbidden",
-            "evidence run ids must equal every linked run in its comparison",
-        )
-    if not selected:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "confirmatory_runs_missing",
-            "the evidence comparison has no confirmatory runs for this intent",
-        )
 
-    roles = {run.role for run in selected}
-    for role in ("reference", "variant"):
-        if role not in roles:
-            _append_reason(
-                reason_codes,
-                reason_details,
-                f"{role}_confirmatory_runs_missing",
-                f"no linked confirmatory run has role {role!r}",
-            )
-
-    biased_sampling_declarations = [
-        declaration
-        for run in selected
-        if (declaration := _biased_sampling_declaration(run)) is not None
-    ]
-    if (
-        verifier_id == "region_water_occupancy@1"
-        and verifier_id not in _WEIGHT_AWARE_METRIC_IDS
-        and biased_sampling_declarations
-    ):
-        declared_runs = ", ".join(
-            f"{run_id} ({key}={value})"
-            for run_id, key, value in biased_sampling_declarations
-        )
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "biased_sampling_weights_unsupported",
-            "linked confirmatory runs explicitly declare biased or enhanced "
-            "sampling, but region_water_occupancy@1 has no weight-aware "
-            f"estimator in this release: {declared_runs}",
-        )
-
-    artifact_failures = False
-    for run in selected:
-        diagnostic = load_diagnostics.get(run.run_id, {})
-        if diagnostic.get("status") != "loaded":
-            artifact_failures = True
-            _append_reason(
-                reason_codes,
-                reason_details,
-                "confirmatory_run_artifact_invalid",
-                f"run {run.run_id!r}: "
-                + "; ".join(diagnostic.get("errors") or ["not loadable"]),
-            )
-
-    scoped_trajectory_artifacts = [
-        artifact
-        for artifact in artifacts
-        if artifact["kind"] == "trajectory" and artifact["run_id"] in selected_ids
-    ]
-    scoped_duplicates = _duplicate_artifacts(scoped_trajectory_artifacts)[
-        "trajectories"
-    ]
-    if scoped_duplicates:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "duplicate_confirmatory_trajectory",
-            "a linked trajectory is byte-identical within this comparison",
-        )
-    metric_inputs_valid = (
-        bool(selected)
-        and roles == {"reference", "variant"}
-        and not artifact_failures
-    )
-    artifact_valid = metric_inputs_valid and not scoped_duplicates
-
-    verifier = registry.resolve(verifier_id)
-    if verifier is None:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "metric_not_registered",
-            f"no native verifier is registered for {verifier_id!r}",
-        )
-        metric_result = {
-            "raw_recomputed": None,
-            "per_run": [],
-            "statistical_status": "not_evaluable",
-            "reason_codes": [],
-            "reason_details": [],
-        }
-    elif not metric_inputs_valid:
-        metric_result = {
-            "raw_recomputed": None,
-            "per_run": [],
-            "statistical_status": "not_evaluable",
-            "reason_codes": [],
-            "reason_details": [],
-        }
-    else:
-        effective_item = dict(item)
-        # The preregistered observable, never a post-hoc report field, drives
-        # native recomputation.  Both observable.parameters and direct
-        # observable parameter keys are supported.
-        effective_item["parameters"] = _observable_parameters(observable)
-        effective_item["decision_rule"] = analysis.get("decision_rule", {})
-        effective_item["outcome_mapping"] = analysis.get("outcome_mapping", {})
-        try:
-            metric_result = verifier(
-                MetricContext(
-                    root=root,
-                    evidence_item=effective_item,
-                    runs=tuple(selected),
-                    loaded_runs={
-                        run.run_id: loaded_runs[run.run_id]
-                        for run in selected
-                        if run.run_id in loaded_runs
-                    },
-                    load_diagnostics={
-                        run.run_id: load_diagnostics.get(run.run_id, {})
-                        for run in selected
-                    },
-                    scientific_target=scientific_target,
-                    runner_runtime=registration.get("runner_runtime", {}),
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 -- metric boundary is fail-closed
-            metric_result = _metric_failure(
-                "native_metric_recompute_failed",
-                reason_codes=["native_metric_exception"],
-                reason_details=[
-                    {
-                        "code": "native_metric_exception",
-                        "detail": f"{type(exc).__name__}: {exc}",
-                    }
-                ],
-            )
-
-    for code, detail in zip(
-        metric_result.get("reason_codes", []),
-        metric_result.get("reason_details", []),
-    ):
-        _append_reason(
-            reason_codes,
-            reason_details,
-            str(code),
-            str(detail.get("detail") if isinstance(detail, dict) else detail),
-        )
-    statistical_status = str(
-        metric_result.get("statistical_status") or "not_evaluable"
-    )
-    if statistical_status != "resolved" and "statistically_inconclusive" not in reason_codes:
-        _append_reason(
-            reason_codes,
-            reason_details,
-            "statistically_inconclusive",
-            f"native metric statistical status is {statistical_status!r}",
-        )
-
-    support_eligible = bool(
-        not reason_codes
-        and artifact_valid
-        and metric_result.get("raw_recomputed") is not None
-        and statistical_status == "resolved"
-    )
-    return {
-        "id": evidence_id,
-        "intent_id": intent_id,
-        "analysis_id": analysis_id,
-        "comparison_id": comparison_id,
-        "verifier_id": verifier_id,
-        "confirmatory_run_ids": sorted(selected_ids),
-        "artifact_valid": artifact_valid,
-        "raw_recomputed": metric_result.get("raw_recomputed"),
-        "per_run": metric_result.get("per_run", []),
-        "statistical_status": statistical_status,
-        "support_eligible": support_eligible,
-        "reason_codes": reason_codes,
-        "reason_details": reason_details,
+    primary_contract = scientific_target.get("primary_evidence_contract")
+    if not isinstance(primary_contract, dict):
+        primary_contract = {}
+        reasons.append("primary_evidence_contract_missing")
+    primary_item = {
+        "parameters": dict(
+            primary_contract.get("fixed_observable_parameters") or {}
+        ),
+        "decision_rule": primary_contract.get("decision_rule"),
     }
+    context = MetricContext(
+        root=root,
+        evidence_item=primary_item,
+        runs=tuple(runs),
+        loaded_runs=loaded,
+        load_diagnostics=load_diagnostics,
+        scientific_target=scientific_target,
+        runner_runtime=runner_runtime,
+    )
+    primary_result = _verify_region_water_occupancy(context)
+    primary_reasons = list(primary_result.get("reason_codes") or [])
+
+    raw_controls = scientific_target.get("control_evidence_contracts")
+    fold_contract = next(
+        (
+            item
+            for item in raw_controls or []
+            if isinstance(item, dict)
+            and item.get("verifier_id") == "folded_state_retention@1"
+        ),
+        None,
+    )
+    if not isinstance(fold_contract, dict):
+        control_result = _metric_failure("folded_state_contract_missing")
+    else:
+        control_context = replace(
+            context,
+            evidence_item={
+                "parameters": dict(
+                    fold_contract.get("fixed_observable_parameters") or {}
+                ),
+                "decision_rule": fold_contract.get("decision_rule"),
+            },
+        )
+        control_result = _verify_folded_state_retention(control_context)
+    control_reasons = list(control_result.get("reason_codes") or [])
+
+    primary_raw = primary_result.get("raw_recomputed")
+    estimate_direction = (
+        primary_raw.get("estimate_direction")
+        if isinstance(primary_raw, dict)
+        else None
+    )
+    mapping = primary_contract.get("outcome_mapping")
+    recomputed_outcome = (
+        mapping.get(estimate_direction)
+        if isinstance(mapping, dict) and isinstance(estimate_direction, str)
+        else None
+    )
+    primary_resolved = bool(
+        primary_result.get("statistical_status") == "resolved"
+        and isinstance(recomputed_outcome, str)
+        and recomputed_outcome
+        != scientific_target.get("unresolved_outcome", "unresolved")
+    )
+    support_ready = bool(
+        artifact_valid
+        and primary_resolved
+        and not primary_reasons
+    )
+    control_raw = control_result.get("raw_recomputed")
+    control_passed = bool(
+        control_result.get("statistical_status") == "resolved"
+        and isinstance(control_raw, dict)
+        and control_raw.get("folded_state_retained") is True
+        and not control_reasons
+    )
+    reasons.extend(primary_reasons)
+    reasons.extend(control_reasons)
+    if not artifact_valid:
+        reasons.append("replay_artifacts_invalid")
+    if not primary_resolved:
+        reasons.append("replay_outcome_unresolved")
+
+    return {
+        "artifact_valid": artifact_valid,
+        "support_ready": support_ready,
+        "recomputed_outcome": recomputed_outcome,
+        "control_passed": control_passed,
+        "reason_codes": list(dict.fromkeys(reasons)),
+        "diagnostics": {
+            "load": load_diagnostics,
+            "occupancy": _json_safe(primary_result),
+            "folded_state": _json_safe(control_result),
+        },
+    }
+
+
+def _artifact_relative_path(payload: Any, key: str) -> str | None:
+    record = payload.get(key) if isinstance(payload, dict) else None
+    return _text(record.get("path")) if isinstance(record, dict) else None
 
 
 def _verify_region_water_occupancy(context: MetricContext) -> dict[str, Any]:
@@ -809,15 +287,14 @@ def _verify_region_water_occupancy(context: MetricContext) -> dict[str, Any]:
                 "water_selection_not_native",
                 "region_water_occupancy@1 fixes water atoms to all water oxygens",
             )
-        if not region_selection:
-            _append_reason(
-                reasons,
-                details,
-                "region_selection_missing",
-                f"run {run.run_id!r} has no region selection",
+        region = (
+            trajectory.topology.select(region_selection)
+            if region_selection
+            else _task_cavity_atom_indices(
+                trajectory.topology,
+                context.scientific_target,
             )
-            continue
-        region = trajectory.topology.select(region_selection)
+        )
         waters = trajectory.topology.select(str(water_selection))
         if len(region) == 0:
             _append_reason(
@@ -1084,22 +561,6 @@ def _verify_region_water_occupancy(context: MetricContext) -> dict[str, Any]:
             ).get("topology_sha256"),
         }
         per_run.append(record)
-        if (
-            run.declared_starting_occupancy is not None
-            and not math.isclose(
-                run.declared_starting_occupancy,
-                record["starting_occupancy"],
-                abs_tol=1.0e-9,
-            )
-        ):
-            _append_reason(
-                reasons,
-                details,
-                "declared_starting_occupancy_mismatch",
-                f"run {run.run_id!r} declared {run.declared_starting_occupancy} "
-                f"but raw first frame has {record['starting_occupancy']}",
-            )
-
     if reasons and not per_run:
         return {
             "raw_recomputed": None,
@@ -1545,213 +1006,6 @@ def _verify_folded_state_retention(context: MetricContext) -> dict[str, Any]:
     }
 
 
-def _normalise_runs(study_index: dict[str, Any]) -> tuple[list[_RunSpec], list[str]]:
-    raw_runs: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
-    errors: list[str] = []
-    systems = study_index.get("systems")
-    if isinstance(systems, list):
-        for system_index, system in enumerate(systems):
-            if not isinstance(system, dict):
-                continue
-            system_id = _text(system.get("system_id"))
-            if not system_id:
-                system_id = f"system_{system_index + 1}"
-                errors.append("system_id_missing")
-            candidates = system.get("runs")
-            if isinstance(candidates, list):
-                raw_runs.extend(
-                    (run, system_id, system)
-                    for run in candidates
-                    if isinstance(run, dict)
-                )
-
-    runs: list[_RunSpec] = []
-    seen: set[str] = set()
-    for index, (raw, system_id, system) in enumerate(raw_runs):
-        run_id = _text(raw.get("run_id")) or f"run_{index + 1}"
-        if run_id in seen:
-            errors.append("duplicate_run_id")
-        seen.add(run_id)
-        metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
-        phase = _phase(raw)
-        if not phase:
-            errors.append(f"{run_id}:run_phase_missing")
-        topology = _path_value(raw.get("topology")) or _path_value(
-            system.get("topology")
-        )
-        trajectories = tuple(_trajectory_values(raw))
-        declared_starting = raw.get(
-            "starting_occupancy", metadata.get("starting_occupancy")
-        )
-        declared_number = _finite_float(declared_starting)
-        runs.append(
-            _RunSpec(
-                run_id=run_id,
-                system_id=system_id,
-                role="unassigned",
-                phase=phase,
-                intent_id=_text(raw.get("intent_id")),
-                topology=topology,
-                trajectories=trajectories,
-                production_event_id=_text(raw.get("production_event_id")),
-                declared_starting_occupancy=declared_number,
-                metadata=_json_safe(metadata),
-            )
-        )
-    if not runs:
-        errors.append("declared_runs_missing")
-    return runs, errors
-
-
-def _biased_sampling_declaration(
-    run: _RunSpec,
-) -> tuple[str, str, str] | None:
-    """Return one explicit biased/enhanced-sampling declaration, if present.
-
-    This is intentionally metadata-only and fail-narrow: absent metadata and
-    unknown method strings are not interpreted as biased sampling.  Native
-    verifiers can expand the accepted vocabulary in a versioned release.
-    """
-    metadata = run.metadata
-    for key in sorted(_BIASED_SAMPLING_FLAG_KEYS):
-        value = metadata.get(key)
-        if _explicit_truthy(value):
-            return run.run_id, key, _sampling_declaration_text(value)
-    for key in sorted(_SAMPLING_MODE_KEYS):
-        value = metadata.get(key)
-        if not isinstance(value, str):
-            continue
-        mode = _normalise_sampling_mode(value)
-        if mode in _BIASED_SAMPLING_MODES:
-            return run.run_id, key, mode
-    return None
-
-
-def _explicit_truthy(value: Any) -> bool:
-    if value is True:
-        return True
-    if isinstance(value, str):
-        return _normalise_sampling_mode(value) in {
-            "true",
-            "yes",
-            "required",
-            *_BIASED_SAMPLING_MODES,
-        }
-    return isinstance(value, (dict, list, tuple)) and bool(value)
-
-
-def _normalise_sampling_mode(value: str) -> str:
-    return value.strip().lower().replace("-", "_").replace(" ", "_")
-
-
-def _sampling_declaration_text(value: Any) -> str:
-    if isinstance(value, str):
-        return _normalise_sampling_mode(value)
-    if isinstance(value, bool):
-        return str(value).lower()
-    return type(value).__name__
-
-
-def _normalise_comparisons(
-    study_index: dict[str, Any],
-) -> tuple[dict[str, dict[str, Any]], list[str]]:
-    comparisons: dict[str, dict[str, Any]] = {}
-    errors: list[str] = []
-    systems = {
-        system_id
-        for system in study_index.get("systems", [])
-        if isinstance(system, dict)
-        if (system_id := _text(system.get("system_id")))
-    }
-    raw_comparisons = study_index.get("comparisons")
-    if not isinstance(raw_comparisons, list):
-        return {}, ["comparisons_missing"]
-    for raw in raw_comparisons:
-        if not isinstance(raw, dict):
-            continue
-        comparison_id = _text(raw.get("comparison_id"))
-        if not comparison_id:
-            errors.append("comparison_id_missing")
-            continue
-        if comparison_id in comparisons:
-            errors.append("duplicate_comparison_id")
-            continue
-        reference_ids = _string_list(raw.get("reference_system_ids"))
-        variant_ids = _string_list(raw.get("variant_system_ids"))
-        if not reference_ids:
-            errors.append(f"{comparison_id}:reference_system_ids_missing")
-        if not variant_ids:
-            errors.append(f"{comparison_id}:variant_system_ids_missing")
-        if set(reference_ids) & set(variant_ids):
-            errors.append(f"{comparison_id}:comparison_system_overlap")
-        if (set(reference_ids) | set(variant_ids)) - systems:
-            errors.append(f"{comparison_id}:comparison_system_unknown")
-        comparisons[comparison_id] = {
-            "comparison_id": comparison_id,
-            "reference_system_ids": reference_ids,
-            "variant_system_ids": variant_ids,
-        }
-    if not comparisons:
-        errors.append("comparisons_missing")
-    return comparisons, errors
-
-
-def _inspect_artifacts(
-    root: Path, runs: list[_RunSpec]
-) -> tuple[list[dict[str, Any]], list[str]]:
-    artifacts: list[dict[str, Any]] = []
-    errors: list[str] = []
-    for run in runs:
-        declarations = []
-        if run.topology:
-            declarations.append(("topology", run.topology))
-        else:
-            errors.append(f"{run.run_id}:topology_missing")
-        if not run.trajectories:
-            errors.append(f"{run.run_id}:trajectory_missing")
-        declarations.extend(("trajectory", path) for path in run.trajectories)
-        for kind, relative in declarations:
-            path, issue = _safe_artifact_path(root, relative)
-            if issue:
-                errors.append(f"{run.run_id}:{kind}:{issue}")
-                continue
-            assert path is not None
-            artifacts.append(
-                {
-                    "kind": kind,
-                    "run_id": run.run_id,
-                    "path": relative,
-                    "bytes": path.stat().st_size,
-                    "sha256": _sha256(path),
-                }
-            )
-    return artifacts, errors
-
-
-def _duplicate_artifacts(artifacts: list[dict[str, Any]]) -> dict[str, Any]:
-    result: dict[str, list[dict[str, Any]]] = {
-        "trajectories": [],
-        "topologies": [],
-    }
-    for kind, key in (("trajectory", "trajectories"), ("topology", "topologies")):
-        by_hash: dict[str, list[dict[str, str]]] = {}
-        for artifact in artifacts:
-            if artifact["kind"] != kind:
-                continue
-            by_hash.setdefault(artifact["sha256"], []).append(
-                {"run_id": artifact["run_id"], "path": artifact["path"]}
-            )
-        result[key] = sorted(
-            (
-                {"sha256": digest, "references": sorted(references, key=lambda x: (x["run_id"], x["path"]))}
-                for digest, references in by_hash.items()
-                if len(references) > 1
-            ),
-            key=lambda group: group["sha256"],
-        )
-    return result
-
-
 def _load_confirmatory_runs(
     root: Path, runs: list[_RunSpec]
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
@@ -1769,12 +1023,6 @@ def _load_confirmatory_runs(
         return loaded, diagnostics
 
     for run in runs:
-        if run.phase != _CONFIRMATORY_PHASE:
-            diagnostics[run.run_id] = {
-                "status": "excluded_nonconfirmatory",
-                "errors": [],
-            }
-            continue
         run_errors: list[str] = []
         top_path, top_issue = _safe_artifact_path(root, run.topology)
         topology_sha256 = (
@@ -1884,79 +1132,6 @@ def _aligned_structural_coordinate_range(trajectory: Any, np: Any) -> float:
     return float(np.max(np.ptp(structural.xyz, axis=0)))
 
 
-def _registration_summary(
-    certificate: dict[str, Any] | None,
-    *,
-    analysis_intent: dict[str, Any],
-    preregistration_valid: bool | None,
-    registered_plan_sha256: str | None,
-) -> dict[str, Any]:
-    trusted_digest = _text(registered_plan_sha256)
-    if not isinstance(certificate, dict):
-        return {
-            "certificate_supplied": False,
-            "intent_id": None,
-            "registered_at": None,
-            "preregistration_valid": False,
-            "support_eligible_evidence_ids": [],
-            "runner_runtime": {},
-            "analysis_intent_sha256": None,
-            "receipt_status": "not_supplied",
-            "registered_plan_sha256": trusted_digest,
-        }
-    certificate_digest = _text(certificate.get("analysis_intent_sha256"))
-    if trusted_digest is None and certificate_digest:
-        receipt_status = "certificate_attested"
-    elif trusted_digest is None:
-        receipt_status = "certificate_digest_missing"
-    elif trusted_digest == certificate_digest:
-        receipt_status = "verified_pre_run"
-    else:
-        receipt_status = "hash_mismatch"
-    certificate_valid = certificate.get("preregistration_valid") is True
-    if preregistration_valid is False:
-        certificate_valid = False
-    intent_id = _text(certificate.get("intent_id"))
-    authored_intent_id = _text(analysis_intent.get("intent_id"))
-    if intent_id != authored_intent_id:
-        certificate_valid = False
-    return {
-        "certificate_supplied": True,
-        "intent_id": intent_id,
-        "registered_at": _text(certificate.get("registered_at")),
-        "preregistration_valid": certificate_valid,
-        "support_eligible_evidence_ids": sorted(
-            _string_list(certificate.get("support_eligible_evidence_ids"))
-        ),
-        "attested_evidence_ids": sorted(
-            _string_list(certificate.get("attested_evidence_ids"))
-        ),
-        "runner_runtime": {
-            str(run.get("run_id")): run.get("runtime")
-            for run in certificate.get("run_attestations") or []
-            if isinstance(run, dict)
-            and isinstance(run.get("run_id"), str)
-            and isinstance(run.get("runtime"), dict)
-            and run.get("attested") is True
-        },
-        "analysis_intent_sha256": certificate_digest,
-        "receipt_status": receipt_status,
-        "registered_plan_sha256": trusted_digest,
-    }
-
-
-def _primary_analyses(analysis_intent: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    raw = analysis_intent.get("primary_analyses")
-    if not isinstance(raw, list):
-        return {}
-    return {
-        analysis_id: item
-        for item in raw
-        if isinstance(item, dict)
-        if (analysis_id := _text(item.get("analysis_id")))
-    }
-
-
 def _parameters(item: dict[str, Any]) -> dict[str, Any]:
     nested = item.get("parameters")
     parameters = dict(nested) if isinstance(nested, dict) else {}
@@ -1983,24 +1158,6 @@ def _parameters(item: dict[str, Any]) -> dict[str, Any]:
     for key in keys:
         if key in item and key not in parameters:
             parameters[key] = item[key]
-    return _json_safe(parameters)
-
-
-def _observable_parameters(observable: dict[str, Any]) -> dict[str, Any]:
-    """Extract arbitrary verifier parameters from a primary observable."""
-    nested = observable.get("parameters")
-    parameters = dict(nested) if isinstance(nested, dict) else {}
-    metadata_keys = {
-        "parameters",
-        "metric",
-        "name",
-        "unit",
-        "description",
-        "verifier_id",
-    }
-    for key, value in observable.items():
-        if key not in metadata_keys and key not in parameters:
-            parameters[key] = value
     return _json_safe(parameters)
 
 
@@ -2221,6 +1378,51 @@ def _task_cavity_atom_contract(
     )
 
 
+def _task_cavity_atom_indices(
+    topology: Any,
+    scientific_target: dict[str, Any],
+) -> Any:
+    """Resolve the task-owned cavity atoms without assuming PDB numbering."""
+
+    import numpy as np
+
+    entity = scientific_target.get("entity")
+    reference_sequence = (
+        entity.get("reference_sequence") if isinstance(entity, dict) else None
+    )
+    positions, atom_names = _task_cavity_atom_contract(scientific_target)
+    if (
+        not isinstance(reference_sequence, str)
+        or not reference_sequence.strip()
+        or not positions
+        or not atom_names
+    ):
+        return np.asarray([], dtype=int)
+    try:
+        from study_identity_v2 import (
+            map_topology_residues_to_reference_positions,
+        )
+    except ImportError:
+        from mdclaw.benchmark.study_identity_v2 import (
+            map_topology_residues_to_reference_positions,
+        )
+
+    mapping = map_topology_residues_to_reference_positions(
+        topology,
+        reference_sequence,
+    )
+    return np.asarray(
+        [
+            int(atom.index)
+            for atom in topology.atoms
+            if atom.residue.is_protein
+            and mapping.get(int(atom.residue.index)) in positions
+            and str(atom.name) in atom_names
+        ],
+        dtype=int,
+    )
+
+
 def _selection_reference_atom_keys(
     topology: Any,
     atom_indices: Any,
@@ -2397,88 +1599,6 @@ def _append_reason(
     details.append({"code": code, "detail": detail})
 
 
-def _submitted_conclusion(report: dict[str, Any]) -> dict[str, Any]:
-    verdict = report.get("md_verdict")
-    if not isinstance(verdict, dict):
-        return {}
-    return {
-        key: _json_safe(verdict[key])
-        for key in (
-            "status",
-            "outcome",
-            "basis",
-            "confidence",
-            "cited_evidence_ids",
-        )
-        if key in verdict
-    }
-
-
-def _agent_report_projection(report: dict[str, Any]) -> dict[str, Any]:
-    """Bind every report field a later truth-blind judge is expected to read."""
-    projection: dict[str, Any] = {}
-    if "md_verdict" in report:
-        projection["md_verdict"] = _submitted_conclusion(report)
-    raw_evidence = report.get("evidence")
-    if isinstance(raw_evidence, list):
-        projection["evidence"] = [
-            {
-                key: _json_safe(item[key])
-                for key in (
-                    "id",
-                    "intent_id",
-                    "analysis_id",
-                    "comparison_id",
-                    "verifier_id",
-                    "claim_role",
-                    "estimand_link",
-                    "reported",
-                    "uncertainty",
-                    "artifacts",
-                )
-                if key in item
-            }
-            for item in raw_evidence
-            if isinstance(item, dict)
-        ]
-    for key in ("reasoning", "limitations"):
-        if key in report:
-            projection[key] = _json_safe(report[key])
-    return projection
-
-
-def _phase(value: dict[str, Any]) -> str:
-    for key in ("phase", "analysis_phase", "run_phase", "purpose"):
-        if text := _text(value.get(key)):
-            return text.lower().replace("-", "_")
-    selector = value.get("run_selector")
-    if isinstance(selector, dict) and (text := _text(selector.get("phase"))):
-        return text.lower().replace("-", "_")
-    return ""
-
-
-def _trajectory_values(run: dict[str, Any]) -> list[str]:
-    for key in ("trajectory_segments", "trajectories", "trajectory"):
-        if key not in run:
-            continue
-        value = run[key]
-        if isinstance(value, list):
-            return [path for item in value if (path := _path_value(item))]
-        path = _path_value(value)
-        return [path] if path else []
-    return []
-
-
-def _path_value(value: Any) -> str | None:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    if isinstance(value, dict):
-        for key in ("path", "file"):
-            if path := _text(value.get(key)):
-                return path
-    return None
-
-
 def _safe_artifact_path(
     root: Path, relative: str | None
 ) -> tuple[Path | None, str | None]:
@@ -2517,12 +1637,6 @@ def _sem(values: list[float]) -> float:
     if len(values) < 2:
         return 0.0
     return statistics.stdev(values) / math.sqrt(len(values))
-
-
-def _string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return list(dict.fromkeys(text for item in value if (text := _text(item))))
 
 
 def _text(value: Any) -> str | None:
@@ -2577,11 +1691,3 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return str(value)
-
-
-NATIVE_METRIC_REGISTRY.register(
-    "region_water_occupancy@1", _verify_region_water_occupancy
-)
-NATIVE_METRIC_REGISTRY.register(
-    "folded_state_retention@1", _verify_folded_state_retention
-)

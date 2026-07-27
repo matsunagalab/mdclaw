@@ -1,11 +1,12 @@
 # MDStudyBench Task Specs
 
-The active generator builds only the S01 v2 pilot. S02-S04 remain frozen
-`grounded_correct_v1` fixtures in `tasks/` and are not regenerated.
+The active generator builds only the S01 v2 pilot. S02-S04 are inactive legacy
+regression fixtures in `tasks/` and are not regenerated.
 
-`defaults.json` contains the shared submission files, held-out truth check, and
-reject policy. The S01 task spec owns the scientific target and the deterministic
-primary-evidence contract:
+`defaults.json` contains the two agent-authored files
+(`confirmatory_plan.json` and `claim.json`) and the held-out truth check. The
+runner generates the final manifest and certified episode. The S01 task spec
+owns the scientific target and deterministic replay contract:
 
 - native verifier;
 - direction-to-outcome mapping;

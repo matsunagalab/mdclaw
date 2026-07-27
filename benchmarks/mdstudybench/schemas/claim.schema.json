@@ -1,0 +1,43 @@
+{
+  "additionalProperties": false,
+  "description": "The only agent-authored output after runner-certified MD.",
+  "properties": {
+    "outcome": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Outcome"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "resolved",
+        "unresolved"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "task_id": {
+      "minLength": 1,
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "status",
+    "outcome"
+  ],
+  "title": "ClaimV2",
+  "type": "object"
+}

@@ -37,7 +37,14 @@
     },
     "SubmissionOutputs": {
       "properties": {
-        "analysis_intent": {
+        "checkpoints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Checkpoints",
+          "type": "array"
+        },
+        "claim": {
           "anyOf": [
             {
               "type": "string"
@@ -47,14 +54,19 @@
             }
           ],
           "default": null,
-          "title": "Analysis Intent"
+          "title": "Claim"
         },
-        "checkpoints": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Checkpoints",
-          "type": "array"
+        "confirmatory_plan": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirmatory Plan"
         },
         "decision_log": {
           "anyOf": [
@@ -67,6 +79,18 @@
           ],
           "default": null,
           "title": "Decision Log"
+        },
+        "episode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Episode"
         },
         "evidence_report": {
           "anyOf": [
@@ -170,18 +194,6 @@
           ],
           "default": null,
           "title": "Source Selection"
-        },
-        "study_index": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Study Index"
         },
         "topology": {
           "items": {

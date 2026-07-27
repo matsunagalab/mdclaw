@@ -51,48 +51,10 @@
     },
     "LLMJudgeResult": {
       "properties": {
-        "abstention_justified": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Abstention Justified"
-        },
-        "abstention_reason_codes": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Abstention Reason Codes",
-          "type": "array"
-        },
-        "cited_evidence_ids": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Cited Evidence Ids",
-          "type": "array"
-        },
         "enabled": {
           "default": false,
           "title": "Enabled",
           "type": "boolean"
-        },
-        "evidence_packet_hash": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Evidence Packet Hash"
         },
         "judge_model": {
           "anyOf": [
@@ -106,18 +68,6 @@
           "default": null,
           "title": "Judge Model"
         },
-        "logical_grounding_supported": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Logical Grounding Supported"
-        },
         "prompt_hash": {
           "anyOf": [
             {
@@ -129,13 +79,6 @@
           ],
           "default": null,
           "title": "Prompt Hash"
-        },
-        "rationale": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "title": "Rationale",
-          "type": "object"
         },
         "raw_response_file": {
           "anyOf": [
@@ -160,23 +103,6 @@
           },
           "title": "Scores",
           "type": "object"
-        },
-        "support_verdict": {
-          "anyOf": [
-            {
-              "enum": [
-                "supported",
-                "inconclusive",
-                "contradicted"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Support Verdict"
         },
         "temperature": {
           "default": 0.0,
@@ -216,100 +142,10 @@
       "title": "RuntimeRecord",
       "type": "object"
     },
-    "StudyVerdict": {
-      "description": "Conjunctive outcome for the grounded-correct Study protocol.",
-      "properties": {
-        "decision_reasons": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Decision Reasons",
-          "type": "array"
-        },
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "evaluation_complete": {
-          "default": false,
-          "title": "Evaluation Complete",
-          "type": "boolean"
-        },
-        "evidence_packet_hash": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Evidence Packet Hash"
-        },
-        "evidence_status": {
-          "anyOf": [
-            {
-              "enum": [
-                "supported",
-                "inconclusive",
-                "contradicted"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Evidence Status"
-        },
-        "evidence_verified": {
-          "default": false,
-          "title": "Evidence Verified",
-          "type": "boolean"
-        },
-        "grounded_correct": {
-          "default": false,
-          "title": "Grounded Correct",
-          "type": "boolean"
-        },
-        "reasoning_grounded": {
-          "default": false,
-          "title": "Reasoning Grounded",
-          "type": "boolean"
-        },
-        "truth_correct": {
-          "default": false,
-          "title": "Truth Correct",
-          "type": "boolean"
-        },
-        "valid_md": {
-          "default": false,
-          "title": "Valid Md",
-          "type": "boolean"
-        }
-      },
-      "title": "StudyVerdict",
-      "type": "object"
-    },
     "StudyVerdictV2": {
       "additionalProperties": false,
       "description": "The three non-compensating MDStudyBench v2 evaluation gates.",
       "properties": {
-        "analysis_intent_hash": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Analysis Intent Hash"
-        },
         "claim_supported": {
           "default": false,
           "title": "Claim Supported",
@@ -337,7 +173,12 @@
           "title": "Evaluation Complete",
           "type": "boolean"
         },
-        "evidence_packet_hash": {
+        "grounded_correct": {
+          "default": false,
+          "title": "Grounded Correct",
+          "type": "boolean"
+        },
+        "plan_hash": {
           "anyOf": [
             {
               "type": "string"
@@ -347,12 +188,7 @@
             }
           ],
           "default": null,
-          "title": "Evidence Packet Hash"
-        },
-        "grounded_correct": {
-          "default": false,
-          "title": "Grounded Correct",
-          "type": "boolean"
+          "title": "Plan Hash"
         },
         "result_class": {
           "default": "not_evaluated",
@@ -494,10 +330,10 @@
           "$ref": "#/$defs/StudyVerdictV2"
         },
         {
-          "$ref": "#/$defs/StudyVerdict"
+          "type": "null"
         }
       ],
-      "title": "Study Verdict"
+      "default": null
     },
     "task_id": {
       "title": "Task Id",

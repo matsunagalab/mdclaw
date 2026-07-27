@@ -1,18 +1,19 @@
 {
   "task_id": "S03_stability_nuclease_h124l",
+  "public_source": "PDB 1STN",
   "capability_tags_extra": [
     "comparative_md",
     "mutation_effect",
     "protein_stability"
   ],
-  "task_intent": "Open-planning scientific-answer test: determine the folding-stability direction of staphylococcal nuclease H124L relative to wild type at pH 5.5. The agent selects structural sources, sampling, replicas, and observables. A successful answer must be supported by the submitted MD evidence and match held-out experimental truth; prior knowledge is reported separately and cannot replace MD grounding.",
+  "task_intent": "Scientific-answer calibration test: compare wild-type staphylococcal nuclease (PDB 1STN, His124) with the H124L variant using short comparative MD, and report the literature-calibrated stability direction in effect.direction. Unlike the T4 lysozyme cavity mutant, H124L is STABILIZING (about +1.9 kcal/mol; Truckses et al. 1996), so a constant 'mutations destabilize' prior is wrong here. Populate metrics.md_analysis with local consistency evidence (e.g. RMSF/SASA around residue 124, secondary-structure persistence, packing), mirror those values in evidence_report.evidence.md_metrics, and explicitly separate MD-supported observations from the literature-calibrated thermodynamic interpretation.",
   "references": [
     {
-      "note": "Curator reference for the held-out experimental comparison; agents may use other public literature.",
+      "note": "Truckses et al. 1996 - staphylococcal nuclease H124L stabilization.",
       "source": "doi:10.1002/pro.5560050917"
     },
     {
-      "note": "Curator structure reference; not a required agent source.",
+      "note": "Staphylococcal nuclease wild type (His124).",
       "source": "PDB 1STN"
     }
   ],
@@ -22,7 +23,7 @@
         "check_id": "effect_direction_in_allowed_set",
         "check_type": "json_allowed_values",
         "json_file": "evidence_report.json",
-        "json_path": "conclusion.direction",
+        "json_path": "effect.direction",
         "allowed_values": [
           "destabilizing",
           "stabilizing",
@@ -37,17 +38,39 @@
         "mutant_topology_manifest_path": "outputs.topology.1",
         "wild_type_residue_name": "HIS",
         "required_residue_name": "LEU",
-        "mutation_resseq": 124,
-        "reference_changed_residue_heavy_atom_count": 10,
-        "variant_changed_residue_heavy_atom_count": 8,
         "weight": 0.0
+      },
+      {
+        "check_id": "direction_grounded_in_own_md",
+        "check_type": "direction_grounding",
+        "observable_metric": "ca_rmsf",
+        "observable_selection": "resSeq 120 to 128 and name CA",
+        "report_observable_name": "ca_rmsf_near_124",
+        "sign_to_direction": {
+          "increase": "destabilizing",
+          "decrease": "stabilizing"
+        },
+        "inconclusive_sigma": 1.0,
+        "inconclusive_score": 0.5,
+        "weight": 0.35
+      },
+      {
+        "check_id": "reported_observable_matches_recompute",
+        "check_type": "observable_recompute_consistency",
+        "observable_metric": "ca_rmsf",
+        "observable_selection": "resSeq 120 to 128 and name CA",
+        "report_observable_name": "ca_rmsf_near_124",
+        "tolerance_fraction": 0.5,
+        "weight": 0.30
+      },
+      {
+        "$bundle": "comparative_md_evidence"
       }
     ],
     "llm_judge_rubrics": [
       "reasoning_logic",
       "confidence_calibration",
-      "overclaim_detection",
-      "limitations"
+      "overclaim_detection"
     ]
   }
 }

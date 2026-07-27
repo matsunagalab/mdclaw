@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import platform
 import signal
@@ -17,6 +16,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -151,6 +151,14 @@ def _directory_sha256(root: Path) -> str:
         digest.update(b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -629,15 +637,12 @@ def _write_stage_wrapper(
     default_task_id_literal = json.dumps(default_task_id)
     wrapper = '''#!/usr/bin/env python3
 import argparse
-import hashlib
 import json
 import os
 import subprocess
 import sys
 import time
-import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 
 DEFAULT_LOG_PATH = __DEFAULT_LOG_PATH__
@@ -649,161 +654,28 @@ parser = argparse.ArgumentParser(
     description="Run a command and append a measured MD benchmark stage record."
 )
 parser.add_argument("--stage", required=True)
-parser.add_argument(
-    "--phase",
-    choices=("exploratory", "confirmatory"),
-    help="Study phase for production or analysis records.",
-)
-parser.add_argument("--intent-id", default="")
-parser.add_argument(
-    "--event-id",
-    default="",
-    help="Stable ID referenced by study_index.json (generated when omitted).",
-)
-parser.add_argument(
-    "--intent-file",
-    default="",
-    help="Intent JSON to snapshot when --stage register_analysis_intent is used.",
-)
-parser.add_argument(
-    "--artifact",
-    action="append",
-    default=[],
-    help="Output artifact to hash after a successful command; repeat as needed.",
-)
-parser.add_argument(
-    "--input-artifact",
-    action="append",
-    default=[],
-    help=(
-        "Immutable input artifact to hash before and after the command; "
-        "repeat as needed."
-    ),
-)
 parser.add_argument("command", nargs=argparse.REMAINDER)
 args = parser.parse_args()
 command = list(args.command)
 if command and command[0] == "--":
     command = command[1:]
-is_intent_registration = args.stage == "register_analysis_intent"
-if not command and not is_intent_registration:
+if not command:
     parser.error("command is required after --")
-if is_intent_registration and not args.intent_file:
-    parser.error("--intent-file is required for register_analysis_intent")
-if args.phase == "confirmatory" and not args.intent_id:
-    parser.error("--intent-id is required for confirmatory records")
 
-
-def sha256_file(path_text):
-    path = Path(path_text)
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def artifact_snapshot(path_text):
-    path = Path(path_text)
-    snapshot = {"exists": False, "is_file": False}
-    try:
-        snapshot["exists"] = path.exists()
-        snapshot["is_file"] = path.is_file()
-        if snapshot["is_file"]:
-            snapshot["bytes"] = path.stat().st_size
-            snapshot["sha256"] = sha256_file(path)
-        elif snapshot["exists"]:
-            snapshot["error"] = "not a regular file"
-    except OSError as exc:
-        snapshot["error"] = str(exc)
-    return snapshot
-
-
-intent_sha256 = ""
-if args.intent_file:
-    intent_path = Path(args.intent_file)
-    if not intent_path.is_file():
-        parser.error(f"intent file not found: {intent_path}")
-    try:
-        intent_payload = json.loads(intent_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        parser.error(f"intent file is not valid JSON: {exc}")
-    file_intent_id = intent_payload.get("intent_id")
-    if not isinstance(file_intent_id, str) or not file_intent_id.strip():
-        parser.error("intent file requires a non-empty intent_id")
-    if args.intent_id and args.intent_id != file_intent_id:
-        parser.error("--intent-id differs from intent file intent_id")
-    args.intent_id = file_intent_id
-    intent_sha256 = sha256_file(intent_path)
-
-artifact_records = [
-    {
-        "path": str(Path(artifact_text)),
-        "before": artifact_snapshot(artifact_text),
-    }
-    for artifact_text in args.artifact
-]
-input_artifact_records = [
-    {
-        "path": str(Path(artifact_text)),
-        "before": artifact_snapshot(artifact_text),
-    }
-    for artifact_text in args.input_artifact
-]
 started = time.monotonic()
-started_at = datetime.now(timezone.utc).isoformat()
 exit_code = 127
 try:
-    if command:
-        completed = subprocess.run(command, check=False)
-        exit_code = int(completed.returncode)
-    else:
-        exit_code = 0
+    completed = subprocess.run(command, check=False)
+    exit_code = int(completed.returncode)
 finally:
     walltime = round(time.monotonic() - started, 6)
     record = {
-        "event_id": args.event_id or str(uuid.uuid4()),
         "stage": args.stage,
-        "command": " ".join(command) if command else "register analysis intent",
+        "command": " ".join(command),
         "exit_code": exit_code,
         "walltime_seconds": walltime,
-        "started_at": started_at,
-        "completed_at": datetime.now(timezone.utc).isoformat(),
         "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
-    if args.phase:
-        record["phase"] = args.phase
-    if args.intent_id:
-        record["intent_id"] = args.intent_id
-    if intent_sha256:
-        record["intent_sha256"] = intent_sha256
-        record["intent_file"] = str(Path(args.intent_file))
-    for artifact in artifact_records:
-        after = artifact_snapshot(artifact["path"])
-        artifact["after"] = after
-        # Preserve the original post-command fields so existing harness-log
-        # readers remain compatible while new readers can audit before/after.
-        if isinstance(after.get("sha256"), str):
-            artifact["sha256"] = after["sha256"]
-            artifact["bytes"] = after["bytes"]
-        elif after.get("error"):
-            artifact["error"] = after["error"]
-        else:
-            artifact["error"] = "not a file after command"
-    if artifact_records:
-        record["artifacts"] = artifact_records
-    for artifact in input_artifact_records:
-        after = artifact_snapshot(artifact["path"])
-        artifact["after"] = after
-        if isinstance(after.get("sha256"), str):
-            artifact["sha256"] = after["sha256"]
-            artifact["bytes"] = after["bytes"]
-        elif after.get("error"):
-            artifact["error"] = after["error"]
-        else:
-            artifact["error"] = "not a file after command"
-    if input_artifact_records:
-        record["input_artifacts"] = input_artifact_records
     for env_name, key in (
         ("MDCLAW_BENCHMARK_RUN_ID", "run_id"),
         ("MDCLAW_BENCHMARK_TASK_ID", "task_id"),
@@ -855,17 +727,22 @@ def _write_mdclaw_runtime_wrapper(
     *,
     mdclaw_runtime: str,
     source_root: Path | None = None,
+    work_root: Path | None = None,
 ) -> None:
     """Write a task-local ``mdclaw`` wrapper pinned to one runtime family."""
     runtime = _normalize_mdclaw_runtime(mdclaw_runtime)
     source_root = (source_root or _REPO_ROOT).resolve()
     source_root_text = shlex.quote(str(source_root))
+    work_root_text = (
+        shlex.quote(str(work_root.resolve())) if work_root is not None else "''"
+    )
     runtime_root_text = shlex.quote(str(_REPO_ROOT.resolve()))
     wrapper = f'''#!/usr/bin/env bash
 set -euo pipefail
 
 RUNTIME={shlex.quote(runtime)}
 SOURCE_ROOT={source_root_text}
+WORK_ROOT={work_root_text}
 RUNTIME_ROOT={runtime_root_text}
 
 if [[ "$RUNTIME" == "auto" ]]; then
@@ -899,8 +776,9 @@ case "$RUNTIME" in
       exit 127
     }}
     ENV_NAME="${{MDCLAW_CONDA_ENV:-mdclaw}}"
-    export PYTHONPATH="$SOURCE_ROOT${{PYTHONPATH:+:$PYTHONPATH}}"
-    exec conda run --no-capture-output -n "$ENV_NAME" python -m mdclaw._cli "$@"
+    export PYTHONPATH="$SOURCE_ROOT"
+    exec conda run --no-capture-output -n "$ENV_NAME" \
+      python -s -P -m mdclaw._cli "$@"
     ;;
   sif)
     SIF_PATH="${{MDCLAW_SIF:-}}"
@@ -923,10 +801,15 @@ case "$RUNTIME" in
     if command -v nvidia-smi >/dev/null 2>&1; then
       NV_FLAG=(--nv)
     fi
+    WORK_BIND=()
+    if [[ -n "$WORK_ROOT" && "$WORK_ROOT" != "$PWD" ]]; then
+      WORK_BIND=(--bind "$WORK_ROOT:$WORK_ROOT")
+    fi
     exec "$RUNNER" exec "${{NV_FLAG[@]}}" \
-      --bind "$SOURCE_ROOT:$SOURCE_ROOT" --pwd "$PWD" \
-      "$SIF_PATH" env PYTHONPATH="$SOURCE_ROOT${{PYTHONPATH:+:$PYTHONPATH}}" \
-      python -m mdclaw._cli "$@"
+      --bind "$SOURCE_ROOT:$SOURCE_ROOT:ro" "${{WORK_BIND[@]}}" \
+      --bind "$PWD:$PWD" --pwd "$PWD" \
+      "$SIF_PATH" env PYTHONPATH="$SOURCE_ROOT" \
+      python -s -P -m mdclaw._cli "$@"
     ;;
   docker)
     command -v docker >/dev/null 2>&1 || {{
@@ -942,10 +825,15 @@ case "$RUNTIME" in
     if [[ "$(uname -s)" == "Linux" ]]; then
       USER_FLAGS=(-u "$(id -u):$(id -g)")
     fi
+    WORK_FLAGS=()
+    if [[ -n "$WORK_ROOT" && "$WORK_ROOT" != "$PWD" ]]; then
+      WORK_FLAGS=(-v "$WORK_ROOT:$WORK_ROOT")
+    fi
     exec docker run --rm "${{GPU_FLAGS[@]}}" "${{USER_FLAGS[@]}}" \
-      -v "$PWD:$PWD" -v "$SOURCE_ROOT:$SOURCE_ROOT:ro" -w "$PWD" \
+      -v "$PWD:$PWD" "${{WORK_FLAGS[@]}}" \
+      -v "$SOURCE_ROOT:$SOURCE_ROOT:ro" -w "$PWD" \
       -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONPATH="$SOURCE_ROOT" \
-      "$IMAGE" python -m mdclaw._cli "$@"
+      "$IMAGE" python -s -P -m mdclaw._cli "$@"
     ;;
   *)
     echo "Unsupported MDClaw runtime: $RUNTIME" >&2
@@ -958,7 +846,7 @@ esac
     path.chmod(0o755)
 
 
-def _execute_v2_confirmatory_request(
+def _execute_v2_confirmatory_plan(
     *,
     task_id: str,
     run_id: str,
@@ -974,30 +862,67 @@ def _execute_v2_confirmatory_request(
     task_started_wall: float,
     timeout_seconds: Optional[float],
 ) -> Optional[dict[str, Any]]:
-    """Freeze an S01 intent and execute its structured MD request as runner.
+    """Freeze and execute the agent's prospective confirmatory MD plan."""
 
-    The evaluated agent creates pending MDClaw ``prod`` nodes and a small
-    ``confirmatory_request.json``.  It does not execute those nodes.  The
-    benchmark runner freezes the exact analysis-intent bytes, runs only the
-    released ``mdclaw_openmm@1`` adapter, and records a scorer-side ledger.
-    """
-
-    request_path = solver_task_dir / "confirmatory_request.json"
-    if not request_path.is_file():
+    plan_path = solver_submission / "confirmatory_plan.json"
+    if not plan_path.is_file():
         return None
-    intent_path = solver_submission / "analysis_intent.json"
-    ledger_errors: list[dict[str, str]] = []
-    request = _read_json_object(request_path, ledger_errors, "confirmatory_request")
-    intent = _read_json_object(intent_path, ledger_errors, "analysis_intent")
+    episode_errors: list[dict[str, str]] = []
+    plan_bytes: bytes | None
+    try:
+        plan_bytes = plan_path.read_bytes()
+    except OSError as exc:
+        plan_bytes = None
+        episode_errors.append(
+            {
+                "code": "confirmatory_plan_invalid",
+                "message": f"confirmatory_plan.json cannot be read: {exc}",
+            }
+        )
+    plan_sha256 = (
+        hashlib.sha256(plan_bytes).hexdigest()
+        if plan_bytes is not None
+        else None
+    )
+    plan: dict[str, Any] = {}
+    if plan_bytes is not None:
+        try:
+            decoded_plan = json.loads(plan_bytes)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            episode_errors.append(
+                {
+                    "code": "confirmatory_plan_invalid",
+                    "message": f"confirmatory_plan.json is not valid JSON: {exc}",
+                }
+            )
+        else:
+            from pydantic import ValidationError
+
+            from mdclaw.benchmark.models import ConfirmatoryPlanV2
+
+            try:
+                validated_plan = ConfirmatoryPlanV2.model_validate(decoded_plan)
+            except (ValidationError, ValueError, TypeError) as exc:
+                episode_errors.append(
+                    {
+                        "code": "confirmatory_plan_schema_invalid",
+                        "message": (
+                            "confirmatory_plan.json violates the released "
+                            f"schema: {exc}"
+                        ),
+                    }
+                )
+            else:
+                plan = validated_plan.model_dump()
     task = _read_json_object(
         private_dir / "tasks" / task_id / "task.json",
-        ledger_errors,
+        episode_errors,
         "private_task",
     )
     scientific_target = task.get("scientific_target")
     if not isinstance(scientific_target, dict):
         scientific_target = {}
-        ledger_errors.append(
+        episode_errors.append(
             {
                 "code": "scientific_target_missing",
                 "message": "grounded_correct_v2 task lacks scientific_target",
@@ -1008,7 +933,7 @@ def _execute_v2_confirmatory_request(
         not runner_source_sha256
         or current_runner_source_sha256 != runner_source_sha256
     ):
-        ledger_errors.append(
+        episode_errors.append(
             {
                 "code": "runner_source_hash_mismatch",
                 "message": (
@@ -1017,33 +942,18 @@ def _execute_v2_confirmatory_request(
                 ),
             }
         )
-    ledger_errors.extend(
-        _v2_intent_freeze_errors(
-            task_id=task_id,
-            intent=intent,
-            scientific_target=scientific_target,
-        )
-    )
-    if request.get("task_id") != task_id:
-        ledger_errors.append(
+    if plan.get("task_id") != task_id:
+        episode_errors.append(
             {
-                "code": "confirmatory_request_task_mismatch",
-                "message": "confirmatory_request.task_id does not match the task",
+                "code": "confirmatory_plan_task_mismatch",
+                "message": "confirmatory_plan.task_id does not match the task",
             }
         )
-    runs = request.get("runs")
-    if not isinstance(runs, list) or not runs:
-        runs = []
-        ledger_errors.append(
-            {
-                "code": "confirmatory_request_runs_missing",
-                "message": "confirmatory_request.runs must be a non-empty list",
-            }
-        )
-    normalized_runs = _normalize_v2_confirmatory_requests(
+    runs = plan.get("runs", [])
+    normalized_runs = _normalize_v2_confirmatory_plan_runs(
         runs,
         solver_work_dir=solver_work_dir,
-        errors=ledger_errors,
+        errors=episode_errors,
     )
     minimum_duration_ns = (
         scientific_target.get("primary_evidence_contract", {})
@@ -1054,7 +964,7 @@ def _execute_v2_confirmatory_request(
         minimum_duration_ns = float(minimum_duration_ns)
     except (TypeError, ValueError):
         minimum_duration_ns = 0.0
-        ledger_errors.append(
+        episode_errors.append(
             {
                 "code": "minimum_confirmatory_time_invalid",
                 "message": "public minimum confirmatory time is invalid",
@@ -1067,7 +977,7 @@ def _execute_v2_confirmatory_request(
             if spec["condition_role"] == role
         )
         if role_duration < minimum_duration_ns:
-            ledger_errors.append(
+            episode_errors.append(
                 {
                     "code": f"{role}_requested_duration_insufficient",
                     "message": (
@@ -1076,23 +986,29 @@ def _execute_v2_confirmatory_request(
                     ),
                 }
             )
-    _preflight_v2_pending_inputs(normalized_runs, ledger_errors)
+    _preflight_v2_pending_inputs(
+        normalized_runs,
+        episode_errors,
+        solver_work_dir=solver_work_dir,
+    )
 
     frozen_at = _now_utc()
-    frozen_intent_path = task_run_dir / "frozen_analysis_intent.json"
-    intent_sha256: Optional[str] = None
-    if intent_path.is_file():
-        frozen_intent_path.write_bytes(intent_path.read_bytes())
-        intent_sha256 = hashlib.sha256(intent_path.read_bytes()).hexdigest()
+    frozen_plan_path = task_run_dir / "frozen_confirmatory_plan.json"
+    if plan_bytes is not None:
+        _atomic_write_bytes(frozen_plan_path, plan_bytes)
+    episode_root = task_run_dir / "episode_work"
+    if episode_root.exists():
+        shutil.rmtree(episode_root)
+    ensure_directory(episode_root / "artifacts")
 
     events: list[dict[str, Any]] = []
     from mdclaw.benchmark.study_execution_v2 import (
         MDCLAW_OPENMM_ADAPTER,
-        RUNNER_EXECUTION_KIND,
+        RUNNER_EPISODE_KIND,
         inspect_mdclaw_production_node_v2,
     )
 
-    if not ledger_errors and intent_sha256 is not None:
+    if not episode_errors and plan_sha256 is not None:
         for index, spec in enumerate(normalized_runs):
             remaining = None
             if timeout_seconds is not None:
@@ -1100,7 +1016,7 @@ def _execute_v2_confirmatory_request(
                     time.monotonic() - task_started_wall
                 )
                 if remaining <= 0:
-                    ledger_errors.append(
+                    episode_errors.append(
                         {
                             "code": "confirmatory_execution_budget_exhausted",
                             "message": "no task walltime remained for confirmatory MD",
@@ -1140,20 +1056,29 @@ def _execute_v2_confirmatory_request(
                     )
                 ),
             ]
+            runner_cwd = Path(
+                tempfile.mkdtemp(
+                    prefix="confirmatory_runner_cwd_",
+                    dir=task_run_dir,
+                )
+            )
             started_at = _now_utc()
             started_wall = time.monotonic()
-            completed = _run_runner_owned_command(
-                command,
-                cwd=solver_task_dir.parent.parent,
-                env=run_env,
-                stdout_path=stdout_path,
-                stderr_path=stderr_path,
-                timeout_seconds=remaining,
-            )
+            try:
+                completed = _run_runner_owned_command(
+                    command,
+                    cwd=runner_cwd,
+                    env=run_env,
+                    stdout_path=stdout_path,
+                    stderr_path=stderr_path,
+                    timeout_seconds=remaining,
+                )
+            finally:
+                shutil.rmtree(runner_cwd, ignore_errors=True)
             completed_at = _now_utc()
             walltime = round(time.monotonic() - started_wall, 6)
             if completed["exit_code"] != 0:
-                ledger_errors.append(
+                episode_errors.append(
                     {
                         "code": "confirmatory_adapter_failed",
                         "message": (
@@ -1169,7 +1094,7 @@ def _execute_v2_confirmatory_request(
                 production_event_id=spec["production_event_id"],
                 condition_role=spec["condition_role"],
                 scientific_target=scientific_target,
-                intent_sha256=intent_sha256,
+                plan_sha256=plan_sha256,
                 started_at=started_at,
                 completed_at=completed_at,
                 walltime_seconds=walltime,
@@ -1191,11 +1116,24 @@ def _execute_v2_confirmatory_request(
             event["adapter_exit_code"] = completed["exit_code"]
             event["adapter_timed_out"] = completed["timed_out"]
             event["runner_sequence"] = index + 1
-            event["stdout"] = str(stdout_path)
-            event["stderr"] = str(stderr_path)
+            snapshot_errors = _snapshot_v2_event_artifacts(
+                event=event,
+                episode_root=episode_root,
+                sequence=index + 1,
+            )
+            if snapshot_errors:
+                event["reason_codes"] = list(
+                    dict.fromkeys(
+                        [
+                            *(event.get("reason_codes") or []),
+                            *snapshot_errors,
+                        ]
+                    )
+                )
+                event["valid"] = False
             events.append(event)
             if event.get("valid") is not True:
-                ledger_errors.append(
+                episode_errors.append(
                     {
                         "code": "confirmatory_node_inspection_failed",
                         "message": (
@@ -1209,325 +1147,104 @@ def _execute_v2_confirmatory_request(
         timeout_seconds is None
         or (time.monotonic() - task_started_wall) <= timeout_seconds
     )
-    ledger = {
+    episode = {
         "schema_version": "1.0",
-        "kind": RUNNER_EXECUTION_KIND,
+        "kind": RUNNER_EPISODE_KIND,
         "recorded_by": "mdclaw_benchmark_runner",
         "run_id": run_id,
         "task_id": task_id,
+        "plan_sha256": plan_sha256,
+        "frozen_at": frozen_at,
         "adapter_id": MDCLAW_OPENMM_ADAPTER,
         "adapter_launcher": {
-            "path": str(mdclaw_wrapper_path.resolve()),
             "sha256": hashlib.sha256(
                 mdclaw_wrapper_path.read_bytes()
             ).hexdigest(),
         },
         "adapter_source": {
-            "path": str(runner_source_path.resolve()),
             "sha256": current_runner_source_sha256,
             "expected_sha256": runner_source_sha256,
         },
         "within_task_budget": within_budget,
-        "frozen_intent": {
-            "sha256": intent_sha256,
-            "frozen_at": frozen_at,
-            "runner_sequence": 0,
-            "private_copy": str(frozen_intent_path),
-        },
-        "request_sha256": (
-            hashlib.sha256(request_path.read_bytes()).hexdigest()
-            if request_path.is_file()
-            else None
-        ),
         "events": events,
         "success": bool(
-            intent_sha256
+            plan_sha256
             and within_budget
             and events
-            and not ledger_errors
+            and not episode_errors
             and all(event.get("valid") is True for event in events)
         ),
-        "errors": ledger_errors,
+        "errors": episode_errors,
     }
-    _write_json(task_run_dir / "study_execution.json", ledger)
+    _write_json(episode_root / "episode.json", episode)
     _write_json(
-        solver_task_dir / "confirmatory_execution.json",
+        solver_task_dir / "confirmatory_result.json",
         {
             "schema_version": "1.0",
             "task_id": task_id,
-            "success": ledger["success"],
-            "frozen_intent_sha256": intent_sha256,
+            "success": episode["success"],
+            "plan_sha256": plan_sha256,
+            "episode_root": str(episode_root.resolve()),
             "events": events,
-            "errors": ledger_errors,
+            "errors": episode_errors,
             "next_step": (
-                "Use only these runner-produced artifacts for confirmatory "
-                "analysis, then finish submission/."
+                "Analyze only these runner-captured artifacts, then write "
+                "submission/claim.json. The runner materializes final packaging."
             ),
         },
     )
-    return ledger
+    return episode
 
 
-def _v2_intent_freeze_errors(
-    *,
-    task_id: str,
-    intent: dict[str, Any],
-    scientific_target: dict[str, Any],
-) -> list[dict[str, str]]:
-    errors: list[dict[str, str]] = []
-    try:
-        from mdclaw.benchmark.models import AnalysisIntent
-
-        AnalysisIntent.model_validate(intent)
-    except Exception as exc:  # noqa: BLE001 -- authored JSON boundary
-        return [
-            {
-                "code": "analysis_intent_model_invalid",
-                "message": str(exc),
-            }
-        ]
-    if intent.get("task_id") != task_id:
-        errors.append(
-            {
-                "code": "analysis_intent_task_mismatch",
-                "message": "analysis_intent.task_id does not match the task",
-            }
-        )
-    if intent.get("target_estimand") != scientific_target.get("estimand"):
-        errors.append(
-            {
-                "code": "analysis_intent_estimand_mismatch",
-                "message": "analysis_intent target_estimand is not the public estimand",
-            }
-        )
-    analyses = intent.get("primary_analyses") or []
-    estimands = [
-        item
-        for item in analyses
-        if isinstance(item, dict)
-        and item.get("analysis_role", "estimand") == "estimand"
-    ]
-    contract = scientific_target.get("primary_evidence_contract")
-    if not isinstance(contract, dict) or len(estimands) != 1:
-        errors.append(
-            {
-                "code": "primary_estimand_contract_invalid",
-                "message": (
-                    "one estimand analysis and a public primary evidence "
-                    "contract are required"
-                ),
-            }
-        )
-        return errors
-    analysis = estimands[0]
-    if analysis.get("verifier_id") != contract.get("verifier_id"):
-        errors.append(
-            {
-                "code": "primary_verifier_mismatch",
-                "message": "estimand verifier differs from the public contract",
-            }
-        )
-    if analysis.get("outcome_mapping") != contract.get("outcome_mapping"):
-        errors.append(
-            {
-                "code": "task_outcome_mapping_mismatch",
-                "message": "outcome mapping differs from the public contract",
-            }
-        )
-    expected_rule = contract.get("decision_rule")
-    actual_rule = analysis.get("decision_rule")
-    if not _same_v2_decision_rule(actual_rule, expected_rule):
-        errors.append(
-            {
-                "code": "task_decision_rule_mismatch",
-                "message": "decision rule differs from the public contract",
-            }
-        )
-    fixed = contract.get("fixed_observable_parameters")
-    observable = analysis.get("observable")
-    parameters = _v2_observable_parameters(
-        observable if isinstance(observable, dict) else {}
-    )
-    if isinstance(fixed, dict):
-        for key, value in fixed.items():
-            if parameters.get(key) != value:
-                errors.append(
-                    {
-                        "code": "task_observable_parameter_mismatch",
-                        "message": (
-                            f"observable parameter {key!r} must equal {value!r}"
-                        ),
-                    }
-                )
-        unexpected = sorted(
-            set(parameters) - set(fixed) - {"region_selection"}
-        )
-        if unexpected:
-            errors.append(
-                {
-                    "code": "task_observable_parameters_unexpected",
-                    "message": (
-                        "primary observable has non-contract parameters "
-                        f"{unexpected!r}"
-                    ),
-                }
-            )
-    required_controls = {
-        value
-        for value in scientific_target.get("required_control_verifiers") or []
-        if isinstance(value, str)
-    }
-    supplied_controls = {
-        item.get("verifier_id")
-        for item in analyses
-        if isinstance(item, dict)
-        and item.get("analysis_role") == "validity_control"
-    }
-    if not required_controls <= supplied_controls:
-        errors.append(
-            {
-                "code": "required_control_analysis_missing",
-                "message": "analysis intent omits a required validity control",
-            }
-        )
-    for control_contract in (
-        scientific_target.get("control_evidence_contracts") or []
-    ):
-        if not isinstance(control_contract, dict):
-            continue
-        verifier_id = control_contract.get("verifier_id")
-        matching = [
-            item
-            for item in analyses
-            if isinstance(item, dict)
-            and item.get("analysis_role") == "validity_control"
-            and item.get("verifier_id") == verifier_id
-        ]
-        if len(matching) != 1:
-            errors.append(
-                {
-                    "code": "control_analysis_count_mismatch",
-                    "message": (
-                        f"task-owned control {verifier_id!r} requires exactly "
-                        "one validity-control analysis"
-                    ),
-                }
-            )
-            continue
-        control = matching[0]
-        if control.get("outcome_mapping") != control_contract.get(
-            "outcome_mapping"
-        ):
-            errors.append(
-                {
-                    "code": "task_control_outcome_mapping_mismatch",
-                    "message": (
-                        f"control {verifier_id!r} outcome mapping differs "
-                        "from the public contract"
-                    ),
-                }
-            )
-        if not _same_v2_decision_rule(
-            control.get("decision_rule"),
-            control_contract.get("decision_rule"),
-        ):
-            errors.append(
-                {
-                    "code": "task_control_decision_rule_mismatch",
-                    "message": (
-                        f"control {verifier_id!r} decision rule differs "
-                        "from the public contract"
-                    ),
-                }
-            )
-        control_parameters = _v2_observable_parameters(
-            control.get("observable")
-            if isinstance(control.get("observable"), dict)
-            else {}
-        )
-        for key, value in (
-            control_contract.get("fixed_observable_parameters") or {}
-        ).items():
-            if control_parameters.get(key) != value:
-                errors.append(
-                    {
-                        "code": "task_control_parameter_mismatch",
-                        "message": (
-                            f"control {verifier_id!r} parameter {key!r} must "
-                            f"equal {value!r}"
-                        ),
-                    }
-                )
-        unexpected_control_parameters = sorted(
-            set(control_parameters)
-            - set(
-                control_contract.get("fixed_observable_parameters") or {}
-            )
-        )
-        if unexpected_control_parameters:
-            errors.append(
-                {
-                    "code": "task_control_parameters_unexpected",
-                    "message": (
-                        f"control {verifier_id!r} has non-contract parameters "
-                        f"{unexpected_control_parameters!r}"
-                    ),
-                }
-            )
-    return errors
-
-
-def _normalize_v2_confirmatory_requests(
+def _normalize_v2_confirmatory_plan_runs(
     runs: list[Any],
     *,
     solver_work_dir: Path,
     errors: list[dict[str, str]],
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
-    seen_run_ids: set[str] = set()
-    seen_event_ids: set[str] = set()
     seen_nodes: set[tuple[str, str]] = set()
+    solver_root = solver_work_dir.resolve()
     for index, item in enumerate(runs):
-        if not isinstance(item, dict):
+        run_id = item["run_id"]
+        node_id = item["node_id"]
+        role = item["condition_role"]
+        raw_job_dir = item["job_dir"]
+        simulation_time_ns = float(item["simulation_time_ns"])
+        if any(part in {".", ".."} for part in raw_job_dir.split("/")):
             errors.append(
                 {
-                    "code": "confirmatory_request_item_invalid",
-                    "message": f"runs[{index}] must be an object",
-                }
-            )
-            continue
-        run_id = item.get("run_id")
-        event_id = item.get("production_event_id")
-        node_id = item.get("node_id")
-        role = item.get("condition_role")
-        raw_job_dir = item.get("job_dir")
-        simulation_time_ns = item.get("simulation_time_ns")
-        if not all(
-            isinstance(value, str) and value
-            for value in (run_id, event_id, node_id, raw_job_dir)
-        ) or role not in {"reference", "variant"} or (
-            isinstance(simulation_time_ns, bool)
-            or not isinstance(simulation_time_ns, (int, float))
-            or not math.isfinite(float(simulation_time_ns))
-            or float(simulation_time_ns) <= 0.0
-        ):
-            errors.append(
-                {
-                    "code": "confirmatory_request_fields_invalid",
+                    "code": "confirmatory_job_dir_invalid",
                     "message": (
-                        f"runs[{index}] requires run_id, production_event_id, "
-                        "condition_role, job_dir, node_id, and a positive "
-                        "simulation_time_ns"
+                        f"runs[{index}].job_dir must not contain . or .. "
+                        "path components"
                     ),
                 }
             )
             continue
         job_dir = Path(raw_job_dir)
-        if not job_dir.is_absolute():
-            job_dir = solver_work_dir / job_dir
-        job_dir = job_dir.resolve()
+        if job_dir.is_absolute():
+            errors.append(
+                {
+                    "code": "confirmatory_job_dir_must_be_relative",
+                    "message": (
+                        f"runs[{index}].job_dir must be relative to work_dir"
+                    ),
+                }
+            )
+            continue
+        lexical_job_dir = solver_root / job_dir
+        if _path_has_symlink_below(solver_root, lexical_job_dir):
+            errors.append(
+                {
+                    "code": "confirmatory_job_path_symlink",
+                    "message": f"runs[{index}].job_dir must not use symlinks",
+                }
+            )
+            continue
+        job_dir = lexical_job_dir.resolve()
         try:
-            job_dir.relative_to(solver_work_dir.resolve())
+            job_dir.relative_to(solver_root)
         except ValueError:
             errors.append(
                 {
@@ -1544,7 +1261,35 @@ def _normalize_v2_confirmatory_requests(
                 }
             )
             continue
-        node_json = job_dir / "nodes" / node_id / "node.json"
+        lexical_node_dir = lexical_job_dir / "nodes" / node_id
+        lexical_node_json = lexical_node_dir / "node.json"
+        if _path_has_symlink_below(lexical_job_dir, lexical_node_json):
+            errors.append(
+                {
+                    "code": "confirmatory_node_path_symlink",
+                    "message": (
+                        f"runs[{index}] nodes/{node_id}/node.json must not "
+                        "use symlinks"
+                    ),
+                }
+            )
+            continue
+        node_dir = lexical_node_dir.resolve()
+        node_json = lexical_node_json.resolve()
+        try:
+            node_dir.relative_to(job_dir)
+            node_json.relative_to(job_dir)
+        except ValueError:
+            errors.append(
+                {
+                    "code": "confirmatory_node_path_outside_job_dir",
+                    "message": (
+                        f"runs[{index}] nodes/{node_id}/node.json must stay "
+                        "under job_dir"
+                    ),
+                }
+            )
+            continue
         node = {}
         try:
             node = json.loads(node_json.read_text())
@@ -1564,14 +1309,6 @@ def _normalize_v2_confirmatory_requests(
                 }
             )
             continue
-        if run_id in seen_run_ids or event_id in seen_event_ids:
-            errors.append(
-                {
-                    "code": "confirmatory_request_id_duplicate",
-                    "message": "run_id and production_event_id must be unique",
-                }
-            )
-            continue
         node_key = (str(job_dir), node_id)
         if node_key in seen_nodes:
             errors.append(
@@ -1581,13 +1318,11 @@ def _normalize_v2_confirmatory_requests(
                 }
             )
             continue
-        seen_run_ids.add(run_id)
-        seen_event_ids.add(event_id)
         seen_nodes.add(node_key)
         output.append(
             {
                 "run_id": run_id,
-                "production_event_id": event_id,
+                "production_event_id": f"runner-prod-{len(output) + 1:03d}",
                 "condition_role": role,
                 "job_dir": job_dir,
                 "node_id": node_id,
@@ -1598,27 +1333,58 @@ def _normalize_v2_confirmatory_requests(
         errors.append(
             {
                 "code": "confirmatory_condition_pair_missing",
-                "message": "request requires reference and variant pressure runs",
+                "message": "plan requires reference and variant pressure runs",
             }
         )
     return output
 
 
+def _path_has_symlink_below(root: Path, path: Path) -> bool:
+    """Return whether a lexical path uses a symlink at or below ``root``."""
+
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
+
+
 def _preflight_v2_pending_inputs(
     runs: list[dict[str, Any]],
     errors: list[dict[str, str]],
+    *,
+    solver_work_dir: Path,
 ) -> None:
     """Reject mismatched paired inputs before spending the MD budget."""
 
     from mdclaw.node.inputs import resolve_node_inputs
 
+    solver_root = solver_work_dir.resolve()
     paired_hashes: dict[str, set[str]] = {
         "base_system": set(),
         "topology": set(),
     }
     for spec in runs:
+        job_dir = Path(spec["job_dir"]).resolve()
+        try:
+            job_dir.relative_to(solver_root)
+        except ValueError:
+            errors.append(
+                {
+                    "code": "confirmatory_job_dir_outside_work_dir",
+                    "message": (
+                        f"run {spec['run_id']!r} job_dir escaped work_dir"
+                    ),
+                }
+            )
+            continue
         resolved = resolve_node_inputs(
-            str(spec["job_dir"]),
+            str(job_dir),
             spec["node_id"],
             "prod",
         )
@@ -1657,8 +1423,49 @@ def _preflight_v2_pending_inputs(
                 else resolved.get("restart_from")
                 or resolved.get("state_xml_file")
             )
-            candidate = Path(path).resolve() if isinstance(path, str) else None
-            if candidate is None or not candidate.is_file():
+            lexical_candidate = (
+                Path(path)
+                if isinstance(path, str) and Path(path).is_absolute()
+                else None
+            )
+            candidate: Path | None = None
+            unsafe_code: str | None = None
+            if lexical_candidate is not None:
+                try:
+                    lexical_relative = lexical_candidate.relative_to(job_dir)
+                except ValueError:
+                    unsafe_code = (
+                        f"confirmatory_{artifact_name}_outside_job_dir"
+                    )
+                else:
+                    if ".." in lexical_relative.parts:
+                        unsafe_code = (
+                            f"confirmatory_{artifact_name}_outside_job_dir"
+                        )
+                    elif _path_has_symlink_below(
+                        job_dir,
+                        lexical_candidate,
+                    ):
+                        unsafe_code = f"confirmatory_{artifact_name}_symlink"
+                    else:
+                        candidate = lexical_candidate.resolve()
+                        try:
+                            candidate.relative_to(job_dir)
+                        except ValueError:
+                            unsafe_code = (
+                                f"confirmatory_{artifact_name}_outside_job_dir"
+                            )
+            if unsafe_code is not None:
+                errors.append(
+                    {
+                        "code": unsafe_code,
+                        "message": (
+                            f"run {spec['run_id']!r} resolved {field} outside "
+                            "its canonical job or through a symlink"
+                        ),
+                    }
+                )
+            elif candidate is None or not candidate.is_file():
                 errors.append(
                     {
                         "code": code,
@@ -1668,7 +1475,7 @@ def _preflight_v2_pending_inputs(
                     }
                 )
             else:
-                digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+                digest = _file_sha256(candidate)
                 pinned_hashes[artifact_name] = digest
                 if artifact_name in paired_hashes:
                     paired_hashes[artifact_name].add(digest)
@@ -1722,6 +1529,159 @@ def _v2_preflight_input_binding_errors(
                 f"confirmatory_{artifact_name}_changed_after_preflight"
             )
     return errors
+
+
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    ensure_directory(path.parent)
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        prefix=f".{path.name}.",
+        dir=path.parent,
+        delete=False,
+    ) as handle:
+        handle.write(payload)
+        temporary = Path(handle.name)
+    os.replace(temporary, path)
+
+
+def _snapshot_v2_event_artifacts(
+    *,
+    event: dict[str, Any],
+    episode_root: Path,
+    sequence: int,
+) -> list[str]:
+    """Atomically copy one runner-inspected event into the portable episode."""
+
+    event.pop("job_dir", None)
+    artifacts_root = episode_root / "artifacts"
+    ensure_directory(artifacts_root)
+    final_dir = artifacts_root / f"{sequence:03d}"
+    temporary_dir = Path(
+        tempfile.mkdtemp(
+            prefix=f".{sequence:03d}.",
+            dir=artifacts_root,
+        )
+    )
+    errors: list[str] = []
+    rewritten: dict[str, dict[str, dict[str, Any]]] = {}
+    try:
+        for group_name in ("input_artifacts", "output_artifacts"):
+            records = event.get(group_name)
+            rewritten[group_name] = {}
+            if not isinstance(records, dict):
+                errors.append(f"{group_name}_missing")
+                continue
+            group_dir = temporary_dir / (
+                "input" if group_name == "input_artifacts" else "output"
+            )
+            ensure_directory(group_dir)
+            for key, record in records.items():
+                if not isinstance(key, str) or not isinstance(record, dict):
+                    errors.append(f"{group_name}_record_invalid")
+                    continue
+                raw_path = record.get("path")
+                source = (
+                    Path(raw_path).resolve()
+                    if isinstance(raw_path, str) and raw_path
+                    else None
+                )
+                if source is None or not source.is_file():
+                    errors.append(f"{group_name}_{key}_missing")
+                    continue
+                safe_key = "".join(
+                    char if char.isalnum() or char in {"-", "_"} else "_"
+                    for char in key
+                )
+                destination = group_dir / f"{safe_key}{source.suffix or '.bin'}"
+                shutil.copy2(source, destination)
+                digest = _file_sha256(destination)
+                if digest != record.get("sha256"):
+                    errors.append(f"{group_name}_{key}_hash_mismatch")
+                    continue
+                rewritten[group_name][key] = {
+                    "path": (
+                        Path("artifacts")
+                        / f"{sequence:03d}"
+                        / group_dir.name
+                        / destination.name
+                    ).as_posix(),
+                    "sha256": digest,
+                    "bytes": destination.stat().st_size,
+                }
+        if errors:
+            for group_name in rewritten:
+                event[group_name] = {
+                    key: {
+                        "sha256": record.get("sha256"),
+                        "bytes": record.get("bytes"),
+                    }
+                    for key, record in rewritten[group_name].items()
+                }
+            return list(dict.fromkeys(errors))
+        os.replace(temporary_dir, final_dir)
+        for group_name, records in rewritten.items():
+            event[group_name] = records
+        return []
+    finally:
+        if temporary_dir.exists():
+            shutil.rmtree(temporary_dir, ignore_errors=True)
+
+
+def _materialize_v2_evaluator_submission(
+    *,
+    task_id: str,
+    run_id: str,
+    solver_submission: Path,
+    task_run_dir: Path,
+    evaluator_submission: Path,
+) -> None:
+    """Build the v2 package only from runner-custodied execution artifacts."""
+
+    ensure_directory(evaluator_submission.parent)
+    staging = Path(
+        tempfile.mkdtemp(
+            prefix=f".{evaluator_submission.name}.v2.",
+            dir=evaluator_submission.parent,
+        )
+    )
+    frozen_plan = task_run_dir / "frozen_confirmatory_plan.json"
+    episode_root = task_run_dir / "episode_work"
+    claim = solver_submission / "claim.json"
+    try:
+        if frozen_plan.is_file() and not frozen_plan.is_symlink():
+            _atomic_write_bytes(
+                staging / "confirmatory_plan.json",
+                frozen_plan.read_bytes(),
+            )
+        if claim.is_file() and not claim.is_symlink():
+            _atomic_write_bytes(staging / "claim.json", claim.read_bytes())
+        if episode_root.is_dir() and not episode_root.is_symlink():
+            shutil.copytree(episode_root, staging / "episode")
+
+        _write_json(
+            staging / "manifest.json",
+            {
+                "schema_version": "1.0",
+                "task_id": task_id,
+                "run_id": run_id,
+                "status": "completed",
+                "generated_by": {
+                    "tool": "mdclaw_benchmark_runner",
+                },
+                "outputs": {
+                    "confirmatory_plan": "confirmatory_plan.json",
+                    "claim": "claim.json",
+                    "episode": "episode/episode.json",
+                },
+            },
+        )
+
+        if evaluator_submission.exists():
+            shutil.rmtree(evaluator_submission)
+        os.replace(staging, evaluator_submission)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def _run_runner_owned_command(
@@ -1810,41 +1770,6 @@ def _read_json_object(
     return payload
 
 
-def _same_v2_decision_rule(actual: Any, expected: Any) -> bool:
-    if not isinstance(actual, dict) or not isinstance(expected, dict):
-        return False
-    keys = {
-        "kind",
-        "confidence_level",
-        "equivalence_margin",
-        "unit",
-        "parameters",
-    }
-    return {
-        key: actual.get(key, {} if key == "parameters" else None)
-        for key in keys
-    } == {
-        key: expected.get(key, {} if key == "parameters" else None)
-        for key in keys
-    }
-
-
-def _v2_observable_parameters(observable: dict[str, Any]) -> dict[str, Any]:
-    nested = observable.get("parameters")
-    parameters = dict(nested) if isinstance(nested, dict) else {}
-    for key, value in observable.items():
-        if key not in {
-            "parameters",
-            "metric",
-            "name",
-            "unit",
-            "description",
-            "verifier_id",
-        } and key not in parameters:
-            parameters[key] = value
-    return parameters
-
-
 def _mdclaw_cli_instruction(
     *,
     mdclaw_runtime: str,
@@ -1881,44 +1806,36 @@ def _submission_packaging_instruction(
             primary_score == "scientific_answer"
             and evaluation_protocol == "grounded_correct_v2"
         ):
-            writes = [
-                "manifest.json",
-                "analysis_intent.json",
-                "study_index.json",
-                "evidence_report.json",
-                (
-                    "all system topologies and exploratory/confirmatory "
-                    "trajectories declared by study_index"
+            return {
+                "standalone_packager": None,
+                "mdclaw_packager": None,
+                "usage": (
+                    "Before confirmatory MD, write confirmatory_plan.json. After "
+                    "the runner resumes you, write claim.json. The benchmark "
+                    "runner builds and validates the final submission."
                 ),
-                "all raw analysis artifacts cited by evidence_report",
-            ]
+                "writes": [
+                    "confirmatory_plan.json (before runner execution)",
+                    "claim.json (after runner result)",
+                ],
+                "post_packaging_rule": (
+                    "Do not create or edit manifest.json, episode/episode.json, "
+                    "or episode/artifacts/. They are runner-owned."
+                ),
+            }
+        writes = [
+            "manifest.json",
+            "provenance.json",
+            "evidence_report.json",
+        ]
+        if primary_score == "scientific_answer":
+            writes.append("metrics.json")
+            writes.extend([
+                "manifest-declared comparative trajectories",
+                "manifest-declared matching topologies",
+            ])
         else:
-            writes = [
-                "manifest.json",
-                "provenance.json",
-                "evidence_report.json",
-            ]
-            if primary_score == "scientific_answer":
-                writes.append("metrics.json")
-                if evaluation_protocol == "grounded_correct_v1":
-                    writes.extend([
-                        "study_index.json",
-                        (
-                            "all reference/variant replica topologies declared "
-                            "by study_index"
-                        ),
-                        (
-                            "all reference/variant trajectories declared by "
-                            "study_index"
-                        ),
-                    ])
-                else:
-                    writes.extend([
-                        "manifest-declared comparative trajectories",
-                        "manifest-declared matching topologies",
-                    ])
-            else:
-                writes.extend(["methods.md", "decision_log.jsonl"])
+            writes.extend(["methods.md", "decision_log.jsonl"])
         return {
             "standalone_packager": None,
             "mdclaw_packager": None,
@@ -1961,7 +1878,11 @@ def _submission_packaging_instruction(
     }
 
 
-def _submission_preflight_instruction(public_dir: Path, task_id: str) -> dict[str, Any]:
+def _submission_preflight_instruction(
+    public_dir: Path,
+    task_id: str,
+    evaluation_protocol: Optional[str] = None,
+) -> dict[str, Any]:
     """Agent-visible, tool-neutral preflight command for one task."""
     script = public_dir / "tools" / "validate_submission.py"
     contract = public_dir / "tasks" / task_id / "submission_contract.json"
@@ -1969,9 +1890,14 @@ def _submission_preflight_instruction(public_dir: Path, task_id: str) -> dict[st
         "script": str(script),
         "submission_contract": str(contract),
         "usage": (
-            "Run this after final raw artifacts are in the exact submission_dir "
-            "and before exiting. It checks only the public contract, not hidden "
-            "truth or MDClaw-specific workflow choices."
+            "The runner executes this after it combines your plan and claim with "
+            "the runner-owned episode; do not run it from the agent stage."
+            if evaluation_protocol == "grounded_correct_v2"
+            else (
+                "Run this after final raw artifacts are in the exact submission_dir "
+                "and before exiting. It checks only the public contract, not hidden "
+                "truth or MDClaw-specific workflow choices."
+            )
         ),
         "command_template": (
             f"{shlex.quote(sys.executable)} {shlex.quote(str(script))} "
@@ -2039,22 +1965,11 @@ def _task_agent_prompt(
             "provenance.json, and decision_log.jsonl. "
         )
     elif primary_score == "scientific_answer":
-        if evaluation_protocol == "grounded_correct_v1":
+        if evaluation_protocol == "grounded_correct_v2":
             artifact_guidance = (
-                "You author every submission file yourself (scored as written, "
-                "not regenerated): manifest.json, metrics.json, provenance.json, "
-                "evidence_report.json, and study_index.json. The study index "
-                "assigns every topology and trajectory segment to a named "
-                "reference or variant replica. "
-            )
-        elif evaluation_protocol == "grounded_correct_v2":
-            artifact_guidance = (
-                "You author every submission file yourself: manifest.json, "
-                "analysis_intent.json, study_index.json, evidence_report.json, "
-                "and all indexed raw/replayable artifacts. Keep prior_expectation "
-                "separate from the MD-only verdict. Confirmatory topology and "
-                "trajectory bytes must match confirmatory_execution.json; the "
-                "runner-owned copies and hashes are authoritative. "
+                "You author only submission/confirmatory_plan.json before "
+                "confirmatory MD and submission/claim.json after the runner "
+                "result. Never author manifest.json or episode files. "
             )
         else:
             artifact_guidance = (
@@ -2073,30 +1988,36 @@ def _task_agent_prompt(
             "minimized view. "
             "Do not hand-write or edit evaluator-generated metadata files. "
         )
-    exit_guidance = (
-        "Run public preflight; exit after preflight passes. On incomplete prep, "
-        "the harness records failure/status."
-        if primary_score == "preparation"
-        else (
+    if evaluation_protocol == "grounded_correct_v2":
+        exit_guidance = (
+            "Exit after writing the plan, or after writing the claim on "
+            "continuation. The runner performs final packaging and public "
+            "preflight."
+        )
+    elif primary_score == "preparation":
+        exit_guidance = (
+            "Run public preflight; exit after preflight passes. On incomplete "
+            "prep, the harness records failure/status."
+        )
+    else:
+        exit_guidance = (
             "Keep local MD work attached until it finishes. Run public "
             "preflight after writing submission/. Exit after preflight passes; "
             "externally scheduled work must remain in durable re-enterable DAG "
             "state."
         )
-    )
     stage_guidance = (
         "Wrap non-MDClaw commands with `$MDCLAW_BENCHMARK_STAGE_WRAPPER "
         "--stage <source|prep|topo|min> --`; minimization must use `--stage min`. "
         "Bare `mdclaw ...` is auto-recorded; do not wrap it."
         if primary_score == "preparation"
         else (
-            "Run every production command listed in study_index through the "
-            "stage wrapper only when you want exploratory provenance. For "
-            "confirmatory work, create pending MDClaw prod nodes, write the "
-            "task_instructions.confirmatory_execution.request_file after "
-            "analysis_intent.json, and exit without running those nodes. The "
-            "runner freezes the intent, executes the certified adapter, and "
-            "resumes you with confirmatory_execution.result_file. "
+            "Create pending MDClaw prod nodes, then write "
+            "submission/confirmatory_plan.json and exit without running those "
+            "nodes. The runner freezes the exact plan bytes and executes them. "
+            "On continuation, read task_instructions.confirmatory_runner.result_file, "
+            "analyze only its runner-owned episode artifacts, write "
+            "submission/claim.json, and exit. "
             if evaluation_protocol == "grounded_correct_v2"
             else
             "For non-MDClaw commands, use the stage wrapper with the matching "
@@ -2141,6 +2062,7 @@ def _task_agent_finalization_prompt(
     finalization_file: Path,
     primary_score: str,
     *,
+    evaluation_protocol: Optional[str] = None,
     resume_incomplete_work: bool = False,
 ) -> str:
     """Prompt for tool-neutral finalization or Study-work continuation.
@@ -2149,6 +2071,22 @@ def _task_agent_finalization_prompt(
     packager on the agent's behalf. This retry gives every agent one identical
     chance to finish the public submission contract using its own work products.
     """
+    if evaluation_protocol == "grounded_correct_v2":
+        return (
+            f"# MD Benchmark Confirmatory Continuation: {task_id}\n\n"
+            "Use the same agent-safe task instructions:\n\n"
+            f"{instruction_file}\n\n"
+            "Read task_instructions.confirmatory_runner.result_file. If success "
+            "is true, do not run more production or modify the frozen plan. "
+            "Analyze only the artifacts under its episode_root, write "
+            "submission/claim.json, and exit. If the result is absent or failed "
+            "without execution events, repair the pending production nodes and "
+            "submission/confirmatory_plan.json, then exit without running them. "
+            "Never create or edit manifest.json or episode files. The runner "
+            "performs final packaging and public preflight.\n\n"
+            "Do not inspect private evaluator files, sibling tasks, truth data, "
+            "or scorer internals. Do not fabricate artifacts.\n"
+        )
     stage_guidance = (
         "For a non-MDClaw minimization command, use "
         "`$MDCLAW_BENCHMARK_STAGE_WRAPPER --stage min -- <command>`."
@@ -3085,18 +3023,9 @@ def prepare_benchmark_run(
             if primary_score == "preparation"
             else (
                 (
-                    f"{stage_wrapper_path} --stage prod --phase exploratory "
-                    "--event-id <stable-event-id> --input-artifact <topology> "
-                    "--artifact <trajectory> -- "
-                    "<exploratory-command>; "
-                    f"{stage_wrapper_path} --stage register_analysis_intent "
-                    "--intent-file <analysis_intent.json>; then "
-                    f"{stage_wrapper_path} --stage prod --phase confirmatory "
-                    "--intent-id <intent-id> --event-id <stable-event-id> "
-                    "--input-artifact <topology> --artifact "
-                    "<trajectory-or-segment> [--artifact <segment> ...] "
-                    "-- <production-command>; also record every other required "
-                    "stage from submission_contract.json"
+                    "Create pending MDClaw prod nodes, write "
+                    "submission/confirmatory_plan.json, and leave confirmatory "
+                    "execution to the benchmark runner."
                 )
                 if evaluation_protocol == "grounded_correct_v2"
                 else f"{stage_wrapper_path} --stage <required_stage> -- <command>"
@@ -3145,6 +3074,7 @@ def prepare_benchmark_run(
             "submission_preflight": _submission_preflight_instruction(
                 public_dir,
                 task_id,
+                evaluation_protocol,
             ),
         }
         harness_instruction = {
@@ -3708,12 +3638,11 @@ def _run_one_benchmark_agent_task(
         else (
             (
                 "Use the stage wrapper only for optional exploratory provenance. "
-                "For confirmatory evidence, write submission/analysis_intent.json "
-                f"and {solver_task_dir / 'confirmatory_request.json'}, then exit. "
-                "The runner freezes the intent and executes the listed pending "
-                "MDClaw prod nodes through mdclaw_openmm@1. On continuation, read "
-                f"{solver_task_dir / 'confirmatory_execution.json'} and analyze "
-                "only its certified outputs."
+                "For confirmatory evidence, create pending MDClaw prod nodes, "
+                "write submission/confirmatory_plan.json, then exit. The runner "
+                "freezes that plan and executes it through mdclaw_openmm@1. On "
+                f"continuation, read {solver_task_dir / 'confirmatory_result.json'} "
+                "and analyze only its runner-owned episode artifacts."
             )
             if evaluation_protocol == "grounded_correct_v2"
             else (
@@ -3747,19 +3676,18 @@ def _run_one_benchmark_agent_task(
             "wrapper": str(stage_wrapper_path),
             "usage": stage_usage,
         },
-        "confirmatory_execution": (
+        "confirmatory_runner": (
             {
                 "adapter": "mdclaw_openmm@1",
-                "request_file": str(
-                    solver_task_dir / "confirmatory_request.json"
-                ),
+                "plan_file": str(solver_submission / "confirmatory_plan.json"),
                 "result_file": str(
-                    solver_task_dir / "confirmatory_execution.json"
+                    solver_task_dir / "confirmatory_result.json"
                 ),
                 "usage": (
                     "Create pending MDClaw prod nodes but do not run them. "
-                    "Write the structured request after analysis_intent.json, "
-                    "then exit so the benchmark runner can freeze and execute it."
+                    "Write submission/confirmatory_plan.json, then exit so the "
+                    "benchmark runner can freeze and execute it. On continuation, "
+                    "write only submission/claim.json."
                 ),
             }
             if evaluation_protocol == "grounded_correct_v2"
@@ -3780,6 +3708,7 @@ def _run_one_benchmark_agent_task(
         "submission_preflight": _submission_preflight_instruction(
             public_dir,
             task_id,
+            evaluation_protocol,
         ),
     }
     if agent_skills:
@@ -3972,12 +3901,21 @@ def _run_one_benchmark_agent_task(
         *,
         background_processes: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        if evaluator_submission.exists():
-            shutil.rmtree(evaluator_submission)
-        if solver_submission.exists():
-            shutil.copytree(solver_submission, evaluator_submission)
+        if evaluation_protocol == "grounded_correct_v2":
+            _materialize_v2_evaluator_submission(
+                task_id=task_id,
+                run_id=run_id,
+                solver_submission=solver_submission,
+                task_run_dir=task_run_dir,
+                evaluator_submission=evaluator_submission,
+            )
         else:
-            ensure_directory(evaluator_submission)
+            if evaluator_submission.exists():
+                shutil.rmtree(evaluator_submission)
+            if solver_submission.exists():
+                shutil.copytree(solver_submission, evaluator_submission)
+            else:
+                ensure_directory(evaluator_submission)
 
         records = _read_harness_jsonl_records(harness_jsonl)
         if records:
@@ -4012,9 +3950,10 @@ def _run_one_benchmark_agent_task(
             runner_wrapper_path,
             mdclaw_runtime=mdclaw_runtime,
             source_root=runner_source_path,
+            work_root=solver_work_dir,
         )
-    runner_execution = (
-        _execute_v2_confirmatory_request(
+    runner_episode = (
+        _execute_v2_confirmatory_plan(
             task_id=task_id,
             run_id=run_id,
             private_dir=private_dir,
@@ -4038,21 +3977,21 @@ def _run_one_benchmark_agent_task(
     if evaluation_protocol == "grounded_correct_v2":
         finalization["harness_status"] = "failed"
         finalization["failure_class"] = "confirmatory_analysis_pending"
-        if runner_execution is not None and runner_execution.get("success") is True:
+        if runner_episode is not None and runner_episode.get("success") is True:
             finalization.setdefault("warnings", []).append(
                 "Runner-certified confirmatory MD is ready; resume the agent "
-                "once to analyze it and finalize the evidence report."
+                "once to analyze it and write claim.json."
             )
         else:
             finalization.setdefault("warnings", []).append(
-                "The confirmatory request is missing or failed preflight; "
-                "resume the agent to correct it before runner execution."
+                "The confirmatory plan is missing or failed preflight; resume "
+                "the agent to correct it before runner execution."
             )
         _write_json(task_run_dir / "finalization.json", finalization)
     retry_limit = max(0, int(finalization_retries or 0))
     if evaluation_protocol == "grounded_correct_v2":
-        # One continuation analyzes a successful initial request. Two are
-        # needed when the first continuation must repair the request before
+        # One continuation analyzes a successful initial plan. Two are needed
+        # when the first continuation must repair the plan before
         # the runner can execute it.
         retry_limit = max(2, retry_limit)
     retry_count = 0
@@ -4086,6 +4025,7 @@ def _run_one_benchmark_agent_task(
                 agent_prompt_path,
                 task_run_dir / "finalization.json",
                 primary_score,
+                evaluation_protocol=evaluation_protocol,
                 resume_incomplete_work=resume_incomplete_work,
             ),
         )
@@ -4118,10 +4058,10 @@ def _run_one_benchmark_agent_task(
         runner_retryable = bool(
             evaluation_protocol == "grounded_correct_v2"
             and (
-                runner_execution is None
+                runner_episode is None
                 or (
-                    runner_execution.get("success") is not True
-                    and not runner_execution.get("events")
+                    runner_episode.get("success") is not True
+                    and not runner_episode.get("events")
                 )
             )
         )
@@ -4130,8 +4070,9 @@ def _run_one_benchmark_agent_task(
                 runner_wrapper_path,
                 mdclaw_runtime=mdclaw_runtime,
                 source_root=runner_source_path,
+                work_root=solver_work_dir,
             )
-            retried_execution = _execute_v2_confirmatory_request(
+            retried_episode = _execute_v2_confirmatory_plan(
                 task_id=task_id,
                 run_id=run_id,
                 private_dir=private_dir,
@@ -4146,21 +4087,21 @@ def _run_one_benchmark_agent_task(
                 task_started_wall=task_started_wall,
                 timeout_seconds=timeout_seconds,
             )
-            if retried_execution is not None:
-                runner_execution = retried_execution
+            if retried_episode is not None:
+                runner_episode = retried_episode
             finalization["harness_status"] = "failed"
             finalization["failure_class"] = "confirmatory_analysis_pending"
             if (
-                runner_execution is not None
-                and runner_execution.get("success") is True
+                runner_episode is not None
+                and runner_episode.get("success") is True
             ):
                 finalization.setdefault("warnings", []).append(
                     "Runner-certified confirmatory MD is ready; resume the "
-                    "agent to analyze it and finalize the evidence report."
+                    "agent to analyze it and write claim.json."
                 )
             else:
                 finalization.setdefault("warnings", []).append(
-                    "The confirmatory request is still missing or invalid; "
+                    "The confirmatory plan is still missing or invalid; "
                     "correct it before runner execution."
                 )
             _write_json(task_run_dir / "finalization.json", finalization)
@@ -4209,7 +4150,7 @@ def _run_one_benchmark_agent_task(
         "finalization": finalization,
         "agent_attempts": agent_records,
         "records": [*records, *agent_records],
-        "study_execution": runner_execution,
+        "study_episode": runner_episode,
     }
     _write_json(harness_record_path, harness_payload)
     _write_json(
@@ -4561,14 +4502,7 @@ def _autorun_run_judges(
             continue
         if not _submission_has_judge_inputs(task_file, submission_dir):
             continue
-        grounded = _task_evaluation_protocol(dataset, task_id) in {
-            "grounded_correct_v1",
-            "grounded_correct_v2",
-        }
-        # Legacy files remain reusable. Grounded decisions are instead
-        # regenerated so they are always bound to the current truth-blind
-        # evidence bundle hash.
-        if out.is_file() and not grounded:
+        if out.is_file():
             continue
         try:
             judge.run_llm_judge(
@@ -4936,10 +4870,6 @@ def _synthetic_failed_score(
     if primary in scores:
         scores[primary] = 0.0
     evaluation_protocol = task_contract.get("evaluation_protocol")
-    grounded = evaluation_protocol in {
-        "grounded_correct_v1",
-        "grounded_correct_v2",
-    }
     if evaluation_protocol == "grounded_correct_v2":
         study_verdict = {
             "enabled": True,
@@ -4954,16 +4884,7 @@ def _synthetic_failed_score(
             "diagnostics": {},
         }
     else:
-        study_verdict = {
-            "enabled": grounded,
-            "evaluation_complete": False,
-            "valid_md": False,
-            "evidence_verified": False,
-            "reasoning_grounded": False,
-            "truth_correct": False,
-            "grounded_correct": False,
-            "decision_reasons": [message] if grounded else [],
-        }
+        study_verdict = None
     return {
         "schema_version": "1.0",
         "run_id": run_id,

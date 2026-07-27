@@ -1,39 +1,22 @@
-"""Standalone public-preflight tests for the MDStudyBench v2 contract."""
+"""Standalone preflight tests for the runner-finalized v2 envelope."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from mdclaw.benchmark import cli
 
 
-md = pytest.importorskip("mdtraj")
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STUDY_DATASET_DIR = REPO_ROOT / "benchmarks" / "mdstudybench"
 TASK_ID = "S01_pressure_hydration_t4l_l99a"
-ESTIMAND = (
-    "The 200 MPa minus 0.1 MPa difference in equilibrium mean internal-cavity "
-    "water occupancy while T4 lysozyme C54T/C97A/L99A remains folded."
-)
-T4L_L99A_SEQUENCE = (
-    "MNIFEMLRIDEGLRLKIYKDTEGYYTIGIGHLLTKSPSLNAAKSELDKAIGRNTNGVITKDEAE"
-    "KLFNQDVDAAVRGILRNAKLKPVYDSLDAVRRAAAINMVFQMGETGVAGFTNSLRMLQQKRWDEA"
-    "AVNLAKSRWYNQTPNRAKRVITTFRTGTWDAYKNL"
-)
-ONE_TO_THREE = {
-    "A": "ALA", "C": "CYS", "D": "ASP", "E": "GLU", "F": "PHE",
-    "G": "GLY", "H": "HIS", "I": "ILE", "K": "LYS", "L": "LEU",
-    "M": "MET", "N": "ASN", "P": "PRO", "Q": "GLN", "R": "ARG",
-    "S": "SER", "T": "THR", "V": "VAL", "W": "TRP", "Y": "TYR",
-}
 
 
 @pytest.fixture(scope="module")
@@ -52,282 +35,115 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
-def _write_run_artifacts(root: Path, system_id: str) -> tuple[str, str]:
-    from mdtraj.core import element
-
-    topology = md.Topology()
-    chain = topology.add_chain()
-    ca_indices: list[int] = []
-    cavity_cb_index: int | None = None
-    for residue_number, one_letter in enumerate(T4L_L99A_SEQUENCE, start=1):
-        residue = topology.add_residue(
-            ONE_TO_THREE[one_letter],
-            chain,
-            resSeq=residue_number,
-        )
-        ca_indices.append(
-            int(topology.add_atom("CA", element.carbon, residue).index)
-        )
-        if residue_number == 99:
-            cavity_cb_index = int(
-                topology.add_atom("CB", element.carbon, residue).index
-            )
-    assert cavity_cb_index is not None
-    water = topology.add_residue("HOH", chain, resSeq=1000)
-    topology.add_atom("O", element.oxygen, water)
-    frame_count = 30
-    coordinates = np.zeros(
-        (frame_count, topology.n_atoms, 3), dtype=np.float32
-    )
-    parameter = np.linspace(0.0, 8.0 * np.pi, len(T4L_L99A_SEQUENCE))
-    base = np.column_stack(
-        (
-            1.2 * np.cos(parameter),
-            1.2 * np.sin(parameter),
-            np.linspace(-1.0, 1.0, len(T4L_L99A_SEQUENCE)),
-        )
-    ).astype(np.float32)
-    for frame in range(frame_count):
-        coordinates[frame, ca_indices, :] = base
-        coordinates[frame, ca_indices[10], 2] += 0.005 * np.sin(frame / 3.0)
-    cavity_center = base[98] + np.array(
-        (0.05, 0.0, 0.0), dtype=np.float32
-    )
-    coordinates[:, cavity_cb_index, :] = cavity_center
-    near = cavity_center + np.array((0.0, 0.0, 0.2), dtype=np.float32)
-    far = np.array((1.5, 1.5, 1.5), dtype=np.float32)
-    occupancy = np.zeros(frame_count, dtype=bool)
-    if system_id == "ambient":
-        occupancy[[0, 7, 8, 15, 16, 23, 24]] = True
-    else:
-        occupancy[:] = True
-        occupancy[[7, 8, 15, 16, 23, 24]] = False
-    coordinates[:, -1, :] = far
-    coordinates[occupancy, -1, :] = near
-    trajectory = md.Trajectory(
-        coordinates,
-        topology,
-        unitcell_lengths=np.full((frame_count, 3), 4.0, dtype=np.float32),
-        unitcell_angles=np.full((frame_count, 3), 90.0, dtype=np.float32),
-    )
-
-    system_dir = root / "systems" / system_id
-    system_dir.mkdir(parents=True, exist_ok=True)
-    topology_path = system_dir / "topology.pdb"
-    trajectory_path = system_dir / "confirmatory.dcd"
-    trajectory[0].save_pdb(str(topology_path))
-    trajectory.save_dcd(str(trajectory_path))
-    return (
-        topology_path.relative_to(root).as_posix(),
-        trajectory_path.relative_to(root).as_posix(),
-    )
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _build_submission(root: Path) -> dict[str, dict]:
-    reference_topology, reference_trajectory = _write_run_artifacts(
-        root,
-        "ambient",
-    )
-    variant_topology, variant_trajectory = _write_run_artifacts(
-        root,
-        "high-pressure",
-    )
-    intent = {
+def _build_finalized_submission(root: Path) -> dict[str, dict]:
+    plan = {
         "schema_version": "1.0",
         "task_id": TASK_ID,
-        "intent_id": "intent-1",
-        "target_estimand": ESTIMAND,
-        "primary_analyses": [
+        "runs": [
             {
-                "analysis_id": "hydration-primary",
-                "analysis_role": "estimand",
-                "comparison_id": "pressure-effect",
-                "verifier_id": "region_water_occupancy@1",
-                "observable": {
-                    "parameters": {
-                        "region_selection": "resid 98 and name CB",
-                        "radius_nm": 0.45,
-                        "cavity_anchor_reference_position": 99,
-                        "cavity_reference_positions": [99],
-                        "cavity_atom_names": ["CB"],
-                        "initialization_convergence_tolerance": 0.5,
-                        "discard_initial_fraction": 0.2,
-                        "n_blocks": 5,
-                        "periodic": True,
-                        "minimum_confirmatory_time_ns_per_condition": 10.0,
-                        "minimum_effective_sample_size_per_condition": 5.0,
-                        "minimum_round_trips_per_condition": 2,
-                    }
-                },
-                "outcome_mapping": {
-                    "increase": "increased_hydration",
-                    "decrease": "decreased_hydration",
-                    "equivalent": "no_material_change",
-                    "unresolved": "unresolved",
-                },
-                "decision_rule": {
-                    "kind": "equivalence_ci",
-                    "confidence_level": 0.95,
-                    "equivalence_margin": 0.1,
-                    "unit": "water_count",
-                },
-                "estimand_link": "Direct pressure contrast in cavity occupancy.",
-                "alternative_explanations": ["global unfolding"],
+                "run_id": "ambient-1",
+                "condition_role": "reference",
+                "job_dir": "jobs/ambient",
+                "node_id": "prod_001",
+                "simulation_time_ns": 10.0,
             },
             {
-                "analysis_id": "folded-control",
-                "analysis_role": "validity_control",
-                "comparison_id": "pressure-effect",
-                "verifier_id": "folded_state_retention@1",
-                "observable": {
-                    "parameters": {
-                        "selection": "protein and name CA",
-                        "alignment_selection": "protein and name CA",
-                        "measurement_selection": "protein and name CA",
-                        "maximum_rmsd_nm": 0.3,
-                        "maximum_initial_rg_nm": 2.5,
-                        "minimum_retained_fraction": 0.9,
-                        "discard_initial_fraction": 0.2,
-                        "n_blocks": 5,
-                    }
-                },
-                "outcome_mapping": {
-                    "pass": "retained",
-                    "fail": "unresolved",
-                },
-                "decision_rule": {
-                    "kind": "custom",
-                    "confidence_level": 0.95,
-                    "parameters": {"plugin": "folded_state_retention@1"},
-                },
-                "estimand_link": "Validity control for the folded-state estimand.",
-                "alternative_explanations": ["global unfolding"],
-            }
+                "run_id": "pressure-1",
+                "condition_role": "variant",
+                "job_dir": "jobs/pressure",
+                "node_id": "prod_001",
+                "simulation_time_ns": 10.0,
+            },
         ],
     }
-    study_index = {
-        "schema_version": "2.0",
+    claim = {
+        "schema_version": "1.0",
         "task_id": TASK_ID,
-        "systems": [
-            {
-                "system_id": "ambient",
-                "source": {"type": "agent_selected", "id": "ambient-source"},
-                "conditions": {
-                    "temperature_k": 300.0,
-                    "ph": 7.0,
-                    "pressure_mpa": 0.1,
-                },
-                "runs": [
-                    {
-                        "run_id": "ambient-confirmatory-1",
-                        "phase": "confirmatory",
-                        "intent_id": "intent-1",
-                        "production_event_id": "prod-ambient-1",
-                        "topology": reference_topology,
-                        "trajectory": reference_trajectory,
-                    }
-                ],
-            },
-            {
-                "system_id": "high-pressure",
-                "source": {"type": "agent_selected", "id": "pressure-source"},
-                "conditions": {
-                    "temperature_k": 300.0,
-                    "ph": 7.0,
-                    "pressure_mpa": 200.0,
-                },
-                "runs": [
-                    {
-                        "run_id": "pressure-confirmatory-1",
-                        "phase": "confirmatory",
-                        "intent_id": "intent-1",
-                        "production_event_id": "prod-pressure-1",
-                        "topology": variant_topology,
-                        "trajectory": variant_trajectory,
-                    }
-                ],
-            },
-        ],
-        "comparisons": [
-            {
-                "comparison_id": "pressure-effect",
-                "reference_system_ids": ["ambient"],
-                "variant_system_ids": ["high-pressure"],
-                "matched_except": ["pressure_mpa"],
-            }
-        ],
+        "status": "resolved",
+        "outcome": "increased_hydration",
     }
-    evidence_report = {
-        "schema_version": "2.0",
-        "task_id": TASK_ID,
-        "prior_expectation": {
-            "outcome": None,
-            "confidence": None,
-            "rationale": "No prior used for the MD conclusion.",
-            "sources": [],
-        },
-        "md_verdict": {
-            "status": "resolved",
-            "outcome": "increased_hydration",
-            "basis": "direct_estimator",
-            "confidence": 0.8,
-            "cited_evidence_ids": [
-                "hydration-primary-result",
-                "folded-control-result",
-            ],
-            "unresolved_reasons": [],
-        },
-        "evidence": [
+    _write_json(root / "confirmatory_plan.json", plan)
+    _write_json(root / "claim.json", claim)
+
+    plan_hash = _sha256(root / "confirmatory_plan.json")
+    input_names = ("base_system", "topology", "start_state")
+    output_names = (
+        "trajectory",
+        "state",
+        "energy",
+        "runtime_system",
+        "integrator",
+    )
+    events = []
+    for sequence, run in enumerate(plan["runs"], start=1):
+        records: dict[str, dict[str, dict]] = {}
+        for group, names in (
+            ("input_artifacts", input_names),
+            ("output_artifacts", output_names),
+        ):
+            direction = "input" if group == "input_artifacts" else "output"
+            records[group] = {}
+            for name in names:
+                relative = (
+                    Path("artifacts")
+                    / f"{sequence:03d}"
+                    / direction
+                    / f"{name}.dat"
+                )
+                artifact = root / "episode" / relative
+                artifact.parent.mkdir(parents=True, exist_ok=True)
+                artifact.write_bytes(
+                    f"runner-{sequence}-{direction}-{name}".encode()
+                )
+                records[group][name] = {
+                    "path": relative.as_posix(),
+                    "sha256": _sha256(artifact),
+                    "bytes": artifact.stat().st_size,
+                }
+        events.append(
             {
-                "id": "hydration-primary-result",
-                "intent_id": "intent-1",
-                "analysis_id": "hydration-primary",
-                "comparison_id": "pressure-effect",
-                "verifier_id": "region_water_occupancy@1",
-                "claim_role": "direct_estimator",
-                "estimand_link": "Direct pressure contrast in cavity occupancy.",
-                "reported": {"estimate": 1.0, "unit": "water_count"},
-                "uncertainty": 0.2,
-                "artifacts": ["analysis/hydration.json"],
-            },
-            {
-                "id": "folded-control-result",
-                "intent_id": "intent-1",
-                "analysis_id": "folded-control",
-                "comparison_id": "pressure-effect",
-                "verifier_id": "folded_state_retention@1",
-                "claim_role": "validity_control",
-                "estimand_link": "Checks that both conditions remain folded.",
-                "reported": {"folded_state_retained": True},
-                "uncertainty": 0.0,
-                "artifacts": ["analysis/folded-control.json"],
+                "run_id": run["run_id"],
+                "condition_role": run["condition_role"],
+                "node_id": run["node_id"],
+                "event_id": f"runner-prod-{sequence:03d}",
+                "plan_sha256": plan_hash,
+                **records,
             }
-        ],
-        "reasoning": "The preregistered contrast supports increased hydration.",
-        "limitations": ["The official harness must attest run ordering."],
+        )
+    episode = {
+        "schema_version": "1.0",
+        "kind": "mdstudybench_runner_episode_v2",
+        "recorded_by": "mdclaw_benchmark_runner",
+        "task_id": TASK_ID,
+        "plan_sha256": plan_hash,
+        "within_task_budget": True,
+        "success": True,
+        "errors": [],
+        "events": events,
     }
     manifest = {
         "schema_version": "1.0",
-        "generated_by": {"tool": "test-agent"},
+        "generated_by": {"tool": "mdclaw_benchmark_runner"},
         "task_id": TASK_ID,
         "status": "completed",
         "outputs": {
-            "analysis_intent": "analysis_intent.json",
-            "study_index": "study_index.json",
-            "evidence_report": "evidence_report.json",
+            "confirmatory_plan": "confirmatory_plan.json",
+            "claim": "claim.json",
+            "episode": "episode/episode.json",
         },
     }
-    payloads = {
+    _write_json(root / "episode" / "episode.json", episode)
+    _write_json(root / "manifest.json", manifest)
+    return {
+        "plan": plan,
+        "claim": claim,
+        "episode": episode,
         "manifest": manifest,
-        "analysis_intent": intent,
-        "study_index": study_index,
-        "evidence_report": evidence_report,
     }
-    for name, payload in payloads.items():
-        _write_json(root / f"{name}.json", payload)
-    _write_json(root / "analysis" / "hydration.json", {"fixture": True})
-    _write_json(root / "analysis" / "folded-control.json", {"fixture": True})
-    return payloads
 
 
 def _run_preflight(
@@ -372,23 +188,21 @@ def _v2_checks(result: dict) -> dict:
     return manifest_check["v2_truth_blind_checks"]
 
 
-def test_exported_preflight_uses_public_private_parity_sources_and_defers_harness(
+def test_exported_preflight_validates_runner_finalized_envelope(
     tmp_path: Path,
     public_package: Path,
 ):
     submission = tmp_path / "submission"
     submission.mkdir()
-    _build_submission(submission)
+    _build_finalized_submission(submission)
 
-    for name in (
+    for internal_tool in (
         "study_evidence_v2.py",
         "study_identity_v2.py",
         "preregistration_v2.py",
         "study_execution_v2.py",
     ):
-        assert (public_package / "tools" / name).read_bytes() == (
-            REPO_ROOT / "mdclaw" / "benchmark" / name
-        ).read_bytes()
+        assert not (public_package / "tools" / internal_tool).exists()
 
     completed, result = _run_preflight(
         public_package=public_package,
@@ -397,27 +211,20 @@ def test_exported_preflight_uses_public_private_parity_sources_and_defers_harnes
 
     assert completed.returncode == 0, completed.stderr
     assert result["success"] is True
-    v2 = _v2_checks(result)
-    assert v2["passed"] is True
-    assert v2["harness_checks_pending"] is True
-    assert v2["entity_condition"]["entity_condition_valid"] is True
-    preregistration = v2["preregistration"]
-    assert preregistration["authored_contract_valid"] is True
-    assert preregistration["harness_checks_pending"] is True
-    assert preregistration["execution_attested"] is False
-    assert preregistration["preregistration_valid"] is False
-    assert preregistration["support_eligible_evidence_ids"] == []
+    assert _v2_checks(result) == {"passed": True, "errors": []}
 
 
-def test_public_preflight_rejects_wrong_pressure_condition(
+def test_agent_plan_stage_is_not_a_final_public_preflight_package(
     tmp_path: Path,
     public_package: Path,
 ):
     submission = tmp_path / "submission"
     submission.mkdir()
-    payloads = _build_submission(submission)
-    payloads["study_index"]["systems"][1]["conditions"]["pressure_mpa"] = 120.0
-    _write_json(submission / "study_index.json", payloads["study_index"])
+    payloads = _build_finalized_submission(submission)
+    (submission / "claim.json").unlink()
+    (submission / "manifest.json").unlink()
+    (submission / "episode" / "episode.json").unlink()
+    assert payloads["plan"]["runs"]
 
     completed, result = _run_preflight(
         public_package=public_package,
@@ -426,22 +233,18 @@ def test_public_preflight_rejects_wrong_pressure_condition(
 
     assert completed.returncode == 1
     assert result["success"] is False
-    v2 = _v2_checks(result)
-    assert v2["entity_condition"]["entity_condition_valid"] is False
-    assert any("pressure_mpa" in error for error in v2["errors"])
+    assert any("claim.json" in error for error in result["errors"])
 
 
-def test_public_preflight_rejects_unsafe_topology_linkage(
+def test_public_preflight_rejects_agent_authored_manifest(
     tmp_path: Path,
     public_package: Path,
 ):
     submission = tmp_path / "submission"
     submission.mkdir()
-    payloads = _build_submission(submission)
-    payloads["study_index"]["systems"][1]["runs"][0]["topology"] = (
-        "../outside.pdb"
-    )
-    _write_json(submission / "study_index.json", payloads["study_index"])
+    payloads = _build_finalized_submission(submission)
+    payloads["manifest"]["generated_by"]["tool"] = "test-agent"
+    _write_json(submission / "manifest.json", payloads["manifest"])
 
     completed, result = _run_preflight(
         public_package=public_package,
@@ -449,25 +252,135 @@ def test_public_preflight_rejects_unsafe_topology_linkage(
     )
 
     assert completed.returncode == 1
-    assert result["success"] is False
-    v2 = _v2_checks(result)
-    assert v2["entity_condition"]["entity_condition_valid"] is False
-    assert any("missing or unsafe" in error for error in v2["errors"])
+    assert "v2 manifest must be generated" in " ".join(_v2_checks(result)["errors"])
 
 
-def test_public_preflight_rejects_surface_region_far_from_l99a_anchor(
+def test_public_preflight_rejects_plan_hash_mismatch(
     tmp_path: Path,
     public_package: Path,
 ):
     submission = tmp_path / "submission"
     submission.mkdir()
-    payloads = _build_submission(submission)
-    payloads["analysis_intent"]["primary_analyses"][0]["observable"][
-        "parameters"
-    ]["region_selection"] = "resid 10"
+    payloads = _build_finalized_submission(submission)
+    payloads["plan"]["runs"][0]["simulation_time_ns"] = 11.0
+    _write_json(submission / "confirmatory_plan.json", payloads["plan"])
+
+    completed, result = _run_preflight(
+        public_package=public_package,
+        submission_dir=submission,
+    )
+
+    assert completed.returncode == 1
+    assert "confirmatory plan hash differs" in " ".join(
+        _v2_checks(result)["errors"]
+    )
+
+
+def test_public_preflight_rejects_unknown_claim_outcome(
+    tmp_path: Path,
+    public_package: Path,
+):
+    submission = tmp_path / "submission"
+    submission.mkdir()
+    payloads = _build_finalized_submission(submission)
+    payloads["claim"]["outcome"] = "literature_guess"
+    _write_json(submission / "claim.json", payloads["claim"])
+
+    completed, result = _run_preflight(
+        public_package=public_package,
+        submission_dir=submission,
+    )
+
+    assert completed.returncode == 1
+    assert "claim.outcome must be one of" in " ".join(
+        _v2_checks(result)["errors"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_error"),
+    [
+        ("plan_extra", "confirmatory_plan has unexpected field"),
+        ("run_extra", "confirmatory_plan.runs[0] has unexpected field"),
+        ("plan_schema", "confirmatory_plan.schema_version"),
+        ("run_id_type", "run_id must be a non-empty string"),
+        ("job_dir_type", "job_dir must be a non-empty string"),
+        ("duration_type", "simulation_time_ns must be finite and positive"),
+        ("claim_extra", "claim has unexpected field"),
+        ("claim_schema", "claim.schema_version"),
+        ("claim_outcome_missing", "claim is missing required field"),
+        ("claim_reasoning", "claim has unexpected field"),
+        ("claim_limitations", "claim has unexpected field"),
+    ],
+)
+def test_public_preflight_rejects_v2_schema_and_strict_type_mismatches(
+    tmp_path: Path,
+    public_package: Path,
+    case: str,
+    expected_error: str,
+):
+    submission = tmp_path / "submission"
+    submission.mkdir()
+    payloads = _build_finalized_submission(submission)
+
+    if case == "plan_extra":
+        payloads["plan"]["unexpected"] = True
+    elif case == "run_extra":
+        payloads["plan"]["runs"][0]["unexpected"] = True
+    elif case == "plan_schema":
+        payloads["plan"]["schema_version"] = "2.0"
+    elif case == "run_id_type":
+        payloads["plan"]["runs"][0]["run_id"] = 1
+    elif case == "job_dir_type":
+        payloads["plan"]["runs"][0]["job_dir"] = 1
+    elif case == "duration_type":
+        payloads["plan"]["runs"][0]["simulation_time_ns"] = "10"
+    elif case == "claim_extra":
+        payloads["claim"]["unexpected"] = True
+    elif case == "claim_schema":
+        payloads["claim"]["schema_version"] = "2.0"
+    elif case == "claim_outcome_missing":
+        payloads["claim"].pop("outcome")
+    elif case == "claim_reasoning":
+        payloads["claim"]["reasoning"] = "unscored prose"
+    elif case == "claim_limitations":
+        payloads["claim"]["limitations"] = ["unscored prose"]
+    else:  # pragma: no cover - parametrization is exhaustive.
+        raise AssertionError(case)
+
+    target = "claim.json" if case.startswith("claim") else (
+        "confirmatory_plan.json"
+    )
+    payload = payloads["claim"] if target == "claim.json" else payloads["plan"]
+    _write_json(submission / target, payload)
+
+    completed, result = _run_preflight(
+        public_package=public_package,
+        submission_dir=submission,
+    )
+
+    assert completed.returncode == 1
+    assert expected_error in " ".join(_v2_checks(result)["errors"])
+
+
+def test_public_preflight_accepts_shared_schema_defaults(
+    tmp_path: Path,
+    public_package: Path,
+):
+    submission = tmp_path / "submission"
+    submission.mkdir()
+    payloads = _build_finalized_submission(submission)
+    payloads["plan"].pop("schema_version")
+    payloads["claim"].pop("schema_version")
+    _write_json(submission / "confirmatory_plan.json", payloads["plan"])
+    _write_json(submission / "claim.json", payloads["claim"])
+    plan_hash = _sha256(submission / "confirmatory_plan.json")
+    payloads["episode"]["plan_sha256"] = plan_hash
+    for event in payloads["episode"]["events"]:
+        event["plan_sha256"] = plan_hash
     _write_json(
-        submission / "analysis_intent.json",
-        payloads["analysis_intent"],
+        submission / "episode" / "episode.json",
+        payloads["episode"],
     )
 
     completed, result = _run_preflight(
@@ -475,33 +388,89 @@ def test_public_preflight_rejects_surface_region_far_from_l99a_anchor(
         submission_dir=submission,
     )
 
+    assert completed.returncode == 0, result["errors"]
+    assert _v2_checks(result) == {"passed": True, "errors": []}
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_error"),
+    [
+        ("manifest_extra", "manifest.outputs must exactly declare"),
+        ("manifest_path", "manifest.outputs must exactly declare"),
+        ("episode_success", "episode.success must be true"),
+        ("episode_budget", "episode.within_task_budget must be true"),
+        ("episode_errors", "episode.errors must be an empty list"),
+        ("input_missing", "input_artifacts must contain exactly"),
+        ("output_extra", "output_artifacts must contain exactly"),
+        ("record_fields", "must contain exactly path, sha256, and bytes"),
+        ("bad_sha", "artifact SHA-256 is invalid"),
+        ("bad_bytes_type", "artifact bytes is invalid"),
+        ("bad_bytes_value", "artifact size mismatch"),
+    ],
+)
+def test_public_preflight_rejects_runner_envelope_mismatches(
+    tmp_path: Path,
+    public_package: Path,
+    case: str,
+    expected_error: str,
+):
+    submission = tmp_path / "submission"
+    submission.mkdir()
+    payloads = _build_finalized_submission(submission)
+    manifest = payloads["manifest"]
+    episode = payloads["episode"]
+    event = episode["events"][0]
+    trajectory = event["output_artifacts"]["trajectory"]
+
+    if case == "manifest_extra":
+        manifest["outputs"]["extra"] = "extra.json"
+        _write_json(submission / "extra.json", {"extra": True})
+    elif case == "manifest_path":
+        manifest["outputs"]["claim"] = "other-claim.json"
+        _write_json(submission / "other-claim.json", payloads["claim"])
+    elif case == "episode_success":
+        episode["success"] = False
+    elif case == "episode_budget":
+        episode["within_task_budget"] = False
+    elif case == "episode_errors":
+        episode["errors"] = ["adapter failed"]
+    elif case == "input_missing":
+        event["input_artifacts"].pop("start_state")
+    elif case == "output_extra":
+        event["output_artifacts"]["unexpected"] = dict(trajectory)
+    elif case == "record_fields":
+        trajectory["unexpected"] = True
+    elif case == "bad_sha":
+        trajectory["sha256"] = "not-a-digest"
+    elif case == "bad_bytes_type":
+        trajectory["bytes"] = "25"
+    elif case == "bad_bytes_value":
+        trajectory["bytes"] += 1
+    else:  # pragma: no cover - parametrization is exhaustive.
+        raise AssertionError(case)
+
+    _write_json(submission / "manifest.json", manifest)
+    _write_json(submission / "episode" / "episode.json", episode)
+
+    completed, result = _run_preflight(
+        public_package=public_package,
+        submission_dir=submission,
+    )
+
     assert completed.returncode == 1
-    v2 = _v2_checks(result)
-    hydration = next(
-        item
-        for item in v2["verified_evidence"]["evidence"]
-        if item["verifier_id"] == "region_water_occupancy@1"
-    )
-    assert (
-        "region_selection_missing_required_cavity_anchor"
-        in hydration["reason_codes"]
-    )
+    assert expected_error in " ".join(_v2_checks(result)["errors"])
 
 
-def test_public_preflight_rejects_relaxed_folded_state_control(
+def test_public_preflight_rejects_unsafe_episode_artifact_path(
     tmp_path: Path,
     public_package: Path,
 ):
     submission = tmp_path / "submission"
     submission.mkdir()
-    payloads = _build_submission(submission)
-    payloads["analysis_intent"]["primary_analyses"][1]["observable"][
-        "parameters"
-    ]["maximum_rmsd_nm"] = 0.5
-    _write_json(
-        submission / "analysis_intent.json",
-        payloads["analysis_intent"],
-    )
+    payloads = _build_finalized_submission(submission)
+    event = payloads["episode"]["events"][0]
+    event["output_artifacts"]["trajectory"]["path"] = "../outside.json"
+    _write_json(submission / "episode" / "episode.json", payloads["episode"])
 
     completed, result = _run_preflight(
         public_package=public_package,
@@ -509,94 +478,11 @@ def test_public_preflight_rejects_relaxed_folded_state_control(
     )
 
     assert completed.returncode == 1
-    preregistration = _v2_checks(result)["preregistration"]
-    assert "task_observable_parameter_mismatch" in {
-        item["code"] for item in preregistration["authored_errors"]
-    }
+    assert "episode artifact path" in " ".join(_v2_checks(result)["errors"])
 
 
-def test_public_preflight_rejects_by_role_folded_selection_override(
-    tmp_path: Path,
+def test_exported_preflight_hashes_artifacts_without_reading_whole_files(
     public_package: Path,
 ):
-    submission = tmp_path / "submission"
-    submission.mkdir()
-    payloads = _build_submission(submission)
-    payloads["analysis_intent"]["primary_analyses"][1]["observable"][
-        "parameters"
-    ]["measurement_selection_by_role"] = {
-        "reference": "protein and name CA",
-        "variant": "resid 0 to 130 and name CA",
-    }
-    _write_json(
-        submission / "analysis_intent.json",
-        payloads["analysis_intent"],
-    )
-
-    completed, result = _run_preflight(
-        public_package=public_package,
-        submission_dir=submission,
-    )
-
-    assert completed.returncode == 1
-    preregistration = _v2_checks(result)["preregistration"]
-    assert "task_observable_parameters_unexpected" in {
-        item["code"] for item in preregistration["authored_errors"]
-    }
-
-
-def test_public_preflight_rejects_malformed_evidence_analysis_linkage(
-    tmp_path: Path,
-    public_package: Path,
-):
-    submission = tmp_path / "submission"
-    submission.mkdir()
-    payloads = _build_submission(submission)
-    payloads["evidence_report"]["evidence"][0]["comparison_id"] = (
-        "not-the-preregistered-comparison"
-    )
-    _write_json(submission / "evidence_report.json", payloads["evidence_report"])
-
-    completed, result = _run_preflight(
-        public_package=public_package,
-        submission_dir=submission,
-    )
-
-    assert completed.returncode == 1
-    assert result["success"] is False
-    v2 = _v2_checks(result)
-    preregistration = v2["preregistration"]
-    assert preregistration["authored_contract_valid"] is False
-    assert "analysis_comparison_mismatch" in preregistration["reason_codes"]
-
-
-def test_public_preflight_exposes_failed_fold_control_for_scoring(
-    tmp_path: Path,
-    public_package: Path,
-):
-    submission = tmp_path / "submission"
-    submission.mkdir()
-    payloads = _build_submission(submission)
-    run = payloads["study_index"]["systems"][1]["runs"][0]
-    topology = submission / run["topology"]
-    trajectory_path = submission / run["trajectory"]
-    trajectory = md.load_dcd(str(trajectory_path), top=str(topology))
-    protein_ca = trajectory.topology.select("protein and name CA")
-    trajectory.xyz[1:, protein_ca[: len(protein_ca) // 3], 0] += 2.0
-    trajectory.save_dcd(str(trajectory_path), force_overwrite=True)
-
-    completed, result = _run_preflight(
-        public_package=public_package,
-        submission_dir=submission,
-    )
-
-    assert completed.returncode == 1
-    assert result["success"] is False
-    v2 = _v2_checks(result)
-    control = next(
-        item
-        for item in v2["verified_evidence"]["evidence"]
-        if item["verifier_id"] == "folded_state_retention@1"
-    )
-    assert control["raw_recomputed"]["folded_state_retained"] is False
-    assert control["support_eligible"] is False
+    tool = public_package / "tools" / "validate_submission.py"
+    assert ".read_bytes()" not in tool.read_text()

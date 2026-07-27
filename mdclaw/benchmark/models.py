@@ -15,7 +15,14 @@ from __future__ import annotations
 import math
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+)
 
 from mdclaw.benchmark.datasets import DEFAULT_BENCHMARK_VERSION
 
@@ -131,7 +138,7 @@ TaskCategory = Literal[
 
 ExecutionMode = Literal["lite", "dry_run", "plan_only"]
 JudgeMode = Literal["deterministic", "llm_judge"]
-EvaluationProtocol = Literal["grounded_correct_v1", "grounded_correct_v2"]
+EvaluationProtocol = Literal["grounded_correct_v2"]
 
 # How much MDClaw tooling the *solver* used. The shared MDClaw scorer judges
 # every entrant regardless of condition; this only describes the solve side.
@@ -185,7 +192,6 @@ DeterministicCheckType = Literal[
     "metrics_caption_consistency",
     "direction_grounding",
     "observable_recompute_consistency",
-    "v2_entity_condition_comparison",
 ]
 
 # Capability axis a deterministic check contributes to. The scorer groups
@@ -239,7 +245,6 @@ DEFAULT_CHECK_CAPABILITY: dict[str, str] = {
     "metrics_caption_consistency": "provenance",
     "direction_grounding": "fidelity",
     "observable_recompute_consistency": "fidelity",
-    "v2_entity_condition_comparison": "fidelity",
     "minimized_structure_required": "physical_validity",
 }
 
@@ -558,13 +563,6 @@ class DeterministicCheck(BaseModel):
     )
     reference_changed_residue_element_counts: Optional[dict[str, int]] = None
     variant_changed_residue_element_counts: Optional[dict[str, int]] = None
-
-    # v2_entity_condition_comparison: resolve a generalized StudyIndexV2
-    # comparison and require matched conditions except for the named
-    # perturbation dimensions.
-    comparison_id: Optional[str] = None
-    matched_except: Optional[list[str]] = None
-
 
 class GroundTruthCheck(BaseModel):
     """Compares an agent-submitted scalar against a curator-held truth file.
@@ -923,13 +921,10 @@ class Task(BaseModel):
     environment_type: Optional[str] = None
     requires_tools: list[str] = Field(default_factory=list)
     evaluation_target: Optional[str] = None
-    # Optional so v0.2 task files keep their existing flat-output and weighted
-    # scoring contracts.  ``grounded_correct_v1`` opts a Study task into the
-    # role-based paired-study submission contract.
+    # Optional so generic tasks keep their existing weighted scoring contract.
     evaluation_protocol: Optional[EvaluationProtocol] = None
-    # v2 makes the public estimand explicit without prescribing a canonical
-    # structure or analysis plan. It remains optional so all v1 task files keep
-    # validating unchanged.
+    # The study protocol makes the public estimand explicit without prescribing
+    # a canonical structure or analysis plan.
     scientific_target: Optional[ScientificTarget] = None
     public_source: Optional[str] = None
     scoring: TaskScoring = Field(default_factory=TaskScoring)
@@ -959,459 +954,94 @@ class Task(BaseModel):
 # Submission contract (manifest.json shape)
 
 
-class PairedStudySource(BaseModel):
-    """Agent-selected structural source for one side of a paired study."""
-
-    model_config = ConfigDict(extra="allow")
-
-    type: str
-    id: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class PairedStudyReplica(BaseModel):
-    """One independently declared MD run.
-
-    A run may use one trajectory file or a sequence of trajectory segments.
-    Cross-field validation (at least one of the two) is performed by the
-    submission validator so this model remains usable with Pydantic v1 and v2.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    replica_id: str
-    topology: str
-    trajectory: Optional[str] = None
-    trajectory_segments: list[str] = Field(default_factory=list)
-
-
-class PairedStudySystem(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    role: Literal["reference", "variant"]
-    source: PairedStudySource
-    replicas: list[PairedStudyReplica]
-
-
-class PairedStudyIndex(BaseModel):
-    """Role-based index of every raw run submitted for a two-system study."""
-
-    model_config = ConfigDict(extra="allow")
-
-    schema_version: SchemaVersion = "1.0"
-    task_id: str
-    conditions: dict[str, Any] = Field(default_factory=dict)
-    systems: list[PairedStudySystem]
-
-
-class StudyEvidenceConclusion(BaseModel):
-    model_config = ConfigDict(extra="allow", allow_inf_nan=False)
-
-    direction: str = Field(min_length=1)
-    evidence_status: Literal["supported", "inconclusive", "contradicted"]
-    confidence: float = Field(ge=0.0, le=1.0)
-
-
-class StudyEvidenceItem(BaseModel):
-    """One agent-selected observable connecting raw runs to its conclusion."""
-
-    model_config = ConfigDict(extra="allow", allow_inf_nan=False)
-
-    id: Optional[str] = None
-    metric: str = Field(min_length=1)
-    selection: str = Field(min_length=1)
-    reference: float
-    variant: float
-    uncertainty: float | dict[str, float]
-    unit: Optional[str] = None
-    selection_b: Optional[str] = None
-    contact_cutoff_nm: Optional[float] = Field(default=None, gt=0.0)
-
-
-class StudyEvidenceReport(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    schema_version: SchemaVersion = "1.0"
-    task_id: str
-    conclusion: StudyEvidenceConclusion
-    evidence: list[StudyEvidenceItem]
-    reasoning: str = Field(min_length=1)
-    limitations: list[str]
-
-
-AnalysisIntentSchemaVersion = Literal["1.0"]
-GroundedV2SchemaVersion = Literal["2.0"]
-StudyRunPhaseV2 = Literal["exploratory", "confirmatory"]
-EvidenceClaimRoleV2 = Literal[
-    "direct_estimator",
-    "validated_proxy",
-    "mechanistic_only",
-    "validity_control",
-]
-AnalysisRoleV2 = Literal["estimand", "validity_control"]
-MDVerdictStatusV2 = Literal["resolved", "unresolved"]
-MDVerdictBasisV2 = Literal[
-    "direct_estimator",
-    "validated_proxy",
-    "mechanistic_only",
-    "insufficient",
-]
-
-
-class PrimaryAnalysis(_GroundedV2Model):
-    """One preregistered, agent-selected analysis and estimand mapping."""
-
-    model_config = ConfigDict(extra="allow")
-
-    analysis_id: str = Field(min_length=1)
-    analysis_role: AnalysisRoleV2 = "estimand"
-    comparison_id: str = Field(min_length=1)
-    observable: dict[str, Any]
-    outcome_mapping: dict[str, str]
-    decision_rule: AnalysisDecisionRule
-    estimand_link: str = Field(min_length=1)
-    alternative_explanations: list[str] = Field(default_factory=list)
-    verifier_id: Optional[str] = None
-
-    def _validate_grounded_v2_semantics(self) -> None:
-        if not self.analysis_id.strip():
-            raise ValueError("analysis_id must be non-empty")
-        if not self.comparison_id.strip():
-            raise ValueError("comparison_id must be non-empty")
-        if not self.observable:
-            raise ValueError("observable must not be empty")
-        if not self.outcome_mapping or any(
-            not str(key).strip() or not str(value).strip()
-            for key, value in self.outcome_mapping.items()
-        ):
-            raise ValueError(
-                "outcome_mapping must contain non-empty keys and outcomes"
-            )
-        if not self.estimand_link.strip():
-            raise ValueError("estimand_link must be non-empty")
-        if self.verifier_id is not None and not self.verifier_id.strip():
-            raise ValueError("verifier_id must be non-empty when provided")
-        _require_nonempty_unique(
-            self.alternative_explanations,
-            "primary_analysis.alternative_explanations",
-        )
-
-
-class AnalysisIntent(_GroundedV2Model):
-    """Agent-authored analysis intent, hashed by the harness before confirmation."""
+class ConfirmatoryRunPlanV2(_GroundedV2Model):
+    """One pending production node requested for runner execution."""
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: AnalysisIntentSchemaVersion = "1.0"
-    task_id: str = Field(min_length=1)
-    intent_id: str = Field(min_length=1)
-    target_estimand: str = Field(min_length=1)
-    primary_analyses: list[PrimaryAnalysis]
-    supersedes_intent_id: Optional[str] = None
-
-    def _validate_grounded_v2_semantics(self) -> None:
-        for name, value in (
-            ("task_id", self.task_id),
-            ("intent_id", self.intent_id),
-            ("target_estimand", self.target_estimand),
-        ):
-            if not value.strip():
-                raise ValueError(f"analysis_intent.{name} must be non-empty")
-        if not self.primary_analyses:
-            raise ValueError("analysis_intent requires at least one primary analysis")
-        _require_nonempty_unique(
-            [analysis.analysis_id for analysis in self.primary_analyses],
-            "analysis_intent.primary_analyses analysis_id values",
-        )
-        if (
-            self.supersedes_intent_id is not None
-            and not self.supersedes_intent_id.strip()
-        ):
-            raise ValueError("supersedes_intent_id must be non-empty when provided")
-        if self.supersedes_intent_id == self.intent_id:
-            raise ValueError("an analysis intent cannot supersede itself")
-
-
-class StudySourceV2(BaseModel):
-    """Agent-selected source declaration for one v2 study system."""
-
-    model_config = ConfigDict(extra="allow")
-
-    type: str = Field(min_length=1)
-    id: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class StudyRunV2(_GroundedV2Model):
-    """One exploratory or confirmatory run with harness-owned lineage."""
-
-    model_config = ConfigDict(extra="allow")
-
-    run_id: str = Field(min_length=1)
-    phase: StudyRunPhaseV2
-    topology: str = Field(min_length=1)
-    trajectory: Optional[str] = None
-    trajectory_segments: list[str] = Field(default_factory=list)
-    production_event_id: str = Field(min_length=1)
-    intent_id: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    run_id: StrictStr = Field(min_length=1)
+    condition_role: Literal["reference", "variant"]
+    job_dir: StrictStr = Field(min_length=1)
+    node_id: StrictStr = Field(min_length=1)
+    simulation_time_ns: StrictFloat | StrictInt
 
     def _validate_grounded_v2_semantics(self) -> None:
         for name, value in (
             ("run_id", self.run_id),
-            ("topology", self.topology),
-            ("production_event_id", self.production_event_id),
+            ("job_dir", self.job_dir),
+            ("node_id", self.node_id),
         ):
             if not value.strip():
-                raise ValueError(f"study_run.{name} must be non-empty")
-        has_trajectory = bool(self.trajectory and self.trajectory.strip())
-        has_segments = bool(self.trajectory_segments)
-        if has_trajectory == has_segments:
-            raise ValueError(
-                "study runs require exactly one of trajectory or "
-                "trajectory_segments"
-            )
-        _require_nonempty_unique(
-            self.trajectory_segments,
-            "study_run.trajectory_segments",
-        )
-        if self.phase == "confirmatory" and not (
-            self.intent_id and self.intent_id.strip()
+                raise ValueError(f"confirmatory run {name} must be non-empty")
+        if (
+            not math.isfinite(float(self.simulation_time_ns))
+            or self.simulation_time_ns <= 0
         ):
-            raise ValueError("confirmatory runs require intent_id")
-        if self.intent_id is not None and not self.intent_id.strip():
-            raise ValueError("intent_id must be non-empty when provided")
+            raise ValueError(
+                "confirmatory run simulation_time_ns must be finite and positive"
+            )
 
 
-class StudySystemV2(_GroundedV2Model):
-    """A structural/physical system participating in one or more comparisons."""
+class ConfirmatoryPlanV2(_GroundedV2Model):
+    """The complete agent-authored input frozen before confirmatory MD."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
-    system_id: str = Field(min_length=1)
-    source: StudySourceV2
-    runs: list[StudyRunV2]
-    conditions: dict[str, Any] = Field(default_factory=dict)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    schema_version: SchemaVersion = "1.0"
+    task_id: StrictStr = Field(min_length=1)
+    runs: list[ConfirmatoryRunPlanV2]
 
     def _validate_grounded_v2_semantics(self) -> None:
-        if not self.system_id.strip():
-            raise ValueError("system_id must be non-empty")
-        if not self.source.type.strip():
-            raise ValueError("study system source.type must be non-empty")
+        if not self.task_id.strip():
+            raise ValueError("confirmatory_plan.task_id must be non-empty")
         if not self.runs:
-            raise ValueError("study systems require at least one run")
+            raise ValueError("confirmatory_plan requires at least one run")
         _require_nonempty_unique(
             [run.run_id for run in self.runs],
-            f"study system {self.system_id!r} run_id values",
+            "confirmatory_plan run_id values",
         )
-
-
-class StudyComparisonV2(_GroundedV2Model):
-    """A declared contrast over arbitrary sets of study systems."""
-
-    model_config = ConfigDict(extra="allow")
-
-    comparison_id: str = Field(min_length=1)
-    reference_system_ids: list[str]
-    variant_system_ids: list[str]
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-    def _validate_grounded_v2_semantics(self) -> None:
-        if not self.comparison_id.strip():
-            raise ValueError("comparison_id must be non-empty")
-        _require_nonempty_unique(
-            self.reference_system_ids,
-            "study_comparison.reference_system_ids",
-        )
-        if not self.reference_system_ids or not self.variant_system_ids:
-            raise ValueError("study comparisons require both system-ID sides")
-        _require_nonempty_unique(
-            self.variant_system_ids,
-            "study_comparison.variant_system_ids",
-        )
-        overlap = set(self.reference_system_ids) & set(self.variant_system_ids)
-        if overlap:
-            raise ValueError(
-                "reference_system_ids and variant_system_ids must be disjoint: "
-                f"{sorted(overlap)}"
-            )
-
-
-class StudyIndexV2(_GroundedV2Model):
-    """Generalized systems-and-comparisons index for open-planning studies."""
-
-    model_config = ConfigDict(extra="allow")
-
-    schema_version: GroundedV2SchemaVersion = "2.0"
-    task_id: str = Field(min_length=1)
-    conditions: dict[str, Any]
-    systems: list[StudySystemV2]
-    comparisons: list[StudyComparisonV2]
-
-    def _validate_grounded_v2_semantics(self) -> None:
-        if not self.task_id.strip():
-            raise ValueError("study_index.task_id must be non-empty")
-        if len(self.systems) < 2:
-            raise ValueError("study_index requires at least two systems")
-        if not self.comparisons:
-            raise ValueError("study_index requires at least one comparison")
-        system_ids = [system.system_id for system in self.systems]
-        _require_nonempty_unique(system_ids, "study_index.system_id values")
-        comparison_ids = [
-            comparison.comparison_id for comparison in self.comparisons
+        requested_nodes = [
+            f"{run.job_dir}\0{run.node_id}"
+            for run in self.runs
         ]
         _require_nonempty_unique(
-            comparison_ids,
-            "study_index.comparison_id values",
+            requested_nodes,
+            "confirmatory_plan job_dir/node_id pairs",
         )
-        run_ids = [run.run_id for system in self.systems for run in system.runs]
-        _require_nonempty_unique(run_ids, "study_index global run_id values")
-        known_systems = set(system_ids)
-        for comparison in self.comparisons:
-            referenced = set(comparison.reference_system_ids) | set(
-                comparison.variant_system_ids
-            )
-            unknown = referenced - known_systems
-            if unknown:
-                raise ValueError(
-                    f"comparison {comparison.comparison_id!r} references unknown "
-                    f"system IDs: {sorted(unknown)}"
-                )
-
-
-class PriorExpectationV2(_GroundedV2Model):
-    """Structured open-book expectation, excluded from the grounding judge."""
-
-    model_config = ConfigDict(extra="allow", allow_inf_nan=False)
-
-    outcome: Optional[str] = None
-    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    sources: list[str | dict[str, Any]] = Field(default_factory=list)
-    rationale: str = ""
-
-    def _validate_grounded_v2_semantics(self) -> None:
-        if self.outcome is None:
-            if self.confidence is not None:
-                raise ValueError(
-                    "prior confidence requires a declared prior outcome"
-                )
-            return
-        if not self.outcome.strip():
-            raise ValueError("prior outcome must be non-empty when provided")
-
-
-class MDVerdictV2(_GroundedV2Model):
-    """The MD-only verdict; unresolved is distinct from a neutral direction."""
-
-    model_config = ConfigDict(extra="allow", allow_inf_nan=False)
-
-    status: MDVerdictStatusV2
-    outcome: Optional[str] = None
-    basis: MDVerdictBasisV2
-    confidence: float = Field(ge=0.0, le=1.0)
-    cited_evidence_ids: list[str] = Field(default_factory=list)
-    unresolved_reasons: list[str] = Field(default_factory=list)
-
-    def _validate_grounded_v2_semantics(self) -> None:
-        _require_nonempty_unique(
-            self.cited_evidence_ids,
-            "md_verdict.cited_evidence_ids",
-        )
-        _require_nonempty_unique(
-            self.unresolved_reasons,
-            "md_verdict.unresolved_reasons",
-        )
-        resolved_bases = {"direct_estimator", "validated_proxy"}
-        unresolved_bases = {"mechanistic_only", "insufficient"}
-        if self.status == "resolved":
-            if not self.outcome or not self.outcome.strip():
-                raise ValueError("resolved MD verdicts require outcome")
-            if self.basis not in resolved_bases:
-                raise ValueError(
-                    "resolved MD verdicts require direct_estimator or "
-                    "validated_proxy basis"
-                )
-            if not self.cited_evidence_ids:
-                raise ValueError(
-                    "resolved MD verdicts require at least one cited evidence ID"
-                )
-            if self.unresolved_reasons:
-                raise ValueError(
-                    "resolved MD verdicts cannot declare unresolved_reasons"
-                )
-            return
-        if self.outcome is not None:
-            raise ValueError("unresolved MD verdicts require outcome=null")
-        if self.basis not in unresolved_bases:
+        roles = {run.condition_role for run in self.runs}
+        if roles != {"reference", "variant"}:
             raise ValueError(
-                "unresolved MD verdicts require mechanistic_only or "
-                "insufficient basis"
-            )
-        if not self.unresolved_reasons:
-            raise ValueError(
-                "unresolved MD verdicts require at least one unresolved reason"
+                "confirmatory_plan requires reference and variant runs"
             )
 
 
-class StudyEvidenceItemV2(BaseModel):
-    """One evidence claim linked to a preregistered analysis and comparison."""
+class ClaimV2(_GroundedV2Model):
+    """The only agent-authored output after runner-certified MD."""
 
-    model_config = ConfigDict(extra="allow", allow_inf_nan=False)
+    model_config = ConfigDict(extra="forbid")
 
-    id: str = Field(min_length=1)
-    intent_id: str = Field(min_length=1)
-    analysis_id: str = Field(min_length=1)
-    comparison_id: str = Field(min_length=1)
-    verifier_id: str = Field(min_length=1)
-    claim_role: EvidenceClaimRoleV2
-    estimand_link: str = Field(min_length=1)
-    reported: dict[str, Any] = Field(default_factory=dict)
-    uncertainty: Optional[float | dict[str, float]] = None
-    artifacts: list[str] = Field(default_factory=list)
-
-
-class EvidenceReportV2(_GroundedV2Model):
-    """Open-book prior plus an independently judged MD-only verdict."""
-
-    model_config = ConfigDict(extra="allow")
-
-    schema_version: GroundedV2SchemaVersion = "2.0"
-    task_id: str = Field(min_length=1)
-    prior_expectation: PriorExpectationV2
-    md_verdict: MDVerdictV2
-    evidence: list[StudyEvidenceItemV2]
-    reasoning: str = Field(min_length=1)
-    limitations: list[str]
+    schema_version: SchemaVersion = "1.0"
+    task_id: StrictStr = Field(min_length=1)
+    status: Literal["resolved", "unresolved"]
+    outcome: Optional[StrictStr] = Field(...)
 
     def _validate_grounded_v2_semantics(self) -> None:
         if not self.task_id.strip():
-            raise ValueError("evidence_report.task_id must be non-empty")
-        if not self.evidence:
-            raise ValueError("evidence_report requires at least one evidence item")
-        evidence_ids = [item.id for item in self.evidence]
-        _require_nonempty_unique(evidence_ids, "evidence_report evidence IDs")
-        cited = set(self.md_verdict.cited_evidence_ids)
-        unknown = cited - set(evidence_ids)
-        if unknown:
-            raise ValueError(
-                "md_verdict cites unknown evidence IDs: " f"{sorted(unknown)}"
-            )
-        if not self.reasoning.strip():
-            raise ValueError("evidence_report.reasoning must be non-empty")
-        _require_nonempty_unique(
-            self.limitations,
-            "evidence_report.limitations",
-        )
-        if not self.limitations:
-            raise ValueError("evidence_report requires at least one limitation")
+            raise ValueError("claim.task_id must be non-empty")
+        if self.status == "resolved":
+            if self.outcome is None or not self.outcome.strip():
+                raise ValueError("resolved claim requires a non-empty outcome")
+        elif self.outcome is not None:
+            raise ValueError("unresolved claim requires outcome=null")
 
 
 class SubmissionOutputs(BaseModel):
     metrics: Optional[str] = "metrics.json"
     provenance: Optional[str] = "provenance.json"
     evidence_report: Optional[str] = "evidence_report.json"
-    analysis_intent: Optional[str] = None
+    confirmatory_plan: Optional[str] = None
+    claim: Optional[str] = None
+    episode: Optional[str] = None
     decision_log: Optional[str] = None
     methods: Optional[str] = None
     figures: list[str] = Field(default_factory=list)
@@ -1422,9 +1052,6 @@ class SubmissionOutputs(BaseModel):
     minimized_structure: Optional[str] = None
     minimization_report: Optional[str] = None
     source_selection: Optional[str] = None
-    # v0.3 paired Study tasks point to a role-based index rather than relying
-    # on positional alignment between flat topology/trajectory lists.
-    study_index: Optional[str] = None
 
 
 class SubmissionError(BaseModel):
@@ -1467,48 +1094,12 @@ class LLMJudgeResult(BaseModel):
     raw_response_file: Optional[str] = None
     scores: dict[str, float] = Field(default_factory=dict)
     violations: list[dict] = Field(default_factory=list)
-    support_verdict: Optional[
-        Literal["supported", "inconclusive", "contradicted"]
-    ] = None
-    logical_grounding_supported: Optional[bool] = None
-    abstention_justified: Optional[bool] = None
-    abstention_reason_codes: list[str] = Field(default_factory=list)
-    cited_evidence_ids: list[str] = Field(default_factory=list)
-    evidence_packet_hash: Optional[str] = None
-    rationale: dict[str, str] = Field(default_factory=dict)
 
 
 class RuntimeRecord(BaseModel):
     walltime_minutes: float = 0.0
     tokens: int = 0
     gpu_hours: float = 0.0
-
-
-class StudyVerdict(BaseModel):
-    """Conjunctive outcome for the grounded-correct Study protocol."""
-
-    enabled: bool = False
-    evaluation_complete: bool = False
-    valid_md: bool = False
-    evidence_verified: bool = False
-    evidence_status: Optional[
-        Literal["supported", "inconclusive", "contradicted"]
-    ] = None
-    reasoning_grounded: bool = False
-    truth_correct: bool = False
-    grounded_correct: bool = False
-    decision_reasons: list[str] = Field(default_factory=list)
-    evidence_packet_hash: Optional[str] = None
-
-
-StudyResultClassV2 = Literal[
-    "not_evaluated",
-    "grounded_correct",
-    "grounded_wrong",
-    "unsupported_claim",
-    "unresolved",
-    "invalid_execution",
-]
 
 
 class StudyVerdictV2(_GroundedV2Model):
@@ -1523,23 +1114,22 @@ class StudyVerdictV2(_GroundedV2Model):
     truth_available: bool = False
     truth_agreement: Optional[bool] = None
     grounded_correct: bool = False
-    result_class: StudyResultClassV2 = "not_evaluated"
+    result_class: Literal[
+        "not_evaluated",
+        "grounded_correct",
+        "grounded_wrong",
+        "unsupported_claim",
+        "unresolved",
+        "invalid_execution",
+    ] = "not_evaluated"
     decision_reason_codes: list[str] = Field(default_factory=list)
-    evidence_packet_hash: Optional[str] = None
-    analysis_intent_hash: Optional[str] = None
+    plan_hash: Optional[str] = None
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
     def _validate_grounded_v2_semantics(self) -> None:
         if not self.truth_available and self.truth_agreement is not None:
             raise ValueError(
                 "truth_agreement must be null when held-out truth is unavailable"
-            )
-        if self.truth_agreement is not None and (
-            not self.valid_execution or not self.claim_supported
-        ):
-            raise ValueError(
-                "truth_agreement is evaluated only after valid_execution and "
-                "claim_supported pass"
             )
         if self.grounded_correct and (
             not self.valid_execution
@@ -1591,9 +1181,7 @@ class Score(BaseModel):
     deterministic_checks: list[CheckResult] = Field(default_factory=list)
     ground_truth_checks: list[CheckResult] = Field(default_factory=list)
     llm_judge: LLMJudgeResult = Field(default_factory=LLMJudgeResult)
-    study_verdict: StudyVerdictV2 | StudyVerdict = Field(
-        default_factory=StudyVerdict
-    )
+    study_verdict: Optional[StudyVerdictV2] = None
     runtime: RuntimeRecord = Field(default_factory=RuntimeRecord)
     integrity_warnings: list[str] = Field(default_factory=list)
     errors: list[dict] = Field(default_factory=list)

@@ -1,10 +1,9 @@
-"""Runner-owned OpenMM execution certificates for MDStudyBench v2.
+"""Runner-owned OpenMM event inspection for MDStudyBench v2.
 
 The generic stage wrapper is useful provenance, but it cannot prove that a
 trajectory came from MD: the evaluated agent can invoke any command and can
-write its own JSON.  This module defines the narrower S01 pilot boundary.
-Only the benchmark runner may execute a frozen confirmatory MDClaw production
-request and attach the resulting ledger to ``harness_execution.json``.
+write its own JSON. Only the benchmark runner uses this module to inspect a
+completed confirmatory MDClaw production node and capture its artifacts.
 
 No held-out scientific answer is accepted anywhere in this module.
 """
@@ -20,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 
-RUNNER_EXECUTION_KIND = "mdstudybench_runner_execution_v2"
+RUNNER_EPISODE_KIND = "mdstudybench_runner_episode_v2"
 MDCLAW_OPENMM_ADAPTER = "mdclaw_openmm@1"
 
 
@@ -32,336 +31,6 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
-def sha256_directory(path: str | Path) -> str:
-    root = Path(path)
-    if not root.is_dir():
-        return ""
-    digest = hashlib.sha256()
-    for item in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
-        digest.update(item.relative_to(root).as_posix().encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(item.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
-
-
-def verify_runner_execution_v2(
-    *,
-    submission_dir: str | Path,
-    scientific_target: dict[str, Any],
-    study_index: dict[str, Any],
-    analysis_intent_file: str | Path,
-    harness_record: Any,
-) -> dict[str, Any]:
-    """Verify a scorer-side ledger against the submitted study artifacts."""
-
-    root = Path(submission_dir).resolve()
-    errors: list[dict[str, str]] = []
-    ledger = (
-        harness_record.get("study_execution")
-        if isinstance(harness_record, dict)
-        else None
-    )
-    if not isinstance(ledger, dict):
-        return _execution_certificate(
-            ledger=None,
-            errors=[
-                {
-                    "code": "runner_execution_ledger_missing",
-                    "message": (
-                        "official v2 scoring requires a runner-owned "
-                        "confirmatory execution ledger"
-                    ),
-                }
-            ],
-        )
-
-    if ledger.get("kind") != RUNNER_EXECUTION_KIND:
-        _issue(
-            errors,
-            "runner_execution_kind_invalid",
-            "study_execution.kind is not the released runner ledger kind",
-        )
-    if ledger.get("task_id") != study_index.get("task_id"):
-        _issue(
-            errors,
-            "runner_execution_task_mismatch",
-            "runner ledger task_id does not match study_index.task_id",
-        )
-    if isinstance(harness_record, dict) and (
-        ledger.get("run_id") != harness_record.get("run_id")
-    ):
-        _issue(
-            errors,
-            "runner_execution_run_mismatch",
-            "runner ledger run_id does not match its harness record",
-        )
-    expected_adapter = scientific_target.get("execution_adapter")
-    if (
-        not isinstance(expected_adapter, str)
-        or ledger.get("adapter_id") != expected_adapter
-    ):
-        _issue(
-            errors,
-            "execution_adapter_mismatch",
-            "runner ledger adapter does not match the public task contract",
-        )
-    if ledger.get("recorded_by") != "mdclaw_benchmark_runner":
-        _issue(
-            errors,
-            "runner_custody_missing",
-            "execution ledger is not marked as benchmark-runner owned",
-        )
-    launcher = ledger.get("adapter_launcher")
-    if not isinstance(launcher, dict):
-        _issue(
-            errors,
-            "runner_adapter_launcher_missing",
-            "runner ledger lacks the private adapter launcher digest",
-        )
-    else:
-        launcher_path = launcher.get("path")
-        launcher_sha256 = launcher.get("sha256")
-        if (
-            not isinstance(launcher_path, str)
-            or not Path(launcher_path).is_absolute()
-            or not Path(launcher_path).is_file()
-            or not isinstance(launcher_sha256, str)
-            or sha256_file(launcher_path) != launcher_sha256
-        ):
-            _issue(
-                errors,
-                "runner_adapter_launcher_hash_mismatch",
-                "private runner adapter launcher is missing or changed",
-            )
-    adapter_source = ledger.get("adapter_source")
-    if not isinstance(adapter_source, dict):
-        _issue(
-            errors,
-            "runner_adapter_source_missing",
-            "runner ledger lacks the frozen adapter-source digest",
-        )
-    else:
-        source_path = adapter_source.get("path")
-        source_sha256 = adapter_source.get("sha256")
-        expected_source_sha256 = adapter_source.get("expected_sha256")
-        if (
-            not isinstance(source_path, str)
-            or not Path(source_path).is_absolute()
-            or not Path(source_path).is_dir()
-            or not isinstance(source_sha256, str)
-            or not source_sha256
-            or source_sha256 != expected_source_sha256
-            or sha256_directory(source_path) != source_sha256
-        ):
-            _issue(
-                errors,
-                "runner_adapter_source_hash_mismatch",
-                "runner adapter source snapshot is missing or changed",
-            )
-    if ledger.get("within_task_budget") is not True:
-        _issue(
-            errors,
-            "task_budget_not_attested",
-            "runner did not attest that confirmatory execution stayed in budget",
-        )
-    if ledger.get("success") is not True:
-        _issue(
-            errors,
-            "runner_execution_unsuccessful",
-            "runner ledger does not attest successful confirmatory execution",
-        )
-    ledger_failures = ledger.get("errors")
-    if not isinstance(ledger_failures, list):
-        _issue(
-            errors,
-            "runner_execution_errors_invalid",
-            "runner ledger errors must be a list",
-        )
-    elif ledger_failures:
-        _issue(
-            errors,
-            "runner_execution_errors_present",
-            "runner ledger records confirmatory execution errors",
-        )
-
-    intent_path = _safe_file(root, analysis_intent_file)
-    submitted_intent_hash = (
-        sha256_file(intent_path) if intent_path is not None else None
-    )
-    frozen = ledger.get("frozen_intent")
-    if not isinstance(frozen, dict):
-        _issue(errors, "frozen_intent_missing", "runner ledger lacks frozen_intent")
-        frozen = {}
-    if (
-        submitted_intent_hash is None
-        or frozen.get("sha256") != submitted_intent_hash
-    ):
-        _issue(
-            errors,
-            "frozen_intent_hash_mismatch",
-            "submitted analysis_intent.json differs from the runner-frozen bytes",
-        )
-    if not isinstance(frozen.get("frozen_at"), str):
-        _issue(
-            errors,
-            "frozen_intent_time_missing",
-            "runner ledger lacks a freeze timestamp",
-        )
-
-    events = ledger.get("events")
-    if not isinstance(events, list):
-        events = []
-        _issue(
-            errors,
-            "runner_execution_events_missing",
-            "runner ledger requires confirmatory execution events",
-        )
-    event_by_run: dict[str, list[dict[str, Any]]] = {}
-    for event in events:
-        if not isinstance(event, dict):
-            _issue(
-                errors,
-                "runner_execution_event_invalid",
-                "runner execution events must be objects",
-            )
-            continue
-        run_id = event.get("run_id")
-        if not isinstance(run_id, str) or not run_id:
-            _issue(
-                errors,
-                "runner_execution_run_id_missing",
-                "every runner execution event requires run_id",
-            )
-            continue
-        event_by_run.setdefault(run_id, []).append(event)
-
-    roles = _confirmatory_runs_with_roles(study_index, errors)
-    attested_runs: list[dict[str, Any]] = []
-    base_system_hashes: set[str] = set()
-    topology_hashes: set[str] = set()
-    for run_id, run in roles.items():
-        matches = event_by_run.get(run_id, [])
-        if len(matches) != 1:
-            _issue(
-                errors,
-                "runner_execution_event_not_unique",
-                f"confirmatory run {run_id!r} requires exactly one runner event",
-            )
-            continue
-        event = matches[0]
-        run_errors: list[str] = []
-        if event.get("valid") is not True:
-            run_errors.append("runner_node_inspection_failed")
-        if event.get("adapter_id") != expected_adapter:
-            run_errors.append("runner_event_adapter_mismatch")
-        if event.get("adapter_exit_code") != 0:
-            run_errors.append("confirmatory_adapter_nonzero_exit")
-        if event.get("adapter_timed_out") is not False:
-            run_errors.append("confirmatory_adapter_timeout")
-        if event.get("production_event_id") != run.get("production_event_id"):
-            run_errors.append("production_event_id_mismatch")
-        if event.get("condition_role") != run.get("condition_role"):
-            run_errors.append("condition_role_mismatch")
-        if event.get("intent_sha256") != submitted_intent_hash:
-            run_errors.append("execution_intent_hash_mismatch")
-        if not _event_started_after_freeze(event, frozen):
-            run_errors.append("confirmatory_started_before_freeze")
-
-        submitted_topology = _safe_file(root, run.get("topology"))
-        submitted_trajectories = [
-            path
-            for relative in _run_trajectory_paths(run)
-            if (path := _safe_file(root, relative)) is not None
-        ]
-        inputs = event.get("input_artifacts")
-        outputs = event.get("output_artifacts")
-        if not isinstance(inputs, dict):
-            inputs = {}
-        if not isinstance(outputs, dict):
-            outputs = {}
-        if (
-            submitted_topology is None
-            or inputs.get("topology", {}).get("sha256")
-            != sha256_file(submitted_topology)
-        ):
-            run_errors.append("submitted_topology_hash_mismatch")
-        topology_hash = inputs.get("topology", {}).get("sha256")
-        if isinstance(topology_hash, str) and topology_hash:
-            topology_hashes.add(topology_hash)
-        ledger_trajectory = outputs.get("trajectory")
-        if (
-            len(submitted_trajectories) != 1
-            or not isinstance(ledger_trajectory, dict)
-            or ledger_trajectory.get("sha256")
-            != sha256_file(submitted_trajectories[0])
-        ):
-            run_errors.append("submitted_trajectory_hash_mismatch")
-        base_hash = inputs.get("base_system", {}).get("sha256")
-        if isinstance(base_hash, str) and base_hash:
-            base_system_hashes.add(base_hash)
-        else:
-            run_errors.append("base_system_hash_missing")
-
-        if run_errors:
-            for code in run_errors:
-                _issue(
-                    errors,
-                    code,
-                    f"confirmatory run {run_id!r} failed: {code}",
-                )
-        attested_runs.append(
-            {
-                "run_id": run_id,
-                "production_event_id": run.get("production_event_id"),
-                "condition_role": run.get("condition_role"),
-                "attested": not run_errors,
-                "reason_codes": run_errors,
-                "runtime": (
-                    event.get("runtime")
-                    if isinstance(event.get("runtime"), dict)
-                    else {}
-                ),
-            }
-        )
-
-    extra_run_ids = sorted(set(event_by_run) - set(roles))
-    if extra_run_ids:
-        _issue(
-            errors,
-            "undeclared_runner_execution_event",
-            f"runner ledger contains undeclared run IDs {extra_run_ids}",
-        )
-    if len(base_system_hashes) > 1:
-        _issue(
-            errors,
-            "paired_chemistry_mismatch",
-            "paired pressure conditions must use the same base system.xml bytes",
-        )
-    if len(topology_hashes) > 1:
-        _issue(
-            errors,
-            "paired_topology_mismatch",
-            "paired pressure conditions must use the same topology.pdb bytes",
-        )
-    observed_roles = {
-        run.get("condition_role") for run in roles.values()
-    }
-    if observed_roles != {"reference", "variant"}:
-        _issue(
-            errors,
-            "paired_condition_roles_missing",
-            "confirmatory study requires both reference and variant pressure runs",
-        )
-
-    return _execution_certificate(
-        ledger=ledger,
-        errors=errors,
-        attested_runs=attested_runs,
-        submitted_intent_hash=submitted_intent_hash,
-    )
-
-
 def inspect_mdclaw_production_node_v2(
     *,
     job_dir: str | Path,
@@ -370,7 +39,7 @@ def inspect_mdclaw_production_node_v2(
     production_event_id: str,
     condition_role: str,
     scientific_target: dict[str, Any],
-    intent_sha256: str,
+    plan_sha256: str,
     started_at: str,
     completed_at: str,
     walltime_seconds: float,
@@ -387,7 +56,7 @@ def inspect_mdclaw_production_node_v2(
             run_id=run_id,
             production_event_id=production_event_id,
             condition_role=condition_role,
-            intent_sha256=intent_sha256,
+            plan_sha256=plan_sha256,
             started_at=started_at,
             completed_at=completed_at,
             walltime_seconds=walltime_seconds,
@@ -468,7 +137,7 @@ def inspect_mdclaw_production_node_v2(
         run_id=run_id,
         production_event_id=production_event_id,
         condition_role=condition_role,
-        intent_sha256=intent_sha256,
+        plan_sha256=plan_sha256,
         started_at=started_at,
         completed_at=completed_at,
         walltime_seconds=walltime_seconds,
@@ -1152,101 +821,12 @@ def _inspect_final_state(
     }, errors
 
 
-def _confirmatory_runs_with_roles(
-    study_index: dict[str, Any],
-    errors: list[dict[str, str]],
-) -> dict[str, dict[str, Any]]:
-    systems = study_index.get("systems")
-    comparisons = study_index.get("comparisons")
-    if not isinstance(systems, list) or not isinstance(comparisons, list):
-        _issue(
-            errors,
-            "study_index_structure_invalid",
-            "study_index systems/comparisons are required for execution attestation",
-        )
-        return {}
-    system_roles: dict[str, str] = {}
-    for comparison in comparisons:
-        if not isinstance(comparison, dict):
-            continue
-        for key, role in (
-            ("reference_system_ids", "reference"),
-            ("variant_system_ids", "variant"),
-        ):
-            for system_id in comparison.get(key) or []:
-                if isinstance(system_id, str):
-                    previous = system_roles.get(system_id)
-                    if previous is not None and previous != role:
-                        _issue(
-                            errors,
-                            "system_condition_role_ambiguous",
-                            f"system {system_id!r} has conflicting comparison roles",
-                        )
-                    system_roles[system_id] = role
-    output: dict[str, dict[str, Any]] = {}
-    for system in systems:
-        if not isinstance(system, dict):
-            continue
-        system_id = system.get("system_id")
-        role = system_roles.get(str(system_id))
-        for run in system.get("runs") or []:
-            if not isinstance(run, dict) or run.get("phase") != "confirmatory":
-                continue
-            run_id = run.get("run_id")
-            if not isinstance(run_id, str) or not run_id:
-                continue
-            output[run_id] = {
-                **run,
-                "system_id": system_id,
-                "condition_role": role,
-            }
-    return output
-
-
-def _execution_certificate(
-    *,
-    ledger: dict[str, Any] | None,
-    errors: list[dict[str, str]],
-    attested_runs: list[dict[str, Any]] | None = None,
-    submitted_intent_hash: str | None = None,
-) -> dict[str, Any]:
-    execution_attested = bool(ledger is not None and not errors)
-    return {
-        "schema_version": "1.0",
-        "kind": "mdstudybench_runner_execution_certificate_v2",
-        "truth_blind": True,
-        "adapter_id": (
-            ledger.get("adapter_id") if isinstance(ledger, dict) else None
-        ),
-        "runner_custody": bool(
-            isinstance(ledger, dict)
-            and ledger.get("recorded_by") == "mdclaw_benchmark_runner"
-        ),
-        "execution_attested": execution_attested,
-        "attestation_scope": {
-            "production_runtime_matches_frozen_base_system": (
-                execution_attested
-            ),
-            "base_system_construction_attested": False,
-            "runtime_environment_attested": False,
-        },
-        "diagnostic_reason_codes": [
-            "base_system_construction_unattested",
-            "runtime_environment_unattested",
-        ],
-        "analysis_intent_sha256": submitted_intent_hash,
-        "attested_runs": attested_runs or [],
-        "reason_codes": list(dict.fromkeys(item["code"] for item in errors)),
-        "errors": errors,
-    }
-
-
 def _node_event(
     *,
     run_id: str,
     production_event_id: str,
     condition_role: str,
-    intent_sha256: str,
+    plan_sha256: str,
     started_at: str,
     completed_at: str,
     walltime_seconds: float,
@@ -1263,7 +843,7 @@ def _node_event(
         "production_event_id": production_event_id,
         "condition_role": condition_role,
         "adapter_id": MDCLAW_OPENMM_ADAPTER,
-        "intent_sha256": intent_sha256,
+        "plan_sha256": plan_sha256,
         "started_at": started_at,
         "completed_at": completed_at,
         "walltime_seconds": walltime_seconds,
@@ -1299,20 +879,6 @@ def _artifact_records(paths: dict[str, Path | None]) -> dict[str, Any]:
     return output
 
 
-def _safe_file(root: Path, relative: Any) -> Path | None:
-    if not isinstance(relative, (str, Path)):
-        return None
-    candidate = Path(relative)
-    if candidate.is_absolute():
-        return None
-    resolved = (root / candidate).resolve()
-    try:
-        resolved.relative_to(root)
-    except ValueError:
-        return None
-    return resolved if resolved.is_file() else None
-
-
 def _existing_path(value: Any) -> Path | None:
     if not isinstance(value, (str, Path)):
         return None
@@ -1329,37 +895,6 @@ def _node_artifact(node_dir: Path, relative: Any) -> Path | None:
     except ValueError:
         return None
     return path if path.is_file() else None
-
-
-def _run_trajectory_paths(run: dict[str, Any]) -> list[str]:
-    segments = run.get("trajectory_segments")
-    if isinstance(segments, list) and segments:
-        return [value for value in segments if isinstance(value, str)]
-    trajectory = run.get("trajectory")
-    return [trajectory] if isinstance(trajectory, str) else []
-
-
-def _event_started_after_freeze(
-    event: dict[str, Any],
-    frozen: dict[str, Any],
-) -> bool:
-    from datetime import datetime
-
-    try:
-        started = datetime.fromisoformat(str(event.get("started_at")))
-        frozen_at = datetime.fromisoformat(str(frozen.get("frozen_at")))
-    except (TypeError, ValueError):
-        return False
-    event_sequence = event.get("runner_sequence")
-    frozen_sequence = frozen.get("runner_sequence")
-    if (
-        isinstance(event_sequence, int)
-        and not isinstance(event_sequence, bool)
-        and isinstance(frozen_sequence, int)
-        and not isinstance(frozen_sequence, bool)
-    ):
-        return event_sequence > frozen_sequence and started >= frozen_at
-    return started > frozen_at
 
 
 def _state_step_count(state: Any) -> int | None:
@@ -1497,11 +1032,3 @@ def _read_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
-
-
-def _issue(
-    errors: list[dict[str, str]],
-    code: str,
-    message: str,
-) -> None:
-    errors.append({"code": code, "message": message})

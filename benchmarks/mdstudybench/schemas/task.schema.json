@@ -368,8 +368,7 @@
             "structure_geometry_quality",
             "metrics_caption_consistency",
             "direction_grounding",
-            "observable_recompute_consistency",
-            "v2_entity_condition_comparison"
+            "observable_recompute_consistency"
           ],
           "title": "Check Type",
           "type": "string"
@@ -378,18 +377,6 @@
           "default": 0.6,
           "title": "Clash Overlap Fraction",
           "type": "number"
-        },
-        "comparison_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Comparison Id"
         },
         "contact_cutoff_nm": {
           "default": 0.45,
@@ -562,21 +549,6 @@
           ],
           "default": null,
           "title": "Lipid Residue Names"
-        },
-        "matched_except": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Matched Except"
         },
         "max_angle_outliers": {
           "anyOf": [
@@ -2232,10 +2204,7 @@
     "evaluation_protocol": {
       "anyOf": [
         {
-          "enum": [
-            "grounded_correct_v1",
-            "grounded_correct_v2"
-          ],
+          "const": "grounded_correct_v2",
           "type": "string"
         },
         {

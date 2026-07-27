@@ -29,7 +29,6 @@ from mdclaw.benchmark.models import (
     LLMJudgeResult,
     RuntimeRecord,
     Score,
-    StudyVerdict,
     StudyVerdictV2,
     Task,
 )
@@ -102,13 +101,8 @@ def score_submission(
     provenance = integrity.read_json_safe(submission_dir / "provenance.json")
     evidence_path = submission_dir / "evidence_report.json"
     if task.evaluation_protocol == "grounded_correct_v2":
-        # The truth-blind bundle follows the manifest declaration.  Ground
-        # truth comparison must consume those exact same bytes; otherwise a
-        # submission could present one verdict to the judge and a second
-        # verdict at the conventional root path to the truth check.
-        evidence_relative = integrity._safe_path(
-            manifest, "outputs.evidence_report"
-        )
+        # In v2 the only agent-authored post-execution result is claim.json.
+        evidence_relative = integrity._safe_path(manifest, "outputs.claim")
         if (
             isinstance(evidence_relative, str)
             and not integrity.unsafe_relative_path_issue(
@@ -119,22 +113,6 @@ def score_submission(
                 submission_dir, evidence_relative
             )
     evidence = integrity.read_json_safe(evidence_path)
-    verified_evidence_packet: Optional[dict[str, Any]] = None
-    verified_evidence_packet_hash: Optional[str] = None
-    if task.evaluation_protocol == "grounded_correct_v1":
-        from mdclaw.benchmark.study_evidence import (
-            build_verified_evidence_packet,
-            verified_evidence_hash,
-        )
-
-        verified_evidence_packet = build_verified_evidence_packet(
-            submission_dir,
-            manifest,
-            evidence,
-        )
-        verified_evidence_packet_hash = verified_evidence_hash(
-            verified_evidence_packet
-        )
     requires_harness_record = task.evaluation_protocol == "grounded_correct_v2" or any(
         check.require_harness_record
         for check in task.scoring.integrity_checks
@@ -156,14 +134,14 @@ def score_submission(
     if harness_identity_warnings:
         harness_record = {}
 
-    truth_blind_bundle_v2: Optional[dict[str, Any]] = None
+    grounded_evaluation_v2: Optional[dict[str, Any]] = None
     if (
         task.evaluation_protocol == "grounded_correct_v2"
         and task.scientific_target is not None
     ):
         from mdclaw.benchmark.grounded_v2 import build_truth_blind_bundle_v2
 
-        truth_blind_bundle_v2 = build_truth_blind_bundle_v2(
+        grounded_evaluation_v2 = build_truth_blind_bundle_v2(
             submission_dir=submission_dir,
             scientific_target=task.scientific_target.model_dump(),
             harness_record=harness_record,
@@ -315,37 +293,12 @@ def score_submission(
     if manifest_status == "blocked":
         score_status = "failed"
 
-    study_verdict = StudyVerdict()
-    if task.evaluation_protocol == "grounded_correct_v1":
-        study_verdict = _grounded_study_verdict(
-            manifest_status=manifest_status,
-            packet=verified_evidence_packet or {},
-            packet_hash=verified_evidence_packet_hash,
-            judge_payload=llm_judge_payload,
-            required_rubrics=task.scoring.llm_judge_rubrics,
-            ground_truth_results=ground_truth_results,
-            hard_failures=hard_failures,
-            integrity_rejected=integrity_rejected,
-        )
-        # The official v0.3 outcome is deliberately conjunctive.  Keep the
-        # diagnostic axes/checks below, but do not let strong performance on
-        # one dimension compensate for missing MD grounding on another.
-        weighted_total = 1.0 if study_verdict.grounded_correct else 0.0
-        if study_verdict.grounded_correct:
-            score_status = "passed"
-        elif study_verdict.valid_md:
-            score_status = "partial"
-        else:
-            score_status = "failed"
-    elif task.evaluation_protocol == "grounded_correct_v2":
+    study_verdict: Optional[StudyVerdictV2] = None
+    if task.evaluation_protocol == "grounded_correct_v2":
+        expected_outcome = _grounded_v2_expected_outcome(task, task_dir)
         study_verdict = _grounded_study_verdict_v2(
-            manifest_status=manifest_status,
-            bundle=truth_blind_bundle_v2 or {},
-            judge_payload=llm_judge_payload,
-            required_rubrics=task.scoring.llm_judge_rubrics,
-            ground_truth_results=ground_truth_results,
-            hard_failures=hard_failures,
-            integrity_rejected=integrity_rejected,
+            evaluation=grounded_evaluation_v2 or {},
+            expected_outcome=expected_outcome,
         )
         # Keep the public primary axis as simple as the protocol itself.  Raw
         # held-out-truth agreement remains visible in ground_truth_checks, but
@@ -722,11 +675,10 @@ def _check_paired_mutation_topology(check: DeterministicCheck,
     """Verify the submitted comparative topologies differ by exactly one residue
     substitution at the mutation / ligand site.
 
-    For v0.3, loads every topology declared in ``study_index.json`` and checks
-    every reference/variant replica pairing. Legacy flat-output submissions use
-    ``outputs.topology[0:2]``. Water and counterions are ignored so the check is
-    robust to solvated submissions whose water/ion counts differ. It is
-    chain-agnostic (independent of how the solver labeled chains).
+    Loads ``outputs.topology[0]`` (reference) and ``outputs.topology[1]``
+    (variant). Water and counterions are ignored so the check is robust to
+    solvated submissions whose water/ion counts differ. It is chain-agnostic
+    (independent of how the solver labeled chains).
 
     Two modes:
     - named: when ``wild_type_residue_name`` and ``required_residue_name`` are
@@ -736,22 +688,18 @@ def _check_paired_mutation_topology(check: DeterministicCheck,
       substituted between the two systems (used for ligand-swap comparisons
       where the residue codes are solver-chosen).
     """
-    study_groups = _paired_study_topology_path_groups(submission_dir, manifest)
-    if study_groups is not None:
-        reference_paths, variant_paths = study_groups
-    else:
-        wt_rel = _manifest_artifact_path(
-            manifest, check.topology_manifest_path, "outputs.topology.0",
-        ) or check.topology_path
-        mut_rel = _manifest_artifact_path(
-            manifest, check.mutant_topology_manifest_path, "outputs.topology.1",
-        )
-        reference_paths = [wt_rel] if wt_rel else []
-        variant_paths = [mut_rel] if mut_rel else []
+    wt_rel = _manifest_artifact_path(
+        manifest, check.topology_manifest_path, "outputs.topology.0",
+    ) or check.topology_path
+    mut_rel = _manifest_artifact_path(
+        manifest, check.mutant_topology_manifest_path, "outputs.topology.1",
+    )
+    reference_paths = [wt_rel] if wt_rel else []
+    variant_paths = [mut_rel] if mut_rel else []
     if not reference_paths or not variant_paths:
         return False, 0.0, (
             "reference and variant topology paths required via "
-            "study_index.json or outputs.topology[0:2]"
+            "outputs.topology[0] and outputs.topology[1]"
         )
     wild = (check.wild_type_residue_name or "").strip().upper()
     mutant = (check.required_residue_name or "").strip().upper()
@@ -931,51 +879,6 @@ def _non_solvent_residue_fingerprints(topology: Any) -> list[dict[str, Any]]:
             }
         )
     return fingerprints
-
-
-def _paired_study_topology_path_groups(
-    submission_dir: Path,
-    manifest: dict[str, Any],
-) -> Optional[tuple[list[str], list[str]]]:
-    """Resolve all reference/variant topology paths from a v0.3 study index."""
-    relative = integrity._safe_path(manifest, "outputs.study_index")
-    if not isinstance(relative, str) or not relative:
-        return None
-    path = _resolve_relative(submission_dir, relative)
-    if not path.is_file():
-        return None
-    try:
-        payload = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    systems = payload.get("systems") if isinstance(payload, dict) else None
-    if not isinstance(systems, list):
-        return None
-    resolved: dict[str, list[str]] = {"reference": [], "variant": []}
-    for system in systems:
-        if not isinstance(system, dict):
-            continue
-        role = system.get("role")
-        replicas = system.get("replicas")
-        if role not in resolved or not isinstance(replicas, list):
-            continue
-        for replica in replicas:
-            if isinstance(replica, dict) and isinstance(replica.get("topology"), str):
-                resolved[role].append(replica["topology"])
-    if not resolved["reference"] or not resolved["variant"]:
-        return None
-    return resolved["reference"], resolved["variant"]
-
-
-def _paired_study_topology_paths(
-    submission_dir: Path,
-    manifest: dict[str, Any],
-) -> Optional[tuple[str, str]]:
-    """Backward-compatible first-pair resolver for internal callers/tests."""
-    groups = _paired_study_topology_path_groups(submission_dir, manifest)
-    if groups is None:
-        return None
-    return groups[0][0], groups[1][0]
 
 
 # ---------------------------------------------------------------------------
@@ -3635,67 +3538,6 @@ def _check_metrics_caption_consistency(check: DeterministicCheck,
     return False, 0.0, f"{len(issues)} caption(s) with mismatched values"
 
 
-def _check_v2_entity_condition_comparison(
-    check: DeterministicCheck,
-    submission_dir: Path,
-    manifest: dict,
-    **_,
-):
-    relative = integrity._safe_path(manifest, "outputs.study_index")
-    if not isinstance(relative, str) or not relative:
-        return False, 0.0, "manifest.outputs.study_index is missing"
-    study = integrity.read_json_safe(submission_dir / relative)
-    systems = {
-        str(item.get("system_id")): item
-        for item in study.get("systems") or []
-        if isinstance(item, dict) and item.get("system_id") is not None
-    }
-    comparison = next(
-        (
-            item
-            for item in study.get("comparisons") or []
-            if isinstance(item, dict)
-            and item.get("comparison_id") == check.comparison_id
-        ),
-        None,
-    )
-    if comparison is None:
-        return False, 0.0, f"comparison {check.comparison_id!r} is missing"
-    reference_ids = comparison.get("reference_system_ids") or []
-    variant_ids = comparison.get("variant_system_ids") or []
-    if not reference_ids or not variant_ids:
-        return False, 0.0, "comparison requires reference and variant systems"
-    unknown = (set(reference_ids) | set(variant_ids)) - set(systems)
-    if unknown:
-        return False, 0.0, f"comparison references unknown systems: {sorted(unknown)}"
-    excluded = set(check.matched_except or [])
-    for reference_id in reference_ids:
-        for variant_id in variant_ids:
-            reference = systems[reference_id].get("conditions") or {}
-            variant = systems[variant_id].get("conditions") or {}
-            for key in (set(reference) | set(variant)) - excluded:
-                left = reference.get(key)
-                right = variant.get(key)
-                if (
-                    isinstance(left, (int, float))
-                    and not isinstance(left, bool)
-                    and isinstance(right, (int, float))
-                    and not isinstance(right, bool)
-                ):
-                    equal = math.isclose(
-                        float(left), float(right), rel_tol=1.0e-6, abs_tol=1.0e-9
-                    )
-                else:
-                    equal = left == right
-                if not equal:
-                    return (
-                        False,
-                        0.0,
-                        f"condition {key!r} differs outside matched_except",
-                    )
-    return True, 1.0, "declared comparison conditions are matched"
-
-
 _DETERMINISTIC_DISPATCH = {
     "required_files": _check_required_files,
     "forbidden_files": _check_forbidden_files,
@@ -3733,7 +3575,6 @@ _DETERMINISTIC_DISPATCH = {
     "metrics_caption_consistency": _check_metrics_caption_consistency,
     "direction_grounding": _check_direction_grounding,
     "observable_recompute_consistency": _check_observable_recompute_consistency,
-    "v2_entity_condition_comparison": _check_v2_entity_condition_comparison,
 }
 
 
@@ -3930,312 +3771,78 @@ def _score_status(weighted_total: float,
     return "failed"
 
 
-def _grounded_study_verdict(
-    *,
-    manifest_status: str,
-    packet: dict[str, Any],
-    packet_hash: Optional[str],
-    judge_payload: Optional[dict[str, Any]],
-    required_rubrics: list[str],
-    ground_truth_results: list[CheckResult],
-    hard_failures: list[CheckResult],
-    integrity_rejected: bool,
-) -> StudyVerdict:
-    """Apply the grounded-correct protocol without compensating weights."""
-    summary = packet.get("summary") if isinstance(packet, dict) else {}
-    if not isinstance(summary, dict):
-        summary = {}
-    conclusion = packet.get("conclusion") if isinstance(packet, dict) else {}
-    if not isinstance(conclusion, dict):
-        conclusion = {}
+def _grounded_v2_expected_outcome(
+    task: Task,
+    task_dir: Optional[Path],
+) -> Optional[str]:
+    """Read the hidden outcome without consulting the agent claim."""
 
-    valid_md = bool(summary.get("artifact_valid"))
-    valid_md = (
-        valid_md
-        and manifest_status == "completed"
-        and not hard_failures
-        and not integrity_rejected
-    )
-    evidence_verified = bool(summary.get("evidence_verified"))
-    evidence_status = conclusion.get("evidence_status")
-    if evidence_status not in {"supported", "inconclusive", "contradicted"}:
-        evidence_status = None
-
-    payload = judge_payload if isinstance(judge_payload, dict) else {}
-    scores = payload.get("scores") if isinstance(payload.get("scores"), dict) else {}
-    rubrics_complete = all(
-        not isinstance(scores.get(name), bool)
-        and isinstance(scores.get(name), (int, float))
-        and math.isfinite(float(scores[name]))
-        and 0.0 <= float(scores[name]) <= 1.0
-        for name in required_rubrics
-    )
-    support_verdict = payload.get("support_verdict")
-    logical_flag = payload.get("logical_grounding_supported")
-    hash_matches = bool(
-        packet_hash
-        and payload.get("evidence_packet_hash") == packet_hash
-    )
-
-    verified_ids = {
-        str(item.get("id"))
-        for item in (packet.get("evidence") or [])
-        if isinstance(item, dict)
-        and item.get("verification_status") == "verified"
-        and item.get("id") is not None
-    }
-    raw_cited_ids = payload.get("cited_evidence_ids")
-    cited_ids = {
-        str(item)
-        for item in (
-            raw_cited_ids if isinstance(raw_cited_ids, list) else []
-        )
-        if isinstance(item, str) and item
-    }
-    cited_verified_items = [
-        item
-        for item in (packet.get("evidence") or [])
-        if isinstance(item, dict)
-        and str(item.get("id")) in cited_ids
-        and item.get("verification_status") == "verified"
-    ]
-    cites_only_verified_evidence = bool(cited_ids) and cited_ids <= verified_ids
-    cites_resolved_evidence = bool(cited_verified_items) and all(
-        isinstance(item.get("recomputed"), dict)
-        and item["recomputed"].get("precision_status") == "resolved"
-        for item in cited_verified_items
-    )
-    reasoning_score = scores.get("reasoning_logic")
-    reasoning_score_supports = bool(
-        isinstance(reasoning_score, (int, float))
-        and not isinstance(reasoning_score, bool)
-        and float(reasoning_score) >= 0.5
-    )
-    judge_complete = bool(
-        payload
-        and payload.get("enabled") is True
-        and payload.get("rubric_version") == "2.0"
-        and rubrics_complete
-        and support_verdict in {"supported", "inconclusive", "contradicted"}
-        and isinstance(logical_flag, bool)
-        and hash_matches
-        and (
-            support_verdict != "supported"
-            or (
-                cites_only_verified_evidence
-                and cites_resolved_evidence
-                and reasoning_score_supports
-            )
-        )
-    )
-    reasoning_grounded = bool(
-        judge_complete
-        and support_verdict == "supported"
-        and logical_flag is True
-        and cites_only_verified_evidence
-        and cites_resolved_evidence
-        and reasoning_score_supports
-    )
-
-    truth_available = bool(ground_truth_results)
-    truth_correct = truth_available and all(
-        result.passed for result in ground_truth_results
-    )
-    evaluation_complete = bool(packet_hash and judge_complete and truth_available)
-    grounded_correct = bool(
-        evaluation_complete
-        and valid_md
-        and evidence_verified
-        and evidence_status == "supported"
-        and reasoning_grounded
-        and truth_correct
-    )
-
-    reasons: list[str] = []
-    if manifest_status != "completed":
-        reasons.append(f"submission status is {manifest_status!r}, not 'completed'")
-    if not valid_md:
-        reasons.append("submitted MD artifacts are not valid")
-    if not evidence_verified:
-        reasons.append("no agent-selected MD evidence was independently verified")
-    if evidence_status != "supported":
-        reasons.append(
-            "agent declared MD evidence status "
-            f"{evidence_status or 'missing'} rather than 'supported'"
-        )
-    if not judge_complete:
-        reasons.append("truth-blind logical-grounding judge result is incomplete")
-    elif not reasoning_grounded:
-        reasons.append("judge did not find the conclusion supported by verified MD")
-    if not truth_available:
-        reasons.append("held-out truth comparison was not evaluated")
-    elif not truth_correct:
-        reasons.append("final conclusion does not match held-out truth")
-
-    return StudyVerdict(
-        enabled=True,
-        evaluation_complete=evaluation_complete,
-        valid_md=valid_md,
-        evidence_verified=evidence_verified,
-        evidence_status=evidence_status,
-        reasoning_grounded=reasoning_grounded,
-        truth_correct=truth_correct,
-        grounded_correct=grounded_correct,
-        decision_reasons=reasons,
-        evidence_packet_hash=packet_hash,
-    )
+    if task_dir is None:
+        return None
+    for check in task.scoring.ground_truth_checks:
+        truth = integrity.read_json_safe(task_dir / check.truth_file)
+        expected = integrity._safe_path(truth, check.truth_path)
+        if isinstance(expected, str) and expected:
+            return expected
+    return None
 
 
 def _grounded_study_verdict_v2(
     *,
-    manifest_status: str,
-    bundle: dict[str, Any],
-    judge_payload: Optional[dict[str, Any]],
-    required_rubrics: list[str],
-    ground_truth_results: list[CheckResult],
-    hard_failures: list[CheckResult],
-    integrity_rejected: bool,
+    evaluation: dict[str, Any],
+    expected_outcome: Optional[str],
 ) -> StudyVerdictV2:
-    """Apply the three deterministic, non-compensating v2 gates."""
+    """Combine three independent booleans without compensating tradeoffs."""
 
-    # These arguments remain in the private call signature so v1/v2 dispatch
-    # stays stable.  They are deliberately irrelevant to v2 primary scoring.
-    del judge_payload, required_rubrics
-
-    summary = bundle.get("summary") if isinstance(bundle, dict) else {}
-    if not isinstance(summary, dict):
-        summary = {}
-    packet_hash = (
-        str(bundle.get("bundle_hash"))
-        if isinstance(bundle.get("bundle_hash"), str)
+    valid_execution = evaluation.get("valid_execution") is True
+    claim_supported = evaluation.get("claim_supported") is True
+    recomputed_outcome = evaluation.get("recomputed_outcome")
+    claim_outcome = evaluation.get("claim_outcome")
+    truth_available = bool(
+        isinstance(expected_outcome, str) and expected_outcome
+    )
+    truth_agreement: Optional[bool] = (
+        bool(
+            isinstance(recomputed_outcome, str)
+            and recomputed_outcome == expected_outcome
+        )
+        if truth_available
         else None
     )
-    artifact_valid = bool(
-        summary.get("artifact_valid")
-        and not (bundle.get("errors") or [])
-        and manifest_status == "completed"
-        and not hard_failures
-        and not integrity_rejected
-    )
-    entity_condition_valid = bool(summary.get("entity_condition_valid"))
-    execution_attested = bool(summary.get("execution_attested"))
-    preregistration_valid = bool(summary.get("preregistration_valid"))
-    required_controls_evaluated = bool(
-        summary.get("required_controls_evaluated")
-    )
-    required_controls_passed = bool(summary.get("required_controls_passed"))
-    valid_execution = bool(
-        artifact_valid
-        and entity_condition_valid
-        and execution_attested
-        and preregistration_valid
-    )
-
-    report = bundle.get("agent_report") if isinstance(bundle, dict) else {}
-    if not isinstance(report, dict):
-        report = {}
-    md_verdict = report.get("md_verdict")
-    if not isinstance(md_verdict, dict):
-        md_verdict = {}
-    verdict_status = md_verdict.get("status")
-    if verdict_status not in {"resolved", "unresolved"}:
-        verdict_status = None
-    agent_cited = {
-        str(value)
-        for value in md_verdict.get("cited_evidence_ids") or []
-        if isinstance(value, str) and value
-    }
-    raw_ids = {
-        str(value)
-        for value in summary.get("raw_recomputed_evidence_ids") or []
-        if isinstance(value, str) and value
-    }
-    eligible_ids = {
-        str(value)
-        for value in summary.get("support_eligible_evidence_ids") or []
-        if isinstance(value, str) and value
-    }
-    raw_recomputed = bool(agent_cited) and agent_cited <= raw_ids
-    support_eligible = bool(agent_cited) and agent_cited <= eligible_ids
-    deterministic_support = bool(summary.get("claim_supported"))
-    claim_supported = bool(
-        valid_execution
-        and verdict_status == "resolved"
-        and raw_recomputed
-        and support_eligible
-        and required_controls_evaluated
-        and required_controls_passed
-        and deterministic_support
-    )
-
-    truth_available = bool(ground_truth_results)
-    truth_agreement: Optional[bool] = None
-    if valid_execution and claim_supported and truth_available:
-        truth_agreement = all(
-            result.passed for result in ground_truth_results
-        )
-    evaluation_complete = bool(packet_hash and truth_available)
     grounded_correct = bool(
         valid_execution
         and claim_supported
         and truth_agreement is True
     )
+    diagnostics = evaluation.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    claim_status = diagnostics.get("claim_status")
+    evaluation_complete = bool(evaluation and truth_available)
 
     result_class = "not_evaluated"
     if evaluation_complete:
         if not valid_execution:
             result_class = "invalid_execution"
-        elif verdict_status == "unresolved":
+        elif claim_status == "unresolved":
             result_class = "unresolved"
         elif not claim_supported:
             result_class = "unsupported_claim"
+        elif truth_agreement is True:
+            result_class = "grounded_correct"
         else:
-            result_class = (
-                "grounded_correct"
-                if truth_agreement is True
-                else "grounded_wrong"
-            )
+            result_class = "grounded_wrong"
 
-    reason_codes: list[str] = []
-    for code, condition in (
-        ("submission_not_completed", manifest_status != "completed"),
-        ("artifact_invalid", not artifact_valid),
-        ("entity_condition_invalid", not entity_condition_valid),
-        ("execution_not_attested", not execution_attested),
-        ("preregistration_invalid", not preregistration_valid),
-        ("required_controls_not_evaluated", not required_controls_evaluated),
-        (
-            "required_controls_not_passed",
-            verdict_status == "resolved" and not required_controls_passed,
-        ),
-        ("raw_not_recomputed", verdict_status == "resolved" and not raw_recomputed),
-        ("evidence_not_support_eligible", verdict_status == "resolved" and not support_eligible),
-        (
-            "deterministic_claim_not_supported",
-            verdict_status == "resolved" and not deterministic_support,
-        ),
-        ("md_verdict_unresolved", verdict_status == "unresolved"),
-        ("truth_unavailable", not truth_available),
-        (
-            "truth_mismatch",
-            truth_agreement is False,
-        ),
-    ):
-        if condition:
-            reason_codes.append(code)
-    prereg = bundle.get("preregistration_certificate")
-    execution_certificate = (
-        prereg.get("execution_certificate")
-        if isinstance(prereg, dict)
-        and isinstance(prereg.get("execution_certificate"), dict)
-        else {}
-    )
-    analysis_intent_hash = (
-        prereg.get("analysis_intent_sha256")
-        if isinstance(prereg, dict)
-        and isinstance(prereg.get("analysis_intent_sha256"), str)
-        else None
-    )
+    reason_codes = [
+        str(code)
+        for code in evaluation.get("reason_codes") or []
+        if isinstance(code, str) and code
+    ]
+    if not truth_available:
+        reason_codes.append("truth_unavailable")
+    elif truth_agreement is not True:
+        reason_codes.append("recomputed_truth_mismatch")
+
     return StudyVerdictV2(
         enabled=True,
         evaluation_complete=evaluation_complete,
@@ -4245,27 +3852,19 @@ def _grounded_study_verdict_v2(
         truth_agreement=truth_agreement,
         grounded_correct=grounded_correct,
         result_class=result_class,
-        decision_reason_codes=reason_codes,
-        evidence_packet_hash=packet_hash,
-        analysis_intent_hash=analysis_intent_hash,
+        decision_reason_codes=list(dict.fromkeys(reason_codes)),
+        plan_hash=(
+            evaluation.get("plan_hash")
+            if isinstance(evaluation.get("plan_hash"), str)
+            else None
+        ),
         diagnostics={
-            "artifact_valid": artifact_valid,
-            "entity_condition_valid": entity_condition_valid,
-            "execution_attested": execution_attested,
-            "preregistration_valid": preregistration_valid,
-            "required_controls_evaluated": required_controls_evaluated,
-            "required_controls_passed": required_controls_passed,
-            "raw_recomputed": raw_recomputed,
-            "support_eligible": support_eligible,
-            "md_verdict_status": verdict_status,
-            "recomputed_outcome": summary.get("recomputed_outcome"),
-            "agent_outcome": summary.get("agent_outcome"),
-            "execution_attestation_scope": execution_certificate.get(
-                "attestation_scope"
-            ),
-            "execution_diagnostic_reason_codes": (
-                execution_certificate.get("diagnostic_reason_codes") or []
-            ),
+            **diagnostics,
+            "recomputed_outcome": recomputed_outcome,
+            "claim_outcome": claim_outcome,
+            "expected_outcome": expected_outcome,
+            "recomputed_truth_agreement": truth_agreement,
+            "control_passed": evaluation.get("control_passed") is True,
         },
     )
 
@@ -4283,15 +3882,6 @@ def _build_llm_judge_record(task: Task, payload: Optional[dict[str, Any]]
         raw_response_file=payload.get("raw_response_file"),
         scores=dict(payload.get("scores") or {}),
         violations=list(payload.get("violations") or []),
-        support_verdict=payload.get("support_verdict"),
-        logical_grounding_supported=payload.get("logical_grounding_supported"),
-        abstention_justified=payload.get("abstention_justified"),
-        abstention_reason_codes=list(
-            payload.get("abstention_reason_codes") or []
-        ),
-        cited_evidence_ids=list(payload.get("cited_evidence_ids") or []),
-        evidence_packet_hash=payload.get("evidence_packet_hash"),
-        rationale=dict(payload.get("rationale") or {}),
     )
 
 
@@ -4387,8 +3977,7 @@ def aggregate_run_scores(scores: list[dict[str, Any]],
     grounded_results = [
         bool((score.get("study_verdict") or {}).get("grounded_correct"))
         for score, task in zip(scores, tasks)
-        if task.get("evaluation_protocol")
-        in {"grounded_correct_v1", "grounded_correct_v2"}
+        if task.get("evaluation_protocol") == "grounded_correct_v2"
     ]
     grounded_correct_rate = (
         round(statistics.fmean(float(value) for value in grounded_results), 4)

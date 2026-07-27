@@ -46,20 +46,14 @@ def test_mdstudybench_v04_specs_use_prospective_grounded_contract():
         "grounded_correct_v2"
     )
     assert defaults["required_outputs"] == [
-        "manifest.json",
-        "analysis_intent.json",
-        "study_index.json",
-        "evidence_report.json",
+        "confirmatory_plan.json",
+        "claim.json",
     ]
+    assert defaults["task_defaults"]["secondary_scores"] == []
     assert "deterministic_check_bundles" not in defaults
 
-    integrity_types = {
-        check["check_type"]
-        for check in defaults["scoring_defaults"]["integrity_checks"]
-    }
-    assert "citation_pool" not in integrity_types
-    assert "manifest_artifact_floor" not in integrity_types
-    assert "trajectory_file_signature" not in integrity_types
+    assert "integrity_checks" not in defaults["scoring_defaults"]
+    assert "integrity_policy" not in defaults["scoring_defaults"]
 
     for task_id in dataset["task_ids"]:
         spec = _read_json(SPEC_DIR / "tasks" / f"{task_id}.json")
@@ -75,6 +69,10 @@ def test_mdstudybench_v04_specs_use_prospective_grounded_contract():
 
         generated = build_task_payload(defaults, spec)
         assert generated["evaluation_protocol"] == "grounded_correct_v2"
+        assert generated["required_outputs"] == [
+            "confirmatory_plan.json",
+            "claim.json",
+        ]
         target = generated["scientific_target"]
         assert target["claim_type"] == "dynamic_equilibrium"
         assert target["neutral_requires_equivalence"] is True
@@ -138,18 +136,12 @@ def test_mdstudybench_v04_specs_use_prospective_grounded_contract():
             }
         ]
         assert "llm_judge_rubrics" not in generated["scoring"]
+        assert "integrity_checks" not in generated["scoring"]
+        assert "integrity_policy" not in generated["scoring"]
         assert target["entity"]["expected_protein_copy_count"] == 1
         assert generated["scoring"]["ground_truth_checks"][0][
             "submission_path"
-        ] == "md_verdict.outcome"
-        required_evidence = next(
-            check
-            for check in generated["scoring"]["integrity_checks"]
-            if check["check_type"] == "evidence_completeness"
-        )["required_keys"]
-        assert "evidence" in required_evidence
-        assert "reasoning" in required_evidence
-        assert "md_verdict.cited_evidence_ids" in required_evidence
+        ] == "outcome"
 
 
 def test_mdstudybench_public_prompts_do_not_pin_plan_or_source_anchor():
@@ -157,15 +149,17 @@ def test_mdstudybench_public_prompts_do_not_pin_plan_or_source_anchor():
     prompt = (DATASET_DIR / "tasks" / task_id / "prompt.md").read_text()
     normalized = " ".join(prompt.split())
 
-    assert "No PDB ID, chain ID, source structure, or sampling plan is preferred" in normalized
-    assert "Use exactly one primary estimand analysis" in normalized
-    assert "analysis_intent.json" in prompt
-    assert "study_index.json" in prompt
-    assert "prior_expectation" in prompt
+    assert "No PDB ID, chain label, or reference plan is preferred" in normalized
+    assert "confirmatory_plan.json" in prompt
+    assert "claim.json" in prompt
+    assert "analysis_intent.json" not in prompt
+    assert "study_index.json" not in prompt
+    assert "evidence_report.json" not in prompt
     assert "held-out experimental truth" in normalized
-    assert "Do not run confirmatory production yourself" in normalized
-    assert "cavity_anchor_reference_position" in prompt
-    assert "mdclaw_openmm@1" in prompt
+    assert "Do not execute confirmatory production yourself" in normalized
+    assert "submission_contract.json" in prompt
+    assert "cavity_anchor_reference_position" not in prompt
+    assert "public preflight" not in normalized
     for private_anchor in (
         "1L90",
         "2B6X",

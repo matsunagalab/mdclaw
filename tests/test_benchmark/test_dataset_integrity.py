@@ -442,17 +442,15 @@ def test_studybench_v2_integrity_uses_prospective_grounded_contract():
             check.check_type for check in task.scoring.deterministic_checks
         }
 
-        assert task.scoring.integrity_policy == "reject", task_id
+        assert task.scoring.integrity_policy == "warn", task_id
         assert task.evaluation_protocol == "grounded_correct_v2", task_id
         assert task.required_outputs == [
-            "manifest.json",
-            "analysis_intent.json",
-            "study_index.json",
-            "evidence_report.json",
+            "confirmatory_plan.json",
+            "claim.json",
         ]
-        # Generic command logs cannot prove real MD.  The official v2 scorer
-        # instead requires the task-owned runner adapter.
-        assert "provenance_execution_evidence" not in check_types, task_id
+        # Generic artifact-quality checks are outside the three official
+        # gates. Claim schema and runner custody are validated directly.
+        assert check_types == set(), task_id
         # v2 entity, condition, and allowed-outcome gates are assembled from
         # the single manifest-declared truth-blind bundle.  Do not duplicate
         # them as legacy fixed-path deterministic checks.
@@ -475,46 +473,31 @@ def test_s01_open_planning_contract_requires_grounded_non_overclaimed_answer():
     payload = json.loads(
         (STUDY_DATASET_DIR / "tasks" / task_id / "task.json").read_text()
     )
-    reference_pool = json.loads(
-        (
-            STUDY_DATASET_DIR
-            / "tasks"
-            / task_id
-            / "truth"
-            / "reference_pool.json"
-        ).read_text()
-    )
-
     combined = " ".join((prompt + "\n" + payload["task_intent"]).split())
 
     assert "pH 7.0" in combined
     assert "0.1 MPa" in combined
     assert "200 MPa" in combined
     assert (
-        "No PDB ID, chain ID, source structure, or sampling plan is preferred"
+        "No PDB ID, chain label, or reference plan is preferred"
         in combined
     )
-    assert "Use exactly one primary estimand analysis" in combined
-    assert "prior_expectation" in combined
-    assert "analysis_intent.json" in combined
-    assert "folded_state_retention@1" in combined
-    assert "runner-certified, explicit-solvent" in combined
-    assert "no production-time force added relative to the frozen base" in combined
-    assert "base_system_construction_unattested" in combined
-    assert "cavity_anchor_reference_position" in combined
-    assert "mdclaw_openmm@1" in combined
+    assert "confirmatory_plan.json" in prompt
+    assert "claim.json" in prompt
+    assert "analysis_intent.json" not in prompt
+    assert "prior_expectation" not in prompt
+    assert "cavity_anchor_reference_position" not in prompt
+    assert "mdclaw_openmm@1" not in prompt
+    assert "public preflight" not in prompt
     assert payload["scientific_target"]["neutral_outcome"] == (
         "no_material_change"
     )
-    assert reference_pool["entity"]["construct_mutations"] == [
-        "C54T",
-        "C97A",
-        "L99A",
+    assert payload["scientific_target"]["required_control_verifiers"] == [
+        "folded_state_retention@1"
     ]
-    assert {anchor["pdb_id"] for anchor in reference_pool["structural_anchors"]} == {
-        "1L90",
-        "2B6X",
-    }
+    assert payload["scientific_target"]["execution_adapter"] == (
+        "mdclaw_openmm@1"
+    )
     for private_anchor in ("1L90", "2B6X", "pnas.0508224102", "25201963"):
         assert private_anchor not in prompt
 
