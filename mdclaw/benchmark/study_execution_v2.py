@@ -12,8 +12,13 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import importlib
 import json
 import math
+import os
+import shutil
+import subprocess
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -21,6 +26,14 @@ from typing import Any
 
 RUNNER_EPISODE_KIND = "mdstudybench_runner_episode_v2"
 MDCLAW_OPENMM_ADAPTER = "mdclaw_openmm@1"
+
+# Artifact inspection needs the same science stack the adapter runs in. The
+# runner itself is often a thin orchestration venv, so inspection is delegated
+# to the MDClaw container rather than failing closed on a missing import.
+_INSPECTION_DEPENDENCIES = ("openmm", "mdtraj", "numpy")
+_INSPECTION_INPROCESS_ENV = "MDCLAW_INSPECT_INPROCESS"
+_INSPECTION_RESULT_SENTINEL = "__MDCLAW_INSPECTION_RESULT__ "
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def sha256_file(path: str | Path) -> str:
@@ -114,7 +127,7 @@ def inspect_mdclaw_production_node_v2(
     runtime_facts: dict[str, Any] = {}
     if all(input_paths.values()) and all(output_paths.values()):
         try:
-            runtime_facts, runtime_errors = _inspect_openmm_artifacts(
+            runtime_facts, runtime_errors = _run_openmm_artifact_inspection(
                 input_paths=input_paths,
                 output_paths=output_paths,
                 metadata=metadata,
@@ -148,6 +161,141 @@ def inspect_mdclaw_production_node_v2(
         output_paths=output_paths,
         runtime_facts=runtime_facts,
     )
+
+
+def _missing_inspection_dependencies() -> list[str]:
+    """Return the science-stack modules this interpreter cannot import."""
+    missing: list[str] = []
+    for module_name in _INSPECTION_DEPENDENCIES:
+        try:
+            importlib.import_module(module_name)
+        except Exception:  # noqa: BLE001 -- broken binary imports also count
+            missing.append(module_name)
+    return missing
+
+
+def _inspection_delegate_argv(bind_paths: list[Path]) -> list[str] | None:
+    """Build the container argv that runs inspection in the MDClaw SIF.
+
+    Mirrors how confirmatory production itself is executed: the runner may be a
+    thin venv, but the artifacts must be read by the same science stack that
+    wrote them. Returns ``None`` when no SIF runtime is available.
+    """
+    sif = os.environ.get("MDCLAW_SIF") or ""
+    if not sif or not os.path.exists(sif):
+        candidate = _REPO_ROOT / "mdclaw.sif"
+        sif = str(candidate) if candidate.exists() else ""
+    if not sif:
+        return None
+    runner = next(
+        (name for name in ("singularity", "apptainer") if shutil.which(name)),
+        None,
+    )
+    if runner is None:
+        return None
+
+    binds: list[str] = []
+    seen: set[str] = set()
+    for path in [_REPO_ROOT, *bind_paths]:
+        resolved = str(Path(path).resolve())
+        if resolved not in seen:
+            seen.add(resolved)
+            binds.extend(["--bind", f"{resolved}:{resolved}"])
+    pythonpath = str(_REPO_ROOT)
+    existing = os.environ.get("PYTHONPATH")
+    if existing:
+        pythonpath += os.pathsep + existing
+    return [
+        runner,
+        "exec",
+        *binds,
+        "--pwd",
+        str(_REPO_ROOT),
+        sif,
+        "env",
+        f"PYTHONPATH={pythonpath}",
+        f"{_INSPECTION_INPROCESS_ENV}=1",
+        "python",
+        "-m",
+        "mdclaw.benchmark.study_execution_v2",
+    ]
+
+
+def _run_openmm_artifact_inspection(
+    *,
+    input_paths: dict[str, Path | None],
+    output_paths: dict[str, Path | None],
+    metadata: dict[str, Any],
+    condition_role: str,
+    scientific_target: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Inspect artifacts here when possible, otherwise inside the MDClaw SIF."""
+    forced_inprocess = os.environ.get(_INSPECTION_INPROCESS_ENV) == "1"
+    if forced_inprocess or not _missing_inspection_dependencies():
+        return _inspect_openmm_artifacts(
+            input_paths=input_paths,
+            output_paths=output_paths,
+            metadata=metadata,
+            condition_role=condition_role,
+            scientific_target=scientific_target,
+        )
+
+    bind_paths = [
+        path.parent
+        for path in (*input_paths.values(), *output_paths.values())
+        if path is not None
+    ]
+    argv = _inspection_delegate_argv(bind_paths)
+    if argv is None:
+        # Fail closed, but name the cause: this is the runner's environment,
+        # not evidence that the inspected artifacts are untrustworthy.
+        return {}, ["openmm_artifact_inspection_unavailable"]
+
+    payload = {
+        "input_paths": {
+            key: (str(path) if path is not None else None)
+            for key, path in input_paths.items()
+        },
+        "output_paths": {
+            key: (str(path) if path is not None else None)
+            for key, path in output_paths.items()
+        },
+        "metadata": metadata,
+        "condition_role": condition_role,
+        "scientific_target": scientific_target,
+    }
+    completed = subprocess.run(
+        argv,
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    result = _parse_delegated_inspection_result(completed.stdout)
+    if result is None:
+        return {}, ["openmm_artifact_inspection_unavailable"]
+    return result
+
+
+def _parse_delegated_inspection_result(
+    stdout: str,
+) -> tuple[dict[str, Any], list[str]] | None:
+    """Read the sentinel-tagged JSON result line from a delegated inspection."""
+    for line in reversed((stdout or "").splitlines()):
+        if not line.startswith(_INSPECTION_RESULT_SENTINEL):
+            continue
+        try:
+            payload = json.loads(line[len(_INSPECTION_RESULT_SENTINEL):])
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        facts = payload.get("runtime_facts")
+        errors = payload.get("errors")
+        if not isinstance(facts, dict) or not isinstance(errors, list):
+            return None
+        return facts, [str(entry) for entry in errors]
+    return None
 
 
 def _inspect_openmm_artifacts(
@@ -1032,3 +1180,38 @@ def _read_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _inspect_from_stdin() -> int:
+    """Delegated-inspection entry point: JSON payload in, tagged JSON out.
+
+    Only the runner invokes this, inside the MDClaw container, when its own
+    interpreter lacks the science stack. It reports artifact findings; it never
+    reads a task's held-out answer.
+    """
+    try:
+        payload = json.loads(sys.stdin.read())
+        facts, errors = _inspect_openmm_artifacts(
+            input_paths={
+                key: (Path(value) if value is not None else None)
+                for key, value in payload["input_paths"].items()
+            },
+            output_paths={
+                key: (Path(value) if value is not None else None)
+                for key, value in payload["output_paths"].items()
+            },
+            metadata=payload.get("metadata") or {},
+            condition_role=payload.get("condition_role") or "",
+            scientific_target=payload.get("scientific_target") or {},
+        )
+    except Exception:  # noqa: BLE001 -- artifact trust boundary is fail-closed
+        facts, errors = {}, ["openmm_artifact_inspection_failed"]
+    print(
+        _INSPECTION_RESULT_SENTINEL
+        + json.dumps({"runtime_facts": facts, "errors": errors}, default=str)
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_inspect_from_stdin())
