@@ -767,3 +767,94 @@ def test_runtime_wrapper_cannot_import_solver_cwd_mdclaw_shadow(
     assert trusted_marker.read_text() == "trusted"
     assert not fake_marker.exists()
     assert not user_site_marker.exists()
+
+
+def _run_sif_wrapper(
+    tmp_path: Path,
+    *,
+    source_root: Path,
+    solver_cwd: Path,
+    harness_log: Path | None,
+) -> str:
+    """Render the SIF wrapper against a stub container runner and return argv."""
+    fake_bin = tmp_path / "stub-bin"
+    fake_bin.mkdir(exist_ok=True)
+    stub = fake_bin / "singularity"
+    stub.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n')
+    stub.chmod(0o755)
+
+    sif_path = tmp_path / "stub.sif"
+    sif_path.write_text("not-a-real-sif")
+
+    wrapper = tmp_path / "wrapper_bin" / "mdclaw"
+    _write_mdclaw_runtime_wrapper(
+        wrapper,
+        mdclaw_runtime="sif",
+        source_root=source_root,
+        work_root=solver_cwd,
+    )
+
+    environment = os.environ.copy()
+    environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
+    environment["MDCLAW_SIF"] = str(sif_path)
+    environment.pop("MDCLAW_BENCHMARK_HARNESS_LOG", None)
+    if harness_log is not None:
+        environment["MDCLAW_BENCHMARK_HARNESS_LOG"] = str(harness_log)
+
+    completed = subprocess.run(
+        [str(wrapper), "--list"],
+        cwd=solver_cwd,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout
+
+
+def test_sif_wrapper_binds_harness_log_dir_read_write(tmp_path: Path):
+    """The read-only source mount must not swallow harness execution records.
+
+    The harness log lives under the run directory, which normally sits inside
+    the read-only ``source_root`` mount. Without an explicit read-write bind the
+    CLI's append is silently dropped and the scorer sees no executed commands.
+    """
+    source_root = tmp_path / "repo"
+    solver_cwd = source_root / "benchmark_runs" / "run" / "solver" / "work"
+    solver_cwd.mkdir(parents=True)
+    harness_log = (
+        source_root / "benchmark_runs" / "run" / "tasks" / "T1"
+        / "harness_execution.jsonl"
+    )
+
+    argv = _run_sif_wrapper(
+        tmp_path,
+        source_root=source_root,
+        solver_cwd=solver_cwd,
+        harness_log=harness_log,
+    )
+
+    assert f"{source_root}:{source_root}:ro" in argv
+    assert f"{harness_log.parent}:{harness_log.parent}" in argv
+    # The read-write bind must come after the read-only source mount so it wins.
+    assert argv.index(f"{source_root}:{source_root}:ro") < argv.index(
+        f"{harness_log.parent}:{harness_log.parent}"
+    )
+    assert harness_log.parent.is_dir()
+
+
+def test_sif_wrapper_omits_log_bind_without_harness_log(tmp_path: Path):
+    source_root = tmp_path / "repo"
+    solver_cwd = source_root / "work"
+    solver_cwd.mkdir(parents=True)
+
+    argv = _run_sif_wrapper(
+        tmp_path,
+        source_root=source_root,
+        solver_cwd=solver_cwd,
+        harness_log=None,
+    )
+
+    assert f"{source_root}:{source_root}:ro" in argv
+    assert "" not in argv.splitlines()

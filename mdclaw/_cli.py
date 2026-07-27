@@ -623,8 +623,15 @@ def _write_benchmark_harness_record(
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a") as f:
             f.write(json.dumps(record, sort_keys=True, default=str) + "\n")
-    except Exception:
-        # Harness logging must never break the underlying CLI command.
+    except Exception as exc:
+        # Harness logging must never break the underlying CLI command, but a
+        # silent drop looks identical to "the agent ran no commands" to the
+        # scorer, so say why on stderr.
+        print(
+            f"Warning: could not append benchmark harness record to {log_path}: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
         return
 
 

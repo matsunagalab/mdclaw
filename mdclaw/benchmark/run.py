@@ -769,6 +769,16 @@ if [[ "$RUNTIME" == "auto" ]]; then
   fi
 fi
 
+# The benchmark harness log usually lives under SOURCE_ROOT, which container
+# runtimes mount read-only so a solver cannot mutate the source tree. Bind its
+# directory read-write on top of that mount, or CLI execution records are
+# silently dropped (mdclaw._cli swallows the write failure by design).
+HARNESS_LOG_DIR=""
+if [[ -n "${{MDCLAW_BENCHMARK_HARNESS_LOG:-}}" ]]; then
+  HARNESS_LOG_DIR="$(dirname "$MDCLAW_BENCHMARK_HARNESS_LOG")"
+  mkdir -p "$HARNESS_LOG_DIR" 2>/dev/null || HARNESS_LOG_DIR=""
+fi
+
 case "$RUNTIME" in
   conda)
     command -v conda >/dev/null 2>&1 || {{
@@ -805,8 +815,13 @@ case "$RUNTIME" in
     if [[ -n "$WORK_ROOT" && "$WORK_ROOT" != "$PWD" ]]; then
       WORK_BIND=(--bind "$WORK_ROOT:$WORK_ROOT")
     fi
+    LOG_BIND=()
+    if [[ -n "$HARNESS_LOG_DIR" ]]; then
+      LOG_BIND=(--bind "$HARNESS_LOG_DIR:$HARNESS_LOG_DIR")
+    fi
     exec "$RUNNER" exec "${{NV_FLAG[@]}}" \
       --bind "$SOURCE_ROOT:$SOURCE_ROOT:ro" "${{WORK_BIND[@]}}" \
+      "${{LOG_BIND[@]}}" \
       --bind "$PWD:$PWD" --pwd "$PWD" \
       "$SIF_PATH" env PYTHONPATH="$SOURCE_ROOT" \
       python -s -P -m mdclaw._cli "$@"
@@ -829,8 +844,12 @@ case "$RUNTIME" in
     if [[ -n "$WORK_ROOT" && "$WORK_ROOT" != "$PWD" ]]; then
       WORK_FLAGS=(-v "$WORK_ROOT:$WORK_ROOT")
     fi
+    LOG_FLAGS=()
+    if [[ -n "$HARNESS_LOG_DIR" ]]; then
+      LOG_FLAGS=(-v "$HARNESS_LOG_DIR:$HARNESS_LOG_DIR")
+    fi
     exec docker run --rm "${{GPU_FLAGS[@]}}" "${{USER_FLAGS[@]}}" \
-      -v "$PWD:$PWD" "${{WORK_FLAGS[@]}}" \
+      -v "$PWD:$PWD" "${{WORK_FLAGS[@]}}" "${{LOG_FLAGS[@]}}" \
       -v "$SOURCE_ROOT:$SOURCE_ROOT:ro" -w "$PWD" \
       -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONPATH="$SOURCE_ROOT" \
       "$IMAGE" python -s -P -m mdclaw._cli "$@"
