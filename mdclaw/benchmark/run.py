@@ -1056,6 +1056,8 @@ def _execute_v2_confirmatory_plan(
                     )
                 ),
             ]
+            if "random_seed" in spec:
+                command.extend(["--random-seed", str(spec["random_seed"])])
             runner_cwd = Path(
                 tempfile.mkdtemp(
                     prefix="confirmatory_runner_cwd_",
@@ -1319,16 +1321,32 @@ def _normalize_v2_confirmatory_plan_runs(
             )
             continue
         seen_nodes.add(node_key)
-        output.append(
-            {
-                "run_id": run_id,
-                "production_event_id": f"runner-prod-{len(output) + 1:03d}",
-                "condition_role": role,
-                "job_dir": job_dir,
-                "node_id": node_id,
-                "simulation_time_ns": float(simulation_time_ns),
-            }
-        )
+        conditions = node.get("conditions", {})
+        random_seed = None
+        if isinstance(conditions, dict) and "random_seed" in conditions:
+            random_seed = conditions["random_seed"]
+            if isinstance(random_seed, bool) or not isinstance(random_seed, int):
+                errors.append(
+                    {
+                        "code": "confirmatory_random_seed_invalid",
+                        "message": (
+                            f"runs[{index}] prod node random_seed must be "
+                            "an integer when declared"
+                        ),
+                    }
+                )
+                continue
+        normalized = {
+            "run_id": run_id,
+            "production_event_id": f"runner-prod-{len(output) + 1:03d}",
+            "condition_role": role,
+            "job_dir": job_dir,
+            "node_id": node_id,
+            "simulation_time_ns": float(simulation_time_ns),
+        }
+        if random_seed is not None:
+            normalized["random_seed"] = random_seed
+        output.append(normalized)
     if {item["condition_role"] for item in output} != {"reference", "variant"}:
         errors.append(
             {

@@ -217,6 +217,7 @@ def test_confirmatory_commands_use_empty_runner_owned_cwd(
             "job_dir": solver_work_dir / role,
             "node_id": "prod_001",
             "simulation_time_ns": 0.01,
+            **({"random_seed": 20260727} if role == "reference" else {}),
         }
         for index, role in enumerate(("reference", "variant"), start=1)
     ]
@@ -246,13 +247,15 @@ def test_confirmatory_commands_use_empty_runner_owned_cwd(
         lambda **_kwargs: [],
     )
     observed_cwds: list[Path] = []
+    observed_commands: list[list[str]] = []
 
     def fake_run_runner_owned_command(
-        _command,
+        command,
         *,
         cwd,
         **_kwargs,
     ):
+        observed_commands.append(command)
         observed_cwds.append(cwd)
         assert cwd.parent == task_run_dir
         assert cwd.name.startswith("confirmatory_runner_cwd_")
@@ -287,10 +290,92 @@ def test_confirmatory_commands_use_empty_runner_owned_cwd(
     assert all(not cwd.exists() for cwd in observed_cwds)
     assert all(not cwd.is_relative_to(solver_task_dir) for cwd in observed_cwds)
     assert all(not cwd.is_relative_to(solver_work_dir) for cwd in observed_cwds)
+    assert observed_commands[0].count("--random-seed") == 1
+    seed_index = observed_commands[0].index("--random-seed")
+    assert observed_commands[0][seed_index + 1] == "20260727"
+    assert "--random-seed" not in observed_commands[1]
     assert (task_run_dir / "frozen_confirmatory_plan.json").read_bytes() == (
         plan_path.read_bytes()
     )
     assert (solver_task_dir / "confirmatory_result.json").is_file()
+
+
+def test_normalize_confirmatory_runs_preserves_optional_declared_random_seed(
+    tmp_path: Path,
+):
+    work_dir = tmp_path / "work"
+    for role in ("reference", "variant"):
+        node_dir = work_dir / role / "nodes" / "prod_001"
+        node_dir.mkdir(parents=True)
+        conditions = {"random_seed": 20260727} if role == "reference" else {}
+        (node_dir / "node.json").write_text(
+            json.dumps(
+                {
+                    "node_type": "prod",
+                    "status": "pending",
+                    "conditions": conditions,
+                }
+            )
+        )
+    errors: list[dict[str, str]] = []
+
+    normalized = _normalize_v2_confirmatory_plan_runs(
+        [
+            {
+                "run_id": f"{role}-1",
+                "condition_role": role,
+                "job_dir": role,
+                "node_id": "prod_001",
+                "simulation_time_ns": 0.01,
+            }
+            for role in ("reference", "variant")
+        ],
+        solver_work_dir=work_dir,
+        errors=errors,
+    )
+
+    assert errors == []
+    assert normalized[0]["random_seed"] == 20260727
+    assert "random_seed" not in normalized[1]
+
+
+@pytest.mark.parametrize("random_seed", [None, True, 1.5, "17"])
+def test_normalize_confirmatory_runs_rejects_invalid_declared_random_seed(
+    tmp_path: Path,
+    random_seed: object,
+):
+    work_dir = tmp_path / "work"
+    node_dir = work_dir / "reference" / "nodes" / "prod_001"
+    node_dir.mkdir(parents=True)
+    (node_dir / "node.json").write_text(
+        json.dumps(
+            {
+                "node_type": "prod",
+                "status": "pending",
+                "conditions": {"random_seed": random_seed},
+            }
+        )
+    )
+    errors: list[dict[str, str]] = []
+
+    normalized = _normalize_v2_confirmatory_plan_runs(
+        [
+            {
+                "run_id": "reference-1",
+                "condition_role": "reference",
+                "job_dir": "reference",
+                "node_id": "prod_001",
+                "simulation_time_ns": 0.01,
+            }
+        ],
+        solver_work_dir=work_dir,
+        errors=errors,
+    )
+
+    assert normalized == []
+    assert "confirmatory_random_seed_invalid" in {
+        item["code"] for item in errors
+    }
 
 
 def test_confirmatory_job_dirs_must_be_relative_to_work_dir(tmp_path: Path):
