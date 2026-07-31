@@ -8,6 +8,7 @@
 set -euo pipefail
 
 python - <<'PY'
+import ctypes
 import math
 import platform
 
@@ -21,6 +22,15 @@ assert torch.version.cuda is not None, "PyTorch is a CPU-only build"
 
 capability = torch.cuda.get_device_capability(0)
 assert capability[0] >= 10, f"Expected CUDA compute capability >=10, got {capability}"
+
+nvrtc = ctypes.CDLL("libnvrtc.so")
+nvrtc_major = ctypes.c_int()
+nvrtc_minor = ctypes.c_int()
+assert nvrtc.nvrtcVersion(
+    ctypes.byref(nvrtc_major), ctypes.byref(nvrtc_minor)
+) == 0
+nvrtc_version = (nvrtc_major.value, nvrtc_minor.value)
+assert nvrtc_version == (13, 0), f"Expected NVRTC 13.0, got {nvrtc_version}"
 
 platforms = [
     openmm.Platform.getPlatform(index).getName()
@@ -57,6 +67,7 @@ assert hasattr(openmmtorch, "PythonTorchForce"), "PythonTorchForce missing"
 
 print(f"architecture={platform.machine()}")
 print(f"torch={torch.__version__} torch_cuda={torch.version.cuda}")
+print(f"nvrtc={nvrtc_major.value}.{nvrtc_minor.value}")
 print(f"gpu_available=True capability={capability}")
 print(f"openmm={openmm.__version__} platforms={platforms}")
 print(f"potential_energy_kj_mol={energy:.8f}")

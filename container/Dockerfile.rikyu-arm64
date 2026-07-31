@@ -12,8 +12,8 @@
 #     docker://ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev
 
 ARG MINIFORGE_IMAGE="condaforge/miniforge3:24.11.3-0@sha256:bcfc04b3562faa8dfd48f3767e2bd7b73a8529f9611b508d42e5bd227db1342d"
-ARG CUDA_DEVEL_IMAGE="nvidia/cuda:13.1.2-devel-ubuntu24.04@sha256:b9f64abf7226fdb3463ca202bc99878ec847171e6c5f77bd34c8d1403fbf1eca"
-ARG CUDA_RUNTIME_IMAGE="nvidia/cuda:13.1.2-runtime-ubuntu24.04@sha256:bff001d3257971cc4752e15ac2d354befa70995ded8e141741ade50569fc192e"
+ARG CUDA_DEVEL_IMAGE="nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:5dc1bca23d05bd37b011be68ec470c03b403a5da07ec3a86e41af9470e9d0cc6"
+ARG CUDA_RUNTIME_IMAGE="nvidia/cuda:13.0.2-runtime-ubuntu24.04@sha256:6a0e31b59e70890446f2c17356d6efc0d54260090a8c63d6ca7c2ad049db95d2"
 
 # =============================================================================
 # Stage 1: Build and pack the arm64 conda environment
@@ -41,9 +41,9 @@ RUN sed -E \
       -e '/^[[:space:]]+- (openmm|openmm-torch|pytorch|cuda-version)([<>= ].*)?$/d' \
       -e '/^  - pip:/,$d' \
       environment.yml > environment-arm64-cuda13.yml && \
-    printf '  - pytorch=%s=*cuda130*\n  - cuda-version=13.1\n' \
+    printf '  - pytorch=%s=*cuda130*\n  - cuda-version=13.0\n' \
       "${PYTORCH_VERSION}" >> environment-arm64-cuda13.yml && \
-    CONDA_OVERRIDE_CUDA=13.1 mamba env create \
+    CONDA_OVERRIDE_CUDA=13.0 mamba env create \
       -f environment-arm64-cuda13.yml -n mdclaw && \
     mamba clean -afy
 
@@ -69,7 +69,7 @@ RUN mamba run -n mdclaw python -c \
     mamba clean -afy
 
 # =============================================================================
-# Stage 2: Build OpenMM and openmm-torch against CUDA 13.1
+# Stage 2: Build OpenMM and openmm-torch against CUDA 13.0
 # =============================================================================
 FROM --platform=linux/arm64 ${CUDA_DEVEL_IMAGE} AS openmm-builder
 
@@ -97,6 +97,8 @@ RUN tar -xzf /tmp/mdclaw_env.tar.gz -C /opt/mdclaw && \
 
 ENV PATH="/opt/mdclaw/bin:$PATH" \
     CUDA_HOME="/usr/local/cuda"
+
+RUN nvcc --version | grep -q "release 13.0"
 
 RUN /opt/mdclaw/bin/pip install --no-cache-dir cython
 
@@ -127,8 +129,9 @@ RUN mkdir -p /build/openmm-torch && \
 
 # openmm-torch contains compiled CUDA code, unlike OpenMM's NVRTC kernels.
 # Explicitly build SASS for compute capability 10.0 and retain PTX for forward
-# compatibility. PyTorch's CUDA 13.0 build is minor-version compatible with the
-# CUDA 13.1 compiler in this stage.
+# compatibility. Keep the compiler on CUDA 13.0 as well: OpenMM uses NVRTC at
+# runtime, and PTX emitted by a newer minor toolkit may be rejected by a driver
+# whose maximum supported CUDA toolkit is 13.0.
 ENV TORCH_CUDA_ARCH_LIST="10.0+PTX"
 RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c \
       "import pathlib, torch; print(pathlib.Path(torch.__file__).resolve().parent / 'share' / 'cmake' / 'Torch')") && \
@@ -161,7 +164,7 @@ RUN mkdir -p /opt/mdclaw-layer-parts && \
     mv /opt/mdclaw/targets /opt/mdclaw-layer-parts/targets
 
 # =============================================================================
-# Stage 3: Slim CUDA 13.1 arm64 runtime
+# Stage 3: Slim CUDA 13.0 arm64 runtime
 # =============================================================================
 FROM --platform=linux/arm64 ${CUDA_RUNTIME_IMAGE}
 
@@ -169,12 +172,13 @@ ARG GIT_REVISION="unknown"
 ARG WARM_MEMBRANE_CACHE="0"
 
 LABEL org.opencontainers.image.title="MDClaw arm64 CUDA 13 runtime" \
-      org.opencontainers.image.description="MDClaw Linux arm64 runtime with CUDA 13.1, OpenMM, AmberTools, and PyTorch." \
+      org.opencontainers.image.description="MDClaw Linux arm64 runtime with CUDA 13.0, OpenMM, AmberTools, and PyTorch." \
       org.opencontainers.image.source="https://github.com/matsunagalab/mdclaw" \
       org.opencontainers.image.documentation="https://github.com/matsunagalab/mdclaw/blob/main/docs/developer/container.md" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.revision="${GIT_REVISION}" \
-      org.opencontainers.image.vendor="matsunagalab"
+      org.opencontainers.image.vendor="matsunagalab" \
+      com.nvidia.cuda.version="13.0.2"
 
 RUN test "$(dpkg --print-architecture)" = "arm64" && \
     apt-get update && \
@@ -198,12 +202,27 @@ COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc-builtins.so* /opt/mdcl
 
 ENV PATH="/opt/mdclaw/bin:$PATH" \
     AMBERHOME="/opt/mdclaw" \
+    MDCLAW_CUDA_TOOLKIT_VERSION="13.0" \
     PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages" \
     OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins" \
     LD_LIBRARY_PATH="/opt/mdclaw/lib:/opt/mdclaw/lib/python3.12/site-packages/torch/lib:${LD_LIBRARY_PATH}" \
     NVIDIA_VISIBLE_DEVICES="all" \
     NVIDIA_DRIVER_CAPABILITIES="compute,utility" \
     MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR="/opt/mdclaw/share/membrane_patches"
+
+# Fail the build if the final runtime accidentally receives NVRTC from a newer
+# toolkit. OpenMM compiles its CUDA kernels with this library at Context
+# creation time, so this version is a runtime compatibility contract.
+RUN /opt/mdclaw/bin/python - <<'PY'
+import ctypes
+
+nvrtc = ctypes.CDLL("libnvrtc.so")
+major = ctypes.c_int()
+minor = ctypes.c_int()
+assert nvrtc.nvrtcVersion(ctypes.byref(major), ctypes.byref(minor)) == 0
+assert (major.value, minor.value) == (13, 0), (major.value, minor.value)
+print(f"NVRTC {major.value}.{minor.value}")
+PY
 
 COPY scripts/warmup_membrane_cache.py /opt/mdclaw/share/warmup_membrane_cache.py
 RUN if [ "${WARM_MEMBRANE_CACHE}" = "1" ]; then \

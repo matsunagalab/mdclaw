@@ -74,6 +74,19 @@ print(f'MDAnalysis {mda.__version__}, RMSD {value}')
 check "pdb2pqr" python -c "import pdb2pqr; print('pdb2pqr OK')"
 check "numpy" python -c "import numpy; print(f'NumPy {numpy.__version__}')"
 check "torch" python -c "import torch; print(f'PyTorch {torch.__version__}')"
+check "NVRTC runtime contract" python -c "
+import ctypes
+import os
+
+nvrtc = ctypes.CDLL('libnvrtc.so')
+major = ctypes.c_int()
+minor = ctypes.c_int()
+assert nvrtc.nvrtcVersion(ctypes.byref(major), ctypes.byref(minor)) == 0
+actual = f'{major.value}.{minor.value}'
+expected = os.environ.get('MDCLAW_CUDA_TOOLKIT_VERSION')
+assert expected is None or actual == expected, (actual, expected)
+print(f'NVRTC {actual}')
+"
 
 # --- AmberTools ---
 echo ""
