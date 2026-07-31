@@ -32,25 +32,20 @@ COPY mdclaw/ mdclaw/
 
 # The generic environment pins OpenMM below CUDA 13 and PyTorch below 2.8 for
 # mixed-driver clusters. Rikyu has an R580 driver and a CUDA 13.x site stack,
-# so this image resolves the architecture-specific GPU packages separately.
+# so this image resolves the architecture-specific GPU packages in the same
+# transaction as the OpenFF/JAX dependencies.
 # The pip subsection is also installed separately, after GPU PyTorch exists,
 # to prevent pip from selecting an unrelated CPU wheel as an indirect
 # dependency of HPacker/e3nn.
+ARG PYTORCH_VERSION="2.10.0"
 RUN sed -E \
       -e '/^[[:space:]]+- (openmm|openmm-torch|pytorch|cuda-version)([<>= ].*)?$/d' \
       -e '/^  - pip:/,$d' \
       environment.yml > environment-rikyu.yml && \
-    mamba env create -f environment-rikyu.yml -n mdclaw && \
-    mamba clean -afy
-
-# PyTorch 2.12.1 is the first conda-forge line used here that provides a
-# linux-aarch64 CUDA 13.0 build. CUDA 13 minor-version compatibility permits
-# this runtime to coexist with the CUDA 13.1 toolkit used to compile OpenMM and
-# openmm-torch.
-ARG PYTORCH_VERSION="2.12.1"
-RUN CONDA_OVERRIDE_CUDA=13.0 mamba install -n mdclaw -y -c conda-forge \
-      "pytorch=${PYTORCH_VERSION}=*cuda130*" \
-      "cuda-version=13.0" && \
+    printf '  - pytorch=%s=*cuda130*\n  - cuda-version=13.1\n' \
+      "${PYTORCH_VERSION}" >> environment-rikyu.yml && \
+    CONDA_OVERRIDE_CUDA=13.1 mamba env create \
+      -f environment-rikyu.yml -n mdclaw && \
     mamba clean -afy
 
 RUN mamba run -n mdclaw pip install --no-cache-dir \
