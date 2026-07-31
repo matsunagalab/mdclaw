@@ -48,7 +48,7 @@ RUN sed -E \
 # this runtime to coexist with the CUDA 13.1 toolkit used to compile OpenMM and
 # openmm-torch.
 ARG PYTORCH_VERSION="2.12.1"
-RUN mamba install -n mdclaw -y -c conda-forge \
+RUN CONDA_OVERRIDE_CUDA=13.0 mamba install -n mdclaw -y -c conda-forge \
       "pytorch=${PYTORCH_VERSION}=*cuda130*" \
       "cuda-version=13.0" && \
     mamba clean -afy
