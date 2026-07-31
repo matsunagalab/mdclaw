@@ -1,0 +1,212 @@
+# syntax=docker/dockerfile:1.7
+#
+# MDClaw runtime for RIKEN Rikyu (Grace arm64 + GB200 Blackwell).
+#
+# Build on an arm64 host (Apple Silicon Docker Desktop is supported):
+#   docker build --platform linux/arm64 \
+#     -f container/Dockerfile.rikyu-arm64 \
+#     -t ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev .
+#
+# Rikyu accepts the published OCI image through Apptainer:
+#   apptainer pull mdclaw-rikyu-arm64-cuda13-dev.sif \
+#     docker://ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev
+
+ARG MINIFORGE_IMAGE="condaforge/miniforge3:24.11.3-0@sha256:bcfc04b3562faa8dfd48f3767e2bd7b73a8529f9611b508d42e5bd227db1342d"
+ARG CUDA_DEVEL_IMAGE="nvidia/cuda:13.1.2-devel-ubuntu24.04@sha256:b9f64abf7226fdb3463ca202bc99878ec847171e6c5f77bd34c8d1403fbf1eca"
+ARG CUDA_RUNTIME_IMAGE="nvidia/cuda:13.1.2-runtime-ubuntu24.04@sha256:bff001d3257971cc4752e15ac2d354befa70995ded8e141741ade50569fc192e"
+
+# =============================================================================
+# Stage 1: Build and pack the arm64 conda environment
+# =============================================================================
+FROM --platform=linux/arm64 ${MINIFORGE_IMAGE} AS conda-base
+
+WORKDIR /build
+
+RUN test "$(dpkg --print-architecture)" = "arm64" && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends build-essential git ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY environment.yml pyproject.toml README.md ./
+COPY mdclaw/ mdclaw/
+
+# The generic environment pins OpenMM below CUDA 13 and PyTorch below 2.8 for
+# mixed-driver clusters. Rikyu has an R580 driver and a CUDA 13.x site stack,
+# so this image resolves the architecture-specific GPU packages separately.
+# The pip subsection is also installed separately, after GPU PyTorch exists,
+# to prevent pip from selecting an unrelated CPU wheel as an indirect
+# dependency of HPacker/e3nn.
+RUN sed -E \
+      -e '/^[[:space:]]+- (openmm|openmm-torch|pytorch|cuda-version)([<>= ].*)?$/d' \
+      -e '/^  - pip:/,$d' \
+      environment.yml > environment-rikyu.yml && \
+    mamba env create -f environment-rikyu.yml -n mdclaw && \
+    mamba clean -afy
+
+# PyTorch 2.12.1 is the first conda-forge line used here that provides a
+# linux-aarch64 CUDA 13.0 build. CUDA 13 minor-version compatibility permits
+# this runtime to coexist with the CUDA 13.1 toolkit used to compile OpenMM and
+# openmm-torch.
+ARG PYTORCH_VERSION="2.12.1"
+RUN mamba install -n mdclaw -y -c conda-forge \
+      "pytorch=${PYTORCH_VERSION}=*cuda130*" \
+      "cuda-version=13.0" && \
+    mamba clean -afy
+
+RUN mamba run -n mdclaw pip install --no-cache-dir \
+      ".[dev]" \
+      "openff-pablo @ git+https://github.com/openforcefield/openff-pablo.git@v0.2.2"
+
+# Apply packmol-memgen's NumPy compatibility patch, matching the generic image.
+RUN SITE_PACKAGES=$(mamba run -n mdclaw python -c "import site; print(site.getsitepackages()[0])") && \
+    PATCH_FILE="$SITE_PACKAGES/packmol_memgen/lib/pdbremix/v3numpy.py" && \
+    if [ -f "$PATCH_FILE" ]; then \
+        sed -i.bak "s/np\\.float)/float)/g; s/np\\.int)/int)/g" "$PATCH_FILE" && \
+        rm -f "${PATCH_FILE}.bak"; \
+    fi
+
+RUN mamba run -n mdclaw python -c \
+      "import platform, torch; assert platform.machine() == 'aarch64'; assert torch.version.cuda == '13.0'; print(torch.__version__, torch.version.cuda)" && \
+    mamba install -n base -y conda-pack && \
+    conda-pack -n mdclaw -o /build/mdclaw_env.tar.gz \
+      --ignore-editable-packages --ignore-missing-files && \
+    mamba clean -afy
+
+# =============================================================================
+# Stage 2: Build OpenMM and openmm-torch against CUDA 13.1 for Blackwell
+# =============================================================================
+FROM --platform=linux/arm64 ${CUDA_DEVEL_IMAGE} AS openmm-builder
+
+ARG BUILD_JOBS="4"
+ARG OPENMM_VERSION="8.5.1"
+ARG OPENMM_TORCH_COMMIT="b6532900ad825cb3d12193817a1e34a7f46ae6a3"
+
+RUN test "$(dpkg --print-architecture)" = "arm64" && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      build-essential \
+      ca-certificates \
+      cmake \
+      doxygen \
+      git \
+      ninja-build \
+      swig && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /opt/mdclaw
+COPY --from=conda-base /build/mdclaw_env.tar.gz /tmp/mdclaw_env.tar.gz
+RUN tar -xzf /tmp/mdclaw_env.tar.gz -C /opt/mdclaw && \
+    rm /tmp/mdclaw_env.tar.gz && \
+    /opt/mdclaw/bin/python /opt/mdclaw/bin/conda-unpack
+
+ENV PATH="/opt/mdclaw/bin:$PATH" \
+    CUDA_HOME="/usr/local/cuda"
+
+RUN /opt/mdclaw/bin/pip install --no-cache-dir cython
+
+RUN git clone --depth 1 --branch "${OPENMM_VERSION}" \
+      https://github.com/openmm/openmm.git /build/openmm
+
+RUN cmake -S /build/openmm -B /build/openmm/build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/opt/mdclaw \
+      -DPYTHON_EXECUTABLE=/opt/mdclaw/bin/python \
+      -DOPENMM_BUILD_CUDA_LIB=ON \
+      -DOPENMM_BUILD_OPENCL_LIB=OFF \
+      -DOPENMM_BUILD_C_AND_FORTRAN_WRAPPERS=OFF && \
+    cmake --build /build/openmm/build --parallel "${BUILD_JOBS}" && \
+    cmake --install /build/openmm/build && \
+    cmake --build /build/openmm/build --target PythonInstall --parallel "${BUILD_JOBS}"
+
+RUN /opt/mdclaw/bin/python -c \
+      "import openmm; assert openmm.__version__.startswith('8.5.1'); print('OpenMM', openmm.__version__)"
+
+RUN mkdir -p /build/openmm-torch && \
+    cd /build/openmm-torch && \
+    git init -q && \
+    git remote add origin https://github.com/openmm/openmm-torch.git && \
+    git fetch --depth 1 origin "${OPENMM_TORCH_COMMIT}" && \
+    git checkout -q FETCH_HEAD
+
+# openmm-torch contains compiled CUDA code, unlike OpenMM's NVRTC kernels.
+# Explicitly build SASS for Blackwell sm_100 and retain PTX for forward
+# compatibility. PyTorch's CUDA 13.0 build is minor-version compatible with
+# the CUDA 13.1 compiler in this stage.
+ENV TORCH_CUDA_ARCH_LIST="10.0+PTX"
+RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c \
+      "import pathlib, torch; print(pathlib.Path(torch.__file__).resolve().parent / 'share' / 'cmake' / 'Torch')") && \
+    cmake -S /build/openmm-torch -B /build/openmm-torch/build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/opt/mdclaw \
+      -DOPENMM_DIR=/opt/mdclaw \
+      -DPYTHON_EXECUTABLE=/opt/mdclaw/bin/python \
+      -DTorch_DIR="${TORCH_CMAKE_DIR}" \
+      -DCMAKE_CUDA_ARCHITECTURES=100 \
+      -DCMAKE_CXX_FLAGS="-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE" \
+      -DNN_BUILD_CUDA_LIB=ON \
+      -DNN_BUILD_OPENCL_LIB=OFF && \
+    cmake --build /build/openmm-torch/build --parallel "${BUILD_JOBS}" && \
+    cmake --install /build/openmm-torch/build && \
+    cmake --build /build/openmm-torch/build --target PythonInstall --parallel "${BUILD_JOBS}"
+
+RUN /opt/mdclaw/bin/python -c \
+      "import openmmtorch; assert hasattr(openmmtorch, 'PythonTorchForce'); print('openmm-torch PythonTorchForce OK')"
+
+# =============================================================================
+# Stage 3: Slim CUDA 13.1 arm64 runtime
+# =============================================================================
+FROM --platform=linux/arm64 ${CUDA_RUNTIME_IMAGE}
+
+ARG GIT_REVISION="unknown"
+ARG WARM_MEMBRANE_CACHE="0"
+
+LABEL org.opencontainers.image.title="MDClaw for RIKEN Rikyu" \
+      org.opencontainers.image.description="MDClaw arm64 runtime for Grace-Blackwell with CUDA 13.1, OpenMM, AmberTools, and PyTorch." \
+      org.opencontainers.image.source="https://github.com/matsunagalab/mdclaw" \
+      org.opencontainers.image.documentation="https://github.com/matsunagalab/mdclaw/blob/main/docs/developer/container.md" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.revision="${GIT_REVISION}" \
+      org.opencontainers.image.vendor="matsunagalab"
+
+RUN test "$(dpkg --print-architecture)" = "arm64" && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates \
+      libgl1 \
+      libglib2.0-0 \
+      libsm6 \
+      libxrender1 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=openmm-builder /opt/mdclaw /opt/mdclaw
+
+# OpenMM compiles kernels at runtime. The runtime CUDA image does not include
+# NVRTC, so copy NVRTC and its builtins from the devel stage.
+COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc.so* /opt/mdclaw/lib/
+COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc-builtins.so* /opt/mdclaw/lib/
+
+ENV PATH="/opt/mdclaw/bin:$PATH" \
+    AMBERHOME="/opt/mdclaw" \
+    PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages" \
+    OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins" \
+    LD_LIBRARY_PATH="/opt/mdclaw/lib:/opt/mdclaw/lib/python3.12/site-packages/torch/lib:${LD_LIBRARY_PATH}" \
+    NVIDIA_VISIBLE_DEVICES="all" \
+    NVIDIA_DRIVER_CAPABILITIES="compute,utility" \
+    MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR="/opt/mdclaw/share/membrane_patches"
+
+COPY scripts/warmup_membrane_cache.py /opt/mdclaw/share/warmup_membrane_cache.py
+RUN if [ "${WARM_MEMBRANE_CACHE}" = "1" ]; then \
+      /opt/mdclaw/bin/python /opt/mdclaw/share/warmup_membrane_cache.py \
+        --out "${MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR}"; \
+    else \
+      mkdir -p "${MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR}" && \
+      echo "Skipping membrane patch warm-up for Rikyu development image."; \
+    fi
+
+COPY container/scripts/entrypoint.sh /opt/mdclaw/bin/entrypoint.sh
+RUN chmod +x /opt/mdclaw/bin/entrypoint.sh
+
+WORKDIR /work
+
+ENTRYPOINT ["/opt/mdclaw/bin/entrypoint.sh"]
+CMD ["mdclaw", "--version"]

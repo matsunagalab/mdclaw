@@ -36,6 +36,45 @@ docker push ghcr.io/matsunagalab/mdclaw:latest
 
 The GHCR package must be public for unauthenticated Singularity pulls.
 
+## Rikyu Arm64 / CUDA 13 Development Image
+
+Rikyu uses Grace arm64 CPUs and GB200 Blackwell GPUs. Its development image is
+kept separate from the generic `linux/amd64` / CUDA 11.8 image:
+
+```bash
+revision=$(git rev-parse --short=12 HEAD)
+image="ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev-${revision}"
+
+docker build --platform linux/arm64 \
+  --build-arg GIT_REVISION="$(git rev-parse HEAD)" \
+  --build-arg BUILD_JOBS=4 \
+  -f container/Dockerfile.rikyu-arm64 \
+  -t "$image" .
+docker push "$image"
+```
+
+The Dockerfile uses the arm64 manifests of CUDA 13.1.2 on Ubuntu 24.04, builds
+OpenMM 8.5.1 against CUDA 13.1, and compiles `openmm-torch` for Blackwell
+`sm_100`. It uses a CUDA 13.0 arm64 conda-forge PyTorch build, which is
+compatible within the CUDA 13.x driver family.
+
+Do not publish this image under `ghcr.io/matsunagalab/mdclaw:latest`. After
+push, record the registry digest and test the artifact pulled by digest rather
+than only the local Docker image:
+
+```bash
+apptainer pull mdclaw-rikyu-arm64-cuda13-dev.sif \
+  "docker://ghcr.io/matsunagalab/mdclaw-rikyu@sha256:<digest>"
+apptainer exec --nv mdclaw-rikyu-arm64-cuda13-dev.sif \
+  bash /path/to/container/scripts/test-container.sh
+apptainer exec --nv mdclaw-rikyu-arm64-cuda13-dev.sif \
+  bash /path/to/container/scripts/test-rikyu-gpu.sh
+```
+
+The development build skips the expensive membrane-patch warm-up by default.
+Pass `--build-arg WARM_MEMBRANE_CACHE=1` for a release candidate that should
+include the bundled patch cache.
+
 ## Singularity
 
 The Docker image published to GHCR is also the source for the HPC SIF:
