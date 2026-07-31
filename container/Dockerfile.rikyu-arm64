@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1.7
 #
-# MDClaw runtime for RIKEN Rikyu (Grace arm64 + GB200 Blackwell).
+# MDClaw runtime for Linux arm64 systems with CUDA 13.x GPUs.
 #
 # Build on an arm64 host (Apple Silicon Docker Desktop is supported):
 #   docker build --platform linux/arm64 \
 #     -f container/Dockerfile.rikyu-arm64 \
 #     -t ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev .
 #
-# Rikyu accepts the published OCI image through Apptainer:
+# The published OCI image can be converted to SIF with Apptainer:
 #   apptainer pull mdclaw-rikyu-arm64-cuda13-dev.sif \
 #     docker://ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev
 
@@ -30,9 +30,8 @@ RUN test "$(dpkg --print-architecture)" = "arm64" && \
 COPY environment.yml pyproject.toml README.md ./
 COPY mdclaw/ mdclaw/
 
-# The generic environment pins OpenMM below CUDA 13 and PyTorch below 2.8 for
-# mixed-driver clusters. Rikyu has an R580 driver and a CUDA 13.x site stack,
-# so this image resolves the architecture-specific GPU packages in the same
+# The generic environment pins OpenMM below CUDA 13 and PyTorch below 2.8.
+# This image instead resolves the arm64/CUDA 13 GPU packages in the same
 # transaction as the OpenFF/JAX dependencies.
 # The pip subsection is also installed separately, after GPU PyTorch exists,
 # to prevent pip from selecting an unrelated CPU wheel as an indirect
@@ -41,11 +40,11 @@ ARG PYTORCH_VERSION="2.10.0"
 RUN sed -E \
       -e '/^[[:space:]]+- (openmm|openmm-torch|pytorch|cuda-version)([<>= ].*)?$/d' \
       -e '/^  - pip:/,$d' \
-      environment.yml > environment-rikyu.yml && \
+      environment.yml > environment-arm64-cuda13.yml && \
     printf '  - pytorch=%s=*cuda130*\n  - cuda-version=13.1\n' \
-      "${PYTORCH_VERSION}" >> environment-rikyu.yml && \
+      "${PYTORCH_VERSION}" >> environment-arm64-cuda13.yml && \
     CONDA_OVERRIDE_CUDA=13.1 mamba env create \
-      -f environment-rikyu.yml -n mdclaw && \
+      -f environment-arm64-cuda13.yml -n mdclaw && \
     mamba clean -afy
 
 RUN mamba run -n mdclaw pip install --no-cache-dir \
@@ -68,7 +67,7 @@ RUN mamba run -n mdclaw python -c \
     mamba clean -afy
 
 # =============================================================================
-# Stage 2: Build OpenMM and openmm-torch against CUDA 13.1 for Blackwell
+# Stage 2: Build OpenMM and openmm-torch against CUDA 13.1
 # =============================================================================
 FROM --platform=linux/arm64 ${CUDA_DEVEL_IMAGE} AS openmm-builder
 
@@ -125,9 +124,9 @@ RUN mkdir -p /build/openmm-torch && \
     git checkout -q FETCH_HEAD
 
 # openmm-torch contains compiled CUDA code, unlike OpenMM's NVRTC kernels.
-# Explicitly build SASS for Blackwell sm_100 and retain PTX for forward
-# compatibility. PyTorch's CUDA 13.0 build is minor-version compatible with
-# the CUDA 13.1 compiler in this stage.
+# Explicitly build SASS for compute capability 10.0 and retain PTX for forward
+# compatibility. PyTorch's CUDA 13.0 build is minor-version compatible with the
+# CUDA 13.1 compiler in this stage.
 ENV TORCH_CUDA_ARCH_LIST="10.0+PTX"
 RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c \
       "import pathlib, torch; print(pathlib.Path(torch.__file__).resolve().parent / 'share' / 'cmake' / 'Torch')") && \
@@ -158,8 +157,8 @@ FROM --platform=linux/arm64 ${CUDA_RUNTIME_IMAGE}
 ARG GIT_REVISION="unknown"
 ARG WARM_MEMBRANE_CACHE="0"
 
-LABEL org.opencontainers.image.title="MDClaw for RIKEN Rikyu" \
-      org.opencontainers.image.description="MDClaw arm64 runtime for Grace-Blackwell with CUDA 13.1, OpenMM, AmberTools, and PyTorch." \
+LABEL org.opencontainers.image.title="MDClaw arm64 CUDA 13 runtime" \
+      org.opencontainers.image.description="MDClaw Linux arm64 runtime with CUDA 13.1, OpenMM, AmberTools, and PyTorch." \
       org.opencontainers.image.source="https://github.com/matsunagalab/mdclaw" \
       org.opencontainers.image.documentation="https://github.com/matsunagalab/mdclaw/blob/main/docs/developer/container.md" \
       org.opencontainers.image.licenses="MIT" \
@@ -198,7 +197,7 @@ RUN if [ "${WARM_MEMBRANE_CACHE}" = "1" ]; then \
         --out "${MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR}"; \
     else \
       mkdir -p "${MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR}" && \
-      echo "Skipping membrane patch warm-up for Rikyu development image."; \
+      echo "Skipping membrane patch cache validation for this development image."; \
     fi
 
 COPY container/scripts/entrypoint.sh /opt/mdclaw/bin/entrypoint.sh

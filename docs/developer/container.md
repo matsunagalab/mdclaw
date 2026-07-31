@@ -36,10 +36,10 @@ docker push ghcr.io/matsunagalab/mdclaw:latest
 
 The GHCR package must be public for unauthenticated Singularity pulls.
 
-## Rikyu Arm64 / CUDA 13 Development Image
+## Arm64 / CUDA 13 Development Image
 
-Rikyu uses Grace arm64 CPUs and GB200 Blackwell GPUs. Its development image is
-kept separate from the generic `linux/amd64` / CUDA 11.8 image:
+The arm64/CUDA 13 development image is kept separate from the generic
+`linux/amd64` / CUDA 11.8 image:
 
 ```bash
 revision=$(git rev-parse --short=12 HEAD)
@@ -54,9 +54,9 @@ docker push "$image"
 ```
 
 The Dockerfile uses the arm64 manifests of CUDA 13.1.2 on Ubuntu 24.04, builds
-OpenMM 8.5.1 against CUDA 13.1, and compiles `openmm-torch` for Blackwell
-`sm_100`. It uses a CUDA 13.0 arm64 conda-forge PyTorch build, which is
-compatible within the CUDA 13.x driver family.
+OpenMM 8.5.1 against CUDA 13.1, and compiles `openmm-torch` for compute
+capability 10.0 (`sm_100`). It uses a CUDA 13.0 arm64 conda-forge PyTorch
+build, which is compatible within the CUDA 13.x driver family.
 
 Do not publish this image under `ghcr.io/matsunagalab/mdclaw:latest`. After
 push, record the registry digest and test the artifact pulled by digest rather
@@ -71,9 +71,10 @@ apptainer exec --nv mdclaw-rikyu-arm64-cuda13-dev.sif \
   bash /path/to/container/scripts/test-rikyu-gpu.sh
 ```
 
-The development build skips the expensive membrane-patch warm-up by default.
-Pass `--build-arg WARM_MEMBRANE_CACHE=1` for a release candidate that should
-include the bundled patch cache.
+The MDClaw package already contains the representative bundled membrane-patch
+cache. The development build skips revalidating or regenerating that cache by
+default. Pass `--build-arg WARM_MEMBRANE_CACHE=1` to make cache validation and
+regeneration a build-time gate for a release candidate.
 
 ## Singularity
 
