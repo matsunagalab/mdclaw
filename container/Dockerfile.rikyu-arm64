@@ -105,6 +105,7 @@ RUN git clone --depth 1 --branch "${OPENMM_VERSION}" \
 RUN cmake -S /build/openmm -B /build/openmm/build -G Ninja \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_INSTALL_PREFIX=/opt/mdclaw \
+      -DCUDAToolkit_ROOT=/usr/local/cuda \
       -DPYTHON_EXECUTABLE=/opt/mdclaw/bin/python \
       -DOPENMM_BUILD_CUDA_LIB=ON \
       -DOPENMM_BUILD_OPENCL_LIB=OFF \
