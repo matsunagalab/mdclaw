@@ -61,6 +61,8 @@ RUN SITE_PACKAGES=$(mamba run -n mdclaw python -c "import site; print(site.getsi
 
 RUN mamba run -n mdclaw python -c \
       "import platform, torch; assert platform.machine() == 'aarch64'; assert torch.version.cuda == '13.0'; print(torch.__version__, torch.version.cuda)" && \
+    mamba run -n mdclaw python -c \
+      "import MDAnalysis as mda, mdtraj; print('MDAnalysis', mda.__version__, 'MDTraj', mdtraj.__version__)" && \
     mamba install -n base -y conda-pack && \
     conda-pack -n mdclaw -o /build/mdclaw_env.tar.gz \
       --ignore-editable-packages --ignore-missing-files && \

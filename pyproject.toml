@@ -33,6 +33,7 @@ dependencies = [
 
     # Visualization & analysis
     "mdtraj>=1.9.0",
+    "MDAnalysis>=2.8,<3",
     "matplotlib",
     "pymbar>=4.0.3,<5",
 

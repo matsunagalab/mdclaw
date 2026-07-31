@@ -1,8 +1,8 @@
 # Container Runtime Build And Distribution
 
 The container is MDClaw's packaged scientific runtime. It contains the `mdclaw`
-CLI plus CUDA runtime, PyTorch, AmberTools, OpenMM, and PyMOL
-(`pymol-open-source`, for headless structure previews).
+CLI plus CUDA runtime, PyTorch, AmberTools, OpenMM, PyMOL
+(`pymol-open-source`, for headless structure previews), MDTraj, and MDAnalysis.
 
 Heavy AI model backends (BioEmu, Boltz-2) are intentionally **not** baked into
 the image. They ship their own Torch/CUDA stacks that conflict with the OpenMM
@@ -77,6 +77,23 @@ The MDClaw package already contains the representative bundled membrane-patch
 cache. The development build skips revalidating or regenerating that cache by
 default. Pass `--build-arg WARM_MEMBRANE_CACHE=1` to make cache validation and
 regeneration a build-time gate for a release candidate.
+
+Some institutional network paths interrupt long single-blob OCI downloads. If
+an Apptainer pull repeatedly fails on the same large layer, do not loop the
+same transfer indefinitely. Convert the already-verified Docker image to SIF
+on a trusted arm64 Linux system, then transfer the SIF with a resumable tool
+and verify its checksum:
+
+```bash
+docker save -o mdclaw-arm64.tar "$image"
+singularity build mdclaw-arm64.sif docker-archive:mdclaw-arm64.tar
+sha256sum mdclaw-arm64.sif
+
+rsync --partial --append --progress mdclaw-arm64.sif user@host:
+ssh user@host sha256sum mdclaw-arm64.sif
+```
+
+The two SHA-256 values must match before running the transferred SIF.
 
 ## Singularity
 

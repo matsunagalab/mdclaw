@@ -48,6 +48,29 @@ check "rdkit" python -c "from rdkit import Chem; print('RDKit OK')"
 check "parmed" python -c "import parmed; print(f'ParmEd {parmed.__version__}')"
 check "pdbfixer" python -c "from pdbfixer import PDBFixer; print('PDBFixer OK')"
 check "mdtraj" python -c "import mdtraj; print(f'MDTraj {mdtraj.__version__}')"
+check "MDAnalysis trajectory analysis" python -c "
+import numpy as np
+import MDAnalysis as mda
+from MDAnalysis.analysis.rms import rmsd
+from MDAnalysis.coordinates.memory import MemoryReader
+
+coordinates = np.asarray(
+    [
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+        [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+    ],
+    dtype=np.float32,
+)
+universe = mda.Universe.empty(2)
+universe.load_new(coordinates, format=MemoryReader)
+universe.trajectory[0]
+reference = universe.atoms.positions.copy()
+universe.trajectory[1]
+value = rmsd(reference, universe.atoms.positions)
+assert len(universe.trajectory) == 2
+assert np.isfinite(value) and value > 0
+print(f'MDAnalysis {mda.__version__}, RMSD {value}')
+"
 check "pdb2pqr" python -c "import pdb2pqr; print('pdb2pqr OK')"
 check "numpy" python -c "import numpy; print(f'NumPy {numpy.__version__}')"
 check "torch" python -c "import torch; print(f'PyTorch {torch.__version__}')"
