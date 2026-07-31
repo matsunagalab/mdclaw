@@ -8,6 +8,9 @@
 
 set -e
 
+# Avoid importing an adjacent source checkout instead of the installed package.
+cd "${TMPDIR:-/tmp}"
+
 PASS=0
 FAIL=0
 
@@ -54,7 +57,7 @@ echo ""
 echo "[AmberTools]"
 check "tleap" bash -c "echo 'quit' | tleap -f -"
 check "antechamber" antechamber -h
-check "parmchk2" which parmchk2
+check "parmchk2" bash -c "command -v parmchk2"
 
 # --- GPU detection ---
 echo ""
