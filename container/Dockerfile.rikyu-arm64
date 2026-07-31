@@ -149,6 +149,15 @@ RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c \
 RUN /opt/mdclaw/bin/python -c \
       "import openmmtorch; assert hasattr(openmmtorch, 'PythonTorchForce'); print('openmm-torch PythonTorchForce OK')"
 
+# Partition the packed environment before the final-stage COPY. Keeping the
+# Python tree, shared libraries, and CUDA targets in separate OCI layers avoids
+# a single multi-gigabyte blob that is fragile to transfer through HPC registry
+# proxies and Apptainer.
+RUN mkdir -p /opt/mdclaw-layer-parts && \
+    mv /opt/mdclaw/lib/python3.12 /opt/mdclaw-layer-parts/python3.12 && \
+    mv /opt/mdclaw/lib /opt/mdclaw-layer-parts/lib && \
+    mv /opt/mdclaw/targets /opt/mdclaw-layer-parts/targets
+
 # =============================================================================
 # Stage 3: Slim CUDA 13.1 arm64 runtime
 # =============================================================================
@@ -176,6 +185,9 @@ RUN test "$(dpkg --print-architecture)" = "arm64" && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=openmm-builder /opt/mdclaw /opt/mdclaw
+COPY --from=openmm-builder /opt/mdclaw-layer-parts/lib/ /opt/mdclaw/lib/
+COPY --from=openmm-builder /opt/mdclaw-layer-parts/python3.12/ /opt/mdclaw/lib/python3.12/
+COPY --from=openmm-builder /opt/mdclaw-layer-parts/targets/ /opt/mdclaw/targets/
 
 # OpenMM compiles kernels at runtime. The runtime CUDA image does not include
 # NVRTC, so copy NVRTC and its builtins from the devel stage.

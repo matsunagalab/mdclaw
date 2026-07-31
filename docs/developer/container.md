@@ -56,7 +56,9 @@ docker push "$image"
 The Dockerfile uses the arm64 manifests of CUDA 13.1.2 on Ubuntu 24.04, builds
 OpenMM 8.5.1 against CUDA 13.1, and compiles `openmm-torch` for compute
 capability 10.0 (`sm_100`). It uses a CUDA 13.0 arm64 conda-forge PyTorch
-build, which is compatible within the CUDA 13.x driver family.
+build, which is compatible within the CUDA 13.x driver family. The packed
+runtime is copied into several OCI layers so no single application layer must
+carry the complete multi-gigabyte conda environment during an Apptainer pull.
 
 Do not publish this image under `ghcr.io/matsunagalab/mdclaw:latest`. After
 push, record the registry digest and test the artifact pulled by digest rather
