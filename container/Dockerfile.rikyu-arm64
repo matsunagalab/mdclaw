@@ -135,6 +135,7 @@ RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_INSTALL_PREFIX=/opt/mdclaw \
       -DCUDAToolkit_ROOT=/usr/local/cuda \
+      -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
       -DOPENMM_DIR=/opt/mdclaw \
       -DPYTHON_EXECUTABLE=/opt/mdclaw/bin/python \
       -DTorch_DIR="${TORCH_CMAKE_DIR}" \
