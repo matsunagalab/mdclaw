@@ -108,6 +108,16 @@ assert cufft.cufftGetVersion(ctypes.byref(api_version)) == 0
 assert api_version.value >= 12010, api_version.value
 print(f'cuFFT {max(versions)}, API={api_version.value}')
 "
+check "cuFFT FUSE preload shim contract" python -c "
+import os
+from pathlib import Path
+
+shim = '/opt/mdclaw/lib/libmdclaw_fusefix.so'
+assert shim in os.environ.get('LD_PRELOAD', '').split(':')
+assert Path(shim).is_file()
+assert shim in Path('/proc/self/maps').read_text()
+print('cuFFT FUSE preload shim active')
+"
 
 # --- AmberTools ---
 echo ""

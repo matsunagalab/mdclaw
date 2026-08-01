@@ -158,6 +158,20 @@ RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c \
 RUN /opt/mdclaw/bin/python -c \
       "import openmmtorch; assert hasattr(openmmtorch, 'PythonTorchForce'); print('openmm-torch PythonTorchForce OK')"
 
+# Rootless container runtimes can mount SIF/OCI files through FUSE.  Pre-fault
+# cuFFT's file-backed mappings so CUDA does not need to service FUSE page faults
+# while creating FFT plans.  Build this tiny LD_PRELOAD shim in the devel stage
+# so the final runtime does not need a compiler.
+COPY container/mdclaw_fusefix.c /tmp/mdclaw_fusefix.c
+RUN gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
+      -Wl,-z,relro,-z,now \
+      -o /opt/mdclaw/lib/libmdclaw_fusefix.so \
+      /tmp/mdclaw_fusefix.c -ldl && \
+    rm /tmp/mdclaw_fusefix.c && \
+    LD_PRELOAD=/opt/mdclaw/lib/libmdclaw_fusefix.so \
+      /opt/mdclaw/bin/python -c \
+      "from pathlib import Path; assert '/opt/mdclaw/lib/libmdclaw_fusefix.so' in Path('/proc/self/maps').read_text(); print('cuFFT FUSE preload shim OK')"
+
 # Partition the packed environment before the final-stage COPY. Keeping the
 # Python tree, shared libraries, and CUDA targets in separate OCI layers avoids
 # a single multi-gigabyte blob that is fragile to transfer through HPC registry
@@ -184,7 +198,8 @@ LABEL org.opencontainers.image.title="MDClaw arm64 CUDA 13 runtime" \
       org.opencontainers.image.vendor="matsunagalab" \
       com.nvidia.cuda.version="13.0.2" \
       io.mdclaw.cuda.math-libs.version="13.1" \
-      io.mdclaw.cuda.cufft.minimum-version="12.1.0.78"
+      io.mdclaw.cuda.cufft.minimum-version="12.1.0.78" \
+      io.mdclaw.runtime.fuse-prefault="libcufft.so"
 
 RUN test "$(dpkg --print-architecture)" = "arm64" && \
     apt-get update && \
@@ -213,10 +228,25 @@ ENV PATH="/opt/mdclaw/bin:$PATH" \
     MDCLAW_CUFFT_MIN_VERSION="12.1.0.78" \
     PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages" \
     OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins" \
+    LD_PRELOAD="/opt/mdclaw/lib/libmdclaw_fusefix.so" \
     LD_LIBRARY_PATH="/opt/mdclaw/lib:/opt/mdclaw/lib/python3.12/site-packages/torch/lib:${LD_LIBRARY_PATH}" \
     NVIDIA_VISIBLE_DEVICES="all" \
     NVIDIA_DRIVER_CAPABILITIES="compute,utility" \
     MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR="/opt/mdclaw/share/membrane_patches"
+
+# Confirm that the final image contains and loads the shim.  GPU acceptance is
+# performed from the resulting SIF because a normal Docker filesystem does not
+# exercise the affected FUSE path.
+RUN /opt/mdclaw/bin/python - <<'PY'
+import os
+from pathlib import Path
+
+shim = "/opt/mdclaw/lib/libmdclaw_fusefix.so"
+assert shim in os.environ["LD_PRELOAD"].split(":"), os.environ["LD_PRELOAD"]
+assert Path(shim).is_file()
+assert shim in Path("/proc/self/maps").read_text()
+print("cuFFT FUSE preload shim active")
+PY
 
 # Fail the build if the final runtime accidentally receives NVRTC from a newer
 # toolkit. OpenMM compiles its CUDA kernels with this library at Context

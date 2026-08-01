@@ -62,12 +62,22 @@ a driver can reject PTX emitted by a newer minor toolkit with
 `CUDA_ERROR_UNSUPPORTED_PTX_VERSION`.
 
 The dynamically loaded conda CUDA math libraries are resolved from the CUDA
-13.1 family, with `libcufft>=12.1.0.78`. This split is intentional: NVRTC stays
-at 13.0 for PTX compatibility, while cuFFT 12.1 provides compute capability
-10.0 FFT support needed by OpenMM PME and `torch.fft`. Build and smoke tests
-assert both contracts. The packed runtime is copied into several OCI layers so
-no single application layer must carry the complete multi-gigabyte conda
-environment during an Apptainer pull.
+13.1 family, with `libcufft>=12.1.0.78`. This split keeps NVRTC at 13.0 for PTX
+compatibility while retaining a consistent CUDA math-library stack. Build and
+smoke tests assert both version contracts. The packed runtime is copied into
+several OCI layers so no single application layer must carry the complete
+multi-gigabyte conda environment during an Apptainer pull.
+
+Some rootless Apptainer installations mount SIF files through FUSE. On affected
+driver/runtime combinations, OpenMM PME and `torch.fft` can fail when CUDA
+faults in a page from the FUSE-backed cuFFT mapping even though the library is
+intact. The arm64 image therefore preloads `libmdclaw_fusefix.so`, a small shim
+that applies `MADV_POPULATE_READ` to cuFFT's private writable mappings after
+they are loaded. It leaves the pages file-backed and shared. The generic
+container smoke verifies that the shim is present and loaded; the GPU smoke
+must be run directly from the SIF and exercises both OpenMM PME and
+`torch.fft`. An unpacked directory is not an equivalent acceptance test for
+this specific failure mode.
 
 Do not publish this image under `ghcr.io/matsunagalab/mdclaw:latest`. After
 push, record the registry digest and test the artifact pulled by digest rather

@@ -11,9 +11,11 @@ python - <<'PY'
 import ctypes
 import glob
 import math
+import os
 import platform
 import random
 import re
+from pathlib import Path
 
 import openmm
 import torch
@@ -22,6 +24,13 @@ from openmm import unit
 assert platform.machine() in {"aarch64", "arm64"}, platform.machine()
 assert torch.cuda.is_available(), "PyTorch cannot see a CUDA GPU"
 assert torch.version.cuda is not None, "PyTorch is a CPU-only build"
+
+fusefix = "/opt/mdclaw/lib/libmdclaw_fusefix.so"
+assert fusefix in os.environ.get("LD_PRELOAD", "").split(":"), os.environ.get(
+    "LD_PRELOAD"
+)
+assert Path(fusefix).is_file(), fusefix
+assert fusefix in Path("/proc/self/maps").read_text()
 
 capability = torch.cuda.get_device_capability(0)
 assert capability[0] >= 10, f"Expected CUDA compute capability >=10, got {capability}"
@@ -129,6 +138,7 @@ print(f"architecture={platform.machine()}")
 print(f"torch={torch.__version__} torch_cuda={torch.version.cuda}")
 print(f"nvrtc={nvrtc_major.value}.{nvrtc_minor.value}")
 print(f"cufft={'.'.join(map(str, max(cufft_versions)))}")
+print("cufft_fuse_prefault=PASS")
 print(f"gpu_available=True capability={capability}")
 print(f"openmm={openmm.__version__} platforms={platforms}")
 print(f"potential_energy_kj_mol={energy:.8f}")
