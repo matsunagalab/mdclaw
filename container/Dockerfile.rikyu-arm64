@@ -41,9 +41,9 @@ RUN sed -E \
       -e '/^[[:space:]]+- (openmm|openmm-torch|pytorch|cuda-version)([<>= ].*)?$/d' \
       -e '/^  - pip:/,$d' \
       environment.yml > environment-arm64-cuda13.yml && \
-    printf '  - pytorch=%s=*cuda130*\n  - cuda-version=13.0\n' \
+    printf '  - pytorch=%s=*cuda130*\n  - cuda-version>=13.1,<13.2\n  - libcufft>=12.1.0.78\n' \
       "${PYTORCH_VERSION}" >> environment-arm64-cuda13.yml && \
-    CONDA_OVERRIDE_CUDA=13.0 mamba env create \
+    CONDA_OVERRIDE_CUDA=13.1 mamba env create \
       -f environment-arm64-cuda13.yml -n mdclaw && \
     mamba clean -afy
 
@@ -61,6 +61,8 @@ RUN SITE_PACKAGES=$(mamba run -n mdclaw python -c "import site; print(site.getsi
 
 RUN mamba run -n mdclaw python -c \
       "import platform, torch; assert platform.machine() == 'aarch64'; assert torch.version.cuda == '13.0'; print(torch.__version__, torch.version.cuda)" && \
+    mamba run -n mdclaw python -c \
+      "import re, sys; from pathlib import Path; files=list((Path(sys.prefix)/'lib').glob('libcufft.so.12.*')); versions=[tuple(map(int, re.search(r'libcufft\\.so\\.(\\d+(?:\\.\\d+)+)$', str(path)).group(1).split('.'))) for path in files if re.search(r'libcufft\\.so\\.(\\d+(?:\\.\\d+)+)$', str(path))]; assert versions and max(versions) >= (12, 1, 0, 78), (files, versions); print('cuFFT', '.'.join(map(str, max(versions))))" && \
     mamba run -n mdclaw python -c \
       "import MDAnalysis as mda, mdtraj; print('MDAnalysis', mda.__version__, 'MDTraj', mdtraj.__version__)" && \
     mamba install -n base -y conda-pack && \
@@ -98,7 +100,9 @@ RUN tar -xzf /tmp/mdclaw_env.tar.gz -C /opt/mdclaw && \
 ENV PATH="/opt/mdclaw/bin:$PATH" \
     CUDA_HOME="/usr/local/cuda"
 
-RUN nvcc --version | grep -q "release 13.0"
+# The packed conda environment includes CUDA 13.1 user-space tools. Always use
+# the base image compiler explicitly so OpenMM/NVRTC stay on the 13.0 contract.
+RUN /usr/local/cuda/bin/nvcc --version | grep -q "release 13.0"
 
 RUN /opt/mdclaw/bin/pip install --no-cache-dir cython
 
@@ -172,13 +176,15 @@ ARG GIT_REVISION="unknown"
 ARG WARM_MEMBRANE_CACHE="0"
 
 LABEL org.opencontainers.image.title="MDClaw arm64 CUDA 13 runtime" \
-      org.opencontainers.image.description="MDClaw Linux arm64 runtime with CUDA 13.0, OpenMM, AmberTools, and PyTorch." \
+      org.opencontainers.image.description="MDClaw Linux arm64 runtime with CUDA 13.0 NVRTC, CUDA 13.1 math libraries, OpenMM, AmberTools, and PyTorch." \
       org.opencontainers.image.source="https://github.com/matsunagalab/mdclaw" \
       org.opencontainers.image.documentation="https://github.com/matsunagalab/mdclaw/blob/main/docs/developer/container.md" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.revision="${GIT_REVISION}" \
       org.opencontainers.image.vendor="matsunagalab" \
-      com.nvidia.cuda.version="13.0.2"
+      com.nvidia.cuda.version="13.0.2" \
+      io.mdclaw.cuda.math-libs.version="13.1" \
+      io.mdclaw.cuda.cufft.minimum-version="12.1.0.78"
 
 RUN test "$(dpkg --print-architecture)" = "arm64" && \
     apt-get update && \
@@ -203,6 +209,8 @@ COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc-builtins.so* /opt/mdcl
 ENV PATH="/opt/mdclaw/bin:$PATH" \
     AMBERHOME="/opt/mdclaw" \
     MDCLAW_CUDA_TOOLKIT_VERSION="13.0" \
+    MDCLAW_CUDA_MATH_LIBS_VERSION="13.1" \
+    MDCLAW_CUFFT_MIN_VERSION="12.1.0.78" \
     PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages" \
     OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins" \
     LD_LIBRARY_PATH="/opt/mdclaw/lib:/opt/mdclaw/lib/python3.12/site-packages/torch/lib:${LD_LIBRARY_PATH}" \
@@ -222,6 +230,37 @@ minor = ctypes.c_int()
 assert nvrtc.nvrtcVersion(ctypes.byref(major), ctypes.byref(minor)) == 0
 assert (major.value, minor.value) == (13, 0), (major.value, minor.value)
 print(f"NVRTC {major.value}.{minor.value}")
+PY
+
+# The CUDA compiler and NVRTC stay on 13.0 for driver/PTX compatibility, while
+# the conda CUDA math libraries use the 13.1 family. cuFFT 12.1 is required for
+# compute capability 10.0 FFT workloads. Verify the actual runtime library,
+# not only the solver metadata.
+RUN /opt/mdclaw/bin/python - <<'PY'
+import ctypes
+import os
+import re
+import sys
+from pathlib import Path
+
+minimum = tuple(map(int, os.environ["MDCLAW_CUFFT_MIN_VERSION"].split(".")))
+files = list((Path(sys.prefix) / "lib").glob("libcufft.so.12.*"))
+versions = []
+for path in files:
+    match = re.search(r"libcufft\.so\.(\d+(?:\.\d+)+)$", str(path))
+    if match:
+        versions.append(tuple(map(int, match.group(1).split("."))))
+assert versions and max(versions) >= minimum, (files, versions, minimum)
+
+cufft = ctypes.CDLL("libcufft.so.12")
+api_version = ctypes.c_int()
+assert cufft.cufftGetVersion(ctypes.byref(api_version)) == 0
+assert api_version.value >= 12010, api_version.value
+print(
+    "cuFFT",
+    ".".join(map(str, max(versions))),
+    f"API={api_version.value}",
+)
 PY
 
 COPY scripts/warmup_membrane_cache.py /opt/mdclaw/share/warmup_membrane_cache.py

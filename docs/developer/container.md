@@ -55,14 +55,19 @@ docker push "$image"
 
 The Dockerfile uses the arm64 manifests of CUDA 13.0.2 on Ubuntu 24.04, builds
 OpenMM 8.5.1 against CUDA 13.0, and compiles `openmm-torch` for compute
-capability 10.0 (`sm_100`). PyTorch is also the CUDA 13.0 arm64 conda-forge
-build. Keep the OpenMM NVRTC toolkit at or below the maximum CUDA version
+capability 10.0 (`sm_100`). PyTorch is the CUDA 13.0 arm64 conda-forge build.
+Keep the OpenMM compiler and NVRTC toolkit at or below the maximum CUDA version
 supported by the host driver: OpenMM compiles kernels at Context creation, and
 a driver can reject PTX emitted by a newer minor toolkit with
-`CUDA_ERROR_UNSUPPORTED_PTX_VERSION`. The build and smoke tests therefore
-assert that the bundled NVRTC runtime is 13.0. The packed runtime is copied
-into several OCI layers so no single application layer must carry the complete
-multi-gigabyte conda environment during an Apptainer pull.
+`CUDA_ERROR_UNSUPPORTED_PTX_VERSION`.
+
+The dynamically loaded conda CUDA math libraries are resolved from the CUDA
+13.1 family, with `libcufft>=12.1.0.78`. This split is intentional: NVRTC stays
+at 13.0 for PTX compatibility, while cuFFT 12.1 provides compute capability
+10.0 FFT support needed by OpenMM PME and `torch.fft`. Build and smoke tests
+assert both contracts. The packed runtime is copied into several OCI layers so
+no single application layer must carry the complete multi-gigabyte conda
+environment during an Apptainer pull.
 
 Do not publish this image under `ghcr.io/matsunagalab/mdclaw:latest`. After
 push, record the registry digest and test the artifact pulled by digest rather

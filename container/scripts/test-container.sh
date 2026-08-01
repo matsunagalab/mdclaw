@@ -87,6 +87,27 @@ expected = os.environ.get('MDCLAW_CUDA_TOOLKIT_VERSION')
 assert expected is None or actual == expected, (actual, expected)
 print(f'NVRTC {actual}')
 "
+check "cuFFT runtime contract" python -c "
+import ctypes
+import os
+import re
+import sys
+from pathlib import Path
+
+minimum = tuple(map(int, os.environ.get('MDCLAW_CUFFT_MIN_VERSION', '12.1.0.78').split('.')))
+files = list((Path(sys.prefix) / 'lib').glob('libcufft.so.12.*'))
+versions = []
+for path in files:
+    match = re.search(r'libcufft\.so\.(\d+(?:\.\d+)+)$', str(path))
+    if match:
+        versions.append(tuple(map(int, match.group(1).split('.'))))
+assert versions and max(versions) >= minimum, (files, versions, minimum)
+cufft = ctypes.CDLL('libcufft.so.12')
+api_version = ctypes.c_int()
+assert cufft.cufftGetVersion(ctypes.byref(api_version)) == 0
+assert api_version.value >= 12010, api_version.value
+print(f'cuFFT {max(versions)}, API={api_version.value}')
+"
 
 # --- AmberTools ---
 echo ""
