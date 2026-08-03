@@ -48,6 +48,38 @@ singularity exec --nv \
   mdclaw.sif bash /work/test.sh
 ```
 
+### Never Run Singularity Inside A User Namespace
+
+Do not wrap `singularity` in `unshare -Ur`, `unshare -U`, or any other user
+namespace. Singularity mounts a SIF through its setuid starter, and the kernel
+ignores the setuid bit whenever the file's owner is unmapped in the current user
+namespace. Both `starter-suid` and `fusermount3` therefore become unprivileged,
+the squashfuse mount fails with `fusermount3: mount failed: Operation not
+permitted`, and Singularity falls back to extracting the entire SIF into a
+temporary sandbox on *every* invocation. Measured on floyd with a 5.1 GB SIF:
+
+| invocation | elapsed |
+| --- | --- |
+| `singularity exec mdclaw.sif …` | 0.80 s |
+| `singularity exec --no-home --bind "$PWD:/work" --pwd /work …` | 0.36 s |
+| `unshare -Ur singularity exec …` | 65.7 s, plus 5.1 GB of scratch churn |
+
+The trap is that a `unknown userid` / `Could not lookup the current user's
+information: user: lookup userid <uid>: bad address` warning invites exactly this
+workaround. On hosts whose accounts come from NIS or LDAP rather than
+`/etc/passwd`, that message is a warning, not a failure. The fix is `--no-home`
+plus a neutral bind path, which avoids resolving the account's home directory
+while keeping the privileged mount path:
+
+```bash
+singularity exec --no-home --bind "$PWD:/work" --pwd /work \
+  mdclaw.sif python -m mdclaw._cli --list
+```
+
+If that still fails outright, set `SINGULARITY_HOME` explicitly. A user namespace
+is not the answer. `bin/mdclaw` warns when it is about to launch Singularity from
+inside one.
+
 ## Runtime Notes
 
 - Docker image size is roughly 11.4 GB; SIF size is roughly 4.6 GB.

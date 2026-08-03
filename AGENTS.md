@@ -76,8 +76,11 @@ PYTHONPATH="$PWD" singularity exec --bind "$PWD:$PWD" --pwd "$PWD" \
 singularity exec mdclaw.sif ruff check mdclaw/ tests/
 ```
 
-If Singularity fails with `unknown userid`, avoid host account lookup by binding
-the checkout at a neutral path:
+If Singularity warns `unknown userid` (hosts whose accounts come from NIS or
+LDAP), keep the plain `singularity exec` above and add `--no-home` plus a
+neutral bind path. Never wrap Singularity in `unshare` or any other user
+namespace: that silently disables the setuid starter, so every call re-extracts
+the whole SIF. See `docs/developer/container.md`.
 
 ```bash
 singularity exec --no-home --bind "$PWD:/work" --pwd /work \
