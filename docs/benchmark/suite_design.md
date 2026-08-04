@@ -241,14 +241,9 @@ contributes to the v2 primary score.
 | Tier | ID | Question class | Public comparison | Status |
 |---|---|---|---|---|
 | Pilot | `S01_pressure_hydration_t4l_l99a` | Dynamic equilibrium | Internal-cavity hydration at 200 MPa versus 0.1 MPa in folded T4L C54T/C97A/L99A, 300 K with a fixed pH-7 protonation model | Experimental |
-| Extended | `S02_ppi_hotspot_barnase_d39a` | PPI mutation thermodynamics | barstar D39A versus WT barnase-barstar | Experimental |
-| Extended | `S03_stability_nuclease_h124l` | Folding thermodynamics | staphylococcal nuclease H124L versus WT | Experimental |
-| Extended | `S04_affinity_t4l_l99a_alkylbenzene` | Ligand-binding thermodynamics | n-butylbenzene versus benzene in T4L L99A | Experimental |
 
-S02-S04 are excluded from primary aggregation until their estimands have native,
-artifact-recomputable thermodynamic evidence contracts and independent
-feasibility runs. The former T4L L99A folding-stability S01 is retained only as
-a v0.3 regression fixture.
+A thermodynamic task earns a place here only once its estimand has a native,
+artifact-recomputable evidence contract and an independent feasibility run.
 
 ## Experimental-Truth Source Pools
 
@@ -288,9 +283,9 @@ agent tasks.
    - LLM-only/no-run baseline,
    - one external MD tool/harness when available.
 6. Keep MDStudyBench compact: `MDStudyBench-v0.4` has one standard,
-   feasibility-gated task. Promote an extended task only after its target
-   estimand is independently recomputable and a blinded reference run shows it
-   is resolvable within the declared budget.
+   feasibility-gated task. Add a task only after its target estimand is
+   independently recomputable and a blinded reference run shows it is resolvable
+   within the declared budget.
 
 ### Current Prep Implementation Status
 
@@ -337,7 +332,7 @@ Still to do:
 Implemented (`MDStudyBench-v0.4`):
 
 - The pilot tier contains the pressure-dependent T4L L99A cavity-hydration
-  task; S02-S04 are explicitly extended and non-primary.
+  task, and nothing else.
 - `scientific_target` defines the public estimand, entity, conditions, allowed
   resolved outcomes, neutral equivalence outcome, required validity controls,
   and unresolved outcome without prescribing a workflow.
@@ -369,8 +364,8 @@ Still to do:
 - Run the new S01 blindly with the current OpenMM stack and confirm that pressure
   response, wet/dry transitions, folded-state retention, and initialization
   sensitivity are observable within the budget before freezing the release.
-- Add artifact-recomputable free-energy and thermodynamic evidence contracts
-  before promoting S02-S04 from the extended tier.
+- Build artifact-recomputable free-energy and thermodynamic evidence contracts
+  before adding any thermodynamic task.
 - Harden the runner/solver isolation boundary before promoting S01 to a primary
   leaderboard.
 - Add independently recomputable generic metrics only when real submissions need

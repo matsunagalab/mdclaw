@@ -736,43 +736,6 @@ def test_prep_normalization_preserves_existing_output_file(tmp_path: Path):
     assert out_path.read_text() == "user data\n"
 
 
-def test_study_answer_validation_requires_trajectory_manifest_outputs(
-    tmp_path: Path,
-):
-    repo_root = Path(__file__).resolve().parents[2]
-    task_file = (
-        repo_root
-        / "benchmarks"
-        / "mdstudybench"
-        / "tasks"
-        / "S01_stability_t4l_l99a"
-        / "task.json"
-    )
-    submission_dir = tmp_path / "submission"
-    _write_submission(
-        submission_dir,
-        manifest={
-            "schema_version": "1.0",
-            "task_id": "S01_stability_t4l_l99a",
-            "status": "completed",
-            "outputs": {
-                "metrics": "metrics.json",
-                "provenance": "provenance.json",
-                "evidence_report": "evidence_report.json",
-            },
-        },
-        metrics={"md_analysis": {"production_time_ns": 1.0}},
-        provenance={},
-        evidence={},
-    )
-
-    result = validation.validate_submission(task_file, submission_dir)
-
-    assert result["success"] is False
-    assert any("outputs.trajectories" in err for err in result["errors"])
-    assert any("outputs.topology" in err for err in result["errors"])
-
-
 def test_score_submission_rejects_manifest_output_path_escape(tmp_path: Path):
     task = _make_task(
         primary="execution",

@@ -40,8 +40,6 @@ def test_mdstudybench_v04_specs_use_prospective_grounded_contract():
     assert dataset["tiers"]["pilot"]["task_ids"] == dataset["task_ids"]
     assert dataset["tiers"]["pilot"]["primary_leaderboard"] is False
     assert dataset["tiers"]["pilot"]["release_status"] == "experimental"
-    assert dataset["tiers"]["extended"]["primary_leaderboard"] is False
-    assert dataset["tiers"]["extended"]["release_status"] == "experimental"
     assert defaults["task_defaults"]["evaluation_protocol"] == (
         "grounded_correct_v2"
     )

@@ -333,7 +333,6 @@ def test_studybench_dataset_json_matches_task_directories():
     }
     tiers = dataset["tiers"]
     pilot_ids = tiers["pilot"]["task_ids"]
-    extended_ids = tiers["extended"]["task_ids"]
 
     assert dataset["benchmark_version"] == "MDStudyBench-v0.4"
     assert dataset["task_count"] == len(task_ids) == 1
@@ -341,15 +340,11 @@ def test_studybench_dataset_json_matches_task_directories():
     assert pilot_ids == task_ids
     assert tiers["pilot"]["primary_leaderboard"] is False
     assert tiers["pilot"]["release_status"] == "experimental"
-    assert extended_ids == [
-        "S02_ppi_hotspot_barnase_d39a",
-        "S03_stability_nuclease_h124l",
-        "S04_affinity_t4l_l99a_alkylbenzene",
-    ]
-    assert tiers["extended"]["primary_leaderboard"] is False
-    assert tiers["extended"]["release_status"] == "experimental"
-    assert set(pilot_ids).isdisjoint(extended_ids)
-    assert set(pilot_ids + extended_ids).issubset(task_dirs)
+    # The pilot tier is the whole suite: no task directory may linger without
+    # being declared, which is how a retired task used to keep its truth data on
+    # disk after leaving dataset.json.
+    assert set(tiers) == {"pilot"}
+    assert task_dirs == set(pilot_ids)
     assert (
         "tasks/<task_id>/submission_checklist.md"
         in dataset["public_private_split"]["public"]

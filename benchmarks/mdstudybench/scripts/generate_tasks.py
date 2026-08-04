@@ -22,12 +22,8 @@ def _task_payloads() -> list[tuple[str, dict]]:
     defaults = _read_json(SUITE_DIR / "task_specs" / "defaults.json")
     tiers = dataset.get("tiers") or {}
     pilot_ids = list((tiers.get("pilot") or {}).get("task_ids") or [])
-    extended_ids = list((tiers.get("extended") or {}).get("task_ids") or [])
     if list(dataset.get("task_ids") or []) != pilot_ids:
         raise ValueError("dataset.task_ids must exactly equal tiers.pilot.task_ids")
-    overlap = sorted(set(pilot_ids) & set(extended_ids))
-    if overlap:
-        raise ValueError(f"pilot and extended tiers overlap: {overlap}")
     payloads: list[tuple[str, dict]] = []
     for task_id in pilot_ids:
         spec_path = SUITE_DIR / "task_specs" / "tasks" / f"{task_id}.json"

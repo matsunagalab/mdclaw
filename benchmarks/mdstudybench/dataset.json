@@ -18,7 +18,6 @@
     "Tasks focus on open-planning scientific question answering and auditable study bundles, not system preparation alone.",
     "The v0.4 S01 pilot reports three non-compensating gates: valid_execution, claim_supported, and truth_agreement. grounded_correct@1 is their conjunction.",
     "S01 is non-primary while the runner-owned OpenMM adapter and blind feasibility are calibrated.",
-    "S02-S04 remain available in an extended experimental tier while their thermodynamic estimands and native free-energy verification contracts are recalibrated.",
     "Preparation-only workflow tasks live in MDPrepBench."
   ],
   "public_private_split": {
@@ -51,17 +50,6 @@
         "S01_pressure_hydration_t4l_l99a"
       ],
       "intent": "Establish and calibrate the shared three-gate evaluation contract before any task enters a primary leaderboard."
-    },
-    "extended": {
-      "display_name": "Extended / Experimental",
-      "release_status": "experimental",
-      "primary_leaderboard": false,
-      "task_ids": [
-        "S02_ppi_hotspot_barnase_d39a",
-        "S03_stability_nuclease_h124l",
-        "S04_affinity_t4l_l99a_alkylbenzene"
-      ],
-      "intent": "Research tasks retained for migration and calibration; they are excluded from the primary leaderboard until task-specific thermodynamic evidence is independently recomputable and feasible within budget."
     }
   }
 }

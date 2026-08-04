@@ -245,12 +245,11 @@ inside that directory. Absolute paths and `../` escapes are rejected during
 normalization. This keeps the benchmark agent-independent while requiring a
 common OpenMM topology artifact format for the current prep battery.
 
-For MDStudyBench, completed scientific-answer tasks such as S01/S02 must list
-real comparative trajectory artifacts in `manifest.outputs.trajectories` and
-connect `metrics.md_analysis` to `evidence_report.effect.direction`. Dry-run
-study-bundle tasks such as S03 do not require trajectories; they require the
-methods draft, decision log, evidence report, and structured study/report
-provenance evidence.
+MDStudyBench works differently: its S01 pilot uses the `grounded_correct_v2`
+contract, where the agent writes only `confirmatory_plan.json` and, after the
+runner has executed that plan, `claim.json`. The runner owns `manifest.json`
+and everything under `episode/`, so an agent neither selects nor submits
+trajectories there.
 
 ## What The Scorer Compares
 

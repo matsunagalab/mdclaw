@@ -5,9 +5,7 @@ scientific question. It is deliberately different from MDPrepBench: there is
 no curator-authored workflow or preferred PDB ID to imitate.
 
 The active dataset is `MDStudyBench-v0.4` under
-`benchmarks/mdstudybench/`. Its only active task is the experimental S01 pilot.
-S02-S04 remain inactive legacy regression fixtures and are excluded from
-aggregation.
+`benchmarks/mdstudybench/`. Its only task is the experimental S01 pilot.
 
 ## Primary result
 
@@ -89,9 +87,8 @@ S01 is a non-primary pilot while the following are calibrated:
   private launcher, sanitized environment, frozen source snapshot, and digest
   checks.
 
-S02-S04 should not migrate to v2 until each has a task-specific,
-artifact-recomputable thermodynamic estimand and an independent feasibility
-run.
+A thermodynamic task should not be added until it has a task-specific,
+artifact-recomputable estimand and an independent feasibility run.
 
 ## Running and validating
 

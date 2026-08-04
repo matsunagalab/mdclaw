@@ -527,7 +527,6 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
     assert dataset["task_ids"] == ["S01_pressure_hydration_t4l_l99a"]
     assert dataset["tiers"]["pilot"]["task_ids"] == dataset["task_ids"]
     assert dataset["tiers"]["pilot"]["primary_leaderboard"] is False
-    assert dataset["tiers"]["extended"]["primary_leaderboard"] is False
     assert result["task_count"] == 1
     assert (out_dir / "schemas" / "confirmatory_plan.schema.json").is_file()
     assert (out_dir / "schemas" / "claim.schema.json").is_file()
