@@ -858,3 +858,90 @@ def test_sif_wrapper_omits_log_bind_without_harness_log(tmp_path: Path):
 
     assert f"{source_root}:{source_root}:ro" in argv
     assert "" not in argv.splitlines()
+
+
+def _normalize_with_conditions(
+    tmp_path: Path,
+    conditions: dict,
+) -> tuple[list[dict], list[dict]]:
+    """Normalize a reference/variant pair whose reference declares conditions."""
+    work_dir = tmp_path / "work"
+    for role in ("reference", "variant"):
+        node_dir = work_dir / role / "nodes" / "prod_001"
+        node_dir.mkdir(parents=True)
+        (node_dir / "node.json").write_text(
+            json.dumps(
+                {
+                    "node_type": "prod",
+                    "status": "pending",
+                    "conditions": conditions if role == "reference" else {},
+                }
+            )
+        )
+    errors: list[dict[str, str]] = []
+    normalized = _normalize_v2_confirmatory_plan_runs(
+        [
+            {
+                "run_id": f"{role}-1",
+                "condition_role": role,
+                "job_dir": role,
+                "node_id": "prod_001",
+                "simulation_time_ns": 0.01,
+            }
+            for role in ("reference", "variant")
+        ],
+        solver_work_dir=work_dir,
+        errors=errors,
+    )
+    return normalized, errors
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        {"platform": "CUDA"},
+        {"device_index": "0"},
+        {"custom_force": "bias.py"},
+    ],
+)
+def test_normalize_rejects_runner_owned_conditions_at_plan_freeze(
+    tmp_path: Path,
+    condition: dict,
+):
+    """These can never verify, so say so before the agent spends its GPU budget.
+
+    run_production reports its own value for each of them and the certified
+    adapter never forwards a node's declaration, so leaving them alone means
+    condition_unverifiable / condition_mismatch only once the node runs.
+    """
+    normalized, errors = _normalize_with_conditions(tmp_path, condition)
+
+    assert [error["code"] for error in errors] == [
+        "confirmatory_condition_unsupported",
+        "confirmatory_condition_pair_missing",
+    ]
+    assert next(iter(condition)) in errors[0]["message"]
+    assert normalized == [] or all(
+        item["condition_role"] != "reference" for item in normalized
+    )
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        {"hmr": True},
+        {"timestep_fs": 4.0},
+        {"implicit_solvent": "obc2"},
+        {"is_membrane": False},
+        {"temperature_kelvin": 300.0, "pressure_bar": 1.0},
+    ],
+)
+def test_normalize_allows_conditions_the_tool_can_verify(
+    tmp_path: Path,
+    condition: dict,
+):
+    """Topology-resolved and adapter-forwarded conditions stay declarable."""
+    normalized, errors = _normalize_with_conditions(tmp_path, condition)
+
+    assert errors == []
+    assert len(normalized) == 2

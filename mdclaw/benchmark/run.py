@@ -111,6 +111,17 @@ _AGENT_COMMAND_PROFILES: dict[str, dict[str, str]] = {
     },
 }
 
+# Prod-node conditions the certified confirmatory adapter owns. It never
+# forwards them, and run_production reports its own value, so a node that
+# declares one can never satisfy its own contract. Conditions resolved from the
+# topology (hmr, timestep_fs, implicit_solvent, is_membrane) are deliberately
+# absent: declaring those is legitimate and does verify.
+_RUNNER_OWNED_PROD_CONDITIONS = frozenset({
+    "platform",
+    "device_index",
+    "custom_force",
+})
+
 _AGENT_PROFILE_ALIASES = {
     "auto": "auto",
     "pi": "pi-plain",
@@ -1341,6 +1352,29 @@ def _normalize_v2_confirmatory_plan_runs(
             continue
         seen_nodes.add(node_key)
         conditions = node.get("conditions", {})
+        if isinstance(conditions, dict):
+            runner_owned = sorted(
+                set(conditions) & _RUNNER_OWNED_PROD_CONDITIONS
+            )
+            if runner_owned:
+                # A declared condition is a contract run_production must
+                # cross-check, but the certified adapter owns execution
+                # placement and never forwards these. Left alone they surface
+                # as condition_unverifiable / condition_mismatch only once the
+                # node runs, after the agent has spent its GPU budget getting
+                # there. Fail at plan freeze, while it is still repairable.
+                errors.append(
+                    {
+                        "code": "confirmatory_condition_unsupported",
+                        "message": (
+                            f"runs[{index}] prod node declares runner-owned "
+                            f"condition(s) {', '.join(runner_owned)}; the "
+                            "certified adapter sets these itself, so the node "
+                            "must not declare them"
+                        ),
+                    }
+                )
+                continue
         random_seed = None
         if isinstance(conditions, dict) and "random_seed" in conditions:
             random_seed = conditions["random_seed"]
