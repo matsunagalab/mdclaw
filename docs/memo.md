@@ -7,6 +7,41 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-04 — Correction: five MDPrepBench tasks do ship reference data
+
+The entry below claims "No task ships one; `tasks/<id>/` holds only `prompt.md`
+and `task.json`". That was checked against `P01` alone and is wrong. Five tasks
+carry a `truth/` directory:
+
+```
+P03_prep_ligand_pose_t4l_benzene    ligand_reference.pdb        105 KB
+P18_prep_membrane_mixed_lipids      model_1_reference.pdb       124 KB
+P19_prep_nmr_model_selection        model_5_reference.pdb        97 KB
+P24_prep_biological_assembly        assembly_1_reference.pdb    317 KB
+P28_prep_kinase_inhibitor_gaff_1iep ligand_pose_reference.pdb   184 KB
+```
+
+The conclusion still holds, because these are a different kind of artifact. They
+are *input-side* references: coordinates used to check that the agent started
+from the right thing — the fifth NMR model rather than the first, the biological
+assembly rather than the asymmetric unit, the ligand in the deposited pose. They
+say nothing about whether a finished, force-field-applied system is correct.
+
+What is still missing is the *output* side: a stored `system.xml` /
+`topology.pdb` / `state.xml` bundle for a task, whose purpose is to detect the
+scorer breaking rather than to grade an agent. Zero tasks have one, and no task's
+`scoring` references a stored bundle (`ground_truth_checks` is `[]` for P01, and
+no task.json mentions a reference or golden file).
+
+| | existing `truth/*.pdb` | the reference bundle still wanted |
+|---|---|---|
+| stores | starting coordinates | the finished, parameterised system |
+| detects | agent picked the wrong input | **the scorer itself regressed** |
+| size | 100–300 KB | ~35 MB (P01, measured) |
+| coverage | 5 tasks | none |
+
+---
+
 ## 2026-08-04 — Retiring MDStudyBench S02-S04, and what the review changed
 
 **Commit:** `8399dc6` (32 files, +55 / −2159)
