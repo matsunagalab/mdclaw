@@ -97,6 +97,14 @@ runtime binaries, package metadata/version, or release artifacts.
 If touching tool execution paths, also run the relevant smoke or pipeline tests
 from `docs/developer/testing.md`.
 
+## Recording Work
+
+`docs/memo.md` is the running record of benchmark and investigation work: what
+was run, the numbers it produced, what was decided, and why. Append a dated entry
+there whenever you finish a piece of work or reach a conclusion that outlives the
+session. Newest first. When a later finding contradicts an earlier entry, add the
+correction and name what it overturns rather than editing the old entry away.
+
 ## Adding Or Changing Tools
 
 1. Add or update the function in the appropriate `mdclaw/<tool>/` submodule.
