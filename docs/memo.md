@@ -7,6 +7,54 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-05 — MDPrepBench reference bundles, and what 40/40 does not mean
+
+codex (gpt-5.6-sol, xhigh) was run as the solver over all 40 tasks through
+`run_benchmark_agent`, so it saw only the public export — never `task.json`, never
+the deterministic checks. **All 40 scored 1.0**, no failures, ~4 h 15 m across
+three shards, ~11 min per task, essentially no GPU.
+
+Bundles total 1.78 GB and live outside git at `$MDPREPBENCH_WITNESS_DIR`:
+
+```
+<task_id>/submission/prepared_structure.pdb
+<task_id>/submission/topology/{system.xml,topology.pdb,state.xml}
+<task_id>/harness_execution.json
+```
+
+`benchmarks/tools/witness.py` records them into
+`benchmarks/mdprepbench/witnesses/manifest.json` (per task: run id, provenance,
+repository head, a hash over everything the scorer reads for that task, and a
+hash per bundle file) and re-scores them on demand.
+
+**What 40/40 establishes, and what it does not.** It establishes that every task
+has at least one bundle this model, scaffold, and runtime can produce inside the
+budget and that the current scorer accepts. It does *not* establish scientific
+correctness beyond what the scorer checks, resistance to scorer-targeted
+shortcuts, task difficulty, or pass@1 reliability — there is one observation per
+task. The historical per-task means of 0.28–0.66 are not a comparison: they mix
+models, scaffolds, code versions, and known instrumentation failures.
+
+**A rule I had stated and have withdrawn.** I proposed treating a codex failure
+as evidence to suspect the scorer. That is unsound: a failure warrants diagnosis,
+not a presumption against the scorer. And the converse matters more here —
+40/40 does not vindicate the scorer either, because an overly permissive scorer
+produces 40/40 too. Positive fixtures cannot detect a weakened scorer; deleting a
+check leaves every witness at 1.0. The negative fixtures remain the other half.
+
+**Defects caught in review before commit**, all in the first draft of the tool:
+scoring writes `normalized_submission/` and `score.json` *into* the bundle, and
+hashing those would have produced a delayed false "drift" the artifacts never
+caused; acceptance checked only `preparation == 1.0`, ignoring `status` and
+`weighted_total`; `record` and `verify` returned 0 on skipped bundles, an unknown
+`--task`, or an empty manifest; drift detection missed added files; a bare
+`--task` meant "everything"; the contract hash covered only `task.json`, so
+swapping one of the five private `truth/*.pdb` references would have gone
+unnoticed; and `_scorer_revision()` shelled out to git, which the container does
+not have, silently recording "unknown".
+
+---
+
 ## 2026-08-05 — Artifacts versus harness evidence: the declaration was wrong
 
 `dataset.json` declared `evaluation_unit: "submission_artifacts"`, and the

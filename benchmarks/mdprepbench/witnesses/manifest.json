@@ -1,0 +1,567 @@
+{
+  "description": "Positive fixtures for MDPrepBench: bundles the scorer accepts, kept to detect the scoring side regressing. Not canonical solutions \u2014 never score a submission by similarity to one.",
+  "schema_version": "1.0",
+  "witnesses": {
+    "P01_prep_simple_monomer_t4l": {
+      "contract_sha256": "1bfb3c055ab0a0a2f92c8df73a0603decb67f70ad67eb3f3a537a371aa023298",
+      "files": {
+        "harness_execution.json": "7ac33520cb7be062a5ae26460022da6f2f40d04776396571397dbef56ebdfe82",
+        "submission/prepared_structure.pdb": "802f0d4d8f89a47acbf2429ad4e591403f6027ac1ceaf101c396216fd9fe8425",
+        "submission/topology/state.xml": "cfed4a92cecc1ae4a0a9b45a17be35ce9223c94ca0c926262b7c393e85d889f2",
+        "submission/topology/system.xml": "5973418bf16596b1f3b9f08a7513cda60da5b19c2a81d16e1d2120d1e740c764",
+        "submission/topology/topology.pdb": "8d35460df4f5f5b70c5c2921c6dcd3604a9fb5f87e95dcb50fabb793c2b33ff9"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T05:57:24+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_p01"
+    },
+    "P02_prep_1ake_chain_ap5": {
+      "contract_sha256": "1eaf6bb44c9f0b1d752d074cd6a0f6419b06f680cc81111ea89a69ab0d78d25a",
+      "files": {
+        "harness_execution.json": "73c9becd6f6f0d9084645e2bc346aff065dbff29eff002310b2d8e5caef5a98c",
+        "submission/prepared_structure.pdb": "609adc74a82ccea80d02ac411445eceefbaff3c5145f744cf902eadd2bfca532",
+        "submission/topology/state.xml": "0d51cd4cdb170210cf411b7f507abc0a790760393620af69c0c578c1da900e9b",
+        "submission/topology/system.xml": "edb61ba4302138bf5bfa6207231b66bac0c40fb342760702b8d58b3adc3ced92",
+        "submission/topology/topology.pdb": "bdc0da33e4a5db71c77d287fc4564640cab750950b7ce44b2ad8c58d6590bd46"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T05:57:56+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s1"
+    },
+    "P03_prep_ligand_pose_t4l_benzene": {
+      "contract_sha256": "918dc2c3f3878328cbbeb6e9a32e68274778fc34751fc70dbfa123f91d58c7f8",
+      "files": {
+        "harness_execution.json": "ebcfcdb406f000f6d8d5b59450dceb58fceff7c025fb6bbed37cfa56e3d6b7c5",
+        "submission/prepared_structure.pdb": "e17f60de8211112fe897b0e1e7294a82ce147905f4bce13bef647bf3d5f74f6c",
+        "submission/topology/state.xml": "40049c7ae37f09b0daca2acd5b1e427a1f8f409f54eaee827ac3471c3aa7ed0c",
+        "submission/topology/system.xml": "7f5e58dcc3fca2dfe4cfa46f47c66f295dc22058360d5c1807eb432cd7d8a66f",
+        "submission/topology/topology.pdb": "fe3f1d4daa9d340f21dde304d531860b154dc5e091f5aec9c34652cfb0dcf2e9"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T05:58:28+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s2"
+    },
+    "P04_prep_multi_ligand_filter_3pwb": {
+      "contract_sha256": "4f9a84b2a0ac8b9951b3ef0aa3a3bad180ad0ecf9e62c80b7310f5ef75250b4c",
+      "files": {
+        "harness_execution.json": "2aa89beb1e1a9646fb0f01f452ced898d0a7722b551272ba3e509578822e4bc7",
+        "submission/prepared_structure.pdb": "02209f2d5f6f319c0589203a488d8672def115ebb0f98a14f3a33b72329ec2c6",
+        "submission/topology/state.xml": "585cf003bcd58ae5be22bc86b054792fead50d6b445df8d7a350d7112fb7fc97",
+        "submission/topology/system.xml": "4c85a6088cc88b3aeac315947af6ef7a2a3b3b1e5624a1863cb716c53d01173c",
+        "submission/topology/topology.pdb": "9ce5c924ef9513675233179938e24f2876b11c5f30c59f68cf68364a50d4963c"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T05:58:59+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s3"
+    },
+    "P05_prep_dap_dehydrogenase_nadp": {
+      "contract_sha256": "92e849f2592afb861cc6846442c3c04bb30c2056b538126b11bb216acc3f126a",
+      "files": {
+        "harness_execution.json": "ae760623d23e7f2c3d7c424cec50ecb4b34d303a6c5ad29c7c8a588df6dc51c0",
+        "submission/prepared_structure.pdb": "3a2a9ba868abc7da5b2578b5504837179ca1279a32f7949dd7500819e3da9fbd",
+        "submission/topology/state.xml": "a625e8b5f19a6357339031e0fc223b42a4888d5f882cc8a131bf1456efcd3a7d",
+        "submission/topology/system.xml": "d467e72c3f58ac22f23b100b73d253166bcd08407e36eb6e9df63e6a952109d0",
+        "submission/topology/topology.pdb": "d3438088e042cdc4c90f4ca7b378daa54ef66b787519bef204f312ea1b20b428"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:01:19+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s1"
+    },
+    "P06_prep_calmodulin_ca_ions": {
+      "contract_sha256": "fb1dc0319f4b8840efc5012863f0e9bbb496168ee12c309bb687305c63fda8a5",
+      "files": {
+        "harness_execution.json": "40ce4f3a44f2f063098346b18e16e0f6a415ea15e7e07ec047b5ddf4446a9114",
+        "submission/prepared_structure.pdb": "5140673a6cff2b2e6bb2ee436fbf9c8571f53e1435f4c011f9c230407c6eaa50",
+        "submission/topology/state.xml": "0eeb7327a73e0f27ab65d9c28141883b01b668e5260e3357241b553c51b498ee",
+        "submission/topology/system.xml": "50c1542bb289f93b1e54cdb6ad3b2bceef5f467e47fc84be22f4ecdc49366fa7",
+        "submission/topology/topology.pdb": "36ce3e07b98a73c5cb6b6c9059aba221e32ddb4fcaf59159f5fbbad6edea5afe"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:02:34+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s2"
+    },
+    "P07_prep_rna_crystallographic_ions": {
+      "contract_sha256": "9204047e2d78a1a18e425b327f8c211b41fb066e34cc424d4c69b615e0c83453",
+      "files": {
+        "harness_execution.json": "315541ae1b55f8fbc094ec955cf3d0c61edc33e1131156756912f133a9c57790",
+        "submission/prepared_structure.pdb": "5b3ccae355d4f23345e90e102b7ca48b954aa11b157e0ff779fdb07484123594",
+        "submission/topology/state.xml": "24181d1d54ae11d8ce552adcfb1ef442a7e979f56f908e147d50f2532f5e9e05",
+        "submission/topology/system.xml": "6501d19d86fde6aaca0129542f5d0f0f1d701ddb0c0cddb4b35bcea0149dfd4b",
+        "submission/topology/topology.pdb": "7a73c25e1511e92ff76b1febe0f7943b2763f56d2d34ceceac8210c99d68d6b4"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:04:38+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s3"
+    },
+    "P08_prep_t4l_l99a_branch": {
+      "contract_sha256": "b4883e5ca1184993b099ce197a858c48267fc7afc55bcd25855d1e0d6c8b99f5",
+      "files": {
+        "harness_execution.json": "7581cf6b6fef4341b4f19ac4cf8d44a5fc25fdff9edba70687580632b54e9621",
+        "submission/prepared_structure.pdb": "80036f90431df3c702d41ad544b5dab03ce53d45bd37f26a1515d807ddbda64f",
+        "submission/topology/state.xml": "d44e38d41f5bd11d39f7ed668af8fa3b594137426c1013331e9b0e5a542a6dae",
+        "submission/topology/system.xml": "7a9aab62809fa04e626bb16bdf0742a7454a99a806ffad34b10dfa7bc38f230a",
+        "submission/topology/topology.pdb": "69ed8ab7b33d7be6cb646a63238f69960c2204691a08495a13b25a965793d240",
+        "submission/wt_prepared_structure.pdb": "802f0d4d8f89a47acbf2429ad4e591403f6027ac1ceaf101c396216fd9fe8425"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:05:14+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s1"
+    },
+    "P09_prep_t4l_double_mutant": {
+      "contract_sha256": "37d3de76f88a8a8bfefd786202d327bc9ed03aae8b80a636ca73341295e4f244",
+      "files": {
+        "harness_execution.json": "5d07de028be2c98de1b074f2813fe716824d906c12ebb6be1bc9a9013a95ccd5",
+        "submission/prepared_structure.pdb": "2fb9284c52e31775dbc4b2643fd630dba48002fdaefafb60096d782113a0ca0a",
+        "submission/topology/state.xml": "d1da41747565f5b0bb91bbeab5b097d21e3df0f249cf4730faa914148149286d",
+        "submission/topology/system.xml": "e472cd914eadcc3337c79f4a53cc5dc0a2ed39148ddce5546c5881dfef16a979",
+        "submission/topology/topology.pdb": "555f92edbf5a37fa3816d02177c1e9ce44dc4fea7d6f89102fef815f3ebcc4fb"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:05:50+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s2"
+    },
+    "P10_prep_bpti_disulfides": {
+      "contract_sha256": "770d72101e670b79b250241108c0ca78f5bca2fa1617f17176e0a45e83ffc9d9",
+      "files": {
+        "harness_execution.json": "3688ef8edddfe2971136289fe6c99f8473483237fdaa37c25e512f789930b9dd",
+        "submission/prepared_structure.pdb": "7c4dac7d8410f96989cec4df7e010f1641170cf9cec14ffd7b9a9fcfdc17519e",
+        "submission/topology/state.xml": "c654ebe871a8cb0ea1ccb1dcff182fdf4c0ed0f786f7ac57f30cd6e0ebdf8aa5",
+        "submission/topology/system.xml": "24070fdfb02b1ad6c6661a53f55af72b991d2735d1251f45d2f7831cba8d1bf2",
+        "submission/topology/topology.pdb": "a07ac27d9b4ad2314bfb4a2bed7a5c590026ef87f09b3dce5561392fd13a00aa"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:06:05+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s3"
+    },
+    "P11_prep_site_protonation_t4l_glu11": {
+      "contract_sha256": "a229a08a2e4319283ac2523ba59dc11d529cd16623d8fbefb309ff79104f8fdb",
+      "files": {
+        "harness_execution.json": "4a109a8f6e94e462ea85b34e2301af092638a6bbf0722e985747cbac5c4ce853",
+        "submission/prepared_structure.pdb": "b1683e6f8e5a29c5d89782505c6a75bff273d035d33596cace0c5bd53de4205e",
+        "submission/topology/state.xml": "78940475511fb9189f075c9e306a328b54a7c1a096a076ad812b9efc15235f34",
+        "submission/topology/system.xml": "334a95d8efbca748b92ba696162d260ce07c69a61524d720cb1cd096861f3874",
+        "submission/topology/topology.pdb": "b3d6e8dfcc478d281350efd99b9b4ecf925a049b24208710c0e4cb5e1b134708"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:06:40+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s1"
+    },
+    "P12_prep_restore_deposited_sep": {
+      "contract_sha256": "5272d68a6f03bcf78bf1089f289255dc0e454b2bab7f25909fc87c4f50595626",
+      "files": {
+        "harness_execution.json": "c5dd29536a58198631e9fa88c918a547b26a9e0a16c8e301b063efdbed4b15f4",
+        "submission/prepared_structure.pdb": "1c1794fae7d94f733c10761e85c6aeb449b63dbfdec8a368225658383da60b8f",
+        "submission/topology/state.xml": "85ac1fed5fc5201c45adc77718ad24a9a72a71cf8f606956fc9948f949a745ea",
+        "submission/topology/system.xml": "317e5d67718aa090536e7e6ab1e56b0707c623cfa58a6ce0298ba567cae53911",
+        "submission/topology/topology.pdb": "9d50dd9ec7f0174fda9a02e0811d5e5f5993f40ec12ad8f52f37559f31a3d091"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:07:01+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s2"
+    },
+    "P13_prep_user_requested_sep": {
+      "contract_sha256": "3658e6b3d9ba66258ccb3818c03e1c166a19159733ad8411cfccbfff85c2a6fb",
+      "files": {
+        "harness_execution.json": "98db1aee5eeedd9a805a426a31c49f99aa433e704408cc8883d63e6797ba64c2",
+        "submission/prepared_structure.pdb": "06a40f2d3eaa9dad6ccf05e5d9deeb05593e488d71c2b0f099ca2bd077a3e1bb",
+        "submission/topology/state.xml": "9fb2f4bff561e085ca78e9544001c33380cd533906c45372149d91d17991986c",
+        "submission/topology/system.xml": "93b5ecfaf9dfe778e04a82ea848c1c905d62519e398398a269383edbce7bd1b4",
+        "submission/topology/topology.pdb": "d58d5fa2e3cf1996b371650be2f2dff3c7d1751f5619634cf44ada0d7eacb573"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:07:21+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s3"
+    },
+    "P14_prep_glycoprotein_glycan": {
+      "contract_sha256": "0a0dbbaa4587b53cf141eee880c67f9f403dd8277407aa6079012c17e050e707",
+      "files": {
+        "harness_execution.json": "391d6c0072b466433ac3cb02bb525859af5eb94812e0ad74712a46eef6388c3f",
+        "submission/prepared_structure.pdb": "f800ff643e8ee16512962a156513d3b591f6b00fa22ea77853046da3667e2dac",
+        "submission/topology/state.xml": "b2e6001fa3fb006fb39dc6dd2b6c82132f1beb55d255dec78d35b1ae1b6a5de8",
+        "submission/topology/system.xml": "fdf5fb1198030f80ed63c3eb9cc918b23c4690b6fd78c43ba7b048d480964a51",
+        "submission/topology/topology.pdb": "41d549d5afc270a12318d02ca4d3363e99b29cc5ac4b7fefef0e97b8b618fbea"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:09:07+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s1"
+    },
+    "P15_prep_standard_dna": {
+      "contract_sha256": "13d487301bf75349700d1beabb273a76160d7606fc4eff26acaa0cfc4fdbd7b3",
+      "files": {
+        "harness_execution.json": "c31eb8afa2e5fafdeb370d2f34b2207e0a55ba07f2675ed05e31367cd07b0362",
+        "submission/prepared_structure.pdb": "bf5240855bbf88afea4d0c81ab70c8251fd1e705af53b782e81ec83eb73d929a",
+        "submission/topology/state.xml": "e5c79c3b27b32b96842d4b64b9c9b3d3f3e24383c1506c9ef6748f1f9ba5bf11",
+        "submission/topology/system.xml": "ffa54bdd87def28a112d50bddea8fc4859ae625ec5d1567638d62325b3c72d7a",
+        "submission/topology/topology.pdb": "b2c4b1880a97224c2faf87fe0c7751c33c0eadb2a0ef67fcb6127ad66f93803d"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:09:32+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s2"
+    },
+    "P16_prep_standard_rna": {
+      "contract_sha256": "1f434da7cbee8cdc670e7d15dd14a581db1f6504d8c29baf8373a5ce9374c538",
+      "files": {
+        "harness_execution.json": "b9fecb5c1f7e0e0c508872b5426d6f17de3b73c4a7a1256c4e698152e8fb1425",
+        "submission/prepared_structure.pdb": "939f123fb18ea1f38e8b4497b21c272ef854df9921bc6199f89f5f03f7daa323",
+        "submission/topology/state.xml": "d01da153fa79665657fc7323cb130aa4c9606ffa6c6e976fca7363dd91bedeb5",
+        "submission/topology/system.xml": "5557013d52f1c186e8e8edadc4a616424fb26d8993cc780a8cb1417837d90f70",
+        "submission/topology/topology.pdb": "e5b8618c1470b68795e229df50b40568cedf1b2d76d3429736448fcc04dd4318"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:11:40+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s3"
+    },
+    "P17_prep_dna_duplex_neutralization": {
+      "contract_sha256": "3368e001a7fb6e48de360442fff19c5e3fb0cb002b49a031db27f28dda0569ae",
+      "files": {
+        "harness_execution.json": "1953316fa56c0bfaf52a14696c01b44945da3454dd26955b80b4506d75b65262",
+        "submission/prepared_structure.pdb": "9f784026ecc91fc1bb4de65ecf6bea698c9aa8dfbb5d43302229d70a0150a031",
+        "submission/topology/state.xml": "4509d407740cf2341708cc25ee7d05ecbff26e3d6bb78be2bf90f0a555d66f15",
+        "submission/topology/system.xml": "ee7d66db472535addc4c0b96485d1cb6fcf6bc2507768642f711ff9decb285e1",
+        "submission/topology/topology.pdb": "6ba6bb68814404adb6066e83e4a36633ac66bb261acf0fba004bd005bd95e795"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:12:11+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s1"
+    },
+    "P18_prep_membrane_mixed_lipids": {
+      "contract_sha256": "fe5fcd7f503882743d0482de28cbc3de63b518cc908152009a598909fdabc7a1",
+      "files": {
+        "harness_execution.json": "450a1f7889099bb7bc550875ca0fa6dffb91d51c94438c4972c2015ee99102a1",
+        "submission/prepared_structure.pdb": "c70d7e52826b8eb013833d787d90757facc1fe53a240d9ad3faffde49286b04c",
+        "submission/topology/state.xml": "02a3b76aa2e89291d4c5bc8b1b25c46ce8aa917d9a83175bce2866ebb5b4d1c5",
+        "submission/topology/system.xml": "c93512ddb19eb7caf24ab4b0016392e1779af28f229c973adf9d2edb70639c80",
+        "submission/topology/topology.pdb": "c992f43b984888e2a201553d42964c5aadd4a2bd6eccd18cd8925b57fcb05919"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:12:45+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s2"
+    },
+    "P19_prep_nmr_model_selection": {
+      "contract_sha256": "87ff0d8ca237afd69b770755d339422d1b6400046a9a756b8156f290a60f20bb",
+      "files": {
+        "harness_execution.json": "4023c36301ba1c19ed588bee33fd83cd27f923b5e6955b3263c3f8c3b0dda395",
+        "submission/prepared_structure.pdb": "69efe39ae74e52bf08cde66c6fd1ed97d5bdab5dc6f7a53a59f4ed975da25ff5",
+        "submission/topology/state.xml": "abd89a043740147598b6ea6cc67b580287dc8b6a46b5e0c17cb4597e090acf56",
+        "submission/topology/system.xml": "9b56318da957b4531c6d6aa4a276bbac349992366fb8857de8dd4e9334319ce9",
+        "submission/topology/topology.pdb": "8d1d90d1bc72c7de2d883879a6d2cbf7ae02fdc618567471d97f6863ff3f8659"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:13:12+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s3"
+    },
+    "P20_prep_terminal_capping": {
+      "contract_sha256": "e52ea56aca6b14c6e13d77582e0f69ae0a1a5d0c710f27c6443dd3f0bbd1a5d2",
+      "files": {
+        "harness_execution.json": "184f4d473d50a466a3331b4af2e6311edae5a1f1cdaeedc7bb9f206d030f728c",
+        "submission/prepared_structure.pdb": "28896c336f898aa035f815a8f3741b0388d713889ba75c7daa6c770603867e6f",
+        "submission/topology/state.xml": "0c0c32c95e41ce6adba45b6252dd736150923e0900bb7bddf6fb1ef2ab5a138a",
+        "submission/topology/system.xml": "76f5c72bf7da9e4ed34bedbf949eaa366925fa22d034ec9ec7d9ca0b4d650b9f",
+        "submission/topology/topology.pdb": "cf6422508276e8b7630ab4dfcd5741dd0b1514e25f812d9bc048d0d052b8c7e6"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:13:22+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s1"
+    },
+    "P21_prep_cleanup_altloc_mse_numbering": {
+      "contract_sha256": "75773c48dde69d3af287172f4d1608077a19db892e0f6039616f09cc794dd357",
+      "files": {
+        "harness_execution.json": "929e65dc5154eef8a2baad86e0696346ef4a3426b81eeb41183e6be8a479175a",
+        "submission/prepared_structure.pdb": "01ce78daaf0189a0e5481796521ba7d4e4d867ccf8e222831134e01226efcd79",
+        "submission/topology/state.xml": "42f3217a132392e96d1111a57a41814e25d43410f3d5a4f5a7a913e37a1db977",
+        "submission/topology/system.xml": "67bf6e089ae686c8e60ba19d2ab6c79f3dff71c6e9b9e5cbb1ccf33508e61900",
+        "submission/topology/topology.pdb": "502c71359099da6d3517a5f41ab89c9179be4e8ac4a7a45b54d90153eb0b12cf"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:14:25+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s2"
+    },
+    "P22_prep_forcefield_water_fidelity": {
+      "contract_sha256": "1965134aecdc0bd90b559590d51370ea4fb23c42c63eeef03ed44a221bf35acc",
+      "files": {
+        "harness_execution.json": "04ad305138a0ba62cc902d8cfc6085e742938f2083a44b18d49d416eacf4d3f8",
+        "submission/prepared_structure.pdb": "802f0d4d8f89a47acbf2429ad4e591403f6027ac1ceaf101c396216fd9fe8425",
+        "submission/topology/state.xml": "5316920872797f866bdef08c965bc7936c9be2caaa9a471f2ec36faaf2207a0c",
+        "submission/topology/system.xml": "5973418bf16596b1f3b9f08a7513cda60da5b19c2a81d16e1d2120d1e740c764",
+        "submission/topology/topology.pdb": "6e4855d90c58ccda1bc290deb0ef9187cefe413efee2713b2e77131d503edb11"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:15:03+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s3"
+    },
+    "P23_prep_implicit_solvent_chignolin": {
+      "contract_sha256": "b8a00544907f68531648870d56b84262e5bc1a91995348f407e51d94bf8b86d7",
+      "files": {
+        "harness_execution.json": "4e551eadaabe6c00b47a36e722c25fd201bc3027b2524e7994fb1bcce88d7169",
+        "submission/prepared_structure.pdb": "b9dfc36e1d0407cbb22e1f1299381cb7f85e19a4f75ce43163ad40bd5bf29fd8",
+        "submission/topology/state.xml": "17a3e7f2077c6cc3f9977b7e3965c7ed53f540859d546b298607b5d34a12b383",
+        "submission/topology/system.xml": "b0f6d6e59b140510bce9f2f14a5247c866c74ba00318328ef0e6baa8b2eff70e",
+        "submission/topology/topology.pdb": "e4962a3e9053d53d30ef7d9a227b73322127c12e7fed25a4ca2198c9c53b425f"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:15:04+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s1"
+    },
+    "P24_prep_biological_assembly": {
+      "contract_sha256": "369141ae760e9991505dd47f5b17c02a0ecf192760ab8c298bb51297e0a7d9db",
+      "files": {
+        "harness_execution.json": "ab8fc34be4a191a123103c9b5c9a7da5eeb9af133a0afa7cb5b5533bb82c323e",
+        "submission/prepared_structure.pdb": "217f0eb4c01d7635a55e8114700ad6bc5dce986725a9b8c86a4b297098ed6684",
+        "submission/topology/state.xml": "63518453e23946a887a0965c53d2cd26a711a35a4bf110b2471f2e3da90e7535",
+        "submission/topology/system.xml": "f67d3fb5ceec378de8ede75a99597a9a608ba6278dff2893056f6a823a1926fd",
+        "submission/topology/topology.pdb": "e797e833d6789f5cad6b59dff7ce1e6ccde40b64c1351184c600716730dbfce5"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:16:02+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s2"
+    },
+    "P25_prep_kcl_ion_concentration": {
+      "contract_sha256": "8bd787677f6c07b37802f428ea9469ca8f72bea0755368dccdb80303e0a3a160",
+      "files": {
+        "harness_execution.json": "cc1d5e6f869c72b2d0b66c79e546b4f4d1ee54f58fa58f4be35f48f1191a14dc",
+        "submission/prepared_structure.pdb": "d98dd67395db75af33f7635148942310b076f9dffc198f084722e9818f98b818",
+        "submission/topology/state.xml": "ebc1d9e8e5f5026ce909ce563ebab9b76be0c80c5f9760cde8f06efe70dc52a9",
+        "submission/topology/system.xml": "fcee3e4930b6a4e8f061d170e79e3c81e72f30200ea7bdaeb66569318f8a7014",
+        "submission/topology/topology.pdb": "d98dd67395db75af33f7635148942310b076f9dffc198f084722e9818f98b818"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:16:14+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s3"
+    },
+    "P26_prep_zinc_metalloenzyme_2cba": {
+      "contract_sha256": "df2da317ef8f3385e5c91dc56594d11f9ae13a018e107adc95a3d6741ac0132b",
+      "files": {
+        "harness_execution.json": "5a187a56aac973c8683673e380b0aac013e752dd9e3e7f181914efa65d60b1f2",
+        "submission/prepared_structure.pdb": "1674e849f965849d3703a638f957908c009d1c9d9a48f14cafc1b8918b5d3243",
+        "submission/topology/state.xml": "11f5c3cb199a40a951d2b3cfc1096f3401f49abd9955454e2b919f1ec626ede7",
+        "submission/topology/system.xml": "147397eb95371c9ed124cdd20a56c4ad0d99d4749f937f7787229dc638e8d76a",
+        "submission/topology/topology.pdb": "6e826a9c60640a24fe2e11bd79652909f9ea7a0035746bd1e90a61101dbe5516"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:17:01+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s1"
+    },
+    "P27_prep_manganese_metalloenzyme_3cna": {
+      "contract_sha256": "6e9dc7db484d8f8a4f2635c5e30468c2d6a8f9cd763b01669cb152db40100362",
+      "files": {
+        "harness_execution.json": "622f88682cd5c1dcfa360e84d2d04aaa6fe5010e07cafb330f4959cff3a01602",
+        "submission/prepared_structure.pdb": "b075c204cc39049621ea3a539927689046b868fbae98f2b9ab8df58eb1b3680e",
+        "submission/topology/state.xml": "9e9167597b30b0e3bbafae8be7c55c91efef40d82c9f86f2039a9c931da49633",
+        "submission/topology/system.xml": "1aa746daf733d9eb807ffc2b922171a29c03b856e4708f27a6432eaa081d6dde",
+        "submission/topology/topology.pdb": "8080297cc5e783a82504d91451132082111e04b3e788a7683be69b67673dc9bc"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:17:52+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s2"
+    },
+    "P28_prep_kinase_inhibitor_gaff_1iep": {
+      "contract_sha256": "7ca4470fe5ed5cad373687811dfbba8f7cf35305ee50b2d7d3a2da95421ed2fb",
+      "files": {
+        "harness_execution.json": "660956bc53a143c606b8c7eb428c271b4a18c020d0a7808cd9141d00c0b2f35c",
+        "submission/prepared_structure.pdb": "b5febc17b1f2b5502af7ba2e546c8bc18c0a503ce9d79363eb0cc8ba39ab59a2",
+        "submission/topology/state.xml": "e7b4e2be99577f62202db6655a70c14e7a1a6cd9011a9436c7d21b48c1632c89",
+        "submission/topology/system.xml": "6575a81dd60224c9c35ac43f4d39b3c8b50f36f85f337a58f95ddca8633053b1",
+        "submission/topology/topology.pdb": "9fff7d372ddad205e973766205f652fd5d0a7a9676c715cba35e353fd286cc2a"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:18:48+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s3"
+    },
+    "P29_prep_protein_protein_interface_1emv": {
+      "contract_sha256": "56716a76fef75ab2abdeae22501eaeb68b5001da3cd5c7fca26f1e459dc15fda",
+      "files": {
+        "harness_execution.json": "540074a25e9cffdbc0be0bdb4199fe54acf7b1aa107c7e4925c6713874624cca",
+        "submission/prepared_structure.pdb": "a555e8b705e2a0026c42fa02c53672f5bc405d9a72a2bc48a958de92212830ab",
+        "submission/topology/state.xml": "62dc7f31c59166d5a8f050fc27dc46451334eed9f5e14c773302f3bf1041791b",
+        "submission/topology/system.xml": "59d20e8bb7fb93b5040086cf71d930475d7258922c73ac893e8f6511c2400795",
+        "submission/topology/topology.pdb": "168c7f75a840d13f9b62eb49a0eb71220a3621efd2bc45a6eaa15512842fb694"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:19:53+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s1"
+    },
+    "P30_prep_protein_dna_zinc_1aay": {
+      "contract_sha256": "a79ee51b9c7587f8ee43af19daa65a68e6f92c2e3b09db0420d6af92489ea1db",
+      "files": {
+        "harness_execution.json": "101d101a1f89968617a1422fe57dde15d021c11a76de29f74aaceb21cd0b46b2",
+        "submission/prepared_structure.pdb": "aa2ecb50dd8c780852525e2bfd00921dcf15f85f93fce2786aa7534ff5ee4795",
+        "submission/topology/state.xml": "475b5de8b7160f002df246e2337f9e975beb9185c3795b92cc7cf9f9ca7b803b",
+        "submission/topology/system.xml": "fa1a0b99195e271ceee0aaa8847191bee52cb3755cf053bfeadf3e8e2c841764",
+        "submission/topology/topology.pdb": "b380f249f69a1a1471048dc2d18c4a08a2558247c4976b150b24d8195b49c60d"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:20:44+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s2"
+    },
+    "P31_prep_his_protonation_hip_t4l": {
+      "contract_sha256": "731e453310b2ff785e45928b1b16c40d37ee8e0fd1b8fd74ab81bebb01a634e8",
+      "files": {
+        "harness_execution.json": "09464e18a7a9ddbc6ded3bbeb797e1318e3d4bf2c8b692705aad80e05484dd6c",
+        "submission/prepared_structure.pdb": "a45d182424777e10531b1df00010154fd3623a214b2c4c59ea0616eac1ecb09f",
+        "submission/topology/state.xml": "65c63d6490f67bef89f86c2e79c3301e640ba42a4640dc98b5272d7b8641a1a7",
+        "submission/topology/system.xml": "2021bb7607ccf2dc15b04199d7086f7b56ac6a9a9a3df59b0375d833fe20782e",
+        "submission/topology/topology.pdb": "1794fcc6fc251e9ffa0cc43c35b2cbc44082cc65148c7c9cc59da3b98210d829"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:21:18+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s3"
+    },
+    "P32_prep_sidechain_completion_1csp": {
+      "contract_sha256": "f498785f8fa8c96539cabb34a56f285ab53b0b334591086fa8e517884c200aae",
+      "files": {
+        "harness_execution.json": "741a06c68de05c292658accf13c24862258cae706a8e5ff1da621357e5cd0f82",
+        "submission/prepared_structure.pdb": "77eb8469453df499df12ea02165e84ca7b4d5624618b79dbbda905c4cb1abe43",
+        "submission/topology/state.xml": "913a4b6e73d7ac2731a271452dd7f37a4ed221e9760a2124d2816c7a3a5279b4",
+        "submission/topology/system.xml": "70852a392651618ab83c11ba77e6cdf77558bf1bef7333de6279c01328b7a4cd",
+        "submission/topology/topology.pdb": "5ce38de276f01801a10d1e755f420c3ff4b996242d5ca0cbcbf90941277ec5f7"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:21:40+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s1"
+    },
+    "P33_prep_physiological_nacl_ubiquitin": {
+      "contract_sha256": "725778a0fc878f9719e42668a83d9d50961b493102cce6949a94545b3c8381b2",
+      "files": {
+        "harness_execution.json": "9b1a9ff74a7a48b6ba840e4f18e2c72b46d2c7bbc638c45592f284f4b93ca520",
+        "submission/prepared_structure.pdb": "f631c93b1a662f46b4a95aaa51a20e1514b8fc415a97e4a7118b36138db0dc6a",
+        "submission/topology/state.xml": "13d609b6ac3fb0a77e6b1dadb9c95c34e3cc66a70540d51373eefcb41e8bd8ac",
+        "submission/topology/system.xml": "5704cbfdf1f5a3df5326fcea81130758b8f4e3506185e32197e232633adfbc2b",
+        "submission/topology/topology.pdb": "10ee55770b18286fdea7eea746fdd697a784f408e3ecb898807cd7b7f7a646a2"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:22:03+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s2"
+    },
+    "P34_prep_anionic_lipid_membrane_2lop": {
+      "contract_sha256": "1459c74fd4b8e2343eb7c1456d205ae00bb380cd7b2f732c484a5043645a1c62",
+      "files": {
+        "harness_execution.json": "565eb2e6d3eba5f89a1b6fb70d045d0b4f259e9938fd2bd12d09b9413d7a9d33",
+        "submission/prepared_structure.pdb": "25c7c3539edb8afd92f0936c4bc61ddb31190deb64d32509146628d7c3588e9f",
+        "submission/topology/state.xml": "70b8c6ba7f11161490f420bd11bb554cce68ba408638e9ab02f34049cc1c7a28",
+        "submission/topology/system.xml": "75ae604e34aaf643c67ba553ea4412a4a846ef146411cdb085a524a92761be41",
+        "submission/topology/topology.pdb": "6d012ea2454281353e0cc488d35f22051cf15386ad76af73c2ce083a61e9b464"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:22:54+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s3"
+    },
+    "P35_prep_rna_structural_mg_1y26": {
+      "contract_sha256": "54ddfdd9979168ffa0d487d641dae24d994da482ebb412c40ac49382a0feb033",
+      "files": {
+        "harness_execution.json": "8b5843663d1ee24c3bc32c2543a16eb5668edc274ce0eb76d188e4c64a13b1bd",
+        "submission/prepared_structure.pdb": "11140f3237b245e084eef10dda6766e6c9e01de11a2521d5d5bd98f65d87145c",
+        "submission/topology/state.xml": "8ece0bd243cc884651fef153bc44bae1abd05d7b2b95a232378d00fd14505cfd",
+        "submission/topology/system.xml": "c9eb2d1974108b0e5db539c78468d263ec6e37afd2d651f6355e209d7f923fd8",
+        "submission/topology/topology.pdb": "3ce93dceb3f2408f163394e3b897ce683b37581cb627be7b73acc2a7690ec31a"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:24:34+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s1"
+    },
+    "P36_prep_protein_rna_complex_1a1t": {
+      "contract_sha256": "5e450d80e61271de758ab67f2da005dc7abee9ebffff80b52031797cdbd464f4",
+      "files": {
+        "harness_execution.json": "a160520290dd83c60fd806b8950278bc41f088de33878f632a2d0dff21905552",
+        "submission/prepared_structure.pdb": "1f7f58be7e3ada40296fa7972120719c83b7b6a5a5daac17523420ee4698d4cd",
+        "submission/topology/state.xml": "6e0778f17044952e498de673138db8fde478bdc4769a6d4fe83935d1462f2060",
+        "submission/topology/system.xml": "16e2eaf1eb9fe8bdaa81ed2ba3eae6f8915617f2cea4300feb8ca32c34dd85c4",
+        "submission/topology/topology.pdb": "8f4fd3bb0fbd6dd6c08d2e2bfa26d6dd01a2ac0230caab801b6407d62d688a8c"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:25:36+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s2"
+    },
+    "P37_prep_beta_barrel_membrane_1bxw": {
+      "contract_sha256": "96afc4aa6717e59df46d2bd825037c4489eb50486a3d1b110a7b178295c305ad",
+      "files": {
+        "harness_execution.json": "94610eb382dd804b271c686a851dbdb6fb5285dbe577f3db984434256bff8ed5",
+        "submission/prepared_structure.pdb": "b02faadfbd1899a48863c3a2d6ac4d15c8f5cdc849784c2e7cbea8edcacbf395",
+        "submission/topology/state.xml": "70743f7a775c331f3a4698176224cb59df4e40cc5315d7a05c9c2b79b6308699",
+        "submission/topology/system.xml": "ccdc95efdbce0b23ea0972daee81fa04c3441dad2a8b7db83d116eb88db1c706",
+        "submission/topology/topology.pdb": "b9e145ee2bd4d6bc35b58aaaeafbe6896574705129e3efef5ecb4c5d56f5d5cf"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:26:08+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s3"
+    },
+    "P38_prep_implicit_complex_mdm2_p53_1ycr": {
+      "contract_sha256": "a2751bee3cf3313884e92e0b792767c442607f265e9e62692711b17fb07c2c5d",
+      "files": {
+        "harness_execution.json": "4b79e7e5b0e59a82aa7c006de26e3eaea5b924fb8707795efcfbd04237a4b649",
+        "submission/prepared_structure.pdb": "3af0a0fc180b9cc66ce1f9d23de88db38d7bc6a5902621724ed1736585dab9fb",
+        "submission/topology/state.xml": "24120707a8eabfdd9802a69313e611c648a5c303ced45a0fcc54bd7d80fb4a92",
+        "submission/topology/system.xml": "1970a06a04195e058cc4008013798c210f10e26506bd1ca45192d9bd47b3cf42",
+        "submission/topology/topology.pdb": "33ff32aced852d27cce6e12969ae7b8d1d4bfa1e8f859eb7c381b2b02ab97226"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:26:11+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s1"
+    },
+    "P39_prep_potassium_channel_membrane_1bl8": {
+      "contract_sha256": "f4e10d12b6d609dff89902babab46d4b3f8a8947334653f08ec9a9f88de3ce2f",
+      "files": {
+        "harness_execution.json": "931047a9af2d8aafe2dce7ecedf7eb8378fc4807142680b3dd26535b5854cdad",
+        "submission/prepared_structure.pdb": "9472b4eb0f9701a936df470fde3fbe657a1027822f6cb4c8baa101ab01709c45",
+        "submission/topology/state.xml": "78e4d12a82b4c7622519665031fb057e985871981c7e974463193946b8b18dac",
+        "submission/topology/system.xml": "ccb6db253e2418b4cbdca6717c853660e8fed6d12982df65e4fc8c0806459810",
+        "submission/topology/topology.pdb": "b7f8c9f94f7e097d7e6787a1d766f57f7949cf4f74e8829708d615c35fb088ff"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:27:25+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s2"
+    },
+    "P40_prep_tip3p_water_fidelity_2lzm": {
+      "contract_sha256": "84b569a5fd602209f39eac97e509c473b5cb6add4103e7b791a112aa22e1596a",
+      "files": {
+        "harness_execution.json": "c4a20184c48c74edea399e33956e41344fbc3b3e6d8fc4cec44bf8398b76eefd",
+        "submission/prepared_structure.pdb": "802f0d4d8f89a47acbf2429ad4e591403f6027ac1ceaf101c396216fd9fe8425",
+        "submission/topology/state.xml": "a8cbfbd62edea1036f5cd89f34891a3dea58362e62bcbf0d5905fdb22cbcc23b",
+        "submission/topology/system.xml": "f2b13aae2c03d2fe9513d4ae403b0782ccc973809727bb24f3d8817e74322558",
+        "submission/topology/topology.pdb": "7c299a1f37441e6d3fb72a994791e6640f5a7b0d1cb14a11fbb5b07ec868610b"
+      },
+      "produced_by": "codex gpt-5.6-sol (xhigh) via run_benchmark_agent, mdclaw-skills+cli",
+      "recorded_at": "2026-08-05T06:27:51+00:00",
+      "repository_head": "960cfaf",
+      "run_id": "witness_codex_s3"
+    }
+  }
+}

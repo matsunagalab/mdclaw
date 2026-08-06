@@ -120,3 +120,5 @@ split/
 summary_*.json
 20220403_unbound/
 .mdclaw_session
+.witness_sweep.sh
+.witness_summary.py
