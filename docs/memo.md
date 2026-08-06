@@ -7,6 +7,66 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-05 — Artifacts versus harness evidence: the declaration was wrong
+
+`dataset.json` declared `evaluation_unit: "submission_artifacts"`, and the
+maintainer states an agent need not use MDClaw's DAG. But the prep tasks carry a
+reject-level integrity check, `workflow_execution_recorded`, requiring a harness
+execution record. Demonstrated on codex's P01 bundle, with the artifacts
+unchanged between the two runs:
+
+| submitted | preparation |
+|---|---|
+| artifacts alone | **0.0** (`harness execution record required but missing or empty`) |
+| artifacts + `harness_execution.json` | 1.0 |
+
+So a third party preparing a perfect system elsewhere and submitting the files
+scores zero, which is not what "artifact-based" promises.
+
+Resolved by **fixing the declaration, not the check**, after the maintainer
+confirmed that requiring the harness is acceptable: a foreign agent can be
+plugged in with `--agent-command` and still not touch MDClaw's MD tools, and
+`mdclaw/benchmark/*.py` imports nothing from the MD side, so the harness is
+separable in practice. `evaluation_unit` became
+`harness_executed_preparation_bundle`, following MDStudyBench's existing
+`runner_certified_study_bundle`; `agent_independent: true` stays, being accurate.
+`environment_type: "artifact_only"` in `task_specs/defaults.json` — which is
+exported into the *public* contract agents read — became
+`harness_executed_artifacts`.
+
+Scoring behaviour is unchanged, so historical scores stay comparable. The known
+weakness is recorded in the dataset notes: harness evidence establishes
+runner-executed provenance, not that the preparation was genuinely performed. The
+check asks for one successful `min`-stage command with a measured walltime, which
+a wrapper around a trivial command satisfies.
+
+---
+
+## 2026-08-05 — Correction: the `mdclaw-free` arm is not structurally blocked
+
+I claimed that all 120 free-condition task instances scored exactly 0.00 and
+suggested the integrity requirement blocked the arm by construction. Wrong on
+both counts.
+
+The 0.00 figure came from globbing `benchmark_runs/cond_*` and deciding the
+condition from `_free_` appearing in the run name. Those runs all record
+`tooling_condition: "unknown"`. The runs actually labelled `mdclaw-free` are four
+others, and they score normally:
+
+```
+20260704_mdprepbench_pi_v2_pi          overall 0.5136   40 tasks
+20260706_mdprepbench_pi_pi             overall 0.5470   40 tasks
+haiku_sif_free_20260616_125805         overall 0.2585   25 tasks
+pi_deepseek_sif_free_20260616_171959   overall 0.5714   25 tasks
+```
+
+The uniform zeros in the `cond_20260705_*` haiku runs are recorded as
+`missing_raw_artifacts` — those agents produced nothing — not as an integrity
+failure. This overturns the suggestion in the 2026-08-04 measurement entry that
+the ablation's free baseline could not score.
+
+---
+
 ## 2026-08-04 — Correction: five MDPrepBench tasks do ship reference data
 
 The entry below claims "No task ships one; `tasks/<id>/` holds only `prompt.md`

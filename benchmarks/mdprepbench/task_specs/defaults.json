@@ -11,7 +11,7 @@
       "blocked_by_missing_input_allowed": false,
       "insufficient_information_allowed": false
     },
-    "environment_type": "artifact_only",
+    "environment_type": "harness_executed_artifacts",
     "requires_tools": [
       "structure_preparation"
     ],

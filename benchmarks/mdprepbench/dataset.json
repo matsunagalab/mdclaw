@@ -2,7 +2,7 @@
   "agent_independent": true,
   "benchmark_type": "artifact_based_agent_benchmark",
   "benchmark_version": "MDPrepBench-v0.3",
-  "evaluation_unit": "submission_artifacts",
+  "evaluation_unit": "harness_executed_preparation_bundle",
   "families": {
     "preparation_workflow_battery": {
       "display_name": "Preparation Workflow Battery",
@@ -55,6 +55,7 @@
   "notes": [
     "Preparation-focused suite in the MDAgentBench benchmark family.",
     "The current prep contract requires a self-consistent OpenMM topology and minimized state; the evaluator derives validation metadata.",
+    "Scoring consumes the raw artifacts, but a submission must come from an episode the benchmark harness executed: the integrity contract requires a harness execution record, so artifacts alone score zero. Any agent can be plugged in through the harness and need not use MDClaw's own MD tools; a non-MDClaw agent records its commands through the stage wrapper. Harness evidence establishes runner-executed provenance, not scientific validity; preparation validity is recomputed from the artifacts.",
     "No public task requires an MDClaw-specific guardrail code.",
     "Scientific question answering tasks live in MDStudyBench."
   ],

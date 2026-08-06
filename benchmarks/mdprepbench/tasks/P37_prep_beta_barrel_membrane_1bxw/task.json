@@ -5,7 +5,7 @@
     "beta_barrel_membrane_protein"
   ],
   "category": "system_preparation",
-  "environment_type": "artifact_only",
+  "environment_type": "harness_executed_artifacts",
   "evaluation_target": "agent_preparation_fidelity",
   "execution_mode": "lite",
   "failure_policy": {
