@@ -8,7 +8,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "benchmarks" / "tools" / "run_mdprepbench_all_agents.py"
 TASK_ID = "P01_prep_simple_monomer_t4l"
@@ -184,3 +183,105 @@ print(json.dumps({
     assert aggregates["scores"] == [0.5, 0.5]
     assert aggregates["mean"] == 0.5
     assert aggregates["stdev"] == 0.0
+
+
+def _script_module():
+    import importlib.util
+
+    # The script does a flat import of its sibling module.
+    sys.path.insert(0, str(SCRIPT.parent))
+    spec = importlib.util.spec_from_file_location("all_agents_script", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _write_scored_run(run_dir: Path, statuses: dict[str, str]) -> None:
+    for task_id, status in statuses.items():
+        task_dir = run_dir / "tasks" / task_id
+        task_dir.mkdir(parents=True)
+        (task_dir / "score.json").write_text(json.dumps({"status": status}))
+
+
+def test_pass_k_separates_reliability_from_mean(tmp_path: Path):
+    """A task that passes in one repeat but not another is flaky, not solved."""
+    module = _script_module()
+    runs = []
+    for rep, statuses in enumerate(
+        [
+            {"P01": "passed", "P02": "passed", "P03": "failed"},
+            {"P01": "passed", "P02": "failed", "P03": "failed"},
+        ],
+        start=1,
+    ):
+        run_dir = tmp_path / f"run_rep{rep}"
+        _write_scored_run(run_dir, statuses)
+        # The second repeat's overall run "failed" (P02+P03 failed); its verdicts
+        # on the other tasks still count. Excluding whole imperfect runs would
+        # leave only perfect runs in the statistic.
+        runs.append({
+            "agent_name": "codex",
+            "run_dir": str(run_dir),
+            "success": rep == 1,
+        })
+
+    aggregate = module._aggregate_pass_k(runs, ["P01", "P02", "P03"])["codex"]
+
+    assert aggregate["complete"] is True
+    assert aggregate["k"] == 2
+    assert aggregate["tasks"] == 3
+    assert aggregate["pass_at_k"] == round(2 / 3, 4)   # P01, P02 ever passed
+    assert aggregate["pass_all_k"] == round(1 / 3, 4)  # only P01 always passed
+    assert aggregate["flaky_tasks"] == ["P02"]
+
+
+def test_pass_k_counts_missing_task_evidence_as_failure(tmp_path: Path):
+    """An agent that crashed before scoring must not look better than one that
+    finished and scored poorly."""
+    module = _script_module()
+    run_dir = tmp_path / "run"
+    _write_scored_run(run_dir, {"P01": "passed"})  # P02 never produced a score
+    runs = [{"agent_name": "codex", "run_dir": str(run_dir), "success": False}]
+
+    aggregate = module._aggregate_pass_k(runs, ["P01", "P02"])["codex"]
+
+    assert aggregate["complete"] is True
+    assert aggregate["pass_at_k"] == 0.5
+    assert aggregate["pass_all_k"] == 0.5
+
+
+def test_pass_k_declares_itself_unavailable_rather_than_mislabelling(
+    tmp_path: Path,
+):
+    """A missing repeat directory makes k a lie; say so instead of reporting it."""
+    module = _script_module()
+    scored = tmp_path / "real"
+    _write_scored_run(scored, {"P01": "passed"})
+    runs = [
+        {"agent_name": "codex", "run_dir": str(scored), "success": True},
+        {"agent_name": "codex", "run_dir": str(tmp_path / "gone"), "success": True},
+    ]
+
+    aggregate = module._aggregate_pass_k(runs, ["P01"])["codex"]
+
+    assert aggregate["complete"] is False
+    assert "pass_at_k" not in aggregate
+
+
+def test_scoring_runtime_check_reports_a_broken_runtime(monkeypatch):
+    """The canary exists to fail in seconds instead of after the agents ran."""
+    module = _script_module()
+    import mdclaw.benchmark.run as runner
+    import mdclaw.benchmark.scoring as scoring
+
+    # Force the delegate path even where the deps are importable in-process.
+    monkeypatch.setattr(scoring, "missing_scorer_dependencies", lambda: ["mdtraj"])
+    monkeypatch.setattr(
+        runner, "_resolve_mdclaw_python",
+        lambda: f"{sys.executable} -X faulthandler -c 'raise SystemExit(3)' --",
+    )
+
+    ok, detail = module._scoring_runtime_check()
+
+    assert ok is False
+    assert "openmm" in detail

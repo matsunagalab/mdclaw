@@ -38,6 +38,45 @@ def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _scoring_runtime_check() -> tuple[Optional[bool], str]:
+    """Fail in seconds, not hours: probe the runtime scoring will delegate to.
+
+    Resolution is borrowed from the runner itself so the probe tests the same
+    command it will use; a parallel resolver here would drift. Returns None when
+    the runner module is not importable in this interpreter -- the child process
+    re-resolves on its own, so that is a warning, not a failure.
+    """
+    try:
+        from mdclaw.benchmark.run import _resolve_mdclaw_python
+        from mdclaw.benchmark.scoring import missing_scorer_dependencies
+    except ImportError as exc:
+        return None, f"runner not importable here ({exc}); skipping the probe"
+    if not missing_scorer_dependencies():
+        # Mirrors the runner: with the deps importable here, scoring runs
+        # in-process and no delegate command is involved.
+        return True, "in-process (openmm/mdtraj/numpy importable)"
+    python_cmd = _resolve_mdclaw_python()
+    argv = [*shlex.split(python_cmd), "-c", "import openmm, mdtraj, numpy"]
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, check=False, timeout=300,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"{python_cmd}: {type(exc).__name__}: {exc}"
+    if proc.returncode == 0:
+        return True, python_cmd
+    tail = (proc.stderr or "").strip().splitlines()[-1:]
+    return False, f"{python_cmd} cannot import openmm/mdtraj/numpy: {tail}"
+
+
+def _dataset_task_ids(dataset_dir: str) -> list[str]:
+    try:
+        payload = json.loads((Path(dataset_dir) / "dataset.json").read_text())
+        return [str(t) for t in payload.get("task_ids") or []]
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
 def _dataset_token(dataset_dir: str) -> str:
     """Short token for run-id prefixes, e.g. 'mdprepbench' / 'mdstudybench'."""
     return _safe_token(Path(dataset_dir).name)
@@ -316,6 +355,70 @@ def _run_overall_score(record: dict[str, Any]) -> Optional[float]:
     return None
 
 
+def _task_passed(run_dir: Path, task_id: str) -> bool:
+    """Canonical per-task verdict: the scorer's own status, nothing softer.
+
+    A task with no readable score.json counts as failed -- missing evidence is
+    a failure, not an exclusion, or agents that crash early would look better
+    than agents that finish and score poorly.
+    """
+    score_file = run_dir / "tasks" / task_id / "score.json"
+    try:
+        payload = json.loads(score_file.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return payload.get("status") == "passed"
+
+
+def _aggregate_pass_k(
+    runs: list[dict[str, Any]],
+    expected_tasks: list[str],
+) -> dict[str, Any]:
+    """Per-agent pass@k / pass^k over repeats, on a fixed task x repeat matrix.
+
+    pass@k: the task passed in at least one repeat; pass^k: in every repeat.
+    The gap is the run-to-run reliability tau-bench's pass^k exposes; a mean
+    hides it. Every non-dry repeat contributes -- a run where one task failed
+    still says everything about the other 39 -- and an agent whose repeats did
+    not all materialise gets no aggregate rather than a mislabelled one.
+    """
+    by_agent: dict[str, list[Path]] = {}
+    for record in runs:
+        if record.get("dry_run"):
+            continue
+        by_agent.setdefault(record.get("agent_name", "unknown"), []).append(
+            Path(record.get("run_dir") or "")
+        )
+
+    aggregates: dict[str, Any] = {}
+    for agent, run_dirs in by_agent.items():
+        k = len(run_dirs)
+        if not expected_tasks or not all(d.is_dir() for d in run_dirs):
+            aggregates[agent] = {
+                "k": k,
+                "complete": False,
+                "reason": "missing run directory or unknown task set",
+            }
+            continue
+        matrix = {
+            task: [_task_passed(d, task) for d in run_dirs]
+            for task in expected_tasks
+        }
+        at_k = [any(v) for v in matrix.values()]
+        all_k = [all(v) for v in matrix.values()]
+        aggregates[agent] = {
+            "k": k,
+            "complete": True,
+            "tasks": len(matrix),
+            "pass_at_k": round(sum(at_k) / len(at_k), 4),
+            "pass_all_k": round(sum(all_k) / len(all_k), 4),
+            "flaky_tasks": sorted(
+                task for task, v in matrix.items() if any(v) and not all(v)
+            ),
+        }
+    return aggregates
+
+
 def _aggregate_repeats(runs: list[dict[str, Any]]) -> dict[str, Any]:
     """Per-agent mean/stdev of overall score across repeats.
 
@@ -449,6 +552,16 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
+    if not args.dry_run:
+        deps_ok, deps_detail = _scoring_runtime_check()
+        if deps_ok is False:
+            parser.error(
+                f"scoring runtime unusable ({deps_detail}); "
+                "every task would fail invalid_openmm_bundle after the agents "
+                "had already spent their walltime"
+            )
+        print(f"[benchmark-all-agents] scoring runtime: {deps_detail}")
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     dataset_token = _dataset_token(args.dataset_dir)
@@ -535,6 +648,8 @@ def main(argv: list[str] | None = None) -> int:
     summary["completed_at"] = _now_utc()
     summary["success"] = all(record.get("success") for record in summary["runs"])
     summary["aggregates"] = _aggregate_repeats(summary["runs"])
+    expected_tasks = args.task_ids or _dataset_task_ids(args.dataset_dir)
+    summary["pass_k"] = _aggregate_pass_k(summary["runs"], expected_tasks)
     _write_json(summary_path, summary)
     print(f"[benchmark-all-agents] summary: {summary_path}")
     return exit_code
