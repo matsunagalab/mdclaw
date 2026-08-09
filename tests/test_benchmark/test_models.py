@@ -22,7 +22,7 @@ from mdclaw.benchmark.models import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATASET_DIR = REPO_ROOT / "benchmarks" / "mdprepbench"
+DATASET_DIR = REPO_ROOT / "benchmarks" / "mdstudybench"
 
 
 def _task_dirs() -> list[Path]:

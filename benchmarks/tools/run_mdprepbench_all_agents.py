@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# The canonical copy of this tool lives in matsunagalab/MDPrepBench. This copy
+# remains only because MDStudyBench's wrapper builds on the shared runner.
 """Run and score all MDPrepBench tasks for Pi, Claude Code, and Codex.
 
 This is an operator convenience wrapper around ``mdclaw run_benchmark_agent``.

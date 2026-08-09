@@ -6,12 +6,9 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-DEFAULT_BENCHMARK_VERSION = "MDPrepBench-v0.3"
-DEFAULT_DATASET_DIR = "benchmarks/mdprepbench"
-BUILTIN_DATASET_DIRS = (
-    "benchmarks/mdprepbench",
-    "benchmarks/mdstudybench",
-)
+DEFAULT_BENCHMARK_VERSION = "MDStudyBench-v0.4"
+DEFAULT_DATASET_DIR = "benchmarks/mdstudybench"
+BUILTIN_DATASET_DIRS = ("benchmarks/mdstudybench",)
 
 
 def repository_root() -> Path:

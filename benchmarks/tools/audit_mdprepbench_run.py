@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# The canonical copy of this tool lives in matsunagalab/MDPrepBench. This copy
+# remains only because MDStudyBench's wrapper builds on the shared runner.
 """Audit an MDPrepBench agent run from runner-owned logs and artifacts.
 
 The audit is descriptive and does not change benchmark scores. It combines

@@ -7,6 +7,49 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-09 — MDPrepBench extracted to matsunagalab/MDPrepBench
+
+MDPrepBench is now its own public repository,
+<https://github.com/matsunagalab/MDPrepBench>, laid out as a sibling checkout
+(`/home/yasu/tmp/MDPrepBench`). Fresh history, MIT, everything public — the
+task contracts and truth references were already world-readable in this repo,
+so openness was made deliberate rather than accidental. The extraction is
+copy-and-trim: package `mdprepbench` is the harness minus the four study-only
+modules, with `grounded_correct_v2` entry points raising NotImplementedError
+pointing back here. All 337 tests pass there; CI runs lint, dataset
+consistency, and a no-OpenMM test subset (verified in a bare venv).
+
+A pre-publish external review caught five release blockers before the first
+public commit, the worst being container-delegated scoring still invoking
+`python -m mdclaw._cli` — it would have scored with whatever MDClaw the image
+carried instead of the published code. Details in the new repo's docs/memo.md.
+
+On this side, mdclaw dropped the prep dataset, prep-only tests/tools/docs, and
+the prep-fixture-dependent tests whose coverage now lives in the new repo
+(336 still pass). Kept: `mdclaw/benchmark` (MDStudyBench needs it),
+`run_mdprepbench_all_agents.py` + `audit_mdprepbench_run.py` (the study batch
+wrapper builds on them; canonical copies are in MDPrepBench), and
+`validate_submission.py` / `package_submission.py`.
+
+**Accepted risk, recorded deliberately:** the removal deletes tests for code
+mdclaw still ships — the shared batch runner's execution/pass^k tests, the
+public-export overwrite guards, the fabrication-policy scorer tests, and the
+P18/P24 scorer regressions. Their coverage lives on, green, in the MDPrepBench
+repository, and the harness here is feature-frozen until MDStudyBench leaves the
+same way; restoring transitional copies was judged not worth the drift. The
+review that flagged this (rightly calling the hybrid unsound as a permanent
+state) also caught that `datasets.py` still defaulted to the deleted
+`benchmarks/mdprepbench` — fixed to `benchmarks/mdstudybench` before commit —
+and that a first trim pass had deleted the *study* tests too, because
+`DATASET_DIR` substring-matched `STUDY_DATASET_DIR`; restored from HEAD and
+re-trimmed with a lookbehind. Suite after all fixes: 441 passed.
+
+MDStudyBench is planned to leave the same way. When it does, `mdclaw/benchmark`
+and the remaining shared tools go with it, and the copy-and-trim pattern plus
+the blocker list from this extraction are the template.
+
+---
+
 ## 2026-08-05 — MDPrepBench reference bundles, and what 40/40 does not mean
 
 codex (gpt-5.6-sol, xhigh) was run as the solver over all 40 tasks through

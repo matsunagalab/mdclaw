@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# The canonical copy of this MDPrepBench packaging helper lives in
+# matsunagalab/MDPrepBench; this copy remains for operator compatibility.
 """Copy a completed raw OpenMM bundle into an MDPrepBench v0.3 submission."""
 
 from __future__ import annotations

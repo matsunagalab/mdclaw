@@ -545,7 +545,8 @@ def test_attestation_verified_and_condition_flow(tmp_path: Path):
     out = tmp_path / "runs"
     prep = benchmark_run.prepare_benchmark_run(
         output_dir=str(out), run_id="verif",
-        task_ids=["P01_prep_simple_monomer_t4l"],
+        dataset_dir="benchmarks/mdstudybench",
+        task_ids=["S01_pressure_hydration_t4l_l99a"],
     )
     assert prep["success"]
     att = json.loads((Path(prep["run_dir"]) / "attestation.json").read_text())

@@ -296,206 +296,42 @@ the failed node for provenance instead of silently continuing.
 
 ## Benchmarking
 
-MDClaw includes two artifact-based benchmark suites under the MDAgentBench
-family:
+Two artifact-based benchmark suites make up the MDAgentBench family:
 
-- `MDPrepBench-v0.3` in `benchmarks/mdprepbench/`: a 40-task preparation
-  workflow battery covering ligand/chain selection, residue protonation, PTMs,
-  glycans, nucleic acids, membranes, assemblies, ion concentration, metal
-  cofactors (zinc, non-zinc Mn/Ca), custom drug-like ligand parameterization,
-  protein-protein and protein-DNA complexes, side-chain reconstruction, and
-  backend-neutral raw OpenMM artifact validation.
-- `MDStudyBench-v0.2` in `benchmarks/mdstudybench/`: four uniform-load
-  scientific-answer and auditable study-bundle comparisons spanning
-  destabilizing, weakened-binding, stabilizing, and ligand-affinity directions,
-  so a constant prior cannot win.
+- **MDPrepBench** — the 40-task preparation workflow battery — now lives in its
+  own public repository:
+  [matsunagalab/MDPrepBench](https://github.com/matsunagalab/MDPrepBench).
+- `MDStudyBench-v0.4` in `benchmarks/mdstudybench/`: the scientific-answer
+  suite. Its S01 pilot uses the grounded-correct v2 contract: the agent plans
+  confirmatory MD, the benchmark runner executes it through a certified
+  adapter, and the primary result is the conjunction of valid execution, claim
+  support, and truth agreement.
 
-Both suites are agent-agnostic: evaluated agents read `prompt.md` and write
+The suites are agent-agnostic: evaluated agents read `prompt.md` and write into
 `submission/`; the scorer reads `task.json`, scorer-only truth files, and
-submitted artifacts. This is deliberately MDClaw-free on the solve side: an
-agent may use MDClaw, direct OpenMM scripts, another MD-prep stack, or a custom
-runner, as long as the submitted artifacts satisfy the public contract. Keep
-submissions slim. The scorer derives properties such as model/assembly choice,
-net charge, ion molarity, water model, and component presence from the submitted
-OpenMM bundle and structures instead of trusting self-reported metrics or
-free-form explanations. Public benchmark tasks do not require MDClaw-specific
-guardrail codes; scientific MD reasoning lives in MDStudyBench, kept small and
-curated rather than mixed back into MDPrepBench.
-
-User-facing benchmark requests should stay short:
-
-```text
-MDPrepBenchを run_id=prep_full_run で実行して評価して
-```
-
-```text
-MDPrepBenchの P11_prep_site_protonation_t4l_glu11 だけを実行して評価して
-```
-
-Use `mdclaw run_benchmark_agent` for automated agents, or
-`mdclaw prepare_benchmark_run` to create agent-safe task packages and score the
-finished submissions separately with the canonical scorer.
-
-### MDPrepBench
-
-Create a run workspace from the repository root:
-
-```bash
-mdclaw prepare_benchmark_run \
-  --output-dir benchmark_runs \
-  --run-id prep_full_run \
-  --dataset-dir benchmarks/mdprepbench \
-  --execution-mode lite
-```
-
-To run only a small subset:
-
-```bash
-mdclaw prepare_benchmark_run \
-  --output-dir benchmark_runs \
-  --run-id prep_p11 \
-  --dataset-dir benchmarks/mdprepbench \
-  --execution-mode lite \
-  --task-ids P11_prep_site_protonation_t4l_glu11
-```
-
-Give the evaluated agent the per-task
-`benchmark_runs/<run_id>/tasks/<task_id>/agent_prompt.md`, or the task entries
-listed in `benchmark_runs/<run_id>/agent_tasks.json`. Each task instruction
-points to agent-safe `prompt.md`, `submission_contract.json`,
-`submission_checklist.md`, and target `submission/` paths. Do not give the
-agent `harness_tasks.json`, `harness_instructions.json`, canonical `task.json`,
-`truth/`, or `scorer/`. Each evaluated agent should solve only its current task;
-do not ask it to inspect the full suite or write a benchmark-wide solver script.
-`run_id` is only a label; do not infer smoke-test shortcuts or task subsets from
-words in it. Task-local Python helpers should run via
-`conda run -n mdclaw python ...`, and agents should retry failed workflow steps
-with new MDClaw nodes rather than rerunning or deleting terminal nodes.
-
-For normal MDClaw DAG runs, create a `min` node after topology and run:
-
-```bash
-mdclaw --job-dir <job_dir> --node-id min_001 run_minimization
-```
-
-The `min` node writes `minimized_structure.pdb`, `minimized.xml`, and
-`minimization_report.json`; downstream `eq` nodes should parent from `min_001`.
-
-For MDPrepBench v0.3, submit the completed minimized state as
-`topology/state.xml`; the evaluator derives the minimized PDB view and report.
-
-For non-MDClaw solvers, package an already-built OpenMM artifact triple with
-the standalone helper instead of importing MDClaw into the solver:
-
-```bash
-python benchmarks/tools/package_submission.py \
-  --submission-dir <submission_dir> \
-  --task-id <task_id> \
-  --system-xml <system.xml> \
-  --topology-pdb <topology.pdb> \
-  --state-xml <state.xml> \
-  --prepared-structure <prepared_structure.pdb>
-```
-
-Add task-specific raw artifacts only when the public contract asks for them,
-for example `--extra-output wt_prepared_structure.pdb=<source_file>` for a
-branching task.
-
-After the agent writes the task `submission/` directories, evaluate the run:
-
-```bash
-mdclaw score_benchmark_run \
-  --run-dir benchmark_runs/<run_id> \
-  --dataset-dir benchmarks/mdprepbench
-```
-
-This writes per-task `validation.json` / `score.json` files and a run-level
-`summary.json`.
-
-For full-suite comparisons across the local Pi, Claude Code, and Codex CLIs, run
-the operator wrapper. It launches one scored run per agent:
-
-```bash
-conda run -n mdclaw python benchmarks/tools/run_mdprepbench_all_agents.py \
-  --output-dir benchmark_runs \
-  --run-id-prefix 20260702_mdprepbench_all \
-  --agents pi claude-code codex \
-  --jobs 5 --gpus 4 --repeats 3
-```
-
-- `--jobs N` runs N tasks per agent concurrently; `--gpus M` (when > 0)
-  round-robins `CUDA_VISIBLE_DEVICES` across those tasks. Both pass straight
-  through to `mdclaw run_benchmark_agent`, so a parallel run still yields one
-  scored `summary.json` per agent.
-- `--repeats R` runs each agent R times (`<prefix>_<agent>_rep1..repR`) and
-  writes per-agent `mean` / `stdev` of the overall score into the
-  `*_all_agents_operator_summary.json` `aggregates` block.
-- `--agent-model AGENT=MODEL` overrides the model per harness; `--dry-run`
-  prints the generated commands without launching agents; `--task-ids <id>`
-  runs a short smoke subset.
-- `--agent-skills-dir skills` runs an explicit skill-enabled condition. The
-  wrapper selects `pi-user` for Pi unless `--agent-profile pi=...` overrides it.
+submitted artifacts. An agent may use MDClaw, direct OpenMM scripts, or another
+MD stack.
 
 ### MDStudyBench
 
-MDStudyBench uses the same run/evaluate tools with the study dataset. For the
-full four-task curated suite:
+The automated path runs the whole plan-runner-claim sequence and scores
+deterministically:
 
 ```bash
-mdclaw prepare_benchmark_run \
-  --output-dir benchmark_runs \
-  --run-id study_full_run \
+mdclaw run_benchmark_agent \
   --dataset-dir benchmarks/mdstudybench \
-  --execution-mode lite \
-  --judge-mode llm_judge
-```
-
-After submissions are written, evaluate with:
-
-```bash
-mdclaw score_benchmark_run \
-  --run-dir benchmark_runs/<run_id> \
-  --dataset-dir benchmarks/mdstudybench
-```
-
-All four tasks expect comparative WT/mutant (or paired-ligand) MD evidence with
-index-aligned `outputs.trajectories` / `outputs.topology`; the scorer reloads the
-trajectories and verifies the substitution, so a literature guess without real MD
-scores zero. When `run_config.json` selects `judge_mode=llm_judge`,
-`score_benchmark_run` auto-runs the judge for tasks that declare rubrics.
-Deterministic mode neither launches nor consumes judge files.
-
-To run every agent over the suite, use the study wrapper. It shares the
-MDPrepBench operator flags (`--agents`, `--jobs`, `--gpus`, `--repeats`,
-`--agent-model`, `--dry-run`), and defaults to each task's declared 24 h budget
-and `--judge-mode llm_judge`:
-
-```bash
-conda run -n mdclaw python benchmarks/tools/run_mdstudybench_all_agents.py \
   --output-dir benchmark_runs \
-  --run-id-prefix 20260702_mdstudybench_all \
-  --agent-skills-dir skills \
-  --jobs 4 --gpus 4
+  --run-id <run_id> \
+  --agent-name <agent> \
+  --max-walltime-minutes-per-task 0 \
+  --judge-mode deterministic
 ```
 
-For an external agent or runner that should receive only public files, export
-the agent-visible package first:
-
-```bash
-mdclaw export_benchmark_public_package \
-  --dataset-dir benchmarks/mdprepbench \
-  --output-dir benchmark_public/mdprepbench
-
-mdclaw export_benchmark_public_package \
-  --dataset-dir benchmarks/mdstudybench \
-  --output-dir benchmark_public/mdstudybench
-```
-
-The exported package contains prompts, submission contracts, and
-submission-facing schemas only; it omits `task.json`, `truth/`, and `scorer/`.
-
-See `benchmarks/README.md` for suite layout, `docs/benchmark/README.md` for
-MDPrepBench details, and `docs/benchmark/mdstudybench.md` for StudyBench tasks.
+The S01 pilot's primary result is one bit — `valid_execution AND
+claim_supported AND truth_agreement` — recomputed by the evaluator from
+runner-certified artifacts. No LLM judge contributes to it. See
+`docs/benchmark/mdstudybench.md` for the contract and
+`benchmarks/mdstudybench/` for the dataset.
 
 ## Developer Quickstart
 
