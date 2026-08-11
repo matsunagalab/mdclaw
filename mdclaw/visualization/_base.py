@@ -130,6 +130,29 @@ def _artifact_to_path(job_dir: str, node_id: str, value: Any) -> Optional[Path]:
     return path.resolve(strict=False)
 
 
+def _event_registered_artifacts(job_dir: str, node_id: str) -> dict:
+    """Artifacts attached to a sealed node through preview_registered events.
+
+    Terminal node.json records are immutable, so post-hoc preview and review
+    attachments live in the append-only event log; later events win.
+    """
+    events_dir = Path(job_dir) / "events"
+    if not events_dir.is_dir():
+        return {}
+    merged: dict = {}
+    for path in sorted(events_dir.glob(f"*_{node_id}_preview_registered_*.json")):
+        try:
+            event = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if event.get("node_id") != node_id:
+            continue
+        artifacts = (event.get("details") or {}).get("artifacts")
+        if isinstance(artifacts, dict):
+            merged.update(artifacts)
+    return merged
+
+
 def _read_node_if_present(job_dir: str, node_id: str) -> Optional[dict]:
     node_json = Path(job_dir) / "nodes" / node_id / "node.json"
     if not node_json.is_file():
@@ -422,14 +445,22 @@ def _register_preview_on_node(
             "create an analyze node for in-progress workflow steps."
         )
 
-    merged_artifacts = dict(node.get("artifacts") or {})
-    merged_artifacts.update(artifacts)
-    complete_node(
+    # Terminal node.json records are sealed; the sanctioned channel for
+    # post-hoc attachments is the append-only event log. The artifact files
+    # themselves already live under the node's artifacts/ directory.
+    from mdclaw._event import write_event
+
+    write_event(
         job_dir,
         node_id,
-        artifacts=merged_artifacts,
-        metadata=metadata,
-        warnings=warnings or None,
+        "preview_registered",
+        tool=str(metadata.get("tool") or "render_structure_preview"),
+        success=True,
+        details={
+            "artifacts": artifacts,
+            "metadata": metadata,
+            "warnings": list(warnings or []),
+        },
     )
 
 

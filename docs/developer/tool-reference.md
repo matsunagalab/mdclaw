@@ -286,7 +286,9 @@ signature, update the relevant section here and the matching skill examples.
   structure artifacts. In node mode it resolves a representative structure
   artifact from the current node, parent, or ancestors, writes a ray-rendered
   preview PNG plus PyMOL script and manifest under `artifacts/previews/`, and
-  registers `structure_preview_png` / `structure_preview_manifest` on the node.
+  registers `structure_preview_png` / `structure_preview_manifest` on the node
+  (for terminal nodes, whose `node.json` is sealed, the attachment is recorded
+  as an append-only `preview_registered` event that the resolvers also read).
   The executed Python script is `structure_preview_pymol_script`; the companion
   `.pml` preview is registered separately as `structure_preview_pymol_pml`.
   Styles include `overview`, `publication`, `ligand_site`, `membrane`,

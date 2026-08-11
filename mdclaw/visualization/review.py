@@ -12,6 +12,7 @@ from mdclaw._common import (
 )
 
 from mdclaw.visualization._base import (
+    _event_registered_artifacts,
     _VISUAL_REVIEWER_TYPES,
     _VISUAL_REVIEW_DEFAULT_CHECKS,
     _VISUAL_REVIEW_RECOMMENDATIONS,
@@ -87,6 +88,8 @@ def _resolve_preview_image_from_node(
         artifacts = node.get("artifacts", {})
         if not isinstance(artifacts, dict):
             continue
+        # Sealed nodes carry post-hoc preview attachments in the event log.
+        artifacts = {**artifacts, **_event_registered_artifacts(job_dir, candidate_id)}
         for key in ("structure_preview_png", "preview_png", "output_png"):
             path = _artifact_to_path(job_dir, candidate_id, artifacts.get(key))
             if path is None:

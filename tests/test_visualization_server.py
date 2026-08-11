@@ -77,7 +77,13 @@ def test_render_structure_preview_registers_analyze_node(monkeypatch, tmp_path):
         "prod_001",
         artifacts={"final_structure_pdb": "artifacts/final.pdb"},
     )
-    create_node(str(job_dir), "analyze", parent_node_ids=["prod_001"], label="preview")
+    create_node(
+        str(job_dir),
+        "analyze",
+        parent_node_ids=["prod_001"],
+        label="preview",
+        conditions={"analysis_data_scope": "segment"},
+    )
 
     result = render_structure_preview(
         job_dir=str(job_dir),
@@ -151,14 +157,22 @@ def test_register_visual_review_registers_node_artifact(tmp_path):
 
     assert result["success"] is True
     assert result["requires_user_confirmation"] is False
+    # The prod node is terminal, so the review is recorded as an append-only
+    # event rather than a node.json mutation.
     node = read_node(str(job_dir), "prod_001")
     assert node["status"] == "completed"
-    assert node["artifacts"]["visual_review_json"] == (
+    events = [
+        json.loads(path.read_text())
+        for path in sorted((job_dir / "events").glob("*preview_registered*.json"))
+    ]
+    assert events, "expected a preview_registered event for the sealed node"
+    details = events[-1]["details"]
+    assert details["artifacts"]["visual_review_json"] == (
         "artifacts/previews/visual_review.visual_review.json"
     )
-    assert node["metadata"]["visual_review"]["reviewer_type"] == "multimodal_llm"
+    assert details["metadata"]["visual_review"]["reviewer_type"] == "multimodal_llm"
     review = json.loads(
-        (job_dir / "nodes" / "prod_001" / node["artifacts"]["visual_review_json"]).read_text()
+        (job_dir / "nodes" / "prod_001" / details["artifacts"]["visual_review_json"]).read_text()
     )
     assert review["success"] is True
     assert review["severity"] == "none"
@@ -211,7 +225,11 @@ def test_register_visual_review_high_severity_does_not_fail_node(tmp_path):
     assert result["requires_user_confirmation"] is True
     node = read_node(str(job_dir), "prod_001")
     assert node["status"] == "completed"
-    assert node["metadata"]["visual_review"]["severity"] == "high"
+    events = [
+        json.loads(path.read_text())
+        for path in sorted((job_dir / "events").glob("*preview_registered*.json"))
+    ]
+    assert events[-1]["details"]["metadata"]["visual_review"]["severity"] == "high"
 
 
 def test_render_structure_preview_registered_as_tool():
@@ -224,3 +242,55 @@ def test_render_structure_preview_registered_as_tool():
     assert callable(TOOLS["register_visual_review"])
     assert "render_structure_preview" in _discover_tools()
     assert "register_visual_review" in _discover_tools()
+
+
+def test_sealed_node_render_then_review_flow(monkeypatch, tmp_path):
+    """The full post-hoc flow on a terminal node: render attaches the preview
+    through the event log, review finds the image through the same log, and
+    the sealed node.json never changes by a byte."""
+    from mdclaw._node import complete_node, create_node
+
+    _mock_pymol(monkeypatch)
+    job_dir = tmp_path / "job"
+    create_node(str(job_dir), "prod")
+    _write_pdb(job_dir / "nodes" / "prod_001" / "artifacts" / "final.pdb")
+    complete_node(
+        str(job_dir),
+        "prod_001",
+        artifacts={"final_structure_pdb": "artifacts/final.pdb"},
+    )
+    node_json = job_dir / "nodes" / "prod_001" / "node.json"
+    sealed_bytes = node_json.read_bytes()
+
+    rendered = render_structure_preview(
+        job_dir=str(job_dir),
+        node_id="prod_001",
+        style="publication",
+        output_name="posthoc",
+    )
+    assert rendered["success"] is True, rendered
+
+    reviewed = register_visual_review(
+        job_dir=str(job_dir),
+        node_id="prod_001",
+        reviewer_type="multimodal_llm",
+        severity="none",
+        recommendation="continue",
+        summary="Post-hoc review of a sealed node.",
+    )
+    assert reviewed["success"] is True, reviewed
+    # The review located the rendered PNG through the event log.
+    assert reviewed["image_path"] is not None
+    assert reviewed["image_path"].endswith("posthoc.preview.png")
+
+    # The sealed record is untouched; the attachments live in events.
+    assert node_json.read_bytes() == sealed_bytes
+    events = [
+        json.loads(path.read_text())
+        for path in sorted((job_dir / "events").glob("*preview_registered*.json"))
+    ]
+    assert len(events) >= 2  # render + review
+    for event in events:
+        assert event["node_id"] == "prod_001"
+        assert event["success"] is True
+        assert isinstance(event["details"]["artifacts"], dict)
