@@ -31,6 +31,15 @@ now a cross-repository protocol both benchmark harnesses rely on, and its
 stage vocabulary must not change silently. The layout the maintainer asked for
 is three sibling checkouts: `mdclaw`, `MDPrepBench`, `MDStudyBench`.
 
+**Pre-existing test failures catalogued during the removal** (fail identically
+with the removal stashed; none are benchmark-related): three
+`test_evidence_server` study-evidence report tests (missing prod `node.json`
+in the fixture), three `test_visualization_server` node-registration tests,
+two implicit-solvent `test_md_helpers` builds, `test_modxna_support` residue
+mapping, `test_pdb_export_resname_guard` inventory pin, one prepare step in
+each of the 3PWB/membrane/metal pipeline DAG tests, and one structure smoke
+test. 14 in total against 1357 passing; they need their own investigation.
+
 This memo stays as the historical record of the benchmark work done while the
 suites lived here; new benchmark entries belong in the respective repos'
 docs/memo.md.
