@@ -294,20 +294,6 @@
     "requires_node": false,
     "server": "node"
   },
-  "export_benchmark_private_package": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [],
-    "requires_node": false,
-    "server": "benchmark"
-  },
-  "export_benchmark_public_package": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [],
-    "requires_node": false,
-    "server": "benchmark"
-  },
   "export_state_pdb": {
     "job_dir_is_data": false,
     "node_type": null,
@@ -423,13 +409,6 @@
     "requires_node": false,
     "server": "study"
   },
-  "init_benchmark_run": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [],
-    "requires_node": false,
-    "server": "benchmark"
-  },
   "init_study": {
     "job_dir_is_data": false,
     "node_type": null,
@@ -475,13 +454,6 @@
     "required_params": [],
     "requires_node": false,
     "server": "solvation"
-  },
-  "list_benchmark_tasks": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [],
-    "requires_node": false,
-    "server": "benchmark"
   },
   "list_jobs": {
     "job_dir_is_data": false,
@@ -554,32 +526,6 @@
     "requires_node": false,
     "server": "genesis"
   },
-  "package_mdprep_submission": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "job_dir",
-      "node_id",
-      "submission_dir",
-      "task_id"
-    ],
-    "requires_node": false,
-    "server": "benchmark"
-  },
-  "package_openmm_submission": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "prepared_structure_file",
-      "state_xml_file",
-      "submission_dir",
-      "system_xml_file",
-      "task_id",
-      "topology_pdb_file"
-    ],
-    "requires_node": false,
-    "server": "benchmark"
-  },
   "phosphorylate_residues": {
     "job_dir_is_data": false,
     "node_type": "prep",
@@ -589,13 +535,6 @@
     ],
     "requires_node": true,
     "server": "structure"
-  },
-  "prepare_benchmark_run": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [],
-    "requires_node": false,
-    "server": "benchmark"
   },
   "prepare_complex": {
     "job_dir_is_data": false,
@@ -727,13 +666,6 @@
     "requires_node": false,
     "server": "visualization"
   },
-  "run_benchmark_agent": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [],
-    "requires_node": false,
-    "server": "benchmark"
-  },
   "run_equilibration": {
     "job_dir_is_data": false,
     "node_type": "eq",
@@ -743,17 +675,6 @@
     ],
     "requires_node": true,
     "server": "md_simulation"
-  },
-  "run_llm_judge": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "output_file",
-      "submission_dir",
-      "task_file"
-    ],
-    "requires_node": false,
-    "server": "benchmark"
   },
   "run_minimization": {
     "job_dir_is_data": false,
@@ -774,25 +695,6 @@
     ],
     "requires_node": true,
     "server": "md_simulation"
-  },
-  "score_benchmark_run": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "run_dir"
-    ],
-    "requires_node": false,
-    "server": "benchmark"
-  },
-  "score_benchmark_submission": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "submission_dir",
-      "task_file"
-    ],
-    "requires_node": false,
-    "server": "benchmark"
   },
   "search_proteins": {
     "job_dir_is_data": false,
@@ -879,15 +781,6 @@
     "requires_node": false,
     "server": "slurm"
   },
-  "summarize_benchmark_run": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "run_dir"
-    ],
-    "requires_node": false,
-    "server": "benchmark"
-  },
   "summarize_study": {
     "job_dir_is_data": false,
     "node_type": null,
@@ -916,35 +809,6 @@
     "requires_node": false,
     "server": "node"
   },
-  "validate_and_score_benchmark_submission": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "submission_dir",
-      "task_file"
-    ],
-    "requires_node": false,
-    "server": "benchmark"
-  },
-  "validate_benchmark_submission": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "submission_dir",
-      "task_file"
-    ],
-    "requires_node": false,
-    "server": "benchmark"
-  },
-  "validate_benchmark_task": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "task_file"
-    ],
-    "requires_node": false,
-    "server": "benchmark"
-  },
   "wait_node": {
     "job_dir_is_data": false,
     "node_type": null,
@@ -954,12 +818,5 @@
     ],
     "requires_node": false,
     "server": "node"
-  },
-  "write_benchmark_schemas": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [],
-    "requires_node": false,
-    "server": "benchmark"
   }
 }

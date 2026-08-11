@@ -72,7 +72,6 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `implicit_solvent_xml_ambiguous` | Implicit-solvent XML is ambiguous; disambiguate the inputs. |
 | `implicit_solvent_xml_missing` | Provide the implicit-solvent XML input. |
 | `input_resolution_blocked` | Resolve inputs via the DAG or provide explicit paths. |
-| `invalid_agent_skills_dir` | Point to a valid agent skills directory. |
 | `invalid_assembly_chain_naming` | Use assembly_chain_naming one of: short, add_number, dup. |
 | `invalid_assembly_ids` | Use assembly_ids only with assembly_mode=ids. |
 | `invalid_assembly_mode` | Use assembly_mode one of: none, preferred, all, ids. |
@@ -84,7 +83,6 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `invalid_json_input` | Fix the JSON string or pass valid JSON via --json-input. |
 | `invalid_lease_seconds` | Provide a positive integer for lease seconds. |
 | `invalid_ligand_chemistry` | Ligand chemistry is invalid; check SMILES/formal charge. |
-| `invalid_mdclaw_runtime` | Run inside a valid MDClaw runtime (container/SIF or mdclaw conda env). |
 | `invalid_modxna_fragment_spec` | Fix the modxna fragment specification. |
 | `invalid_modxna_parameters` | Provide valid modxna parameters. |
 | `invalid_need` | Provide a well-formed node need payload. |

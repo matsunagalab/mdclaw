@@ -66,9 +66,8 @@ Important boundaries:
 | `mdclaw/` | Python package: CLI dispatch, one `mdclaw/<tool>/` package per tool server, and shared state helpers. |
 | `container/` | Docker image and Singularity/Apptainer SIF build assets for the packaged MD runtime. |
 | `scripts/` | Setup, doctor, release, and maintenance scripts. |
-| `benchmarks/mdstudybench/` | Scientific-study benchmark prompts, scorer-only metadata, and truth artifacts. MDPrepBench moved to matsunagalab/MDPrepBench. |
-| `docs/` | User, agent, developer, benchmark, and research documentation. |
-| `tests/` | Unit, smoke, benchmark scorer, and integration tests. |
+| `docs/` | User, agent, developer, and research documentation. |
+| `tests/` | Unit, smoke, and integration tests. |
 
 ## Core Python Modules
 

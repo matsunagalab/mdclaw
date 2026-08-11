@@ -111,7 +111,7 @@ the topology. The run-time validator rejects explicit mismatches with
 contract on the run side — tleap / `parm7` / `rst7` are not produced
 or consumed anywhere. The topo node's `state.xml` carries the topology-time
 minimized coordinates; `topology.pdb` supplies atom/residue topology. When a PDB
-view of the minimized state is needed for reports or MDPrepBench, run:
+view of the minimized state is needed for reports or benchmark submissions, run:
 
 ```bash
 mdclaw export_state_pdb \

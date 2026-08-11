@@ -1010,10 +1010,6 @@ class TestSubprocessCLI:
         assert payload["success"] is True
         tool_names = {tool["name"] for tool in payload["tools"]}
         assert "solvate_structure" in tool_names
-        assert "init_benchmark_run" in tool_names
-        assert "prepare_benchmark_run" in tool_names
-        assert "score_benchmark_run" in tool_names
-        assert "summarize_benchmark_run" in tool_names
 
     def test_tool_help(self):
         result = subprocess.run(
@@ -1763,3 +1759,38 @@ def test_benchmark_min_stage_is_reserved_for_run_minimization():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_benchmark_harness_record_appends_jsonl(tmp_path, monkeypatch):
+    """The stage-record hook is a cross-repo protocol: the standalone benchmark
+    harnesses parse this JSONL, so the write path itself needs a test here."""
+    from mdclaw import _cli
+
+    log = tmp_path / "harness_execution.jsonl"
+    monkeypatch.setenv("MDCLAW_BENCHMARK_HARNESS_LOG", str(log))
+    monkeypatch.setenv("MDCLAW_BENCHMARK_RUN_ID", "r1")
+    monkeypatch.setenv("MDCLAW_BENCHMARK_TASK_ID", "t1")
+    monkeypatch.setattr("sys.argv", ["mdclaw", "run_minimization", "--x"])
+
+    _cli._write_benchmark_harness_record(
+        tool_name="run_minimization", kwargs={}, exit_code=0,
+        started_at=__import__("time").monotonic(),
+    )
+
+    record = json.loads(log.read_text().splitlines()[0])
+    assert record["stage"] == "min"
+    assert record["tool"] == "run_minimization"
+    assert record["run_id"] == "r1" and record["task_id"] == "t1"
+    assert record["exit_code"] == 0
+    assert record["walltime_seconds"] >= 0
+
+
+def test_benchmark_harness_record_is_noop_without_env(tmp_path, monkeypatch):
+    from mdclaw import _cli
+
+    monkeypatch.delenv("MDCLAW_BENCHMARK_HARNESS_LOG", raising=False)
+    _cli._write_benchmark_harness_record(
+        tool_name="run_minimization", kwargs={}, exit_code=0,
+        started_at=__import__("time").monotonic(),
+    )
+    assert list(tmp_path.iterdir()) == []

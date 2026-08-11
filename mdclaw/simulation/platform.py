@@ -45,7 +45,7 @@ def export_state_pdb(
     atom/residue topology used to write a PDB.
 
     This helper is intentionally not a DAG node; it is an export/convenience
-    tool for reports and benchmark submissions. For MDPrepBench, write
+    tool for reports and external submissions. For benchmark submissions, write
     ``output_pdb_file`` as ``submission/minimized_structure.pdb`` and record the
     command in ``provenance.command_log``.
 

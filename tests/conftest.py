@@ -12,10 +12,6 @@ import pytest
 servers_dir = Path(__file__).parent.parent / "mdclaw"
 sys.path.insert(0, str(servers_dir))
 
-# Never auto-invoke the real LLM judge (claude CLI) during tests: score_benchmark_run
-# would otherwise call it for study tasks. Judge logic is covered by test_llm_judge.py
-# with a stubbed LLM.
-os.environ.setdefault("MDCLAW_DISABLE_LLM_JUDGE", "1")
 
 
 # --- Ordered pipeline-step guard --------------------------------------------

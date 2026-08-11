@@ -29,7 +29,6 @@ GUARDRAIL_CODES: dict[str, str] = {
     "missing_local_file_path": "Provide a valid local file path for the input.",
     "tool_not_available": "Stop local execution and report the missing external tool.",
     "missing_required_arguments": "Add the listed required flags (see `mdclaw --list-json`).",
-    "invalid_mdclaw_runtime": "Run inside a valid MDClaw runtime (container/SIF or mdclaw conda env).",
     "input_resolution_blocked": "Resolve inputs via the DAG or provide explicit paths.",
 
     # --- node / DAG context ---
@@ -57,7 +56,6 @@ GUARDRAIL_CODES: dict[str, str] = {
     "invalid_claim_expiry": "Provide a valid claim expiry timestamp.",
     "invalid_lease_seconds": "Provide a positive integer for lease seconds.",
     "agent_id_required": "Provide --agent-id when claiming or updating a node.",
-    "invalid_agent_skills_dir": "Point to a valid agent skills directory.",
 
     # --- node needs ---
     "invalid_need": "Provide a well-formed node need payload.",

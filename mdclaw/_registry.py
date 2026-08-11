@@ -17,6 +17,5 @@ SERVER_REGISTRY = {
     "visualization": "mdclaw.visualization",
     "study": "mdclaw.study",
     "evidence": "mdclaw.evidence",
-    "benchmark": "mdclaw.benchmark",
     "throughput": "mdclaw.throughput",
 }

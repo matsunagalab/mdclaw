@@ -296,42 +296,19 @@ the failed node for provenance instead of silently continuing.
 
 ## Benchmarking
 
-Two artifact-based benchmark suites make up the MDAgentBench family:
+The MDAgentBench suites live in their own public repositories:
 
-- **MDPrepBench** — the 40-task preparation workflow battery — now lives in its
-  own public repository:
-  [matsunagalab/MDPrepBench](https://github.com/matsunagalab/MDPrepBench).
-- `MDStudyBench-v0.4` in `benchmarks/mdstudybench/`: the scientific-answer
-  suite. Its S01 pilot uses the grounded-correct v2 contract: the agent plans
-  confirmatory MD, the benchmark runner executes it through a certified
-  adapter, and the primary result is the conjunction of valid execution, claim
-  support, and truth agreement.
+- [matsunagalab/MDPrepBench](https://github.com/matsunagalab/MDPrepBench) —
+  40-task MD system preparation battery, deterministic artifact scoring.
+- [matsunagalab/MDStudyBench](https://github.com/matsunagalab/MDStudyBench) —
+  scientific question answering with runner-certified confirmatory MD and the
+  grounded-correct contract.
 
-The suites are agent-agnostic: evaluated agents read `prompt.md` and write into
-`submission/`; the scorer reads `task.json`, scorer-only truth files, and
-submitted artifacts. An agent may use MDClaw, direct OpenMM scripts, or another
-MD stack.
-
-### MDStudyBench
-
-The automated path runs the whole plan-runner-claim sequence and scores
-deterministically:
-
-```bash
-mdclaw run_benchmark_agent \
-  --dataset-dir benchmarks/mdstudybench \
-  --output-dir benchmark_runs \
-  --run-id <run_id> \
-  --agent-name <agent> \
-  --max-walltime-minutes-per-task 0 \
-  --judge-mode deterministic
-```
-
-The S01 pilot's primary result is one bit — `valid_execution AND
-claim_supported AND truth_agreement` — recomputed by the evaluator from
-runner-certified artifacts. No LLM judge contributes to it. See
-`docs/benchmark/mdstudybench.md` for the contract and
-`benchmarks/mdstudybench/` for the dataset.
+The MDStudyBench confirmatory runner executes MDClaw production nodes, so it
+depends on this package at runtime. MDClaw's CLI cooperates with both harnesses
+by appending measured execution records to `$MDCLAW_BENCHMARK_HARNESS_LOG`
+(see `mdclaw/_cli.py`); that stage-record protocol is part of MDClaw's public
+contract with the benchmark repositories.
 
 ## Developer Quickstart
 

@@ -7,6 +7,36 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-09 — MDStudyBench extracted; the benchmark harness leaves mdclaw
+
+MDStudyBench is now its own public repository,
+<https://github.com/matsunagalab/MDStudyBench>, extracted with the same
+copy-and-trim pattern as MDPrepBench and reviewed the same way before the first
+commit (the review caught a missed `parents[2]`, an unconditional host
+`import mdclaw`, a README claim that `MDCLAW_PYTHON` drives the scoring
+delegate, a self-contradictory default CLI policy, and the spark1 profile
+defaults surviving the copy — all fixed pre-publish; see that repo's memo).
+
+Unlike the prep suite, `mdclaw` is a deliberate runtime dependency of its
+confirmatory path: the runner executes MDClaw production nodes, snapshots the
+installed `mdclaw` package as the attested adapter source, and resolves node
+inputs through `mdclaw.node`. Scoring an existing submission needs only
+openmm/mdtraj/numpy.
+
+With both suites gone, this repository dropped `mdclaw/benchmark/` (~17k
+lines), `tests/test_benchmark/`, `benchmarks/`, `docs/benchmark/`, and the
+registry entry — 74 files, −36.8k lines. What deliberately stays is the
+stage-record hook in `mdclaw/_cli.py` (`MDCLAW_BENCHMARK_HARNESS_LOG`): it is
+now a cross-repository protocol both benchmark harnesses rely on, and its
+stage vocabulary must not change silently. The layout the maintainer asked for
+is three sibling checkouts: `mdclaw`, `MDPrepBench`, `MDStudyBench`.
+
+This memo stays as the historical record of the benchmark work done while the
+suites lived here; new benchmark entries belong in the respective repos'
+docs/memo.md.
+
+---
+
 ## 2026-08-09 — MDPrepBench extracted to matsunagalab/MDPrepBench
 
 MDPrepBench is now its own public repository,

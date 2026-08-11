@@ -75,7 +75,6 @@ __all__ = [
     "visualization",
     "study",
     "evidence",
-    "benchmark",
     "throughput",
     "literature",
     "metal",
