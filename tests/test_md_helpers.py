@@ -2598,6 +2598,23 @@ class TestBuildAmberSystemImplicitEndToEnd:
     cap-handling.
     """
 
+    @staticmethod
+    def _protonated(small_pdb, tmp_path):
+        """Topo no longer adds hydrogens -- prep owns H completeness -- so the
+        fixture must arrive at build_amber_system already protonated."""
+        from pdbfixer import PDBFixer
+        from openmm.app import PDBFile
+
+        fixer = PDBFixer(filename=small_pdb)
+        fixer.findMissingResidues()
+        fixer.findMissingAtoms()
+        fixer.addMissingAtoms()
+        fixer.addMissingHydrogens(7.0)
+        out = tmp_path / "protonated_input.pdb"
+        with open(out, "w") as fh:
+            PDBFile.writeFile(fixer.topology, fixer.positions, fh)
+        return str(out)
+
     def test_implicit_obc2_build_attaches_gb_force_to_system_xml(
         self, small_pdb, tmp_path
     ):
@@ -2614,7 +2631,7 @@ class TestBuildAmberSystemImplicitEndToEnd:
         from mdclaw.amber.build_system import build_amber_system
 
         result = build_amber_system(
-            pdb_file=str(small_pdb),
+            pdb_file=self._protonated(small_pdb, tmp_path),
             forcefield="ff14SBonlysc",
             implicit_solvent="OBC2",
             output_dir=str(tmp_path / "topo"),
@@ -2661,7 +2678,7 @@ class TestBuildAmberSystemImplicitEndToEnd:
         )
 
         result = build_amber_system(
-            pdb_file=str(small_pdb),
+            pdb_file=self._protonated(small_pdb, tmp_path),
             forcefield="ff14SBonlysc",
             implicit_solvent="OBC2",
             output_dir=str(tmp_path / "topo"),

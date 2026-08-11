@@ -384,13 +384,16 @@ class TestResearchServer:
 class TestStructureServer:
     """Smoke tests for structure_server.py tools."""
 
-    def test_split_molecules(self, small_pdb):
+    def test_split_molecules(self, small_pdb, tmp_path):
         from mdclaw.structure.split import split_molecules
 
         result = split_molecules(
             structure_file=small_pdb,
             select_chains=["A"],
             include_types=["protein"],
+            # Without an explicit output dir the tool writes split_N/ into the
+            # process cwd, which under pytest is the repository checkout.
+            output_dir=str(tmp_path / "split"),
         )
         assert result["success"] is True
 
@@ -414,7 +417,12 @@ class TestStructureServer:
         any structure that actually has non-standard residues (e.g. PCA, MSE).
         """
         from pdbfixer import PDBFixer
-        import mdclaw.structure.clean_protein as structure_server
+        # `import a.b as x` binds the package attribute, and the package
+        # re-exports the clean_protein *function* under the same name as the
+        # submodule; go through sys.modules to get the module itself.
+        import importlib
+
+        structure_server = importlib.import_module("mdclaw.structure.clean_protein")
 
         class _FakeChain:
             def __init__(self, chain_id):

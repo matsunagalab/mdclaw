@@ -16,6 +16,28 @@ def _write_artifact(job_dir, node_id, rel_path, content="x\n"):
     path.write_text(content)
 
 
+
+def _seed_completed_eq(job_dir):
+    """Study jobs no longer accept parentless nodes; satisfy the ancestor rule.
+
+    This is a minimal fixture ancestry, not a canonical MD chain.
+    """
+    from mdclaw._node import complete_node, create_node
+
+    create_node(str(job_dir), "source")
+    _write_artifact(job_dir, "source_001", "artifacts/candidates/candidate_001.pdb")
+    complete_node(
+        str(job_dir),
+        "source_001",
+        artifacts={"candidates": "artifacts/candidates/candidate_001.pdb"},
+    )
+    create_node(str(job_dir), "eq", parent_node_ids=["source_001"])
+    _write_artifact(job_dir, "eq_001", "artifacts/state.xml")
+    complete_node(
+        str(job_dir), "eq_001", artifacts={"state_file": "artifacts/state.xml"}
+    )
+
+
 def _create_completed_methods_job(job_dir, source_id="4M3J", simulation_time_ns=1.0):
     from mdclaw._node import complete_node, create_node
 
@@ -397,7 +419,8 @@ def test_generate_study_evidence_report(tmp_path):
         },
     )
     job_dir = study_dir / "jobs" / "wt"
-    create_node(str(job_dir), "prod")
+    _seed_completed_eq(job_dir)
+    create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
     _write_artifact(job_dir, "prod_001", "artifacts/trajectory.dcd")
     complete_node(
         str(job_dir),
@@ -457,7 +480,8 @@ def test_generate_study_evidence_report_is_incomplete_without_required_nodes(tmp
         },
     )
     job_dir = study_dir / "jobs" / "wt"
-    create_node(str(job_dir), "prod")
+    _seed_completed_eq(job_dir)
+    create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
     add_study_job(str(study_dir), "wt", "jobs/wt", role="baseline")
 
     result = generate_study_evidence_report(str(study_dir))
@@ -485,7 +509,8 @@ def test_generate_study_evidence_report_tracks_missing_planned_jobs(tmp_path):
         },
     )
     job_dir = study_dir / "jobs" / "wt"
-    create_node(str(job_dir), "prod")
+    _seed_completed_eq(job_dir)
+    create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
     _write_artifact(job_dir, "prod_001", "artifacts/trajectory.dcd")
     complete_node(
         str(job_dir),
@@ -521,7 +546,8 @@ def test_generate_study_evidence_report_selects_named_plan(tmp_path):
     )
     for job_id, rmsd in (("selected", 0.2), ("unrelated", 9.0)):
         job_dir = study_dir / "jobs" / job_id
-        create_node(str(job_dir), "prod")
+        _seed_completed_eq(job_dir)
+        create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
         _write_artifact(job_dir, "prod_001", "artifacts/trajectory.dcd")
         complete_node(
             str(job_dir),

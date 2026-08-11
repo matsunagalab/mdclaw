@@ -169,11 +169,81 @@ def test_build_amber_system_fails_modxna_residue_name_mismatch(tmp_path):
     assert result["code"] == "invalid_modxna_parameters"
 
 
+def _write_standard_nucleic_pdb(tmp_path):
+    """A 2-residue DNA chain + 2-residue RNA chain with real template geometry.
+
+    The standard-nucleic hydrogen rebuild inside prep matches Amber terminal
+    templates (DA5/DC3, A5/U3) on exact heavy-atom sets and infers the O3'-P
+    linkage from distances, so the fixture is assembled from pdbfixer's
+    template coordinates rather than hand-written fake atoms.
+    """
+    import os
+
+    import numpy as np
+    import pdbfixer
+    from openmm import unit
+    from openmm.app import ForceField, PDBFile
+
+    template_dir = os.path.join(os.path.dirname(pdbfixer.__file__), "templates")
+
+    def heavy_coords(name):
+        pdb = PDBFile(os.path.join(template_dir, f"{name}.pdb"))
+        residue = list(pdb.topology.residues())[0]
+        return {
+            atom.name: np.array(
+                pdb.positions[atom.index].value_in_unit(unit.angstrom)
+            )
+            for atom in residue.atoms()
+            if atom.element.symbol != "H"
+        }
+
+    def template_heavy(ff, name):
+        return [
+            atom.name
+            for atom in ff._templates[name].atoms
+            if atom.element is not None and atom.element.symbol != "H"
+        ]
+
+    dna = ForceField("amber/DNA.OL15.xml")
+    rna = ForceField("amber/RNA.OL3.xml")
+    lines, serial = [], 1
+    for chain, ff, res5, res3, tmpl5, tmpl3, xoff in (
+        ("A", dna, "DA", "DC", "DA5", "DC3", 0.0),
+        ("B", rna, "A", "U", "A5", "U3", 40.0),
+    ):
+        first = heavy_coords(res5)
+        second = heavy_coords(res3)
+        shift = first["O3'"] + np.array([1.6, 0.0, 0.0]) - second["P"]
+        second = {k: v + shift for k, v in second.items()}
+        for coords in (first, second):
+            for key in coords:
+                coords[key] = coords[key] + np.array([xoff, 0.0, 0.0])
+        for resseq, resname, coords, tmpl in (
+            (1, res5, first, tmpl5),
+            (2, res3, second, tmpl3),
+        ):
+            for atom in (a for a in template_heavy(ff, tmpl) if a in coords):
+                x, y, z = coords[atom]
+                name_field = atom if len(atom) == 4 else f" {atom:<3s}"
+                lines.append(
+                    f"ATOM  {serial:5d} {name_field:<4s} {resname:<3s} "
+                    f"{chain}{resseq:4d}    "
+                    f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {atom[0]:>2s}"
+                )
+                serial += 1
+        lines.append(f"TER   {serial:5d}      {res3:<3s} {chain}{2:4d}")
+        serial += 1
+    lines.append("END")
+    out = tmp_path / "standard_nucleic.pdb"
+    out.write_text("\n".join(lines) + "\n")
+    return out
+
+
 def test_prepare_complex_writes_nucleic_residue_mapping(tmp_path):
     from mdclaw.structure.prepare_complex import prepare_complex
 
     result = prepare_complex(
-        structure_file=str(_write_modified_pdb(tmp_path, _STANDARD_DNA_RNA_PDB)),
+        structure_file=str(_write_standard_nucleic_pdb(tmp_path)),
         output_dir=str(tmp_path / "prep"),
     )
 
@@ -185,7 +255,6 @@ def test_prepare_complex_writes_nucleic_residue_mapping(tmp_path):
     chain_identity_path = Path(result["chain_identity_map_file"])
     assert chain_identity_path.exists()
     assert result["preparation_summary"]["chain_identity_map"]["component_count"] >= 2
-
 
 def test_prepare_modified_nucleic_fake_modxna_source_frame(tmp_path):
     from mdclaw._node import create_node, read_node

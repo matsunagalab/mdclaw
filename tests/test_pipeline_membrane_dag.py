@@ -40,6 +40,9 @@ class TestPipelineMembraneDag:
         result = prepare_complex(
             job_dir=str(job_dir),
             node_id=self.prep_id,
+            # Multi-candidate source bundles (NMR models / assemblies) require
+            # an explicit selection at prep time.
+            source_structure_id="candidate_001",
             select_chains=["A"],
             include_types=["protein"],
             process_ligands=False,

@@ -1,6 +1,5 @@
 """Shared test fixtures for MDClaw test suite."""
 
-import os
 import re
 import sys
 import textwrap

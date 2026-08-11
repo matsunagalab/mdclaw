@@ -58,7 +58,11 @@ class TestPipeline3PWBLigandDag:
 
         node_data = read_node(str(job_dir), self.source_id)
         assert node_data["status"] == "completed"
-        assert node_data["artifacts"]["structure_file"] == "artifacts/3PWB.pdb"
+        # The source node normalizes inputs into the candidates layout; the
+        # raw download is provenance only.
+        assert node_data["artifacts"]["structure_file"] == (
+            "artifacts/candidates/candidate_001.pdb"
+        )
         meta = node_data["metadata"]
         assert meta["source_type"] == "pdb"
         assert meta["source_id"] == "3PWB"
@@ -71,7 +75,7 @@ class TestPipeline3PWBLigandDag:
 
         fetch_artifacts = job_dir / "nodes" / self.source_id / "artifacts"
         result = inspect_molecules(
-            structure_file=str(fetch_artifacts / "3PWB.pdb"),
+            structure_file=str(fetch_artifacts / "candidates" / "candidate_001.pdb"),
             job_dir=str(job_dir),
             node_id=self.source_id,
         )
@@ -115,8 +119,9 @@ class TestPipeline3PWBLigandDag:
             cap_termini=False,
         )
         assert result["success"], result.get("errors")
-        assert result["source_file"].endswith("source_001/artifacts/3PWB.pdb") or \
-               result["source_file"].endswith(f"{self.source_id}/artifacts/3PWB.pdb")
+        assert result["source_file"].endswith(
+            f"{self.source_id}/artifacts/candidates/candidate_001.pdb"
+        )
         assert Path(result["merged_pdb"]).exists()
 
         successful_ligands = {
