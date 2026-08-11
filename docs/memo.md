@@ -7,6 +7,42 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-11 — The fourteen failures: one real bug, thirteen stale fixtures
+
+All fourteen pre-existing failures are fixed (`5eb0486`, `5363222`); the full
+suite is green for the first time on record (1381 passed, 0 failed). None of
+the tests were unnecessary — the question that prompted the investigation.
+
+**The real bug** hid in plain sight for three weeks. The node-sealing change
+(2026-07-16, c532626) made terminal node.json immutable but missed
+`_register_preview_on_node`, which re-called `complete_node` on completed
+nodes. Every post-hoc preview/review attachment on a finished node failed —
+and the tests that would have caught it were failing for unrelated fixture
+reasons, so the signal read as noise. That is the cost of tolerating a red
+suite: real regressions become indistinguishable from stale tests. Attachments
+now go through append-only `preview_registered` events, the resolvers read
+them back, and a regression test pins the sealed-node render-then-review flow.
+
+**The thirteen others** were fixtures asserting contracts the code had
+deliberately outgrown: the parentless-node ban in study jobs, the candidates
+layout, mandatory prep-time candidate selection, prep-owned hydrogen
+completeness, a package-attr shadowing, an unverified writeFile-inventory pin
+(the new membrane call site does restore long residue names — verified before
+pinning), and a chemically impossible synthetic nucleic fixture, now generated
+from pdbfixer template geometry against the force fields' terminal templates.
+
+Two side finds from review: `test_split_molecules` was writing `split_N/`
+directories into the repository checkout (two were committed; removed, output
+now under tmp_path), and the first version of the event fix wrote events
+nothing read — the reviewer's "writing is useless without a reader" catch led
+to the resolver change that makes the flow actually work.
+
+With the membrane/metal prepare steps unblocked, those chains run their full
+MD legs (packmol packing through CPU equilibration) in-suite again, adding
+roughly 1.5 h to a full run. That is the price of the coverage being real.
+
+---
+
 ## 2026-08-09 — MDStudyBench extracted; the benchmark harness leaves mdclaw
 
 MDStudyBench is now its own public repository,
