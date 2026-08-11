@@ -69,12 +69,17 @@ dependency/runtime image and import the checkout source instead of rebuilding
 the SIF for every Python-only edit:
 
 ```bash
-PYTHONPATH="$PWD" singularity exec --bind "$PWD:$PWD" --pwd "$PWD" \
+PYTHONPATH="$PWD" singularity exec --nv --bind "$PWD:$PWD" --pwd "$PWD" \
   mdclaw.sif python -m mdclaw._cli --list
-PYTHONPATH="$PWD" singularity exec --bind "$PWD:$PWD" --pwd "$PWD" \
+PYTHONPATH="$PWD" singularity exec --nv --bind "$PWD:$PWD" --pwd "$PWD" \
   mdclaw.sif python -m mdclaw._cli <tool> ...
 singularity exec mdclaw.sif ruff check mdclaw/ tests/
 ```
+
+Pass `--nv` whenever the work can touch OpenMM: without it the container sees
+no CUDA platform and `platform="auto"` silently falls back to CPU — a membrane
+equilibration that takes minutes on a GPU runs for an hour. Lint and pure
+scoring tests do not need it.
 
 If Singularity warns `unknown userid` (hosts whose accounts come from NIS or
 LDAP), keep the plain `singularity exec` above and add `--no-home` plus a
