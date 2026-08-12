@@ -7,6 +7,33 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-12 — GPU verification: the CPU hour was an invocation defect
+
+Follow-up to the fourteen-failure entry: the hour-long membrane equilibration
+was not a property of the tests but of how I launched them. The SIF was
+invoked without `--nv`, so the container had no CUDA platform and
+`platform="auto"` silently fell back to CPU.
+
+Verified three ways. Platform probes: without `--nv` the usable set is
+`[Reference, CPU]`; with it, `[Reference, CPU, CUDA]`, and a 20k-particle
+auto-selected Context lands on CUDA. Timing: the same membrane+metal chains
+that took 1 h 08 m on CPU completed in **1 m 58 s** with `--nv` — about 35x —
+with identical results (7 passed both ways). The production paths
+(`bin/mdclaw`, the benchmark task wrappers) were never affected; they already
+add `--nv` when `nvidia-smi` is present. Only hand-typed SIF commands
+following the guide missed it, and the guide is fixed (`18ca28a`).
+
+Corrected estimate: a full suite with the revived pipeline chains is ~45 min
+with `--nv`, not the 1.5 h previously reported. The 3PWB chain deliberately
+pins `platform="CPU"` for determinism and is unaffected.
+
+Noted, not done: the executed platform lives only in tool results, not in
+node.json metadata, so post-hoc provenance cannot say which platform produced
+an artifact. Worth considering if platform ever becomes scientifically
+relevant (e.g. mixed-precision differences).
+
+---
+
 ## 2026-08-11 — The fourteen failures: one real bug, thirteen stale fixtures
 
 All fourteen pre-existing failures are fixed (`5eb0486`, `5363222`); the full
