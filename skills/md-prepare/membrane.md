@@ -3,7 +3,7 @@
 Read this only for membrane systems (`solvent_regime = membrane`). Membrane
 embedding replaces bulk solvation: use the same `solv` node type but run
 `embed_in_membrane` instead of `solvate_structure`. First complete a `prep` node
-(see `skills/md-prepare/happy-path.md` steps 1-4).
+per the `skills/md-prepare/SKILL.md` workflow.
 
 ## Run
 

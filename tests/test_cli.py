@@ -115,8 +115,6 @@ class TestToolDiscovery:
         if _dependency_available("httpx"):
             assert "fetch_structure" in tools
             assert tools["fetch_structure"]["is_async"] is True
-            assert "download_structure" in tools
-            assert tools["download_structure"]["is_async"] is True
         else:
             pytest.skip("fetch tools unavailable because research server dependencies are missing")
 
@@ -129,12 +127,11 @@ class TestToolDiscovery:
         tools = _discover_tools()
 
         assert "generate_surrogate_candidates" in tools
-        assert "setup_surrogate_backend" in tools
-        assert "check_surrogate_backend" in tools
+        assert "setup_model_backend" in tools
+        assert "check_model_backend" in tools
 
         if _dependency_available("httpx"):
             assert "fetch_structure" in tools
-            assert "download_structure" in tools
         if _dependency_available("pdbfixer"):
             assert "split_molecules" in tools
             assert "inspect_molecules" in tools
@@ -146,8 +143,8 @@ class TestToolDiscovery:
         tools = _discover_tools()
 
         assert "generate_surrogate_candidates" in tools
-        assert "setup_surrogate_backend" in tools
-        assert "check_surrogate_backend" in tools
+        assert "setup_model_backend" in tools
+        assert "check_model_backend" in tools
         assert tools["generate_surrogate_candidates"]["server"] == "surrogate"
 
     def test_all_servers_represented(self):
@@ -195,7 +192,6 @@ class TestArgparseConstruction:
         tool_name = _pick_existing_tool(
             tools,
             "fetch_structure",
-            "download_structure",
             "solvate_structure",
             "build_amber_system",
         )
@@ -210,7 +206,7 @@ class TestArgparseConstruction:
         """Missing required params causes non-zero exit via main()."""
         from mdclaw._cli import main
 
-        # fetch_structure requires --source; omitting it should exit non-zero
+        # fetch_structure without node context exits non-zero (node_context_required)
         with pytest.raises(SystemExit) as exc_info:
             main(["fetch_structure"])
         assert exc_info.value.code != 0
@@ -274,8 +270,12 @@ class TestArgparseConstruction:
 
     def test_node_required_tool_set_covers_dag_mutators(self):
         """Tools that create or complete workflow nodes must be CLI-gated."""
-        from mdclaw._cli import _NODE_REQUIRED_TOOLS
+        from mdclaw._cli import _discover_tools
 
+        tools = _discover_tools()
+        node_required = {
+            name for name, info in tools.items() if info.get("requires_node")
+        }
         expected = {
             "create_mutated_structure",
             "phosphorylate_residues",
@@ -284,8 +284,8 @@ class TestArgparseConstruction:
             "analyze_rmsf",
             "analyze_contact_frequency",
         }
-        assert expected <= _NODE_REQUIRED_TOOLS
-        assert "render_structure_preview" not in _NODE_REQUIRED_TOOLS
+        assert expected <= node_required
+        assert "render_structure_preview" not in node_required
 
     def test_cli_tool_failure_records_node_failure_artifact(self, tmp_path, monkeypatch):
         from mdclaw import _cli
@@ -471,11 +471,7 @@ class TestArgparseConstruction:
         assert params["smiles_list"]["required"] is False
 
     def test_embed_in_membrane_pdb_file_is_optional_for_autoresolve(self):
-        from mdclaw._cli import (
-            _apply_cli_convenience_defaults,
-            _build_parser,
-            _discover_tools,
-        )
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         _pick_existing_tool(tools, "embed_in_membrane")
@@ -486,19 +482,20 @@ class TestArgparseConstruction:
         assert args.lipids == ["POPC"]
         assert args.water_model == "opc"  # default
 
+        # Repeated tokens arrive as a plain list; the tool itself joins them.
         args = parser.parse_args(
             ["embed_in_membrane", "--lipids", "POPC", "POPE", "CHL1"]
         )
-        kwargs = {"lipids": args.lipids}
-        _apply_cli_convenience_defaults("embed_in_membrane", kwargs)
-        assert kwargs["lipids"] == "POPC:POPE:CHL1"
+        assert args.lipids == ["POPC", "POPE", "CHL1"]
 
-    def test_embed_in_membrane_lipids_are_normalized_before_str_coercion(
+    def test_embed_in_membrane_lipids_accepts_list_and_colon_string(
         self, monkeypatch, capsys
     ):
         from mdclaw import _cli
 
-        def fake_embed_in_membrane(lipids: str = "POPC") -> dict:
+        def fake_embed_in_membrane(lipids: list[str] = None) -> dict:
+            if isinstance(lipids, (list, tuple)):
+                lipids = ":".join(str(item) for item in lipids)
             return {"success": True, "lipids": lipids}
 
         monkeypatch.setattr(
@@ -513,7 +510,6 @@ class TestArgparseConstruction:
                 }
             },
         )
-        monkeypatch.setattr(_cli, "_NODE_REQUIRED_TOOLS", frozenset())
 
         with pytest.raises(SystemExit) as exc_info:
             _cli.main(["embed_in_membrane", "--lipids", "POPC:POPE:CHL1"])
@@ -913,15 +909,16 @@ class TestParameterCoercion:
         assert _is_dict_type(Dict[str, str]) is True
         assert _is_dict_type(str) is False
 
-    def test_is_list_of_dict(self):
+    def test_is_list_of(self):
         from typing import Dict, List
-        from mdclaw._cli import _is_list_of_dict
+        from mdclaw._cli import _is_list_of
 
-        assert _is_list_of_dict(list[dict]) is True
-        assert _is_list_of_dict(List[Dict[str, str]]) is True
-        assert _is_list_of_dict(list[str]) is False
-        assert _is_list_of_dict(dict) is False
-        assert _is_list_of_dict(str) is False
+        assert _is_list_of(list[dict], dict) is True
+        assert _is_list_of(List[Dict[str, str]], dict) is True
+        assert _is_list_of(list[list[int]], list) is True
+        assert _is_list_of(list[str], dict) is False
+        assert _is_list_of(dict, dict) is False
+        assert _is_list_of(str, dict) is False
 
     def test_takes_json(self):
         from typing import Dict
@@ -953,14 +950,6 @@ class TestParameterCoercion:
         result = _coerce_value(payload, list[dict])
         assert isinstance(result, list)
         assert result[0]["node_id"] == "prod_001"
-
-    def test_repeated_string_value_accepts_stringified_single_item_list(self):
-        from mdclaw._cli import _normalize_repeated_string_value
-
-        assert (
-            _normalize_repeated_string_value("['POPC:POPE:CHL1']")
-            == "POPC:POPE:CHL1"
-        )
 
     def test_coerce_int(self):
         from mdclaw._cli import _coerce_value
@@ -1748,13 +1737,13 @@ class TestStudyAndEvidenceCLIParameters:
 
 
 def test_benchmark_min_stage_is_reserved_for_run_minimization():
-    from mdclaw._cli import _benchmark_stage_for_tool
+    from mdclaw._benchmark_log import _benchmark_stage_for_tool
 
-    assert _benchmark_stage_for_tool("run_minimization", {}) == "min"
-    assert _benchmark_stage_for_tool("create_node", {"node_type": "min"}) == "dag"
-    assert _benchmark_stage_for_tool("package_mdprep_submission", {}) == "package"
-    assert _benchmark_stage_for_tool("package_openmm_submission", {}) == "package"
-    assert _benchmark_stage_for_tool("export_state_pdb", {}) == "export"
+    assert _benchmark_stage_for_tool("run_minimization") == "min"
+    assert _benchmark_stage_for_tool("create_node") == "dag"
+    assert _benchmark_stage_for_tool("package_mdprep_submission") == "package"
+    assert _benchmark_stage_for_tool("package_openmm_submission") == "package"
+    assert _benchmark_stage_for_tool("export_state_pdb") == "export"
 
 
 if __name__ == "__main__":
@@ -1764,7 +1753,7 @@ if __name__ == "__main__":
 def test_benchmark_harness_record_appends_jsonl(tmp_path, monkeypatch):
     """The stage-record hook is a cross-repo protocol: the standalone benchmark
     harnesses parse this JSONL, so the write path itself needs a test here."""
-    from mdclaw import _cli
+    from mdclaw import _benchmark_log
 
     log = tmp_path / "harness_execution.jsonl"
     monkeypatch.setenv("MDCLAW_BENCHMARK_HARNESS_LOG", str(log))
@@ -1772,8 +1761,8 @@ def test_benchmark_harness_record_appends_jsonl(tmp_path, monkeypatch):
     monkeypatch.setenv("MDCLAW_BENCHMARK_TASK_ID", "t1")
     monkeypatch.setattr("sys.argv", ["mdclaw", "run_minimization", "--x"])
 
-    _cli._write_benchmark_harness_record(
-        tool_name="run_minimization", kwargs={}, exit_code=0,
+    _benchmark_log._write_benchmark_harness_record(
+        tool_name="run_minimization", exit_code=0,
         started_at=__import__("time").monotonic(),
     )
 
@@ -1786,11 +1775,11 @@ def test_benchmark_harness_record_appends_jsonl(tmp_path, monkeypatch):
 
 
 def test_benchmark_harness_record_is_noop_without_env(tmp_path, monkeypatch):
-    from mdclaw import _cli
+    from mdclaw import _benchmark_log
 
     monkeypatch.delenv("MDCLAW_BENCHMARK_HARNESS_LOG", raising=False)
-    _cli._write_benchmark_harness_record(
-        tool_name="run_minimization", kwargs={}, exit_code=0,
+    _benchmark_log._write_benchmark_harness_record(
+        tool_name="run_minimization", exit_code=0,
         started_at=__import__("time").monotonic(),
     )
     assert list(tmp_path.iterdir()) == []

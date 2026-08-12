@@ -31,9 +31,9 @@ from mdclaw._common import (  # noqa: E402
     create_validation_error,
     ensure_directory,
     generate_job_id,
-    is_glycan_residue_name,
 )
 from mdclaw.chemistry_constants import (  # noqa: E402
+    is_glycan_residue_name,
     AMBER_PROTEIN_RESIDUES,
     AMINO_ACIDS,
 )
@@ -444,7 +444,6 @@ def _resolve_prepare_node_structure_file(
                 "source_selection": selected.get("source_selection"),
                 "source_structure_id": selected.get("selected_structure", {}).get("structure_id"),
                 "source_structure": selected.get("selected_structure"),
-                "source_selection_materialized": selected.get("materialized"),
             }
         except Exception as exc:
             return {
@@ -984,7 +983,7 @@ def prepare_complex(
             )
             disulfide_source = "user_override"
         else:
-            from mdclaw.research.structure_analysis import (
+            from mdclaw.structure.disulfide import (
                 _detect_disulfide_candidates,
                 _parse_ssbond_records,
             )

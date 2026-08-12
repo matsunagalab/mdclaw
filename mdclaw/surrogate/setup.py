@@ -47,22 +47,3 @@ def check_model_backend(
             "errors": [f"{type(exc).__name__}: {exc}"],
             "warnings": [],
         }
-
-
-def setup_surrogate_backend(
-    model: str = "bioemu",
-    device: str = "cpu",
-    prefix: str | None = None,
-    reinstall: bool = False,
-) -> dict:
-    """Backward-compatible alias for :func:`setup_model_backend`."""
-    return setup_model_backend(model, device=device, prefix=prefix, reinstall=reinstall)
-
-
-def check_surrogate_backend(
-    model: str = "bioemu",
-    prefix: str | None = None,
-) -> dict:
-    """Backward-compatible alias for :func:`check_model_backend`."""
-    return check_model_backend(model, prefix=prefix)
-

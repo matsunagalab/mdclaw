@@ -61,7 +61,7 @@ tests:
 
 ```bash
 conda run -n mdclaw ruff check mdclaw/
-conda run -n mdclaw pytest tests/test_mcp_server.py tests/test_cli.py tests/test_guardrails.py tests/test_slurm_server.py -v
+conda run -n mdclaw pytest tests/test_registry.py tests/test_cli.py tests/test_guardrails.py tests/test_slurm_server.py -v
 ```
 
 On Linux hosts where creating conda is expensive, use the current SIF as a
@@ -140,7 +140,7 @@ Core schema v3 rules:
   into a small MD goal, planned jobs, analysis intent, and decision criteria.
 - `tool = run + record`; tools call `_node.py` helpers to update state.
 - `inspect_job` is the read-only re-entry point for existing job DAGs; it
- returns node statuses, leaves, claims, open needs, and progress params.
+ returns node statuses, leaves, open needs, and progress params.
 - `explain_node` validates a candidate node before execution and reports
  `ready_to_run`, resolved inputs, missing inputs, and blocking codes.
 - `create_node` auto-resolves the canonical forward parent when
@@ -173,7 +173,7 @@ Core schema v3 rules:
 - Workflow tools require both `--job-dir` and `--node-id`.
 - Completed and failed nodes are terminal and immutable. Failed nodes keep
   details under `artifacts/failure/latest/`; use
-  `trace_failure` / `explain_failure` to compute read-only recovery options
+  `trace_failure` to compute read-only recovery options
   before creating an explicit branch.
 
 See `docs/developer/architecture.md` for the full job and study directory

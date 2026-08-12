@@ -1,13 +1,4 @@
-"""Node-based job graph management (schema v3).
-
-Each pipeline step (prep, solv, topo, min, eq, prod) is a *node* with its own
-directory, ``node.json``, lock file, and ``artifacts/`` folder.  Parent-child
-relationships form a DAG.  ``progress.json`` is a thin index of nodes.
-
-Design principle:
-    skill = what to run (orchestration, no state mutation)
-    tool  = run + record (execution + state via this module)
-"""
+"""Schema-v3 node constants: types, statuses, parent-type table."""
 
 import logging
 
@@ -37,21 +28,7 @@ ANALYSIS_DATA_SCOPES = frozenset({"segment", "production_chain", "comparison"})
 COMPARISON_MAPPING_TYPES = frozenset({"residue_number", "atom_selection"})
 
 
-IMMUTABLE_NODE_UPDATE_KEYS = frozenset({
-    "schema_version",
-    "node_id",
-    "node_type",
-    "type",
-    "parent_node_ids",
-    "parents",
-    "dependency_node_ids",
-    "dependencies",
-    "conditions",
-    "created_at",
-})
-
-
-OPERATIONAL_METADATA_KEYS = ("claimed_by", "claim_expires_at", "open_needs")
+OPERATIONAL_METADATA_KEYS = ("open_needs",)
 
 
 SCHEMA_VERSION = 3

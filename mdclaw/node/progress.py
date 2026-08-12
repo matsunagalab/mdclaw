@@ -1,13 +1,4 @@
-"""Node-based job graph management (schema v3).
-
-Each pipeline step (prep, solv, topo, min, eq, prod) is a *node* with its own
-directory, ``node.json``, lock file, and ``artifacts/`` folder.  Parent-child
-relationships form a DAG.  ``progress.json`` is a thin index of nodes.
-
-Design principle:
-    skill = what to run (orchestration, no state mutation)
-    tool  = run + record (execution + state via this module)
-"""
+"""progress.json index: init, per-node sync, summaries, rebuild."""
 
 import json
 import logging
@@ -94,14 +85,6 @@ def _node_progress_summary(node_data: dict) -> dict:
         if attempt_node_ids:
             entry["attempted_node_ids"] = sorted(attempt_node_ids)
 
-    claimed_by = metadata.get("claimed_by")
-    claim_expires_at = metadata.get("claim_expires_at")
-    if isinstance(claimed_by, str) and claimed_by:
-        entry["claim"] = {
-            "claimed_by": claimed_by,
-            "claim_expires_at": claim_expires_at,
-        }
-
     return entry
 
 
@@ -127,7 +110,6 @@ def _load_progress_v3(
     progress_path: Path,
     *,
     create_if_missing: bool = False,
-    job_id: Optional[str] = None,
 ) -> Optional[dict]:
     """Read ``progress.json`` and require schema v3.
 
@@ -136,7 +118,7 @@ def _load_progress_v3(
     """
     if not progress_path.exists():
         if create_if_missing:
-            init_progress_v3(str(progress_path.parent), job_id=job_id)
+            init_progress_v3(str(progress_path.parent))
         else:
             return None
     try:
@@ -210,8 +192,8 @@ def update_job_summaries(
     system: Optional[dict] = None,
     preparation: Optional[dict] = None,
     params: Optional[dict] = None,
-) -> None:
-    """Merge cached summary fields into ``progress.json``.
+) -> dict:
+    """Merge cached summary fields into ``progress.json``; return the result.
 
     Tools call this after :func:`complete_node` to update job-level metadata
     (e.g. system info from prepare_complex, solvation params from solvate).
@@ -227,6 +209,7 @@ def update_job_summaries(
         if params:
             progress.setdefault("params", {}).update(params)
         _atomic_write_json(pj, progress)
+    return progress
 
 
 def update_job_params(job_dir: str, params: dict) -> dict:
@@ -254,9 +237,7 @@ def update_job_params(job_dir: str, params: dict) -> dict:
         }
 
     jd = Path(job_dir).resolve()
-    update_job_summaries(str(jd), params=params)
-
-    progress = _load_progress_v3(jd / "progress.json")
+    progress = update_job_summaries(str(jd), params=params)
     return {
         "success": True,
         "job_dir": str(jd),

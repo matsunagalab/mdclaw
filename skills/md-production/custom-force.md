@@ -12,16 +12,7 @@ computes the forces by autograd** and wraps your function in an
 the same function (e.g. `torch.load(ctx.params["model_path"])`).
 
 Requires an `openmm-torch` build that provides `PythonTorchForce` (code
-`custom_force_dependency_missing` otherwise).
-
-> **Availability note**: upstream openmm-torch deprecated `TorchForce` (it
-> relies on TorchScript, which PyTorch no longer maintains) and recommends
-> `PythonTorchForce` for all cases. `PythonTorchForce` landed on master on
-> 2026-06-24 (#179) and is **not in any tagged release yet** (v1.5.1 ships
-> only the deprecated `TorchForce`). The MDClaw container source-builds the
-> pinned commit, so this works there; a plain `conda install openmm-torch`
-> does not yet provide it and the custom-force path reports
-> `custom_force_dependency_missing`.
+`custom_force_dependency_missing` otherwise); the MDClaw container ships it.
 
 ---
 
@@ -52,7 +43,7 @@ Return either a scalar tensor, or `(energy, {cv_name: scalar})` to log CVs.
 
 ---
 
-## Template (a): positional restraint on selected atoms
+## Template: positional restraint on selected atoms
 
 ```python
 import torch
@@ -71,41 +62,9 @@ mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
   --custom-force-parameters '{"selection": "name CA", "k": 1000.0}'
 ```
 
-## Template (b): harmonic bias on an inter-residue distance (logs the CV)
-
-```python
-import torch
-
-def energy(positions, ctx):
-    i = ctx.select("name CA and resid 10")
-    j = ctx.select("name CA and resid 50")
-    d = torch.linalg.norm(positions[i][0] - positions[j][0])
-    k = ctx.params["k"]; d0 = ctx.params["d0"]
-    bias = 0.5 * k * (d - d0) ** 2
-    return bias, {"ca_distance_nm": d}
-```
-
-```bash
-mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
-  --simulation-time-ns 0.1 --temperature-kelvin 300 \
-  --custom-force-script dist_bias.py \
-  --custom-force-parameters '{"k": 2000.0, "d0": 1.2}'
-```
-
-## Template (c): harmonic bias on a domain–domain distance (centroids)
-
-```python
-import torch
-
-def energy(positions, ctx):
-    a = ctx.select("resid 1 to 60 and name CA")
-    b = ctx.select("resid 120 to 180 and name CA")
-    ca = positions[a].mean(0)
-    cb = positions[b].mean(0)
-    d = torch.linalg.norm(ca - cb)
-    k = ctx.params["k"]; d0 = ctx.params["d0"]
-    return 0.5 * k * (d - d0) ** 2, {"domain_distance_nm": d}
-```
+For a distance / centroid / other CV bias, compute the scalar CV from
+`positions` with torch ops the same way and return
+`(bias_energy, {"<cv_name>": cv_value})` so the CV is logged.
 
 ## Using a pre-trained model
 

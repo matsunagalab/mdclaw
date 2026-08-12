@@ -83,20 +83,3 @@ def test_every_registered_code_has_an_action():
 
     empty = sorted(code for code, action in GUARDRAIL_CODES.items() if not str(action).strip())
     assert not empty, "These registered codes have an empty action: " + ", ".join(empty)
-
-
-def test_guardrail_codes_doc_matches_registry():
-    """skills/common/guardrail-codes.md is generated from the registry."""
-    try:
-        from mdclaw.guardrail_codes import GUARDRAIL_CODES  # noqa: F401
-    except ImportError:
-        pytest.skip("mdclaw.guardrail_codes SSOT registry not present yet")
-
-    from scripts.gen_guardrail_codes_md import DOC_PATH, render
-
-    expected = render()
-    actual = DOC_PATH.read_text()
-    assert actual == expected, (
-        "skills/common/guardrail-codes.md is out of sync with the registry. "
-        "Regenerate with `python scripts/gen_guardrail_codes_md.py`."
-    )

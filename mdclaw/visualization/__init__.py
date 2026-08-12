@@ -9,12 +9,11 @@ from mdclaw.visualization.preview import render_structure_preview
 from mdclaw.visualization.review import register_visual_review
 
 TOOLS = {
-    "render_structure_preview": render_structure_preview,
-    "register_visual_review": register_visual_review,
+    fn.__name__: fn
+    for fn in (
+        render_structure_preview,
+        register_visual_review,
+    )
 }
 
-__all__ = [
-    "render_structure_preview",
-    "register_visual_review",
-    "TOOLS",
-]
+__all__ = [*TOOLS, "TOOLS"]

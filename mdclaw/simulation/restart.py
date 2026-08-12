@@ -1,12 +1,4 @@
-"""
-MD Simulation Server - Molecular dynamics simulation & analysis tools.
-
-Provides MCP tools for:
-- OpenMM MD simulation (NVT/NPT equilibration, production)
-- MDTraj trajectory analysis (RMSD, RMSF, distances, hydrogen bonds, etc.)
-- Energy analysis
-- Secondary structure analysis
-"""
+"""Portable-state restore helpers for simulation restarts."""
 
 # Configure logging early to suppress noisy third-party logs
 import os

@@ -10,7 +10,6 @@ SERVER_REGISTRY = {
     "genesis": "mdclaw.genesis",
     "surrogate": "mdclaw.surrogate",
     "literature": "mdclaw.literature",
-    "metal": "mdclaw.metal",
     "slurm": "mdclaw.slurm",
     "node": "mdclaw.node",
     "analyze": "mdclaw.analyze",

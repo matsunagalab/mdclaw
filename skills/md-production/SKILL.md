@@ -7,10 +7,9 @@ description: "Production molecular dynamics simulation using MDClaw CLI tools an
 
 You are a computational biophysics expert running production MD simulations using MDClaw CLI tools.
 
-Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
-`skills/common/run-loop.md`, `skills/common/solvent-regimes.md`, and
-`skills/common/guardrail-codes.md` before acting. `run-loop.md` is the single
-canonical loop and node-CLI-invariant reference.
+Follow `skills/common/preamble.md`, `skills/common/run-loop.md` (the canonical
+node loop), `skills/common/solvent-regimes.md`, and
+`skills/common/tool-output.md` for error handling.
 
 ## Step 0: Parse and Confirm
 
@@ -19,7 +18,7 @@ canonical loop and node-CLI-invariant reference.
 | Target | (job directory) |
 | Execution mode | read `progress.json.params.execution_mode` |
 | Parent eq node | use a completed eq node from `inspect_job`, or an explicit branch parent |
-| Simulation time | user-specified; plan-derived for a scientific answer; or `0.1 ns` only for an omitted production-only sanity run |
+| Simulation time | user-specified, or per the Default Decision Rule below |
 | Other | (non-default parameters) |
 
 ## Prerequisites
@@ -28,11 +27,11 @@ Follow `skills/common/run-loop.md`. Start with
 `mdclaw inspect_job --job-dir <job_dir>` to confirm there is a completed `eq`
 node, no conflicting running work, and the intended `solvent_regime`. For an
 extension, use `--continue-from` (below) rather than a default forward edge.
-Use IDs from `inspect_job`, `explain_node`, and `create_node`, never literal
-example IDs from documentation. For a candidate prod node, `mdclaw explain_node
---job-dir <job_dir> --node-id <prod_node_id>` reports `ready_to_run` and
-`validation.blocking_codes`.
-(`system_xml_file`, `topology_pdb_file`, `state_xml_file`, and `restart_from` are auto-resolved from DAG ancestors by the tool. For convenience, `pressure_bar` defaults to the eq node's `metadata.final_ensemble` so the common eq → prod handoff matches by default. You can override `--pressure-bar` to switch ensembles freely — the saved eq state is reusable across NPT/NVT thanks to the ensemble-agnostic loader. See `skills/md-production/restart.md` "Switching Ensembles Across Nodes" for details.)
+Topology and restart inputs auto-resolve from DAG ancestors. `pressure_bar`
+defaults to the eq node's `metadata.final_ensemble` so the common eq → prod
+handoff matches by default; override `--pressure-bar` to switch ensembles
+freely (see `skills/md-production/restart.md` "Switching Ensembles Across
+Nodes").
 
 If no completed eq node exists, suggest running `skills/md-equilibration/SKILL.md`
 on the same `job_dir` first (`/md-equilibration <job_dir>` when slash commands
@@ -75,21 +74,8 @@ mdclaw create_node --job-dir <dir> --node-type prod --parent-node-ids <eq_node_i
 ```
 
 **Extension** (continue from a completed prod — **preferred** way to extend):
-```bash
-mdclaw create_node --job-dir <dir> --node-type prod \
-  --continue-from <completed_prod_node_id> \
-  --label "+50ns" --conditions '{"simulation_time_ns": 50}'
-```
-
-**Custom force / CV bias**: pass `--custom-force-script` (an
-`energy(positions, ctx)` function, autograd computes the forces via
-`PythonTorchForce`) to `run_production`; the bias signature and artifacts are
-auto-recorded on the node (do not hand-declare `custom_force` in
-`--conditions` — it is validated by
-exact match and would fail). See `skills/md-production/custom-force.md`.
-
-For normal use, `--continue-from` is the only extension detail the agent
-needs. If a run is being retried, chained, or debugged, read
+create a new prod node with `--continue-from <completed_prod_node_id>`; the
+canonical commands and restart/retry detail are in
 `skills/md-production/restart.md`.
 
 ## Workflow
@@ -110,11 +96,6 @@ a candidate collective variable for CV exploration), **read and follow
 `skills/md-production/custom-force.md`** — you write a single
 `energy(positions, ctx)` function and MDClaw computes the forces by autograd,
 logging bias energy and CV values for analysis.
-
-## Error Handling
-
-Follow `skills/common/tool-output.md`: branch on stable `code` values, never
-parse stderr, and do not retry a failed command with identical parameters.
 
 ## Handoff
 

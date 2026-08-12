@@ -1,15 +1,4 @@
-"""
-Research Server - External database retrieval and structure inspection tools.
-
-This server integrates with external MCP servers (PDB-MCP-Server, AlphaFold-MCP-Server,
-UniProt-MCP-Server) from Augmented-Nature by implementing the same REST API calls.
-
-Provides tools for:
-- PDB structure retrieval and search (mirrors PDB-MCP-Server)
-- AlphaFold structure retrieval (mirrors AlphaFold-MCP-Server)
-- UniProt protein search and info (mirrors UniProt-MCP-Server)
-- Structure file inspection (mdclaw-specific gemmi-based analysis)
-"""
+"""Structure retrieval from RCSB PDB and AlphaFold."""
 
 import os
 import shutil
@@ -199,7 +188,7 @@ def _fetch_local_structure(
     """Register a user-supplied local structure file as a source node artifact.
 
     Use this to make local PDB/CIF files first-class DAG roots, alongside
-    ``download_structure`` (PDB) and ``get_alphafold_structure`` (AlphaFold).
+    ``fetch_structure`` (PDB/AlphaFold).
 
     Args:
         file_path: Absolute or relative path to a .pdb/.cif/.ent file.
@@ -318,7 +307,7 @@ def _fetch_local_structure(
 
 @node_tool(node_type="source")
 async def fetch_structure(
-    source: str,
+    source: str = "auto",
     pdb_id: Optional[str] = None,
     uniprot_id: Optional[str] = None,
     file_path: Optional[str] = None,
@@ -340,7 +329,9 @@ async def fetch_structure(
     preserving source-specific provenance metadata.
 
     Args:
-        source: One of ``"pdb"``, ``"alphafold"``, or ``"local"``.
+        source: One of ``"pdb"``, ``"alphafold"``, ``"local"``, or ``"auto"``
+            (default). With ``"auto"`` the source is inferred from whichever
+            one of ``pdb_id`` / ``uniprot_id`` / ``file_path`` is provided.
         pdb_id: Required when ``source="pdb"``.
         uniprot_id: Required when ``source="alphafold"``.
         file_path: Required when ``source="local"``.
@@ -369,6 +360,18 @@ async def fetch_structure(
         ``warnings`` and path/provenance fields.
     """
     normalized_source = source.lower().strip() if isinstance(source, str) else ""
+    if normalized_source in {"", "auto"}:
+        provided = [
+            (name, field)
+            for name, field in (
+                ("pdb", pdb_id),
+                ("alphafold", uniprot_id),
+                ("local", file_path),
+            )
+            if field not in {None, ""}
+        ]
+        if len(provided) == 1:
+            normalized_source = provided[0][0]
     if normalized_source not in {"pdb", "alphafold", "local"}:
         err = create_validation_error(
             "source",
@@ -552,48 +555,3 @@ async def fetch_structure(
     )
     result["source"] = "local"
     return result
-
-
-@node_tool(node_type="source")
-async def download_structure(
-    pdb_id: str,
-    format: str = "cif",
-    output_dir: Optional[str] = None,
-    job_dir: Optional[str] = None,
-    node_id: Optional[str] = None,
-) -> dict:
-    """Compatibility wrapper for fetching RCSB PDB structures.
-
-    Prefer ``fetch_structure(source="pdb", pdb_id=...)`` for new workflows.
-    """
-    return await fetch_structure(
-        source="pdb",
-        pdb_id=pdb_id,
-        format=format,
-        output_dir=output_dir,
-        job_dir=job_dir,
-        node_id=node_id,
-    )
-
-
-@node_tool(node_type="source")
-async def get_alphafold_structure(
-    uniprot_id: str,
-    format: str = "pdb",
-    output_dir: Optional[str] = None,
-    job_dir: Optional[str] = None,
-    node_id: Optional[str] = None,
-) -> dict:
-    """Compatibility wrapper for fetching AlphaFold DB structures.
-
-    Prefer ``fetch_structure(source="alphafold", uniprot_id=...)`` for new
-    workflows. This wrapper keeps the historical default ``format="pdb"``.
-    """
-    return await fetch_structure(
-        source="alphafold",
-        uniprot_id=uniprot_id,
-        format=format,
-        output_dir=output_dir,
-        job_dir=job_dir,
-        node_id=node_id,
-    )

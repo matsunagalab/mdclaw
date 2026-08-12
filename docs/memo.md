@@ -7,6 +7,149 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-13 — MDPrepBench pi+deepseek revalidation after the simplification: 40/40 at 1.0
+
+The de-over-engineered tree (previous entry) was revalidated with the same
+solver as the 2026-07-20 sweep: pi (`pi-user` profile) +
+`spark1-vllm/deepseek-v4-flash`, skills+cli, 30-min/task cap, deterministic
+scoring — now through the standalone MDPrepBench repo (`~/tmp/MDPrepBench`,
+runs `refactor_verify_*`). **Every one of the 40 tasks scored 1.0**, one task
+better than July's 39×1.0 + P28 0.9639 (P28 scored 1.0 this time). The
+consolidated skills and the 77-tool CLI carried the whole suite, including the
+new `--lipids` list contract (P18/P34/P37/P39 membranes all 1.0).
+
+Caveats worth the record:
+
+- **Not one-shot.** The first pass ran as two concurrent shards to halve
+  wall-clock; that self-inflicted vLLM congestion produced 6 walltime timeouts
+  (P03, P21, P24, P26, P28, P29 — 5 of 6 in the same shard). Sequential
+  retries passed 5 of them at 1.0 immediately. July's 40/40 was sequential;
+  concurrency, not the refactor, was the variable — P37–P40 sped up the moment
+  shard A finished.
+- **P26 (zinc, 2CBA) needed 4 attempts.** Attempts 1–3 timed out the same way:
+  with a byte-identical prompt and identical skills, the agent ignored the CLI
+  and spelunked openmm data dirs for ion XMLs, ending in `find /` scans. The
+  first assistant sentence already diverges from July's run ("inspect the local
+  OpenMM environment" vs July's "read the relevant skills"), and the spark1
+  serving config changed since July (220K → 1M context on the same model
+  name) — model-side drift/variance, not a skills regression: P27 (Mn) and
+  P30 (Zn) passed 1.0 first try, and attempt 4 passed 1.0 in 20 min via the
+  normal CLI path.
+- **The harness now really tests the checkout.** `bin/mdclaw` previously ran
+  the SIF's baked-in mdclaw package while host-side native tools ran the
+  checkout — a silent version skew. It now binds PKG_ROOT and sets PYTHONPATH
+  into the container, so these runs exercised the refactored source, verified
+  by tool count (77) from inside the solver workspace.
+
+---
+
+## 2026-08-12 — De-over-engineering executed: −6,433 net lines, 89 → 77 tools
+
+The audit below was executed the same day: 148 files changed, +1,274 / −7,707
+(net −6,433). Suite green afterwards (1,252 passed to the old stop point plus
+the tail files; ruff clean on `mdclaw/`). Skills: 4,332 → ~3,290 lines,
+61 → ~46 files. `_cli.py` 1,409 → ~1,113; `evidence/reporting.py` 1,683 → 503.
+
+**Deleted outright:** claim/lease machinery + its guardrail codes; `update_node`;
+`find_nodes`/`get_children`; `mdclaw/metal/`; `research/structure_analysis.py`
+(its two disulfide helpers moved to `structure/disulfide.py` — the audit missed
+that `prepare_complex` imports them); `research/scoring.py` (the 0–120 rubric;
+`--rank-for-md` now sorts X-ray→cryo-EM→NMR, best resolution first); the
+evidence Methods half + `citation_inventory.md` + `evidence_schema.py` (folded);
+alias tools (`download_structure`, `get_alphafold_structure`,
+`setup/check_surrogate_backend`, `explain_failure`) — all now `tool_renamed`
+redirects; PLIP; write-only `artifact_sha256` (existence check kept — no more
+hashing multi-GB trajectories inside node.lock); the `_tool_meta` shims; false
+MCP docstrings (`test_mcp_server.py` → `test_registry.py`); stale
+`mdclaw/benchmark/` and `tests/test_benchmark/` pycache ghosts.
+
+**Refactored:** one `_tool_param_specs` pass now feeds argparse, `--list-json`,
+and kwargs assembly (the triple type-dispatch ladder is gone);
+`embed_in_membrane.lipids` is `list[str]` (the 60-line repeated-string CLI
+special case died); `fetch_structure` defaults `source="auto"` (CLI convenience
+layer died); benchmark JSONL hook moved to `_benchmark_log.py`; `setup_logger`
+propagates to one root handler (stream-swap surgery collapsed); TOOLS/`__all__`
+derived from function objects in all 16 package `__init__`s; glycan helpers and
+`CANONICAL_WATER_MODELS` moved to `chemistry_constants`; study log
+triple-wrapper inlined; budget validation reduced to shape-only (field-level
+tests replaced accordingly); prod-chain walkers unified; node.json readers
+collapsed onto `_read_node_json`; sealed-node handling uses a typed
+`NodeSealedError` instead of exception-message string matching.
+
+**Bugs fixed:** `--json-input` skipped required-argument validation (regression
+test added); `atomic_write_text_group`'s except-path deleted backups that had
+just failed to restore (now `else`-scoped); broken `mdclaw.__all__`;
+ineffective `_NODE_REQUIRED_TOOLS` monkeypatch in test_cli; the false
+"boolean flags reject true/false" skill sentence; `bin/mdclaw` now binds
+PKG_ROOT + PYTHONPATH into the SIF so container tools run the same source as
+host-side native tools (previously the SIF's baked package — a version skew).
+
+**Deliberately NOT done, with reasons:** guardrail registry kept at 257 codes
+(the hint text is weak-agent scaffolding; measure before pruning);
+`read_ancestor_final_step`'s three-state sentinel kept (tests use the omitted
+form as real API — audit overcounted); `validate_node_execution_context`'s
+`validate_conditions` param kept (None-collapse would change strictness for
+callers passing `actual_conditions=None`); progress.json entry shape kept
+(agent-facing via inspect_job; thinning it is a contract change — decide
+separately); the three failure entry points kept (thin adapters, distinct call
+shapes); `literature/` kept (skill-referenced and working); visualization
+constants kept (audit wrongly called them dead — they are module-local, used).
+
+---
+
+## 2026-08-12 — Over-engineering audit: ~7.5–8k lines removable, 89 → ~78 tools
+
+Four parallel audits (DAG/node core, CLI/dispatch, peripheral subsystems,
+skills) over ~59k lines of Python + 4.3k lines of skills, looking only at
+harness/plumbing complexity, not MD physics. Findings are an assessment;
+nothing has been changed yet.
+
+**Headline ratios.** 263 guardrail codes, 2 code branches anywhere that test a
+code value; 89 tools dispatched by `fn(**kwargs)` behind ~2,244 lines of
+CLI/registry/meta machinery; all 89 `TOOLS` entries are identity mappings;
+`from mdclaw import *` raises (all 17 `__all__` names unbound).
+
+**Dead or orphaned, highest confidence.** claim/release node-lease machinery
+(~170 lines, zero production callers); `mdclaw/metal/` (whole package, zero
+callers, consumer removed in 8a39b78); `research/structure_analysis.py` (694
+lines, docstring cites a workflow phase that no longer exists);
+the Methods-report half of `evidence/reporting.py` (~1,208 of 1,683 lines +
+534-line citation inventory — zero output files across ~50 recorded benchmark
+runs); alias tools (`download_structure`, `get_alphafold_structure`,
+`setup/check_surrogate_backend`, `explain_failure`); write-only
+`artifact_sha256` that hashes multi-GB trajectories inside node.lock with no
+reader.
+
+**Same-fact-N-times.** Tool names stated 3–4x per tool across
+import/TOOLS/`__all__`; parent-type contract implemented twice (create_node
+branches vs `_ALLOWED_PARENT_TYPES` table); progress.json has grown from
+"thin index" into a node.json mirror with its own repair tool; in skills/,
+ion policy ×6, platform preflight ×6, `guardrail-codes.md` (276 lines) is a
+byte-level duplicate of what `hints[0]` already delivers at runtime.
+
+**MCP ghost.** No MCP plumbing remains, but 11 files carry a false "integrates
+with external MCP servers" docstring and `test_mcp_server.py` tests the
+registry — misnaming propagated into CLAUDE.md/testing docs.
+
+**Bugs found incidentally.** `--json-input` path skips required-argument
+validation entirely; `mdclaw/__init__.py.__all__` fully broken;
+skills/md-prepare/explicit-water.md:86 states boolean flags reject
+`true`/`false` values (false — `_parse_cli_bool` accepts them, and
+bioemu-sample instructs `--reconstruct-sidechains false`); inconsistent
+node.lock/progress.lock ordering (latent deadlock shape, masked by
+single-writer usage).
+
+**Deliberately deferred.** The 263-code guardrail registry is the one place
+where over-engineering may be load-bearing weak-agent scaffolding (the payload
+is LLM-facing hint text). Decision: measure against benchmarks before pruning
+to the ~40 referenced codes; don't drift.
+
+Totals: CLI/dispatch ~1,000–1,700; node/DAG ~1,150; peripherals ~4,040 py +
+534 md; skills ~1,320–1,420 (61 files → ~35). Full per-finding detail with
+line numbers lives in the session transcript of this date.
+
+---
+
 ## 2026-08-12 — GPU verification: the CPU hour was an invocation defect
 
 Follow-up to the fourteen-failure entry: the hour-long membrane equilibration

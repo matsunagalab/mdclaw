@@ -5,9 +5,8 @@ description: "SLURM-based HPC submission for MDClaw workflow nodes. Handles clus
 
 # HPC Run Skill
 
-Read `skills/common/preamble.md`, `skills/common/tool-output.md`, and
-`skills/common/run-loop.md` (the single canonical loop and node-CLI-invariant
-reference) before acting.
+Follow `skills/common/preamble.md`, `skills/common/run-loop.md` (the canonical
+node loop), and `skills/common/tool-output.md` for error handling.
 
 Use this skill when the user wants to run minimization, equilibration, or
 production nodes on SLURM, submit multiple replicates or systems, monitor/recover
@@ -23,12 +22,15 @@ its inputs from the DAG.
 - Current DAG state via `mdclaw inspect_job --job-dir <job_dir>`: a completed
   `topo` (and, for `prod`, a completed `eq`) parent, and no conflicting running
   work.
-- Cluster resources/policy if unknown (see `skills/hpc-run/discovery-policy.md`).
+- Cluster resources/policy if unknown: inspect with `mdclaw inspect_cluster`
+  and `mdclaw show_policy`; when policy is missing or the user gives limits,
+  set it explicitly with `mdclaw set_policy` (partitions, GPU/time/memory
+  caps, default partition). For containerized compute nodes, run
+  `mdclaw configure_container --image /abs/path/mdclaw.sif --extra-flags "--nv"`;
+  submission tools then auto-bind each task's `job_dir`.
 
 ## Route To The Right Guidance
 
-- Cluster discovery, resource policy, or packaged runtime setup:
-  `skills/hpc-run/discovery-policy.md`
 - One DAG node as one SLURM job:
   `skills/hpc-run/submit-single.md`
 - Homogeneous batches or replicate arrays:
@@ -37,8 +39,9 @@ its inputs from the DAG.
   `skills/hpc-run/monitor-recover.md`
 - Extending a completed production node:
   `skills/hpc-run/prod-extension.md`
-- Multi-system study campaigns:
-  `skills/hpc-run/study-campaigns.md`
+- Multi-system study campaigns: resolve each registered `study.json`
+  `jobs[].job_dir`, then submit and monitor per job with the pages above.
+  The study is an index; keep SLURM state in each job's node metadata.
 
 ## Critical Rules
 

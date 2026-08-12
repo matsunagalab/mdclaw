@@ -252,7 +252,7 @@ DAG invariants:
   `topo` directly for legacy records, but skills should not create that shape.
 - Terminal (`completed` or `failed`) node.json records are sealed. Create a new
   node for further work; later scheduler observations belong in events.
-- Agent claims and open needs are work-routing hints for unfinished nodes.
+- Open needs are work-routing hints for unfinished nodes.
   Completion clears those operational hints before sealing the node.
 - Events are append-only files, not a shared JSON array.
 - Broken or unsupported chemistry should surface as structured errors rather
@@ -264,7 +264,7 @@ The DAG is designed so an agent can resume from durable evidence instead of a
 separate next-step planner. Five additive helpers carry that load:
 
 - `inspect_job(job_dir)` reads `progress.json` and returns node statuses,
-  leaves, claims, open needs, warnings, and workflow params such as
+  leaves, open needs, warnings, and workflow params such as
   `solvent_regime`.
 - `wait_node(job_dir, node_id)` polls a long-running node until it reaches a
   terminal status. It is read-only and exists to prevent premature packaging or
@@ -278,7 +278,7 @@ separate next-step planner. Five additive helpers carry that load:
   ambiguous or empty frontiers return `node_context_required` with parent
   candidates before creating a node. Bare job directories retain parent-less
   creation for low-level repair and tests.
-- `trace_failure(job_dir, node_id)` / `explain_failure(job_dir, node_id)` reads
+- `trace_failure(job_dir, node_id)` reads
   a failed node, failure artifacts, events, parent/dependency status, and
   existing workflow recommendations. It returns read-only `recovery_options`
   and `next_commands`; it never creates branches automatically.

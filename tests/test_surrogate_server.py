@@ -13,14 +13,13 @@ import shutil
 import sys
 from mdclaw.surrogate._base import (
     BOLTZ_VERSION,
-    SURROGATE_BACKENDS,
+    MODEL_BACKENDS,
     models_with_capability,
     resolve_prediction_backend,
 )
 from mdclaw.surrogate.setup import (
     check_model_backend,
     setup_model_backend,
-    setup_surrogate_backend,
 )
 from mdclaw.surrogate.candidates import generate_surrogate_candidates
 
@@ -37,7 +36,7 @@ def job_with_source_node(tmp_path):
 
 @pytest.fixture
 def stubbed_bioemu_backend(monkeypatch):
-    backend = SURROGATE_BACKENDS["bioemu"]
+    backend = MODEL_BACKENDS["bioemu"]
     monkeypatch.setattr(
         backend,
         "check",
@@ -62,7 +61,7 @@ def stubbed_bioemu_backend(monkeypatch):
     return backend
 
 
-def test_setup_surrogate_backend_constructs_managed_venv_commands(monkeypatch, tmp_path):
+def test_setup_model_backend_constructs_managed_venv_commands(monkeypatch, tmp_path):
     calls = []
 
     monkeypatch.setattr(shutil, "which", lambda name: None)
@@ -81,7 +80,7 @@ def test_setup_surrogate_backend_constructs_managed_venv_commands(monkeypatch, t
 
     monkeypatch.setattr("mdclaw.surrogate._base._run_command", fake_run)
 
-    result = setup_surrogate_backend(
+    result = setup_model_backend(
         model="bioemu",
         device="cuda",
         prefix=str(tmp_path / "bioemu"),
@@ -120,19 +119,6 @@ def test_setup_model_backend_boltz_pins_version(monkeypatch, tmp_path):
     assert result["success"], result["errors"]
     assert any(cmd[-1] == f"boltz=={BOLTZ_VERSION}" for cmd in calls)
     assert result["version"] == BOLTZ_VERSION
-
-
-def test_setup_surrogate_backend_is_alias_for_model_backend(monkeypatch):
-    seen = {}
-
-    def fake_setup(model, device="cpu", prefix=None, reinstall=False):
-        seen.update(model=model, device=device, prefix=prefix, reinstall=reinstall)
-        return {"success": True}
-
-    monkeypatch.setattr("mdclaw.surrogate.setup.setup_model_backend", fake_setup)
-    result = setup_surrogate_backend(model="bioemu", device="cuda")
-    assert result["success"]
-    assert seen == {"model": "bioemu", "device": "cuda", "prefix": None, "reinstall": False}
 
 
 def test_check_model_backend_reports_missing_venv(tmp_path):

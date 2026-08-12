@@ -11,9 +11,11 @@ from __future__ import annotations
 from typing import Optional
 
 from mdclaw._common import (
-    CANONICAL_WATER_MODELS,
     create_guardrail_result,
     normalize_choice,
+)
+from mdclaw.chemistry_constants import (  # noqa: E402
+    CANONICAL_WATER_MODELS,
 )
 from mdclaw.forcefield_catalog import LIPID_XML, OPENMM_APP_LIPID_XML
 from mdclaw.forcefield_templates import load_lipid_template_contract

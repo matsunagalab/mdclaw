@@ -39,9 +39,9 @@ from typing import Optional, Dict, Any  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
     ensure_directory, BaseToolWrapper, guess_pdb_element,
-    is_glycan_residue_name,
 )
 from mdclaw.chemistry_constants import (  # noqa: E402
+    is_glycan_residue_name,
     PHOSPHO_RESNAMES,
     STANDARD_BARE_ION_RESNAMES,
 )

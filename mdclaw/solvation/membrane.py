@@ -15,7 +15,6 @@ from typing import Optional
 
 from mdclaw.chemistry_constants import PROTEIN_RESNAMES
 from mdclaw._common import (
-    CANONICAL_WATER_MODELS,
     BaseToolWrapper,
     create_unique_subdir,
     create_validation_error,
@@ -24,6 +23,9 @@ from mdclaw._common import (
     tail_for_agent,
 )
 from mdclaw._common import get_timeout
+from mdclaw.chemistry_constants import (  # noqa: E402
+    CANONICAL_WATER_MODELS,
+)
 from mdclaw._tool_meta import node_tool
 from mdclaw.solvation.constants import (
     MEMBRANE_BACKENDS,
@@ -1512,7 +1514,7 @@ def embed_in_membrane(
     pdb_file: Optional[str] = None,
     output_dir: Optional[str] = None,
     output_name: str = "membrane",
-    lipids: str = "POPC",
+    lipids: Optional[list[str]] = None,
     ratio: str = "1",
     dist: float = 15.0,
     dist_wat: float = 17.5,
@@ -1564,7 +1566,8 @@ def embed_in_membrane(
                   merged_pdb artifact when omitted.
         output_dir: Output directory (auto-generated if None)
         output_name: Base name for output file (default: "membrane")
-        lipids: Lipid composition (default: "POPC")
+        lipids: Lipid names, e.g. ["POPC"] or ["DOPE", "DOPG"]; a single
+            colon-joined string is also accepted (default: POPC)
                 Single lipid: "POPC"
                 Mixed: "DOPE:DOPG" (separated by colon)
                 Per leaflet: "POPC//POPE" (separated by //)
@@ -1675,6 +1678,8 @@ def embed_in_membrane(
         ...     preoriented=True
         ... )
     """
+    if lipids is None:
+        lipids = ["POPC"]
     if isinstance(lipids, (list, tuple)):
         lipids = ":".join(
             str(lipid).strip() for lipid in lipids if str(lipid).strip()

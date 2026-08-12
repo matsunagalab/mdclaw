@@ -8,9 +8,8 @@ description: "Generate monomer conformational source candidates with BioEmu, the
 Use this skill when the user wants to sample a monomer conformational ensemble
 with BioEmu before running atomistic MD.
 
-Read `skills/common/preamble.md`, `skills/common/tool-output.md`, and
-`skills/common/run-loop.md` (the single canonical loop and node-CLI-invariant
-reference) before acting.
+Follow `skills/common/preamble.md`, `skills/common/run-loop.md` (the canonical
+node loop), and `skills/common/tool-output.md` for error handling.
 
 ## Scope
 
@@ -45,8 +44,6 @@ mdclaw setup_model_backend --model bioemu --device cuda
 
 BioEmu is installed at runtime into an isolated venv, never in the conda
 `mdclaw` environment and never baked into the container image.
-(`setup_surrogate_backend` / `check_surrogate_backend` remain as
-`bioemu`-defaulted aliases.)
 
 On a read-only SIF the venv cannot be written under `/opt/mdclaw`. Point
 `MDCLAW_SURROGATE_DIR` at a writable (ideally shared) filesystem and bind-mount

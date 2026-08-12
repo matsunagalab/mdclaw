@@ -29,24 +29,17 @@ from mdclaw.structure.modxna import (
 )
 
 TOOLS = {
-    "split_molecules": split_molecules,
-    "clean_protein": clean_protein,
-    "clean_ligand": clean_ligand,
-    "merge_structures": merge_structures,
-    "prepare_complex": prepare_complex,
-    "create_mutated_structure": create_mutated_structure,
-    "phosphorylate_residues": phosphorylate_residues,
-    "prepare_modified_nucleic": prepare_modified_nucleic,
+    fn.__name__: fn
+    for fn in (
+        split_molecules,
+        clean_protein,
+        clean_ligand,
+        merge_structures,
+        prepare_complex,
+        create_mutated_structure,
+        phosphorylate_residues,
+        prepare_modified_nucleic,
+    )
 }
 
-__all__ = [
-    "split_molecules",
-    "clean_protein",
-    "clean_ligand",
-    "merge_structures",
-    "prepare_complex",
-    "create_mutated_structure",
-    "phosphorylate_residues",
-    "prepare_modified_nucleic",
-    "TOOLS",
-]
+__all__ = [*TOOLS, "TOOLS"]

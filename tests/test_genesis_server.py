@@ -10,9 +10,7 @@ node's artifacts/ and that the source metadata is recorded correctly.
 import json
 import importlib.util
 import os
-import sys
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -770,55 +768,3 @@ def test_modeller_from_alignment_real_optional(tmp_path):
     selected = result["selected_model"]
     assert selected["failure"] is None
     assert Path(selected["path"]).exists()
-
-
-def test_analyze_plip_interactions_with_mocked_plip(tmp_path, monkeypatch):
-    from mdclaw.genesis import chem as gs
-
-    pdb_file = tmp_path / "complex.pdb"
-    pdb_file.write_text("ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00           N\nEND\n")
-
-    prep_mod = ModuleType("plip.structure.preparation")
-
-    class FakePDBComplex:
-        def __init__(self):
-            self.ligands = [SimpleNamespace(hetid="LIG", chain="B", position=1)]
-            self.interaction_sets = {
-                "LIG:B:1": SimpleNamespace(
-                    hbonds_ldon=[
-                        SimpleNamespace(resnr=42, restype="SER", reschain="A", distance_ad=2.756)
-                    ],
-                    hbonds_pdon=[],
-                    hydrophobic_contacts=[
-                        SimpleNamespace(resnr=55, restype="LEU", reschain="A", distance=3.987)
-                    ],
-                    pistacking=[],
-                    pication_laro=[],
-                    pication_paro=[],
-                    halogen_bonds=[],
-                    saltbridge_lneg=[],
-                    saltbridge_pneg=[],
-                    metal_complexes=[],
-                )
-            }
-
-        def load_pdb(self, _path):
-            return None
-
-        def analyze(self):
-            return None
-
-    prep_mod.PDBComplex = FakePDBComplex
-    monkeypatch.setitem(sys.modules, "plip", ModuleType("plip"))
-    monkeypatch.setitem(sys.modules, "plip.structure", ModuleType("plip.structure"))
-    monkeypatch.setitem(sys.modules, "plip.structure.preparation", prep_mod)
-
-    result = gs.analyze_plip_interactions(str(pdb_file))
-
-    assert result["success"] is True
-    assert len(result["ligands"]) == 1
-    ligand = result["ligands"][0]
-    assert ligand["ligand_name"] == "LIG:B:1"
-    assert ligand["interactions"]["hydrogen_bonds"][0]["protein_residue"] == "42SER"
-    assert ligand["interactions"]["hydrogen_bonds"][0]["distance"] == 2.76
-    assert ligand["interactions"]["hydrophobic"][0]["distance"] == 3.99

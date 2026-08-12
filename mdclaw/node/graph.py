@@ -1,13 +1,4 @@
-"""Node-based job graph management (schema v3).
-
-Each pipeline step (prep, solv, topo, min, eq, prod) is a *node* with its own
-directory, ``node.json``, lock file, and ``artifacts/`` folder.  Parent-child
-relationships form a DAG.  ``progress.json`` is a thin index of nodes.
-
-Design principle:
-    skill = what to run (orchestration, no state mutation)
-    tool  = run + record (execution + state via this module)
-"""
+"""DAG traversal and read-only job inspection (inspect_job, ancestors)."""
 
 import json
 import logging
@@ -22,30 +13,6 @@ from mdclaw.node.constants import DAG_GUIDANCE, NODE_STATUSES  # noqa: E402
 from mdclaw.node.io import _resolve_structured_artifact_paths  # noqa: E402
 from mdclaw.node.progress import _load_progress_v3  # noqa: E402
 
-
-def find_nodes(
-    job_dir: str,
-    *,
-    node_type: Optional[str] = None,
-    status: Optional[str] = None,
-) -> dict:
-    """Return nodes from the progress.json index, optionally filtered.
-
-    Returns a dict ``{node_id: {type, status, parents}}``.
-    """
-    pj = Path(job_dir) / "progress.json"
-    progress = _load_progress_v3(pj)
-    if progress is None:
-        return {}
-    nodes = progress.get("nodes", {})
-    result = {}
-    for nid, info in nodes.items():
-        if node_type and info.get("type") != node_type:
-            continue
-        if status and info.get("status") != status:
-            continue
-        result[nid] = info
-    return result
 
 
 def inspect_job(job_dir: str) -> dict:
@@ -91,11 +58,6 @@ def inspect_job(job_dir: str) -> dict:
         for nid, info in nodes.items()
         if info.get("open_needs_count")
     }
-    claims = {
-        nid: info["claim"]
-        for nid, info in nodes.items()
-        if isinstance(info.get("claim"), dict)
-    }
 
     return {
         "success": True,
@@ -113,7 +75,6 @@ def inspect_job(job_dir: str) -> dict:
         "running_nodes": nodes_by_status.get("running", []),
         "pending_nodes": nodes_by_status.get("pending", []),
         "open_needs": open_needs,
-        "claims": claims,
         "progress_warnings": progress.get("warnings", []),
         "nodes": nodes,
     }
@@ -249,16 +210,6 @@ def get_ancestors(job_dir: str, node_id: str) -> list[str]:
     nodes = progress.get("nodes", {})
     return [node_id, *_iter_ancestor_ids(nodes, node_id)]
 
-
-def get_children(job_dir: str, node_id: str) -> list[str]:
-    """Derive children of *node_id* from the progress.json index."""
-    pj = Path(job_dir) / "progress.json"
-    progress = _load_progress_v3(pj)
-    if progress is None:
-        return []
-    nodes = progress.get("nodes", {})
-    return [nid for nid, info in nodes.items()
-            if node_id in info.get("parents", [])]
 
 
 def resolve_artifact(job_dir: str, node_id: str, rel_path: str) -> Path:

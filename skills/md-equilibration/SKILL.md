@@ -7,10 +7,9 @@ description: "Standalone minimization plus equilibration of a prepared MD system
 
 You are a computational biophysics expert running MD equilibration using MDClaw CLI tools.
 
-Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
-`skills/common/run-loop.md`, `skills/common/solvent-regimes.md`, and
-`skills/common/guardrail-codes.md` before acting. `run-loop.md` is the single
-canonical loop and node-CLI-invariant reference.
+Follow `skills/common/preamble.md`, `skills/common/run-loop.md` (the canonical
+node loop), `skills/common/solvent-regimes.md`, and
+`skills/common/tool-output.md` for error handling.
 
 ## Step 0: Parse and Confirm
 
@@ -46,10 +45,10 @@ multiple `eq` nodes when you need replicates or different conditions. If
 persist it with `mdclaw update_workflow_state --params '{"execution_mode":"autonomous"}'`.
 
 1. Create the `min` and `eq` nodes (see Node Setup below).
-2. Read and follow the regime page, which owns the platform preflight and the
-   `run_minimization` / `run_equilibration` commands:
-   - Explicit water -> `skills/md-equilibration/explicit-water.md`
-   - Implicit solvent -> `skills/md-equilibration/implicit-water.md`
+2. Read and follow `skills/md-equilibration/run-eq.md`, which owns the platform
+   preflight and the `run_minimization` / `run_equilibration` commands for both
+   explicit water and implicit solvent (implicit delta: NVT only,
+   `--pressure-bar 0`).
 3. Hand off (see Handoff below).
 
 For finer control than one `min` + `eq` pair (e.g. NPT compress -> NVT
@@ -76,11 +75,6 @@ mdclaw create_node --job-dir <job_dir> --node-type eq \
 For replicates or alternate conditions, branch a new `eq` node from the same
 `min` node with `--parent-node-ids <min_node_id>` and a distinct `--label` (and
 `random_seed` in `--conditions` when needed).
-
-## Error Handling
-
-Follow `skills/common/tool-output.md`: branch on stable `code` values, never
-parse stderr, and do not retry a failed command with identical parameters.
 
 ## Handoff
 

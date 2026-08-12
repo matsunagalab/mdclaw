@@ -47,14 +47,7 @@ a budget, or when a scientific-answer request omitted production length; see
 
 Decide the regime here, not at topology generation; it affects prep-time
 component disposition such as whether explicit ion components are retained.
-
-| `solvent_regime` | Downstream prepare behavior |
-|---|---|
-| `explicit` (default) | `prepare_complex --solvent-type explicit`, then `solvate_structure` |
-| `implicit` | `prepare_complex --solvent-type implicit`, skip explicit solvation, topology needs `--implicit-solvent <MODEL>` |
-| `vacuum` | `prepare_complex --solvent-type vacuum`, skip solvation and GB |
-| `membrane` | `prepare_complex --solvent-type explicit`, then `embed_in_membrane` |
-
-Default to `explicit` unless the user explicitly asks for implicit solvent,
-vacuum/no-solvent, or a membrane workflow. Record the reason briefly in `notes`
-when it is not the default.
+The regime enum and its downstream tool mapping are the "Regime -> Tool Calls"
+table in `skills/common/solvent-regimes.md`. Default to `explicit` unless the
+user explicitly asks for implicit solvent, vacuum/no-solvent, or a membrane
+workflow; record the reason briefly in `notes` when it is not the default.

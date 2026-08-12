@@ -15,7 +15,6 @@ import pytest
 from mdclaw._node import (
     add_node_need,
     begin_node,
-    claim_node,
     create_node,
     explain_node,
     inspect_job,
@@ -98,12 +97,10 @@ class TestDAGReentry:
         assert summary["leaf_nodes"] == [created["node_id"]]
         assert summary["nodes"][created["node_id"]]["parents"] == [ids["topo"]]
 
-    def test_inspect_job_surfaces_claims_open_needs_and_running(self, job_dir):
+    def test_inspect_job_surfaces_open_needs_and_running(self, job_dir):
         ids = _explicit_chain_through(job_dir, "topo")
         created = create_node(str(job_dir), "min", parent_node_ids=[ids["topo"]])
         node_id = created["node_id"]
-        claimed = claim_node(str(job_dir), node_id, agent_id="agent-A")
-        assert claimed["success"], claimed
         need = add_node_need(
             str(job_dir),
             node_id,
@@ -118,7 +115,6 @@ class TestDAGReentry:
 
         summary = inspect_job(str(job_dir))
         assert summary["running_nodes"] == [node_id]
-        assert summary["claims"][node_id]["claimed_by"] == "agent-A"
         assert summary["open_needs"][node_id]["open_needs_count"] == 1
 
     def test_explain_node_reports_ready_and_resolved_inputs(self, job_dir):
@@ -254,7 +250,7 @@ class TestCliPreflightJson:
         ("tool_name", "expected_node_type"),
         [
             ("concat_trajectory", "analyze"),
-            ("download_structure", "source"),
+            ("fetch_structure", "source"),
         ],
     )
     def test_wrong_node_type_is_rejected_without_mutation(
@@ -293,6 +289,18 @@ class TestCliPreflightJson:
         node = read_node(str(job_dir), prep_id)
         assert node["status"] == "pending"
         assert not (job_dir / "nodes" / prep_id / "artifacts" / "failure").exists()
+
+    def test_json_input_missing_required_args_is_json(self, capsys):
+        from mdclaw._cli import main
+
+        # Regression: the --json-input path used to skip required-argument
+        # validation entirely, failing deep inside the tool instead.
+        with pytest.raises(SystemExit) as exc:
+            main(["inspect_job", "--json-input", "{}"])
+        assert exc.value.code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["success"] is False
+        assert payload["code"] == "missing_required_arguments"
 
     def test_missing_required_args_is_json(self, capsys):
         from mdclaw._cli import main

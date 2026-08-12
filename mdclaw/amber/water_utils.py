@@ -37,8 +37,10 @@ from pathlib import Path  # noqa: E402
 from typing import List, Optional, Dict, Any  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
-    CANONICAL_WATER_MODELS,
     ensure_directory, BaseToolWrapper, create_guardrail_result, normalize_choice,
+)
+from mdclaw.chemistry_constants import (  # noqa: E402
+    CANONICAL_WATER_MODELS,
 )
 
 # Initialize working directory (use absolute path for conda run compatibility)

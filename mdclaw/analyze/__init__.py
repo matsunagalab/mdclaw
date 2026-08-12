@@ -24,26 +24,18 @@ from mdclaw.analyze.registry import (
 )
 
 TOOLS = {
-    "concat_trajectory": concat_trajectory,
-    "fit_trajectory": fit_trajectory,
-    "analyze_rmsd": analyze_rmsd,
-    "analyze_distance": analyze_distance,
-    "analyze_q_value": analyze_q_value,
-    "analyze_rmsf": analyze_rmsf,
-    "analyze_contact_frequency": analyze_contact_frequency,
-    "detect_equilibration": detect_equilibration,
-    "register_analysis_result": register_analysis_result,
+    fn.__name__: fn
+    for fn in (
+        concat_trajectory,
+        fit_trajectory,
+        analyze_rmsd,
+        analyze_distance,
+        analyze_q_value,
+        analyze_rmsf,
+        analyze_contact_frequency,
+        detect_equilibration,
+        register_analysis_result,
+    )
 }
 
-__all__ = [
-    "concat_trajectory",
-    "fit_trajectory",
-    "analyze_rmsd",
-    "analyze_distance",
-    "analyze_q_value",
-    "analyze_rmsf",
-    "analyze_contact_frequency",
-    "detect_equilibration",
-    "register_analysis_result",
-    "TOOLS",
-]
+__all__ = [*TOOLS, "TOOLS"]

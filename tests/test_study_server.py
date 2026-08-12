@@ -13,11 +13,7 @@ from mdclaw.study import (
     record_study_plan,
     summarize_study,
 )
-from mdclaw.study.log import (
-    record_study_decision,
-    record_study_question,
-    record_token_usage,
-)
+from mdclaw.study.log import record_study_log
 
 
 def test_init_study_creates_minimal_layout(tmp_path):
@@ -242,21 +238,24 @@ def test_append_decision_question_and_token_logs(tmp_path):
     study_dir = tmp_path / "study"
     init_study(str(study_dir))
 
-    decision = record_study_decision(
+    decision = record_study_log(
         str(study_dir),
+        "decision",
         phase="plan",
         decision="run_short_screen",
         reason="Time budget favors triage",
         inputs=["study.json"],
         outputs=["plan.json"],
     )
-    question = record_study_question(
+    question = record_study_log(
         str(study_dir),
+        "question",
         question="Does V148A destabilize the active conformation?",
         rationale="Initial user objective",
     )
-    token = record_token_usage(
+    token = record_study_log(
         str(study_dir),
+        "token_usage",
         phase="critic",
         purpose="Review branch metrics",
         tokens=1234,

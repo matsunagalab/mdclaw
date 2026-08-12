@@ -66,7 +66,6 @@ def test_source_bundle_normalizes_nmr_models_to_candidate_files(tmp_path):
         "candidate_002",
     ]
     assert bundle["storage_contract"] == "candidate_files"
-    assert bundle["structures"][1]["requires_materialization"] is False
     assert bundle["structures"][1]["origin"]["model_rank"] == 2
     candidate_file = source_node_dir / bundle["structures"][1]["candidate_file"]
     assert candidate_file.is_file()
@@ -79,7 +78,6 @@ def test_source_bundle_normalizes_nmr_models_to_candidate_files(tmp_path):
         prep_artifacts_dir=prep_artifacts,
     )
 
-    assert selected["materialized"] is False
     assert selected["structure_file"] == str(candidate_file)
     assert "  11.000" in candidate_file.read_text()
     assert (prep_artifacts / "source_selection.json").is_file()

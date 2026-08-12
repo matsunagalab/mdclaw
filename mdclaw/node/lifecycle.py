@@ -1,18 +1,9 @@
-"""Node-based job graph management (schema v3).
-
-Each pipeline step (prep, solv, topo, min, eq, prod) is a *node* with its own
-directory, ``node.json``, lock file, and ``artifacts/`` folder.  Parent-child
-relationships form a DAG.  ``progress.json`` is a thin index of nodes.
-
-Design principle:
-    skill = what to run (orchestration, no state mutation)
-    tool  = run + record (execution + state via this module)
-"""
+"""Node lifecycle: create, status writes, complete/fail, workflow state."""
 
 import json
 import logging
 import shlex
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -21,15 +12,19 @@ from mdclaw._lock import file_lock
 
 logger = logging.getLogger(__name__)
 
-from mdclaw.node.constants import DAG_GUIDANCE, IMMUTABLE_NODE_UPDATE_KEYS, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPES, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, TERMINAL_NODE_STATUSES, _ALLOWED_PARENT_TYPES, _AUTO_PARENT_PREFERENCE  # noqa: E402
-from mdclaw.node.io import _atomic_write_json, _parse_iso_datetime, _sha256_path, _values_match, normalize_artifact_paths  # noqa: E402
-from mdclaw.node.progress import _load_progress_v3, _next_node_id, _node_progress_summary, _sync_progress_node_entry  # noqa: E402
+from mdclaw.node.constants import DAG_GUIDANCE, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPES, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, TERMINAL_NODE_STATUSES, _ALLOWED_PARENT_TYPES, _AUTO_PARENT_PREFERENCE  # noqa: E402
+from mdclaw.node.io import _atomic_write_json, _values_match, normalize_artifact_paths  # noqa: E402
+from mdclaw.node.progress import _load_progress_v3, _next_node_id, _node_progress_summary  # noqa: E402
 from mdclaw.node.validation import _node_is_terminal, _normalize_node_status, _terminal_node_sealed_response, _validate_analyze_conditions  # noqa: E402
 
 
-def _sealed_node_error(data: dict) -> ValueError:
+class NodeSealedError(ValueError):
+    """Raised when a write targets a terminal (sealed) node.json record."""
+
+
+def _sealed_node_error(data: dict) -> "NodeSealedError":
     status = _normalize_node_status(data.get("status"))
-    return ValueError(
+    return NodeSealedError(
         f"terminal node.json record is sealed (status={status!r}); "
         "write an event or create a new node instead"
     )
@@ -480,50 +475,6 @@ def create_node(
 # ── Node JSON helpers ──────────────────────────────────────────────────────
 
 
-def update_node(job_dir: str, node_id: str, updates: dict) -> None:
-    """Merge *updates* into ``node.json`` (under node.lock).
-
-    .. important::
-       ``updates`` must NOT include ``status``. Status is the one field
-       that lives in two files (``node.json`` and the ``progress.json``
-       index), so it has a single writer-path — :func:`update_node_status`
-       — that all callers (CLI, :func:`begin_node`, :func:`complete_node`,
-       :func:`fail_node`) route through. Mutating status through this
-       generic merge would bypass the index update and let the two stores
-       drift. A ``status`` key in *updates* raises ``ValueError``.
-    """
-    if "status" in updates:
-        raise ValueError(
-            "update_node() must not set 'status' — use update_node_status() "
-            "so the progress.json index stays in sync."
-        )
-    immutable_keys = sorted(set(updates) & IMMUTABLE_NODE_UPDATE_KEYS)
-    if immutable_keys:
-        raise ValueError(
-            "update_node() must not mutate immutable node identity fields: "
-            f"{immutable_keys}. Create a new node for changed scientific "
-            "identity."
-        )
-
-    node_dir = Path(job_dir) / "nodes" / node_id
-    node_json = node_dir / "node.json"
-
-    with file_lock(node_dir / "node.lock"):
-        data = json.loads(node_json.read_text())
-        if _node_is_terminal(data):
-            raise _sealed_node_error(data)
-        for key, value in updates.items():
-            if isinstance(value, dict) and isinstance(data.get(key), dict):
-                data[key].update(value)
-            elif isinstance(value, list) and key == "warnings":
-                existing = data.get("warnings", [])
-                existing.extend(value)
-                data["warnings"] = existing
-            else:
-                data[key] = value
-        _atomic_write_json(node_json, data)
-
-
 def _apply_status(
     job_dir: str,
     node_id: str,
@@ -531,7 +482,7 @@ def _apply_status(
     *,
     payload: Optional[dict] = None,
     clear_metadata_keys: Optional[list[str]] = None,
-    artifact_paths_for_hash: Optional[dict] = None,
+    artifact_paths_to_verify: Optional[dict] = None,
 ) -> None:
     """The sole writer-path for node status.
 
@@ -566,9 +517,8 @@ def _apply_status(
         data = json.loads(node_json.read_text())
         if _node_is_terminal(data):
             raise _sealed_node_error(data)
-        if artifact_paths_for_hash:
-            artifact_hashes = {}
-            for key, rel_path in artifact_paths_for_hash.items():
+        if artifact_paths_to_verify:
+            for key, rel_path in artifact_paths_to_verify.items():
                 if not isinstance(rel_path, str) or not rel_path:
                     continue
                 full_path = node_dir / rel_path
@@ -577,16 +527,6 @@ def _apply_status(
                         f"complete_node: artifact '{key}' file missing: {rel_path} "
                         f"(expected at {full_path})"
                     )
-                digest = _sha256_path(full_path)
-                if not digest:
-                    raise ValueError(
-                        f"complete_node: artifact '{key}' could not be hashed: {rel_path}"
-                    )
-                artifact_hashes[key] = digest
-            if artifact_hashes:
-                metadata_payload = dict(merged.get("metadata") or {})
-                metadata_payload["artifact_sha256"] = artifact_hashes
-                merged["metadata"] = metadata_payload
         if clear_metadata_keys and isinstance(data.get("metadata"), dict):
             for k in clear_metadata_keys:
                 data["metadata"].pop(k, None)
@@ -679,28 +619,28 @@ def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
         }
     try:
         _apply_status(job_dir, node_id, canonical_status)
-    except ValueError as exc:
+    except NodeSealedError as exc:
+        # The node became terminal between the pre-check above and the
+        # locked write; report it the same way as the pre-check.
         message = str(exc)
-        if "terminal node.json record is sealed" in message:
-            return {
-                "success": False,
-                "error_type": "ValidationError",
+        return {
+            "success": False,
+            "error_type": "ValidationError",
+            "code": "node_terminal",
+            "message": message,
+            "errors": [message],
+            "warnings": [],
+            "hints": [
+                "Create a new node for changed scientific state.",
+                "Write operational observations as events instead of mutating terminal node.json records.",
+            ],
+            "context": {
+                "node_id": node_id,
+                "requested_status": canonical_status,
                 "code": "node_terminal",
-                "message": message,
-                "errors": [message],
-                "warnings": [],
-                "hints": [
-                    "Create a new node for changed scientific state.",
-                    "Write operational observations as events instead of mutating terminal node.json records.",
-                ],
-                "context": {
-                    "node_id": node_id,
-                    "requested_status": canonical_status,
-                    "code": "node_terminal",
-                },
-                "recoverable": True,
-            }
-        raise
+            },
+            "recoverable": True,
+        }
     return {"success": True, "node_id": node_id, "status": canonical_status}
 
 
@@ -754,153 +694,6 @@ def update_workflow_state(
     return result
 
 
-def claim_node(
-    job_dir: str,
-    node_id: str,
-    agent_id: str,
-    lease_seconds: int = 3600,
-) -> dict:
-    """Claim a node for one agent with an expiring lease."""
-    if not agent_id:
-        return {
-            "success": False,
-            "code": "agent_id_required",
-            "error": "agent_id is required to claim a node",
-        }
-    if lease_seconds <= 0:
-        return {
-            "success": False,
-            "code": "invalid_lease_seconds",
-            "error": "lease_seconds must be positive",
-        }
-
-    jd = Path(job_dir)
-    node_dir = jd / "nodes" / node_id
-    node_json = node_dir / "node.json"
-    if not node_json.exists():
-        return {
-            "success": False,
-            "code": "node_missing",
-            "error": f"Node '{node_id}' does not exist under {job_dir}",
-        }
-
-    now = datetime.now(timezone.utc)
-    expires_at = (now + timedelta(seconds=int(lease_seconds))).isoformat()
-    with file_lock(node_dir / "node.lock"):
-        data = json.loads(node_json.read_text())
-        if _node_is_terminal(data):
-            return _terminal_node_sealed_response(node_id, data.get("status"))
-        metadata = data.setdefault("metadata", {})
-        claimed_by = metadata.get("claimed_by")
-        claim_expires_at = metadata.get("claim_expires_at")
-        expiry = _parse_iso_datetime(claim_expires_at)
-        if claimed_by and claim_expires_at and expiry is None:
-            return {
-                "success": False,
-                "code": "invalid_claim_expiry",
-                "node_id": node_id,
-                "claimed_by": claimed_by,
-                "claim_expires_at": claim_expires_at,
-                "error": (
-                    f"Node '{node_id}' has an invalid claim_expires_at "
-                    f"value: {claim_expires_at!r}"
-                ),
-            }
-        claim_active = expiry is not None and expiry > now
-        if claimed_by and claimed_by != agent_id and claim_active:
-            return {
-                "success": False,
-                "code": "node_already_claimed",
-                "node_id": node_id,
-                "claimed_by": claimed_by,
-                "claim_expires_at": claim_expires_at,
-                "error": (
-                    f"Node '{node_id}' is already claimed by '{claimed_by}' "
-                    f"until {claim_expires_at}"
-                ),
-            }
-        metadata["claimed_by"] = agent_id
-        metadata["claim_expires_at"] = expires_at
-        data["updated_at"] = now.isoformat()
-        _atomic_write_json(node_json, data)
-
-    _sync_progress_node_entry(job_dir, node_id, data)
-    write_event(
-        job_dir,
-        node_id,
-        "node_claimed",
-        success=True,
-        details={
-            "agent_id": agent_id,
-            "lease_seconds": int(lease_seconds),
-            "claim_expires_at": expires_at,
-        },
-    )
-    return {
-        "success": True,
-        "node_id": node_id,
-        "claimed_by": agent_id,
-        "claim_expires_at": expires_at,
-    }
-
-
-def release_node_claim(
-    job_dir: str,
-    node_id: str,
-    agent_id: Optional[str] = None,
-) -> dict:
-    """Release a node claim, optionally requiring the current claimant."""
-    jd = Path(job_dir)
-    node_dir = jd / "nodes" / node_id
-    node_json = node_dir / "node.json"
-    if not node_json.exists():
-        return {
-            "success": False,
-            "code": "node_missing",
-            "error": f"Node '{node_id}' does not exist under {job_dir}",
-        }
-
-    with file_lock(node_dir / "node.lock"):
-        data = json.loads(node_json.read_text())
-        if _node_is_terminal(data):
-            return _terminal_node_sealed_response(node_id, data.get("status"))
-        metadata = data.setdefault("metadata", {})
-        claimed_by = metadata.get("claimed_by")
-        if agent_id and claimed_by and claimed_by != agent_id:
-            return {
-                "success": False,
-                "code": "claim_owner_mismatch",
-                "node_id": node_id,
-                "claimed_by": claimed_by,
-                "error": (
-                    f"Node '{node_id}' is claimed by '{claimed_by}', "
-                    f"not '{agent_id}'"
-                ),
-            }
-        metadata.pop("claimed_by", None)
-        metadata.pop("claim_expires_at", None)
-        data["updated_at"] = datetime.now(timezone.utc).isoformat()
-        _atomic_write_json(node_json, data)
-
-    _sync_progress_node_entry(job_dir, node_id, data)
-    write_event(
-        job_dir,
-        node_id,
-        "node_claim_released",
-        success=True,
-        details={
-            "agent_id": agent_id,
-            "previous_claimed_by": claimed_by,
-        },
-    )
-    return {
-        "success": True,
-        "node_id": node_id,
-        "released": True,
-        "previous_claimed_by": claimed_by,
-    }
-
-
 def begin_node(job_dir: str, node_id: str) -> None:
     """Mark a mutable node as ``running`` at the start of execution."""
     _apply_status(job_dir, node_id, "running")
@@ -944,7 +737,7 @@ def complete_node(
         "completed",
         payload=payload,
         clear_metadata_keys=list(OPERATIONAL_METADATA_KEYS),
-        artifact_paths_for_hash=artifacts,
+        artifact_paths_to_verify=artifacts,
     )
     write_event(job_dir, node_id, "tool_completed", success=True)
 

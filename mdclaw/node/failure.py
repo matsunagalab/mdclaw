@@ -357,11 +357,6 @@ def trace_failure(job_dir: str, node_id: str) -> dict[str, Any]:
     }
 
 
-def explain_failure(job_dir: str, node_id: str) -> dict[str, Any]:
-    """Alias for :func:`trace_failure` for users who ask to explain a failure."""
-    return trace_failure(job_dir, node_id)
-
-
 def cli_argv(argv: Optional[list[str]] = None) -> list[str]:
     """Return a compact argv list suitable for failure artifacts."""
     if argv is not None:

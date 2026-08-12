@@ -20,12 +20,9 @@ from typing import Any
 
 SOURCE_BUNDLE_SCHEMA_VERSION = 1
 
-_SELECTION_ID_KEYS = (
-    "structure_id",
-    "source_structure_id",
-    "candidate_id",
-    "source_candidate_id",
-)
+# ``source_*`` spellings are normalized to these keys by
+# ``source_selection_from_values`` before selection runs.
+_SELECTION_ID_KEYS = ("structure_id", "candidate_id")
 _MODEL_ANNOTATION_KEYS = ("models", "model_metadata", "per_model")
 _ASSEMBLY_MODES = {"none", "preferred", "all", "ids"}
 _ASSEMBLY_NAMING_POLICIES = {
@@ -409,8 +406,6 @@ def _append_candidate_record(
         "format": _infer_format(candidate_file),
         "rank": len(structures) + 1,
         "is_primary": not structures,
-        "storage_mode": "candidate_file",
-        "requires_materialization": False,
         "origin": origin,
     }
     for key in ("label", "description", "metrics", "scores", "tags"):
@@ -783,5 +778,4 @@ def materialize_source_selection(
         "source_selection_file": str(selection_file),
         "selected_structure": record,
         "source_selection": normalized_selection,
-        "materialized": False,
     }

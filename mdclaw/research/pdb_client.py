@@ -1,20 +1,8 @@
-"""
-Research Server - External database retrieval and structure inspection tools.
-
-This server integrates with external MCP servers (PDB-MCP-Server, AlphaFold-MCP-Server,
-UniProt-MCP-Server) from Augmented-Nature by implementing the same REST API calls.
-
-Provides tools for:
-- PDB structure retrieval and search (mirrors PDB-MCP-Server)
-- AlphaFold structure retrieval (mirrors AlphaFold-MCP-Server)
-- UniProt protein search and info (mirrors UniProt-MCP-Server)
-- Structure file inspection (mdclaw-specific gemmi-based analysis)
-"""
+"""RCSB PDB REST and search-API client."""
 
 import asyncio
 import json
 import os
-import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -34,7 +22,6 @@ WORKING_DIR = Path("outputs")
 ensure_directory(WORKING_DIR)
 
 from mdclaw.research.cache import _atomic_write_bytes, _atomic_write_text, _cache_lock, _get_cache_dir, _sha256_bytes, _validate_structure_bytes, _verify_cache  # noqa: E402
-from mdclaw.research.scoring import _calculate_md_suitability_score  # noqa: E402
 from mdclaw.research.source_core import _complete_source_node, _resolve_source_artifacts_dir, _source_bundle_inputs_with_assemblies, _validate_source_node  # noqa: E402
 
 
@@ -366,81 +353,6 @@ async def _fetch_pdb_structure(
     return result
 
 
-def _generate_chain_recommendation(info: dict) -> dict | None:
-    """Generate chain recommendation based on biological assembly.
-
-    Args:
-        info: Structure info dict with polymer_entities and preferred_biological_unit
-
-    Returns:
-        Chain recommendation dict or None if not applicable
-    """
-    # Get all protein chains from polymer entities
-    all_protein_chains = []
-    for entity in info.get("polymer_entities", []):
-        entity_type = entity.get("type", "")
-        if "polypeptide" in entity_type.lower():
-            chain_ids = entity.get("chain_ids", [])
-            all_protein_chains.extend(chain_ids)
-
-    # Remove duplicates and sort
-    all_protein_chains = sorted(set(all_protein_chains))
-
-    if not all_protein_chains:
-        return None
-
-    # Single chain - no recommendation needed
-    if len(all_protein_chains) == 1:
-        return {
-            "recommended": all_protein_chains,
-            "reason": "Single protein chain in structure",
-            "all_protein_chains": all_protein_chains,
-            "is_crystallographic_copy": False,
-        }
-
-    # Multiple chains - check biological assembly
-    bio_unit = info.get("preferred_biological_unit", {})
-    oligomeric_details = (bio_unit.get("oligomeric_details") or "").lower()
-    bio_chains = bio_unit.get("chains", [])
-
-    # Filter bio_chains to only include protein chains
-    bio_protein_chains = [c for c in bio_chains if c in all_protein_chains]
-
-    # Monomeric biological assembly with multiple chains = crystallographic copies
-    if oligomeric_details == "monomeric" or oligomeric_details == "monomer":
-        first_chain = all_protein_chains[0]
-        other_chains = [c for c in all_protein_chains if c != first_chain]
-        return {
-            "recommended": [first_chain],
-            "reason": f"Biological assembly is monomeric. Chain(s) {', '.join(other_chains)} are crystallographic copies.",
-            "all_protein_chains": all_protein_chains,
-            "is_crystallographic_copy": True,
-            "oligomeric_state": "monomeric",
-        }
-
-    # Dimeric, trimeric, etc. - recommend all chains in biological assembly
-    if bio_protein_chains and len(bio_protein_chains) > 1:
-        # Check if it's a known oligomeric state
-        oligomeric_state = oligomeric_details if oligomeric_details else "oligomeric"
-        return {
-            "recommended": bio_protein_chains,
-            "reason": f"Biological assembly is {oligomeric_state}. All chains form the functional unit.",
-            "all_protein_chains": all_protein_chains,
-            "is_crystallographic_copy": False,
-            "oligomeric_state": oligomeric_state,
-        }
-
-    # Fallback: no clear biological assembly info
-    # Recommend first chain with warning
-    first_chain = all_protein_chains[0]
-    return {
-        "recommended": [first_chain],
-        "reason": "No clear biological assembly information. Recommending single chain. Check UniProt for oligomeric state if needed.",
-        "all_protein_chains": all_protein_chains,
-        "is_crystallographic_copy": None,  # Unknown
-        "oligomeric_state": "unknown",
-    }
-
 
 async def get_structure_info(pdb_id: str) -> dict:
     """Get detailed information for a specific PDB structure.
@@ -650,11 +562,6 @@ async def get_structure_info(pdb_id: str) -> dict:
                         f"(chains: {preferred.get('chains', [])})"
                     )
 
-            # Generate chain recommendation based on biological assembly
-            chain_recommendation = _generate_chain_recommendation(info)
-            if chain_recommendation:
-                info["chain_recommendation"] = chain_recommendation
-
             result["info"] = info
             result["success"] = True
             logger.info(f"Retrieved info for {pdb_id}: {info.get('title', 'N/A')[:50]}...")
@@ -850,31 +757,18 @@ async def search_structures(
     recommend structures. Returns brief information about each match to help
     the user choose.
 
-    When rank_for_md=True, results are sorted by MD suitability score (0-120 points):
-
-    Base score (0-100):
-    - Resolution (35%): ≤1.5Å=100, ≤2.0Å=90, ≤2.5Å=75, ≤3.0Å=50, >3.0Å=25
-    - Experimental method (25%): X-ray=100, Cryo-EM=85, NMR=75
-    - Validation metrics (20%): Clashscore, Ramachandran outliers, Rfree
-    - Structure completeness (15%): ≥99%=100, ≥95%=90, ≥90%=75
-    - Recency (5%): ≤1yr=100, ≤3yr=90, ≤5yr=75
-
-    Bonus (+0-20):
-    - Organism match: +20 if structure organism matches target_organism
-
-    Score interpretation:
-    - 100-120: Excellent for MD
-    - 80-99: Good for MD
-    - 60-79: Usable with caution
-    - <60: Not recommended
+    When rank_for_md=True, results are ordered for MD use: X-ray first, then
+    cryo-EM, then other methods, best resolution first within each method.
+    Finer judgement (organism, variants, validation metrics) is left to the
+    caller, which sees the raw per-entry fields.
 
     Args:
         query: Search term (protein name, keyword, or PDB ID)
         limit: Maximum number of results (default: 10, max: 100)
         include_details: If True, fetch metadata (title, resolution, etc.) for each hit
         rank_for_md: If True, re-rank results by MD suitability score
-        target_organism: Target organism for bonus scoring (e.g., "Homo sapiens").
-            Used only for MD score calculation, NOT for API filtering.
+        target_organism: Deprecated; retained for signature compatibility.
+            Use ``organism`` for API-level filtering.
         experimental_method: Filter by experimental method at API level. Options:
             - "X-RAY" or "X-RAY DIFFRACTION" - X-ray crystallography only
             - "CRYO-EM" or "ELECTRON MICROSCOPY" - Cryo-EM structures only
@@ -902,10 +796,6 @@ async def search_structures(
             - organism: Source organism
             - ligands: List of ligand codes
             - deposition_date: When structure was deposited
-            - is_likely_variant: Whether title suggests mutant/variant
-            - variant_indicators: Detected variant keywords/mutations
-            - md_suitability_score: (when rank_for_md=True) 0-100 score
-            - md_score_breakdown: (when rank_for_md=True) Component scores
 
     Examples:
         # Basic search
@@ -1023,17 +913,19 @@ async def search_structures(
 
                 # Apply MD suitability scoring and re-rank
                 if rank_for_md:
-                    for entry in results:
-                        scores = _calculate_md_suitability_score(entry, target_organism)
-                        entry["md_suitability_score"] = scores["total"]
-                        entry["md_score_breakdown"] = scores["breakdown"]
-
-                    # Sort by MD suitability score (descending)
+                    # Deterministic MD-oriented ordering: prefer X-ray, then
+                    # cryo-EM, then NMR; within a method, best (lowest)
+                    # resolution first. Judgement beyond that (organism match,
+                    # variants, validation metrics) is left to the caller,
+                    # which sees the raw fields.
+                    method_rank = {"X-RAY DIFFRACTION": 0, "ELECTRON MICROSCOPY": 1}
                     results.sort(
-                        key=lambda x: x.get("md_suitability_score", 0),
-                        reverse=True,
+                        key=lambda x: (
+                            method_rank.get(str(x.get("method", "")).upper(), 2),
+                            x.get("resolution_float") or float("inf"),
+                        )
                     )
-                    logger.info(f"Re-ranked {len(results)} results by MD suitability")
+                    logger.info(f"Re-ranked {len(results)} results for MD (method, resolution)")
 
                 result["results"] = results
             else:
@@ -1050,56 +942,6 @@ async def search_structures(
 
     return result
 
-
-def _detect_variant_from_title(title: str) -> dict:
-    """Detect if structure title suggests a variant/mutant.
-
-    Analyzes the structure title for keywords and patterns that indicate
-    the structure is a mutant, variant, or engineered protein rather than
-    wild-type.
-
-    Args:
-        title: Structure title from PDB entry
-
-    Returns:
-        Dict with:
-            - is_likely_variant: True if title suggests a variant
-            - variant_indicators: List of detected keywords/mutations
-            - is_wild_type: True if title explicitly mentions wild-type
-    """
-    title_lower = title.lower()
-    indicators = []
-
-    # Variant keywords (mutations, engineering, modifications)
-    variant_keywords = [
-        "mutant", "variant", "mutation", "engineered",
-        "chimera", "chimeric", "modified", "stabilized",
-        "truncated", "fusion", "hybrid", "deletion",
-        "construct", "conjugated", "labeled", "tagged",
-    ]
-    for kw in variant_keywords:
-        if kw in title_lower:
-            indicators.append(kw)
-
-    # Truncation indicator: "short" as adjective (e.g., "short form", "short E. coli")
-    # but avoid false positives like "shortwave"
-    if " short " in title_lower or title_lower.startswith("short "):
-        indicators.append("short")
-
-    # Residue mutation pattern (e.g., K127A, T315I, R53H)
-    # Single letter + 1-4 digits + single letter
-    mutations = re.findall(r'\b[A-Z]\d{1,4}[A-Z]\b', title)
-    indicators.extend(mutations)
-
-    # Wild-type indicators (negative evidence)
-    wt_indicators = ["wild-type", "wild type", " wt ", "wt-", "native"]
-    is_explicit_wt = any(kw in title_lower for kw in wt_indicators)
-
-    return {
-        "is_likely_variant": bool(indicators) and not is_explicit_wt,
-        "variant_indicators": indicators,
-        "is_wild_type": is_explicit_wt,
-    }
 
 
 async def _fetch_structure_summaries(
@@ -1240,9 +1082,6 @@ async def _fetch_structure_summaries(
                 modeled_count = entry_info.get("deposited_modeled_polymer_monomer_count")
                 unmodeled_count = entry_info.get("deposited_unmodeled_polymer_monomer_count")
 
-                # Detect variant/mutant from title
-                variant_info = _detect_variant_from_title(title)
-
                 result_entry = {
                     "pdb_id": pdb_id,
                     "title": title[:100] + "..." if len(title) > 100 else title,
@@ -1252,10 +1091,6 @@ async def _fetch_structure_summaries(
                     "organism": organism,
                     "ligands": ligands[:5],  # Limit to 5 ligands
                     "deposition_date": deposit_date,
-                    # Variant detection
-                    "is_likely_variant": variant_info["is_likely_variant"],
-                    "variant_indicators": variant_info["variant_indicators"],
-                    "is_wild_type": variant_info["is_wild_type"],
                 }
 
                 # Add validation fields if available

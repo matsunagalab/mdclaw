@@ -73,50 +73,8 @@ def test_record_plan_without_budget_still_passes(tmp_path):
     assert "budget" not in fetched["plan"]["plan"]
 
 
-def test_record_plan_rejects_bad_compute_target(tmp_path):
-    sd = tmp_path / "study"
-    init_study(study_dir=str(sd), title="t", objective="o")
-    plan = _base_plan()
-    plan["budget"] = {"compute_target": "supercomputer"}  # invalid
-    out = record_study_plan(study_dir=str(sd), plan=plan)
-    assert out["success"] is False
-    assert any("compute_target" in e for e in out["errors"])
 
 
-def test_record_plan_rejects_negative_gpu_count(tmp_path):
-    sd = tmp_path / "study"
-    init_study(study_dir=str(sd), title="t", objective="o")
-    plan = _base_plan()
-    plan["budget"] = {"compute_target": "hpc", "gpu_count": -1}
-    out = record_study_plan(study_dir=str(sd), plan=plan)
-    assert out["success"] is False
-    assert any("gpu_count" in e for e in out["errors"])
-
-
-def test_record_plan_rejects_non_numeric_throughput(tmp_path):
-    sd = tmp_path / "study"
-    init_study(study_dir=str(sd), title="t", objective="o")
-    plan = _base_plan()
-    plan["budget"] = {
-        "compute_target": "hpc",
-        "throughput": {"ns_per_day_per_gpu": "fast", "source": "x", "confidence": "low"},
-    }
-    out = record_study_plan(study_dir=str(sd), plan=plan)
-    assert out["success"] is False
-    assert any("ns_per_day_per_gpu" in e for e in out["errors"])
-
-
-def test_record_plan_rejects_bad_confidence(tmp_path):
-    sd = tmp_path / "study"
-    init_study(study_dir=str(sd), title="t", objective="o")
-    plan = _base_plan()
-    plan["budget"] = {
-        "compute_target": "hpc",
-        "throughput": {"ns_per_day_per_gpu": 100, "source": "x", "confidence": "certain"},
-    }
-    out = record_study_plan(study_dir=str(sd), plan=plan)
-    assert out["success"] is False
-    assert any("confidence" in e for e in out["errors"])
 
 
 def test_plan_schema_version_defaults_to_2(tmp_path):
@@ -152,3 +110,15 @@ def test_negative_headroom_allowed(tmp_path):
         out["plan"]["plan"]["budget"]["derived"]["headroom_hours"]
         == pytest.approx(-32.0)
     )
+
+
+def test_record_plan_rejects_non_object_budget(tmp_path):
+    """The budget block is advisory agent metadata; the only enforced
+    contract is that, when present, it is an object."""
+    sd = tmp_path / "study"
+    init_study(study_dir=str(sd), title="t", objective="o")
+    plan = _base_plan()
+    plan["budget"] = "cheap"
+    result = record_study_plan(study_dir=str(sd), plan=plan)
+    assert result["success"] is False
+    assert any("plan.budget must be an object" in e for e in result["errors"])

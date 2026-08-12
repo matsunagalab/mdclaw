@@ -5,7 +5,7 @@ otherwise:
 
 ```bash
 conda run -n mdclaw ruff check mdclaw/
-conda run -n mdclaw pytest tests/test_mcp_server.py tests/test_cli.py tests/test_guardrails.py tests/test_slurm_server.py -v
+conda run -n mdclaw pytest tests/test_registry.py tests/test_cli.py tests/test_guardrails.py tests/test_slurm_server.py -v
 ```
 
 ## Test Levels
@@ -21,7 +21,7 @@ conda run -n mdclaw pytest tests/test_mcp_server.py tests/test_cli.py tests/test
 
 ```bash
 # Level 1
-conda run -n mdclaw pytest tests/test_mcp_server.py tests/test_cli.py -v
+conda run -n mdclaw pytest tests/test_registry.py tests/test_cli.py -v
 
 # Level 1 plus existing non-slow tests
 conda run -n mdclaw pytest tests/ -v -m "not slow and not integration"

@@ -7,7 +7,7 @@ supported-ion policy, and the local-run/platform preflight all live in
 default needs clarification; this page covers the solvation and topology steps.
 
 Continue here only after a completed `prep` node exists. For special source,
-chemistry, or branch handling, use the conditional links in `setup.md`.
+chemistry, or branch handling, use the conditional links in `SKILL.md`.
 
 ---
 
@@ -44,20 +44,9 @@ contain source ligands. If either check fails, branch from the valid ancestor;
 do not rerun the same node with changed inputs. Prefer node artifacts and PDB
 contents over stale prose fields in logs or metadata.
 
-After solvation, run a local feasibility preflight before topology/min/eq/prod if
-the next stages will run on this machine:
-
-```bash
-mdclaw inspect_openmm_platforms \
-  --atom-count <result.statistics.total_atoms> \
-  --solvent-type explicit
-```
-
-If `local_feasibility` is `not_recommended` or `slow_on_cpu`, do not silently
-continue into local topology/equilibration/production. Tell the user whether a
-CUDA/OpenCL platform was detected and prefer `/hpc-run`, or explicitly switch
-to a shorter smoke-test protocol. Reducing the water box is a debugging choice
-that changes the system and should be stated as such.
+After solvation, if the next stages will run on this machine, run the
+local-execution / platform preflight from `skills/common/solvent-regimes.md`
+with `--atom-count <result.statistics.total_atoms>` before topology/min/eq/prod.
 
 For membrane systems, use the same `solv` node type but run `embed_in_membrane`
 instead of `solvate_structure`. The full procedure (backend, cold-build timing,
@@ -83,7 +72,6 @@ mdclaw --job-dir <job_dir> --node-id <topo_node_id> build_amber_system \
 `pdb_file` is auto-resolved from the `solv` parent's `solvated_pdb` artifact.
 For membrane systems created by `embed_in_membrane`, pass `--is-membrane`
 instead of `--no-is-membrane`.
-These are boolean optional CLI flags; do not pass `true` / `false` values.
 Do not pass a manual `--pdb-file`; if the wrong structure would be resolved,
 fix the upstream `prep`/`solv` branch and create a new `topo` node.
 

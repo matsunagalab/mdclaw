@@ -33,11 +33,16 @@ and collects the `TOOLS` dict assembled in its `__init__.py`.
 
 ## Parameter Mapping
 
+One introspection pass (`_tool_param_specs`) feeds the argparse builder, the
+`--list-json` schema, and kwargs assembly, so the three views cannot drift.
+
 - `snake_case` parameters become `--kebab-case` flags.
-- `bool` parameters use `--flag` / `--no-flag`.
-- `List[str]` uses `nargs='+'`.
-- `Dict` accepts JSON strings.
-- `--json-input '{...}'` passes all parameters as JSON.
+- `bool` parameters use `--flag` / `--no-flag` (explicit `true`/`false` values
+  are also accepted).
+- `list[str]` uses `nargs='+'`.
+- `dict`, `list[dict]`, and `list[list]` accept JSON strings.
+- `--json-input '{...}'` passes all parameters as JSON, with the same
+  required-argument validation as flags.
 
 Exit code `0` means success. Exit code `1` means the tool returned
 `success: False` or raised an exception.
@@ -73,9 +78,7 @@ via `@node_tool(node_type="...")` (`mdclaw/_tool_meta.py`), not a
 hand-maintained list. `_discover_tools()` exposes both `requires_node` and
 `node_type` through `--list-json`. Before execution, the CLI compares the
 declared type with the selected node's `node.json` and rejects a mismatch
-without changing that node. The module-level
-`_NODE_REQUIRED_TOOLS` / `_JOB_DIR_DATA_TOOLS` names in `mdclaw/_cli.py` are
-computed on access from the decorators for backward compatibility.
+without changing that node.
 
 `add_study_job` is intentionally excluded because its `job_dir` argument is data
 registered under a `study_dir`; relative paths such as `jobs/wt` must remain
@@ -133,11 +136,11 @@ timeout = get_timeout("solvation")
 
 ## Structured Guardrails
 
-Shared guardrail helpers live in `_common.py`:
+Shared guardrail helpers live in `_common.py` (`CANONICAL_WATER_MODELS` moved
+to `mdclaw/chemistry_constants.py`):
 
 ```python
 from mdclaw._common import (
-    CANONICAL_WATER_MODELS,
     normalize_choice,
     create_guardrail_result,
     split_guardrail_results,
@@ -153,7 +156,4 @@ Current enforcement points include:
 
 - `amber.build_amber_system`: forcefield/water compatibility.
 - `solvation.solvate_structure`: OpenMM fallback water-model limits.
-- `metal.detect_metal_ions`: metal-ion detection. Topology handles standard bare
-  ions through the active water-model XML and checks exact template coverage;
-  custom metal sites require OpenMM ForceField XML.
 - `slurm.submit_job`: partition, GPU, CPU, node, time, and memory policy.

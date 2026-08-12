@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from mdclaw._common import (
-    CANONICAL_WATER_MODELS,
     count_atoms_in_pdb,
     create_unique_subdir,
     create_validation_error,
@@ -17,6 +16,9 @@ from mdclaw._common import (
     split_guardrail_results,
 )
 from mdclaw._common import get_timeout
+from mdclaw.chemistry_constants import (  # noqa: E402
+    CANONICAL_WATER_MODELS,
+)
 from mdclaw._tool_meta import node_tool
 from mdclaw.solvation.box import (
     _write_box_dimensions_json,

@@ -30,15 +30,6 @@
     "requires_node": true,
     "server": "analyze"
   },
-  "analyze_plip_interactions": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "pdb_file"
-    ],
-    "requires_node": false,
-    "server": "genesis"
-  },
   "analyze_q_value": {
     "job_dir_is_data": false,
     "node_type": "analyze",
@@ -68,15 +59,6 @@
     ],
     "requires_node": true,
     "server": "analyze"
-  },
-  "analyze_structure_details": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "structure_file"
-    ],
-    "requires_node": false,
-    "server": "research"
   },
   "boltz2_protein_from_seq": {
     "job_dir_is_data": false,
@@ -153,24 +135,6 @@
     "requires_node": false,
     "server": "surrogate"
   },
-  "check_surrogate_backend": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [],
-    "requires_node": false,
-    "server": "surrogate"
-  },
-  "claim_node": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "agent_id",
-      "job_dir",
-      "node_id"
-    ],
-    "requires_node": false,
-    "server": "node"
-  },
   "clean_ligand": {
     "job_dir_is_data": false,
     "node_type": null,
@@ -234,26 +198,6 @@
     "requires_node": false,
     "server": "analyze"
   },
-  "detect_metal_ions": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "pdb_file"
-    ],
-    "requires_node": false,
-    "server": "metal"
-  },
-  "download_structure": {
-    "job_dir_is_data": false,
-    "node_type": "source",
-    "required_params": [
-      "job_dir",
-      "node_id",
-      "pdb_id"
-    ],
-    "requires_node": true,
-    "server": "research"
-  },
   "embed_in_membrane": {
     "job_dir_is_data": false,
     "node_type": "solv",
@@ -273,16 +217,6 @@
     ],
     "requires_node": false,
     "server": "throughput"
-  },
-  "explain_failure": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "job_dir",
-      "node_id"
-    ],
-    "requires_node": false,
-    "server": "node"
   },
   "explain_node": {
     "job_dir_is_data": false,
@@ -310,8 +244,7 @@
     "node_type": "source",
     "required_params": [
       "job_dir",
-      "node_id",
-      "source"
+      "node_id"
     ],
     "requires_node": true,
     "server": "research"
@@ -335,25 +268,7 @@
     "requires_node": false,
     "server": "evidence"
   },
-  "generate_md_methods_report": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "job_dir"
-    ],
-    "requires_node": false,
-    "server": "evidence"
-  },
   "generate_study_evidence_report": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "study_dir"
-    ],
-    "requires_node": false,
-    "server": "evidence"
-  },
-  "generate_study_methods_report": {
     "job_dir_is_data": false,
     "node_type": null,
     "required_params": [
@@ -370,17 +285,6 @@
     ],
     "requires_node": false,
     "server": "surrogate"
-  },
-  "get_alphafold_structure": {
-    "job_dir_is_data": false,
-    "node_type": "source",
-    "required_params": [
-      "job_dir",
-      "node_id",
-      "uniprot_id"
-    ],
-    "requires_node": true,
-    "server": "research"
   },
   "get_protein_info": {
     "job_dir_is_data": false,
@@ -649,16 +553,6 @@
     "requires_node": false,
     "server": "visualization"
   },
-  "release_node_claim": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "job_dir",
-      "node_id"
-    ],
-    "requires_node": false,
-    "server": "node"
-  },
   "render_structure_preview": {
     "job_dir_is_data": false,
     "node_type": null,
@@ -727,13 +621,6 @@
     "required_params": [
       "model"
     ],
-    "requires_node": false,
-    "server": "surrogate"
-  },
-  "setup_surrogate_backend": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [],
     "requires_node": false,
     "server": "surrogate"
   },

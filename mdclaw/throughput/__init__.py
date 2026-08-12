@@ -7,10 +7,10 @@ Public tool functions are re-exported here and assembled into ``TOOLS``.
 from mdclaw.throughput.estimate import estimate_md_throughput
 
 TOOLS = {
-    "estimate_md_throughput": estimate_md_throughput,
+    fn.__name__: fn
+    for fn in (
+        estimate_md_throughput,
+    )
 }
 
-__all__ = [
-    "estimate_md_throughput",
-    "TOOLS",
-]
+__all__ = [*TOOLS, "TOOLS"]

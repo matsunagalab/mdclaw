@@ -1,15 +1,5 @@
-"""Node-based job graph management (schema v3).
+"""Prod lineage walking: restart ancestor choice and artifact chains."""
 
-Each pipeline step (prep, solv, topo, min, eq, prod) is a *node* with its own
-directory, ``node.json``, lock file, and ``artifacts/`` folder.  Parent-child
-relationships form a DAG.  ``progress.json`` is a thin index of nodes.
-
-Design principle:
-    skill = what to run (orchestration, no state mutation)
-    tool  = run + record (execution + state via this module)
-"""
-
-import json
 import logging
 from pathlib import Path
 from typing import Optional
@@ -19,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 from mdclaw.node.constants import _RESTART_NODE_ID_UNSET  # noqa: E402
 from mdclaw.node.graph import _iter_ancestor_ids  # noqa: E402
-from mdclaw.node.io import _read_artifact_from_node, _read_continued_from, _read_metadata_field  # noqa: E402
+from mdclaw.node.io import _read_artifact_from_node, _read_node_json, _read_continued_from, _read_metadata_field  # noqa: E402
 from mdclaw.node.progress import _load_progress_v3  # noqa: E402
 
 
@@ -124,86 +114,34 @@ def _collect_prod_artifact_chain(
     ancestor was found — downstream tools must surface that to the
     caller with a clear error.
     """
-    jd = Path(job_dir)
-    start_nj = jd / "nodes" / analyze_node_id / "node.json"
-    if not start_nj.exists():
-        return []
-    try:
-        start_data = json.loads(start_nj.read_text())
-    except (json.JSONDecodeError, OSError):
+    start_data = _read_node_json(job_dir, analyze_node_id)
+    if start_data is None:
         return []
     parents = start_data.get("parent_node_ids", [])
     if not parents:
         return []
-    # Follow single prod ancestor chain upward. We don't try to merge
-    # branching trajectories — an analyze node must have exactly one
-    # prod parent; forks are handled by making multiple analyze nodes.
-    reversed_chain: list[str] = []
-    current = parents[0]
-    seen: set[str] = set()
-    while current and current not in seen:
-        seen.add(current)
-        nj = jd / "nodes" / current / "node.json"
-        if not nj.exists():
-            break
-        try:
-            cur_data = json.loads(nj.read_text())
-        except (json.JSONDecodeError, OSError):
-            break
-        if cur_data.get("node_type") != "prod":
-            break
-        art = _read_artifact_from_node(job_dir, current, artifact_key)
-        if art is not None:
-            reversed_chain.append(art)
-        # Prefer continued_from metadata (explicit chain marker); fall
-        # back to the first parent. Both should point at a prod or eq.
-        next_id = cur_data.get("metadata", {}).get("continued_from")
-        if not next_id:
-            cur_parents = cur_data.get("parent_node_ids", [])
-            next_id = cur_parents[0] if cur_parents else None
-        current = next_id
-    # reversed_chain is leaf→root; flip to chronological.
-    reversed_chain.reverse()
-    return reversed_chain
-
-
-def _collect_prod_trajectory_chain(
-    job_dir: str, analyze_node_id: str
-) -> list[str]:
-    """Back-compat wrapper: trajectory chain (see
-    :func:`_collect_prod_artifact_chain`)."""
-    return _collect_prod_artifact_chain(
-        job_dir, analyze_node_id, "trajectory"
-    )
+    # Follow the single prod ancestor chain upward. We don't try to merge
+    # branching trajectories — an analyze node must have exactly one prod
+    # parent; forks are handled by making multiple analyze nodes.
+    return _walk_prod_chain_from(job_dir, parents[0], artifact_key)
 
 
 def _walk_prod_chain_from(
     job_dir: str, leaf_prod_id: str, artifact_key: str
 ) -> list[str]:
-    """Walk strictly upward from *leaf_prod_id* (which must itself be
-    a prod) through prod ancestors, collecting *artifact_key* paths
-    in chronological order (oldest first).
-
-    Used by the Phase 3 multi-prod resolver so each parent prod's
-    lineage becomes its own independent branch. The shape mirrors
-    :func:`_collect_prod_artifact_chain` but starts from the prod
-    node directly (not from an analyze node above it) and includes
-    the start node in the walk.
+    """Walk upward from *leaf_prod_id* (which must itself be a prod)
+    through prod ancestors — ``metadata.continued_from`` first, falling
+    back to the first parent — collecting *artifact_key* paths in
+    chronological order (oldest first). Ancestors that lack the artifact
+    are skipped silently; non-prod ancestors (typically eq) end the walk.
     """
-    jd = Path(job_dir)
     reversed_chain: list[str] = []
     current: Optional[str] = leaf_prod_id
     seen: set[str] = set()
     while current and current not in seen:
         seen.add(current)
-        nj = jd / "nodes" / current / "node.json"
-        if not nj.exists():
-            break
-        try:
-            cur_data = json.loads(nj.read_text())
-        except (json.JSONDecodeError, OSError):
-            break
-        if cur_data.get("node_type") != "prod":
+        cur_data = _read_node_json(job_dir, current)
+        if cur_data is None or cur_data.get("node_type") != "prod":
             break
         art = _read_artifact_from_node(job_dir, current, artifact_key)
         if art is not None:
@@ -215,17 +153,6 @@ def _walk_prod_chain_from(
         current = next_id
     reversed_chain.reverse()
     return reversed_chain
-
-
-def _collect_prod_energy_chain(
-    job_dir: str, analyze_node_id: str
-) -> list[str]:
-    """Energy CSV chain from the same prod lineage that produced the
-    trajectory chain. StateDataReporter writes on the same interval as
-    DCDReporter in ``run_production``, so energy rows line up with DCD
-    frames file-for-file — concat in parallel and a ``--stride N`` on
-    the DCD keeps the energy in sync with the same stride applied."""
-    return _collect_prod_artifact_chain(job_dir, analyze_node_id, "energy")
 
 
 def read_ancestor_final_step(

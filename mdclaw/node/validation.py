@@ -1,13 +1,4 @@
-"""Node-based job graph management (schema v3).
-
-Each pipeline step (prep, solv, topo, min, eq, prod) is a *node* with its own
-directory, ``node.json``, lock file, and ``artifacts/`` folder.  Parent-child
-relationships form a DAG.  ``progress.json`` is a thin index of nodes.
-
-Design principle:
-    skill = what to run (orchestration, no state mutation)
-    tool  = run + record (execution + state via this module)
-"""
+"""Node status normalization and analyze-conditions validation."""
 
 import logging
 from typing import Any, Optional
@@ -158,11 +149,6 @@ def _normalize_node_status(status: str) -> Optional[str]:
     normalized = status.strip().lower()
     normalized = NODE_STATUS_ALIASES.get(normalized, normalized)
     return normalized if normalized in NODE_STATUSES else None
-
-
-def _node_is_completed(data: dict) -> bool:
-    return _normalize_node_status(data.get("status")) == "completed"
-
 
 def _node_is_terminal(data: dict) -> bool:
     return _normalize_node_status(data.get("status")) in TERMINAL_NODE_STATUSES

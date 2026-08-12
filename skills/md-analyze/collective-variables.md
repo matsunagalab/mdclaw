@@ -35,13 +35,3 @@ node keyed by its custom-force signature.
 When the script returned only the energy (no `cv_dict`), recompute the CV from
 the trajectory with the metric tools (`skills/md-analyze/metrics.md`) or mdtraj
 directly, using the same atom selections the bias used.
-
-## Toward pymbar (MBAR) reweighting
-
-The CV log is designed as the MBAR input substrate: each frame carries its CV
-value(s) and the applied `bias_energy_kj_mol`, and `meta.json` carries the
-temperature and bias parameters. Collecting these across multiple biased nodes
-(umbrella windows or different bias parameters) gives the per-sample reduced
-potentials MBAR needs to estimate the **unbiased** PMF / free-energy surface
-along the CV. `pymbar>=4.2` is already in the environment; the reweighting
-helper itself is future work — preserve these artifacts so it can consume them.

@@ -8,11 +8,9 @@ Invariants (enforced by tests):
 
 - Every ``code`` literal emitted anywhere under ``mdclaw/`` must be a key here
   (``tests/test_guardrail_code_registry.py``).
-- ``skills/common/guardrail-codes.md`` is generated from this registry
-  (``scripts/gen_guardrail_codes_md.py``) and checked for drift.
 
 When adding a new guardrail code, add it here with a concise, imperative,
-agent-facing action, then regenerate the skill doc.
+agent-facing action.
 """
 
 from __future__ import annotations
@@ -41,7 +39,6 @@ GUARDRAIL_CODES: dict[str, str] = {
     "node_json_invalid": "node.json is corrupt; inspect the node directory and repair or recreate.",
     "node_terminal": "Node is terminal (completed/failed); branch a new node instead.",
     "node_wait_timeout": "Waiting on the node timed out; check the running job or lease.",
-    "node_already_claimed": "Another worker holds the claim; wait, or override only if stale.",
     "invalid_node_type": "Use one of: source, prep, solv, topo, min, eq, prod, analyze.",
     "node_type_mismatch": "Select or create a node whose type matches the requested tool.",
     "invalid_node_status": "Use a valid node status value.",
@@ -52,10 +49,6 @@ GUARDRAIL_CODES: dict[str, str] = {
     "referenced_node_missing": "A parent/dependency id does not exist; use IDs from inspect_job.",
     "study_context_missing": "Job is not under a study; run bootstrap_md_workflow and create the source node in the returned job_dir.",
     "progress_missing_or_invalid": "progress.json is missing/invalid; reinspect the job to rebuild.",
-    "claim_owner_mismatch": "Claim is owned by another agent; do not force-release without cause.",
-    "invalid_claim_expiry": "Provide a valid claim expiry timestamp.",
-    "invalid_lease_seconds": "Provide a positive integer for lease seconds.",
-    "agent_id_required": "Provide --agent-id when claiming or updating a node.",
 
     # --- node needs ---
     "invalid_need": "Provide a well-formed node need payload.",
@@ -155,7 +148,6 @@ GUARDRAIL_CODES: dict[str, str] = {
     "unsupported_modified_nucleic_residue": "Modified nucleic residue is unsupported.",
 
     # --- metals ---
-    "metal_pdb_file_not_found": "Metal PDB file not found; verify the path.",
 
     # --- side-chain / hydrogen packing (HPacker / nucleic) ---
     "hpacker_not_available": "HPacker is unavailable; run in a runtime that ships it.",

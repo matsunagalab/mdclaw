@@ -14,13 +14,13 @@ The skill tree lives under `skills/`; `.agents/skills/`, `.claude/skills/`, and
 Every skill uses the same three tiers:
 
 1. **`common/` shared contract** — invocation rules, the DAG run loop, defaults,
-   tool-output rules, guardrail codes, visual QA. One responsibility per file.
+   tool-output/guardrail-code rules, visual QA. One responsibility per file.
 2. **`<skill>/SKILL.md` spine** — the short, always-read entry point: front
    matter that exposes the pre-command gate, a self-contained normal-path gate,
    `Step 0` confirmation, a numbered happy-path workflow, conditional links,
    and handoff.
-3. **`<skill>/*.md` leaf pages** — conditional and edge-case detail routed by an
-   `[if:...]` tagged router (see `setup.md` style).
+3. **`<skill>/*.md` leaf pages** — conditional and edge-case detail reached
+   through condition-labeled links from `SKILL.md`.
 
 ## Rules
 
@@ -45,8 +45,8 @@ Every skill uses the same three tiers:
   `execution_mode` before inspection. Confirm chains/ligands only after
   `inspect_molecules` (call it `Step 0b`). Use the heading `## Step 0: Parse and
   Confirm` in every skill that confirms inputs.
-- **Route with `[if:...]` tags.** Skills with leaf pages use a router page
-  (`setup.md`-style) for conditional detail. Put always-required correctness
+- **Route conditionally from the spine.** `SKILL.md` links each leaf page
+  with its triggering condition. Put always-required correctness
   rules in the `SKILL.md` pre-command gate instead of requiring a baseline set
   of pages or an ordered read sequence.
 - **Show the executable node sequence.** Runnable workflow examples use

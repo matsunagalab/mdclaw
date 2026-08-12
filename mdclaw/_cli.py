@@ -12,22 +12,20 @@ Output is always JSON on stdout; logs go to stderr.
 """
 
 import argparse
-import ast
 import asyncio
 import inspect
 import json
 import logging
-import math
-import os
 import sys
 import types
 import time
 import traceback
 from pathlib import Path
-from typing import TextIO, Union, get_args, get_origin
+from typing import NamedTuple, TextIO, Union, get_args, get_origin
 
 from mdclaw import __version__
-from mdclaw._common import finalize_error
+from mdclaw._benchmark_log import _write_benchmark_harness_record
+from mdclaw._common import create_validation_error, finalize_error
 from mdclaw._registry import SERVER_REGISTRY
 from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE
 from mdclaw._tool_meta import (
@@ -51,6 +49,11 @@ _RENAMED_TOOLS = {
     "record_node_need_attempt": "manage_node_need --action record_attempt",
     "update_node_status": "update_workflow_state (--node-id/--status)",
     "update_job_params": "update_workflow_state (--params)",
+    "download_structure": "fetch_structure --source pdb --pdb-id <ID>",
+    "get_alphafold_structure": "fetch_structure --source alphafold --uniprot-id <ID>",
+    "setup_surrogate_backend": "setup_model_backend",
+    "check_surrogate_backend": "check_model_backend",
+    "explain_failure": "trace_failure",
 }
 
 # Global options that consume a following value, used to locate the subcommand
@@ -144,22 +147,19 @@ class _TailCaptureStream:
 
 
 def _swap_logging_stream(old_stream: TextIO, new_stream: TextIO) -> list[tuple[logging.StreamHandler, TextIO]]:
-    """Point stream handlers at ``new_stream`` while capturing tool output."""
+    """Point root stream handlers at ``new_stream`` while capturing output.
+
+    mdclaw loggers propagate to the root logger (see ``_common.setup_logger``),
+    so swapping the root handlers is sufficient to capture tool log output.
+    """
     swaps: list[tuple[logging.StreamHandler, TextIO]] = []
-    loggers = [logging.getLogger()]
-    loggers.extend(
-        logger
-        for logger in logging.Logger.manager.loggerDict.values()
-        if isinstance(logger, logging.Logger)
-    )
-    for logger in loggers:
-        for handler in logger.handlers:
-            if (
-                isinstance(handler, logging.StreamHandler)
-                and getattr(handler, "stream", None) is old_stream
-            ):
-                handler.setStream(new_stream)
-                swaps.append((handler, old_stream))
+    for handler in logging.getLogger().handlers:
+        if (
+            isinstance(handler, logging.StreamHandler)
+            and getattr(handler, "stream", None) is old_stream
+        ):
+            handler.setStream(new_stream)
+            swaps.append((handler, old_stream))
     return swaps
 
 
@@ -235,81 +235,88 @@ def _unwrap_optional(hint):
 
 def _is_list_of_str(hint) -> bool:
     """Check if hint is list[str] or List[str]."""
-    origin = get_origin(hint)
-    if origin is list:
-        args = get_args(hint)
-        return args == (str,)
-    return False
-
-
-_CLI_REPEATED_STRING_PARAMS = frozenset({
-    ("embed_in_membrane", "lipids"),
-})
-
-
-def _is_cli_repeated_string_param(tool_name: str, pname: str) -> bool:
-    """Return true for string parameters that accept repeated CLI tokens."""
-    return (tool_name, pname) in _CLI_REPEATED_STRING_PARAMS
+    return get_origin(hint) is list and get_args(hint) == (str,)
 
 
 def _is_dict_type(hint) -> bool:
     """Check if hint is dict or Dict[...]."""
-    origin = get_origin(hint)
-    return origin is dict or hint is dict
+    return get_origin(hint) is dict or hint is dict
 
 
-def _is_list_of_dict(hint) -> bool:
-    """Check if hint is list[dict] / list[Dict[...]] / List[dict] etc.
-
-    Used to route structured list arguments (e.g. ``submit_array_job
-    tasks=list[dict]``) through the same JSON-string argparse path as
-    plain dict arguments — they're not expressible as a flat CLI list.
-    """
-    origin = get_origin(hint)
-    if origin is not list:
+def _is_list_of(hint, element) -> bool:
+    """True when hint is a list whose element type is *element* (dict/list)."""
+    if get_origin(hint) is not list:
         return False
     args = get_args(hint)
-    if not args:
-        return False
-    inner = args[0]
-    inner_origin = get_origin(inner)
-    return inner_origin is dict or inner is dict
-
-
-def _is_list_of_list(hint) -> bool:
-    """Check if hint is list[list[...]] / List[List[...]].
-
-    Nested-list arguments (e.g. ``atom_pairs=list[list[int]]`` for
-    ``analyze_distance``) are not expressible as a flat CLI list
-    either; route them through the JSON-string argparse path.
-    """
-    origin = get_origin(hint)
-    if origin is not list:
-        return False
-    args = get_args(hint)
-    if not args:
-        return False
-    inner = args[0]
-    inner_origin = get_origin(inner)
-    return inner_origin is list or inner is list
+    return bool(args) and (get_origin(args[0]) is element or args[0] is element)
 
 
 def _takes_json(hint) -> bool:
     """True when the argument expects a JSON string at the CLI boundary.
 
-    Covers ``dict`` / ``Dict[...]``, ``list[dict]`` / ``List[Dict[...]]``,
-    and ``list[list[...]]`` (including under ``Optional[...]``).
-    ``list[str]`` stays on the plain ``nargs='+'`` path — that's a
-    better CLI UX for flat lists.
+    Covers ``dict``, ``list[dict]``, and ``list[list[...]]`` (including under
+    ``Optional[...]``) — none of these are expressible as a flat CLI list.
+    ``list[str]`` stays on the plain ``nargs='+'`` path.
     """
     hint, _ = _unwrap_optional(hint)
-    return _is_dict_type(hint) or _is_list_of_dict(hint) or _is_list_of_list(hint)
+    return _is_dict_type(hint) or _is_list_of(hint, dict) or _is_list_of(hint, list)
 
 
 def _is_path_type(hint) -> bool:
     """True for pathlib.Path CLI parameters, including Optional[Path]."""
     inner, _ = _unwrap_optional(hint)
     return inner is Path
+
+
+class _ParamSpec(NamedTuple):
+    """One CLI-visible tool parameter from a single introspection pass.
+
+    The argparse builder, the ``--list-json`` schema, and kwargs assembly in
+    ``main()`` all consume this same view, so they cannot drift apart.
+    """
+
+    name: str
+    cli_flag: str
+    hint: object
+    inner: object
+    optional: bool
+    required: bool
+    default: object
+
+
+def _tool_param_specs(fn, *, requires_node: bool = False) -> list[_ParamSpec]:
+    """Compute the CLI parameter specs for a tool function."""
+    sig = inspect.signature(fn)
+    try:
+        hints = {k: v for k, v in inspect.get_annotations(fn, eval_str=True).items()
+                 if k != "return"}
+    except Exception:
+        hints = {}
+    specs = []
+    for pname, param in sig.parameters.items():
+        # Underscore-prefixed kwargs are internal (used by Python callers for
+        # dispatch plumbing). They never become CLI flags.
+        if pname.startswith("_"):
+            continue
+        hint = hints.get(pname, param.annotation)
+        if hint is inspect.Parameter.empty:
+            hint = str  # fallback
+        inner, is_optional = _unwrap_optional(hint)
+        required = (
+            param.default is inspect.Parameter.empty and not is_optional
+        ) or (
+            requires_node and pname in {"job_dir", "node_id"}
+        )
+        specs.append(_ParamSpec(
+            name=pname,
+            cli_flag="--" + pname.replace("_", "-"),
+            hint=hint,
+            inner=inner,
+            optional=is_optional,
+            required=required,
+            default=param.default,
+        ))
+    return specs
 
 
 def _coerce_value(value, hint):
@@ -414,47 +421,13 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
             help="Pass all parameters as a JSON string.",
         )
 
-        sig = inspect.signature(fn)
-        hints = {}
-        try:
-            hints = {k: v for k, v in inspect.get_annotations(fn, eval_str=True).items()
-                     if k != "return"}
-        except Exception:
-            pass
 
-        for pname, param in sig.parameters.items():
-            # Underscore-prefixed kwargs are internal (used by Python
-            # callers for dispatch plumbing, e.g. multi-branch analyze
-            # helpers). They never become CLI flags.
-            if pname.startswith("_"):
-                continue
-            hint = hints.get(pname, param.annotation)
-            if hint is inspect.Parameter.empty:
-                hint = str  # fallback
-
-            inner, is_optional = _unwrap_optional(hint)
-            cli_name = "--" + pname.replace("_", "-")
-            required = (
-                param.default is inspect.Parameter.empty and not is_optional
-            ) or (
-                info.get("requires_node") and pname in {"job_dir", "node_id"}
-            )
-
-            if _is_cli_repeated_string_param(tool_name, pname):
+        for spec in _tool_param_specs(fn, requires_node=bool(info.get("requires_node"))):
+            default = spec.default if spec.default is not inspect.Parameter.empty else None
+            if spec.inner is bool:
+                default_val = spec.default if spec.default is not inspect.Parameter.empty else False
                 sub.add_argument(
-                    cli_name,
-                    nargs="+",
-                    default=param.default if param.default is not inspect.Parameter.empty else None,
-                    required=False,
-                    help=(
-                        "(str values joined with ':', default: "
-                        f"{param.default if param.default is not inspect.Parameter.empty else 'required'})"
-                    ),
-                )
-            elif inner is bool:
-                default_val = param.default if param.default is not inspect.Parameter.empty else False
-                sub.add_argument(
-                    cli_name,
+                    spec.cli_flag,
                     nargs="?",
                     const=True,
                     type=_parse_cli_bool,
@@ -462,76 +435,50 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
                     help=f"(bool: true/false, default: {default_val})",
                 )
                 sub.add_argument(
-                    f"--no-{pname.replace('_', '-')}",
-                    dest=pname,
+                    f"--no-{spec.name.replace('_', '-')}",
+                    dest=spec.name,
                     action="store_false",
                     default=argparse.SUPPRESS,
-                    help=f"(set {pname}=false)",
+                    help=f"(set {spec.name}=false)",
                 )
-            elif _is_list_of_str(inner):
+            elif _is_list_of_str(spec.inner):
                 sub.add_argument(
-                    cli_name,
+                    spec.cli_flag,
                     nargs="+",
-                    default=param.default if param.default is not inspect.Parameter.empty else None,
-                    required=False,
-                    help="(list of str, required)" if required else "(list of str)",
+                    default=default,
+                    help="(list of str, required)" if spec.required else "(list of str)",
                 )
-            elif _takes_json(inner):
+            elif _takes_json(spec.inner):
                 example = (
                     '\'{"key":"val"}\''
-                    if _is_dict_type(inner)
+                    if _is_dict_type(spec.inner)
                     else '\'[{"key":"val"}, ...]\''
                 )
                 sub.add_argument(
-                    cli_name,
+                    spec.cli_flag,
                     type=str,
-                    default=param.default if param.default is not inspect.Parameter.empty else None,
-                    required=False,
-                    help=f"(JSON string, e.g. {example}, required)" if required else f"(JSON string, e.g. {example})",
-                )
-            elif inner is int:
-                sub.add_argument(
-                    cli_name,
-                    type=int,
-                    default=param.default if param.default is not inspect.Parameter.empty else None,
-                    required=False,
+                    default=default,
                     help=(
-                        "(int, default: required)" if required else
-                        f"(int, default: {param.default})"
-                    ),
-                )
-            elif inner is float:
-                sub.add_argument(
-                    cli_name,
-                    type=float,
-                    default=param.default if param.default is not inspect.Parameter.empty else None,
-                    required=False,
-                    help=(
-                        "(float, default: required)" if required else
-                        f"(float, default: {param.default})"
-                    ),
-                )
-            elif _is_path_type(inner):
-                sub.add_argument(
-                    cli_name,
-                    type=Path,
-                    default=param.default if param.default is not inspect.Parameter.empty else None,
-                    required=False,
-                    help=(
-                        "(Path, default: required)" if required else
-                        f"(Path, default: {param.default})"
+                        f"(JSON string, e.g. {example}, required)" if spec.required
+                        else f"(JSON string, e.g. {example})"
                     ),
                 )
             else:
-                # Default: str
+                if spec.inner is int:
+                    arg_type, label = int, "int"
+                elif spec.inner is float:
+                    arg_type, label = float, "float"
+                elif _is_path_type(spec.inner):
+                    arg_type, label = Path, "Path"
+                else:
+                    arg_type, label = str, "str"
                 sub.add_argument(
-                    cli_name,
-                    type=str,
-                    default=param.default if param.default is not inspect.Parameter.empty else None,
-                    required=False,
+                    spec.cli_flag,
+                    type=arg_type,
+                    default=default,
                     help=(
-                        "(str, default: required)" if required else
-                        f"(str, default: {param.default})"
+                        f"({label}, default: required)" if spec.required
+                        else f"({label}, default: {default})"
                     ),
                 )
 
@@ -547,123 +494,6 @@ def _run_tool(fn, is_async: bool, kwargs: dict):
     if is_async:
         return asyncio.run(fn(**kwargs))
     return fn(**kwargs)
-
-
-def _benchmark_stage_for_tool(tool_name: str, kwargs: dict) -> str:
-    """Best-effort stage label for benchmark harness execution records."""
-    if tool_name == "create_node":
-        return "dag"
-    mapping = {
-        "fetch_structure": "source",
-        "download_structure": "source",
-        "get_alphafold_structure": "source",
-        "register_local_structure": "source",
-        "list_source_candidates": "source",
-        "prepare_complex": "prep",
-        "create_mutated_structure": "prep",
-        "phosphorylate_residues": "prep",
-        "prepare_modified_nucleic": "prep",
-        "solvate_structure": "prep",
-        "embed_in_membrane": "prep",
-        "build_amber_system": "topo",
-        "build_openmm_system": "topo",
-        "package_openmm_submission": "package",
-        "package_mdprep_submission": "package",
-        "run_minimization": "min",
-        "export_state_pdb": "export",
-        "run_equilibration": "eq",
-        "run_production": "prod",
-        "concat_trajectory": "analysis",
-        "fit_trajectory": "analysis",
-        "analyze_rmsd": "analysis",
-        "analyze_distance": "analysis",
-        "analyze_q_value": "analysis",
-        "analyze_rmsf": "analysis",
-        "analyze_contact_frequency": "analysis",
-    }
-    return mapping.get(tool_name, tool_name)
-
-
-def _write_benchmark_harness_record(
-    *,
-    tool_name: str,
-    kwargs: dict,
-    exit_code: int,
-    started_at: float,
-) -> None:
-    """Append a measured CLI invocation record when a benchmark runner asks.
-
-    The hook is opt-in through ``MDCLAW_BENCHMARK_HARNESS_LOG`` so ordinary
-    command-line usage is unchanged. The benchmark runner later folds this
-    JSONL into ``harness_execution.json``.
-    """
-    log_path = os.environ.get("MDCLAW_BENCHMARK_HARNESS_LOG")
-    if not log_path:
-        return
-    elapsed = time.monotonic() - started_at
-    if not math.isfinite(elapsed) or elapsed < 0:
-        elapsed = 0.0
-    argv = [Path(sys.argv[0]).name or "mdclaw", *sys.argv[1:]]
-    record = {
-        "stage": _benchmark_stage_for_tool(tool_name, kwargs),
-        "command": " ".join(str(part) for part in argv),
-        "tool": tool_name,
-        "exit_code": int(exit_code),
-        "walltime_seconds": round(float(elapsed), 6),
-        "recorded_at": datetime_now_utc(),
-    }
-    run_id = os.environ.get("MDCLAW_BENCHMARK_RUN_ID")
-    task_id = os.environ.get("MDCLAW_BENCHMARK_TASK_ID")
-    if run_id:
-        record["run_id"] = run_id
-    if task_id:
-        record["task_id"] = task_id
-    try:
-        path = Path(log_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as f:
-            f.write(json.dumps(record, sort_keys=True, default=str) + "\n")
-    except Exception as exc:
-        # Harness logging must never break the underlying CLI command, but a
-        # silent drop looks identical to "the agent ran no commands" to the
-        # scorer, so say why on stderr.
-        print(
-            f"Warning: could not append benchmark harness record to {log_path}: "
-            f"{type(exc).__name__}: {exc}",
-            file=sys.stderr,
-        )
-        return
-
-
-def datetime_now_utc() -> str:
-    from datetime import datetime, timezone
-
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _cli_validation_error(
-    field: str,
-    message: str,
-    *,
-    code: str,
-    actual: str | None = None,
-    expected: str | None = None,
-) -> dict:
-    context = {"field": field, "actual": actual, "expected": expected, "code": code}
-    hints = [f"Check the '{field}' parameter"]
-    if expected:
-        hints.append(f"Expected: {expected}")
-    return {
-        "success": False,
-        "error_type": "ValidationError",
-        "code": code,
-        "message": f"Validation failed for '{field}': {message}",
-        "hints": hints,
-        "context": context,
-        "recoverable": True,
-        "errors": [f"{field}: {message}"],
-        "warnings": [],
-    }
 
 
 def _build_recovery_hint(job_dir: str, node_id: str) -> dict | None:
@@ -775,7 +605,7 @@ def _node_type_preflight_error(
         else:
             return None
 
-    error = _cli_validation_error(
+    error = create_validation_error(
         "node_id",
         message,
         code=code,
@@ -798,7 +628,7 @@ def _load_json_cli(value: str, field: str):
         return json.loads(value)
     except json.JSONDecodeError as e:
         _json_error_and_exit(
-            _cli_validation_error(
+            create_validation_error(
                 field,
                 f"Invalid JSON: {e.msg}",
                 code="invalid_json_input",
@@ -806,51 +636,6 @@ def _load_json_cli(value: str, field: str):
                 expected="Valid JSON object or array as required by the argument",
             )
         )
-
-
-def _normalize_repeated_string_value(value, *, sep: str = ":"):
-    """Join repeated string CLI values while preserving scalar strings."""
-    if isinstance(value, str):
-        stripped = value.strip()
-        if stripped.startswith(("[", "(")) and stripped.endswith(("]", ")")):
-            try:
-                parsed = ast.literal_eval(stripped)
-            except (SyntaxError, ValueError):
-                return value
-            if isinstance(parsed, (list, tuple)):
-                return _normalize_repeated_string_value(parsed, sep=sep)
-        return value
-    if not isinstance(value, (list, tuple)):
-        return value
-    parts = [str(item).strip() for item in value if str(item).strip()]
-    return sep.join(parts)
-
-
-def _coerce_cli_param_value(tool_name: str, pname: str, value, hint):
-    """Coerce one CLI value, preserving repeated-string parameters."""
-    if _is_cli_repeated_string_param(tool_name, pname):
-        value = _normalize_repeated_string_value(value)
-    return _coerce_value(value, hint)
-
-
-def _apply_cli_convenience_defaults(tool_name: str, kwargs: dict) -> None:
-    """Apply narrow CLI-only defaults that reduce weak-agent retry loops."""
-    if tool_name == "fetch_structure" and not kwargs.get("source"):
-        source_fields = [
-            ("pdb", "pdb_id"),
-            ("alphafold", "uniprot_id"),
-            ("local", "file_path"),
-        ]
-        matches = [
-            (source, field)
-            for source, field in source_fields
-            if kwargs.get(field) not in {None, ""}
-        ]
-        if len(matches) == 1:
-            kwargs["source"] = matches[0][0]
-
-    if tool_name == "embed_in_membrane" and "lipids" in kwargs:
-        kwargs["lipids"] = _normalize_repeated_string_value(kwargs["lipids"])
 
 
 # ---------------------------------------------------------------------------
@@ -862,23 +647,17 @@ def _type_label(hint) -> str:
     inner, is_optional = _unwrap_optional(hint)
     if inner is inspect.Parameter.empty:
         label = "str"
-    elif inner is bool:
-        label = "bool"
-    elif inner is int:
-        label = "int"
-    elif inner is float:
-        label = "float"
-    elif inner is str:
-        label = "str"
+    elif inner in (bool, int, float, str):
+        label = inner.__name__
     elif _is_path_type(inner):
         label = "Path"
     elif _is_list_of_str(inner):
         label = "list[str]"
     elif _is_dict_type(inner):
         label = "dict"
-    elif _is_list_of_dict(inner):
+    elif _is_list_of(inner, dict):
         label = "list[dict]"
-    elif _is_list_of_list(inner):
+    elif _is_list_of(inner, list):
         label = "list[list]"
     else:
         label = getattr(inner, "__name__", str(inner))
@@ -897,58 +676,35 @@ def _jsonable_default(value):
 
 
 def _tool_parameter_schemas(tool_name: str, fn) -> list[dict]:
-    sig = inspect.signature(fn)
-    requires_node_context = tool_requires_node(fn)
-    hints = {}
-    try:
-        hints = {k: v for k, v in inspect.get_annotations(fn, eval_str=True).items()
-                 if k != "return"}
-    except Exception:
-        pass
-
     parameter_examples = tool_parameter_example_map(fn)
+    job_dir_is_data = tool_job_dir_is_data(fn)
     params = []
-    for pname, param in sig.parameters.items():
-        if pname.startswith("_"):
-            continue
-        hint = hints.get(pname, param.annotation)
-        if hint is inspect.Parameter.empty:
-            hint = str
-        inner, is_optional = _unwrap_optional(hint)
-        required = (
-            param.default is inspect.Parameter.empty and not is_optional
-        ) or (
-            requires_node_context and pname in {"job_dir", "node_id"}
-        )
-        cli_flag = f"--{pname.replace('_', '-')}"
+    for spec in _tool_param_specs(fn, requires_node=tool_requires_node(fn)):
         entry = {
-            "name": pname,
-            "cli_flag": cli_flag,
-            "type": _type_label(hint),
-            "required": required,
+            "name": spec.name,
+            "cli_flag": spec.cli_flag,
+            "type": _type_label(spec.hint),
+            "required": spec.required,
             "has_default": (
-                not required and param.default is not inspect.Parameter.empty
+                not spec.required and spec.default is not inspect.Parameter.empty
             ),
-            "default": None if required else _jsonable_default(param.default),
+            "default": None if spec.required else _jsonable_default(spec.default),
         }
-        if inner is bool:
+        if spec.inner is bool:
             entry["cli_action"] = "boolean_optional"
             entry["accepted_cli_forms"] = [
-                cli_flag,
-                f"--no-{pname.replace('_', '-')}",
-                f"{cli_flag} true",
-                f"{cli_flag} false",
+                spec.cli_flag,
+                f"--no-{spec.name.replace('_', '-')}",
+                f"{spec.cli_flag} true",
+                f"{spec.cli_flag} false",
             ]
-        elif _is_cli_repeated_string_param(tool_name, pname):
+        elif _is_list_of_str(spec.inner):
             entry["nargs"] = "+"
-            entry["join_repeated_values_with"] = ":"
-        elif _is_list_of_str(inner):
-            entry["nargs"] = "+"
-        elif _takes_json(inner):
+        elif _takes_json(spec.inner):
             entry["expects_json"] = True
-            if pname in parameter_examples:
-                entry["json_examples"] = parameter_examples[pname]
-        if tool_job_dir_is_data(fn) and pname == "job_dir":
+            if spec.name in parameter_examples:
+                entry["json_examples"] = parameter_examples[spec.name]
+        if job_dir_is_data and spec.name == "job_dir":
             entry["job_dir_role"] = "data"
         params.append(entry)
     return params
@@ -1024,40 +780,6 @@ def _print_tool_list(tools: dict[str, dict]) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
-# Node-context and job-dir-is-data requirements are declared at each tool's
-# definition site via the ``@node_tool`` / ``@job_dir_data_tool`` markers in
-# ``mdclaw._tool_meta`` and read during ``_discover_tools`` (see the
-# ``requires_node`` / ``job_dir_is_data`` fields). This removes the old
-# hardcoded frozensets that had to be kept in sync by hand.
-#
-# ``_NODE_REQUIRED_TOOLS`` / ``_JOB_DIR_DATA_TOOLS`` remain available as derived,
-# lazily-computed module attributes for backward compatibility (tests and any
-# external callers that import them). They are computed from the declarative
-# markers, so they can never desync from the tools themselves.
-
-
-def _node_required_tools() -> frozenset[str]:
-    return frozenset(
-        name for name, info in _discover_tools().items()
-        if info.get("requires_node")
-    )
-
-
-def _job_dir_data_tools() -> frozenset[str]:
-    return frozenset(
-        name for name, info in _discover_tools().items()
-        if info.get("job_dir_is_data")
-    )
-
-
-def __getattr__(name: str):
-    # PEP 562 module-level lazy attributes. Kept for import/monkeypatch
-    # compatibility; the runtime gate below uses the per-tool discovery flags.
-    if name == "_NODE_REQUIRED_TOOLS":
-        return _node_required_tools()
-    if name == "_JOB_DIR_DATA_TOOLS":
-        return _job_dir_data_tools()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -1128,32 +850,29 @@ def main(argv: list[str] | None = None) -> None:
     _global_job_dir = getattr(args, "_global_job_dir", None)
     _global_node_id = getattr(args, "_global_node_id", None)
 
-    # Build kwargs
+    # Build kwargs — both paths consume the same _ParamSpec view.
+    specs = _tool_param_specs(fn, requires_node=requires_node)
+    spec_by_name = {spec.name: spec for spec in specs}
     missing: list[str] = []
     if args.json_input:
         kwargs = _load_json_cli(args.json_input, "--json-input")
-        sig = inspect.signature(fn)
-        hints = {}
-        try:
-            hints = {k: v for k, v in inspect.get_annotations(fn, eval_str=True).items()
-                     if k != "return"}
-        except Exception:
-            pass
         for pname, value in list(kwargs.items()):
-            if pname not in sig.parameters or value is None:
+            spec = spec_by_name.get(pname)
+            if spec is None or value is None:
                 continue
-            hint = hints.get(pname, sig.parameters[pname].annotation)
-            kwargs[pname] = _coerce_cli_param_value(tool_name, pname, value, hint)
-        _apply_cli_convenience_defaults(tool_name, kwargs)
+            kwargs[pname] = _coerce_value(value, spec.hint)
+        if _global_job_dir is not None and kwargs.get("job_dir") is None and "job_dir" in spec_by_name:
+            kwargs["job_dir"] = _global_job_dir
+        if _global_node_id is not None and kwargs.get("node_id") is None and "node_id" in spec_by_name:
+            kwargs["node_id"] = _global_node_id
+        missing = [
+            spec.cli_flag
+            for spec in specs
+            if kwargs.get(spec.name) is None
+            and spec.default is inspect.Parameter.empty
+            and not spec.optional
+        ]
     else:
-        sig = inspect.signature(fn)
-        hints = {}
-        try:
-            hints = {k: v for k, v in inspect.get_annotations(fn, eval_str=True).items()
-                     if k != "return"}
-        except Exception:
-            pass
-
         kwargs = {}
         args_dict = vars(args)
         # Propagate global --job-dir/--node-id into the per-tool namespace so
@@ -1165,27 +884,15 @@ def main(argv: list[str] | None = None) -> None:
             args_dict["job_dir"] = _global_job_dir
         if _global_node_id is not None and args_dict.get("node_id") is None:
             args_dict["node_id"] = _global_node_id
-        for pname, param in sig.parameters.items():
-            hint = hints.get(pname, param.annotation)
-            _, is_optional = _unwrap_optional(hint) if hint is not inspect.Parameter.empty else (hint, False)
-            cli_key = pname  # argparse converts hyphens back to underscores
-            value = args_dict.get(cli_key)
-            if value is None and param.default is inspect.Parameter.empty and not is_optional:
-                missing.append(f"--{pname.replace('_', '-')}")
-                continue
+        for spec in specs:
+            value = args_dict.get(spec.name)
             if value is None:
+                if spec.default is inspect.Parameter.empty and not spec.optional:
+                    missing.append(spec.cli_flag)
                 continue
-            if _takes_json(_unwrap_optional(hint)[0]) and isinstance(value, str):
-                value = _load_json_cli(value, f"--{pname.replace('_', '-')}")
-            value = _coerce_cli_param_value(tool_name, pname, value, hint)
-            kwargs[pname] = value
-
-        _apply_cli_convenience_defaults(tool_name, kwargs)
-        if kwargs.get("source"):
-            missing = [
-                item for item in missing
-                if not (tool_name == "fetch_structure" and item == "--source")
-            ]
+            if _takes_json(spec.hint) and isinstance(value, str):
+                value = _load_json_cli(value, spec.cli_flag)
+            kwargs[spec.name] = value
 
     # Resolve effective job_dir/node_id: global flags take precedence over
     # per-tool kwargs (which come from the subparser's --job-dir/--node-id).
@@ -1284,10 +991,9 @@ def main(argv: list[str] | None = None) -> None:
         })
 
     # Inject global schema-v3 context when the tool accepts it.
-    sig = inspect.signature(fn)
-    if effective_job_dir and "job_dir" in sig.parameters:
+    if effective_job_dir and "job_dir" in spec_by_name:
         kwargs["job_dir"] = effective_job_dir
-    if effective_node_id and "node_id" in sig.parameters:
+    if effective_node_id and "node_id" in spec_by_name:
         kwargs["node_id"] = effective_node_id
 
     # Execute
@@ -1359,7 +1065,6 @@ def main(argv: list[str] | None = None) -> None:
             )
         _write_benchmark_harness_record(
             tool_name=tool_name,
-            kwargs=kwargs,
             exit_code=exit_code,
             started_at=started_at,
         )
@@ -1369,7 +1074,6 @@ def main(argv: list[str] | None = None) -> None:
     except Exception as e:
         _write_benchmark_harness_record(
             tool_name=tool_name,
-            kwargs=kwargs,
             exit_code=1,
             started_at=started_at,
         )

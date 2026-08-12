@@ -1,19 +1,8 @@
-"""Node-based job graph management (schema v3).
-
-Each pipeline step (prep, solv, topo, min, eq, prod) is a *node* with its own
-directory, ``node.json``, lock file, and ``artifacts/`` folder.  Parent-child
-relationships form a DAG.  ``progress.json`` is a thin index of nodes.
-
-Design principle:
-    skill = what to run (orchestration, no state mutation)
-    tool  = run + record (execution + state via this module)
-"""
+"""node.json readers/writers and artifact path portability."""
 
 import json
 import logging
 import os
-import hashlib
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -21,16 +10,6 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 from mdclaw.node.constants import _LABEL_SAFE_CHARS, _STRUCTURED_ARTIFACT_PATH_KEYS  # noqa: E402
-
-
-def _sha256_path(path: Path) -> Optional[str]:
-    if not path.is_file():
-        return None
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
@@ -147,15 +126,6 @@ def _resolve_structured_artifact_paths(
     return value
 
 
-def _parse_iso_datetime(value: str) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-
-
 def _read_node_json_path(node_json: Path, *, strict: bool = False) -> Optional[dict]:
     try:
         return json.loads(node_json.read_text())
@@ -186,14 +156,13 @@ def _load_json_artifact(value: Any, expected_type: type) -> Any:
     return None
 
 
+def _read_node_json(job_dir: str, node_id: str) -> Optional[dict]:
+    """Read one node.json leniently (None when missing/corrupt)."""
+    return _read_node_json_path(Path(job_dir) / "nodes" / node_id / "node.json")
+
+
 def _read_node_metadata(job_dir: str, node_id: str) -> dict:
-    nj = Path(job_dir) / "nodes" / node_id / "node.json"
-    if not nj.exists():
-        return {}
-    try:
-        return json.loads(nj.read_text()).get("metadata", {}) or {}
-    except (json.JSONDecodeError, OSError):
-        return {}
+    return (_read_node_json(job_dir, node_id) or {}).get("metadata", {}) or {}
 
 
 def _sanitize_label(raw: str) -> str:
@@ -207,14 +176,7 @@ def _sanitize_label(raw: str) -> str:
 
 def _read_continued_from(job_dir: str, node_id: str) -> Optional[str]:
     """Return ``node.json.metadata.continued_from`` for *node_id*, or None."""
-    nj = Path(job_dir) / "nodes" / node_id / "node.json"
-    if not nj.exists():
-        return None
-    try:
-        data = json.loads(nj.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
-    value = data.get("metadata", {}).get("continued_from")
+    value = _read_metadata_field(job_dir, node_id, "continued_from")
     return value if isinstance(value, str) else None
 
 
@@ -231,12 +193,8 @@ def _read_artifact_from_node(
     DAG.
     """
     jd = Path(job_dir)
-    nj = jd / "nodes" / node_id / "node.json"
-    if not nj.exists():
-        return None
-    try:
-        data = json.loads(nj.read_text())
-    except (json.JSONDecodeError, OSError):
+    data = _read_node_json(job_dir, node_id)
+    if data is None:
         return None
     value = data.get("artifacts", {}).get(artifact_key)
     if value is None:
@@ -246,24 +204,10 @@ def _read_artifact_from_node(
     return _resolve_structured_artifact_paths(value, jd / "nodes" / node_id)
 
 
-# Sentinel that distinguishes ``restart_node_id=None`` (caller asserts
-# "external restart file — no DAG ancestor produced this artifact") from
-# the omitted case (caller hasn't picked an ancestor; replay the BFS).
-# Using a private object for the sentinel keeps ``None`` available as a
-# meaningful runtime value.
-
-
 def _read_metadata_field(
     job_dir: str, node_id: str, field: str
 ):
     """Return ``node.json.metadata[field]`` for *node_id*, or ``None`` if
     the file/field is missing or unreadable. Type-agnostic — callers cast
     or ``isinstance``-check as needed."""
-    nj = Path(job_dir) / "nodes" / node_id / "node.json"
-    if not nj.exists():
-        return None
-    try:
-        data = json.loads(nj.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
-    return data.get("metadata", {}).get(field)
+    return (_read_node_json(job_dir, node_id) or {}).get("metadata", {}).get(field)

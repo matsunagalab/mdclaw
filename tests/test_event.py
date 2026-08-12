@@ -25,16 +25,12 @@ class TestWriteEvent:
 
     def test_event_content(self, job_dir):
         path = write_event(str(job_dir), "eq_001", "tool_completed",
-                           tool="run_equilibration",
                            success=True,
-                           cli="mdclaw --job-dir <jd> --node-id eq_001 run_equilibration",
                            details={"platform": "CUDA"})
         ev = json.loads(path.read_text())
         assert ev["node_id"] == "eq_001"
         assert ev["event_type"] == "tool_completed"
-        assert ev["tool"] == "run_equilibration"
         assert ev["success"] is True
-        assert ev["cli"].startswith("mdclaw")
         assert ev["details"]["platform"] == "CUDA"
         assert "timestamp" in ev
 

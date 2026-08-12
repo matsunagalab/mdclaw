@@ -71,9 +71,6 @@ mdclaw check_model_backend  --model bioemu
 mdclaw check_model_backend  --model boltz
 ```
 
-`setup_surrogate_backend` / `check_surrogate_backend` remain as
-`bioemu`-defaulted aliases.
-
 Installs use an isolated venv under `$MDCLAW_SURROGATE_DIR/<model>/venv`
 (default: `~/.cache/mdclaw/surrogates/<model>/venv`). Backends are installed at
 runtime, not baked into the container image. On a read-only SIF, point

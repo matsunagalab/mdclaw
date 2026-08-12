@@ -3,12 +3,9 @@
 Covers: _lock.py, _node.py lifecycle, node_server.py registration.
 """
 
-import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -16,14 +13,11 @@ from mdclaw._node import (
     SCHEMA_VERSION,
     add_node_need,
     begin_node,
-    claim_node,
     clear_node_need,
     create_node,
     fail_node,
     find_ancestor_artifact,
-    find_nodes,
     get_ancestors,
-    get_children,
     init_progress_v3,
     explain_node,
     inspect_job,
@@ -31,13 +25,11 @@ from mdclaw._node import (
     rebuild_progress_index,
     record_node_failure,
     record_node_need_attempt,
-    release_node_claim,
     resolve_artifact,
     resolve_node_inputs,
     trace_failure,
     update_job_params,
     update_job_summaries,
-    update_node,
     update_node_status,
     update_workflow_state,
     validate_node_execution_context,
@@ -888,13 +880,12 @@ class TestCompleteNodeStrictArtifacts:
     mistakes (e.g. wrong subdirectory) surface immediately rather than
     silently dropping the sha256 entry."""
 
-    def test_records_artifact_sha256_for_real_file(self, job_dir):
+    def test_accepts_artifact_backed_by_real_file(self, job_dir):
         create_node(str(job_dir), "solv")
         node_id = "solv_001"
         artifact_file = job_dir / "nodes" / node_id / "artifacts" / "solvated.pdb"
         artifact_file.parent.mkdir(parents=True, exist_ok=True)
         artifact_file.write_text("ATOM      1  N   ALA A   1\n")
-        expected_sha = hashlib.sha256(artifact_file.read_bytes()).hexdigest()
 
         _real_complete_node(
             str(job_dir),
@@ -903,7 +894,7 @@ class TestCompleteNodeStrictArtifacts:
         )
 
         node = read_node(str(job_dir), node_id)
-        assert node["metadata"]["artifact_sha256"]["solvated_pdb"] == expected_sha
+        assert node["status"] == "completed"
 
     def test_raises_on_missing_artifact_file(self, job_dir):
         create_node(str(job_dir), "solv")
@@ -915,7 +906,6 @@ class TestCompleteNodeStrictArtifacts:
             )
         node = read_node(str(job_dir), "solv_001")
         assert node["status"] == "pending"
-        assert "artifact_sha256" not in node.get("metadata", {})
 
     def test_raises_when_artifact_path_is_directory(self, job_dir):
         create_node(str(job_dir), "solv")
@@ -930,24 +920,6 @@ class TestCompleteNodeStrictArtifacts:
             )
 
         node = read_node(str(job_dir), "solv_001")
-        assert node["status"] == "pending"
-
-    def test_hash_failure_does_not_complete_node(self, job_dir):
-        create_node(str(job_dir), "solv")
-        node_id = "solv_001"
-        artifact_file = job_dir / "nodes" / node_id / "artifacts" / "solvated.pdb"
-        artifact_file.parent.mkdir(parents=True, exist_ok=True)
-        artifact_file.write_text("ATOM      1  N   ALA A   1\n")
-
-        with patch("mdclaw.node.lifecycle._sha256_path", return_value=None):
-            with pytest.raises(ValueError, match="could not be hashed"):
-                _real_complete_node(
-                    str(job_dir),
-                    node_id,
-                    artifacts={"solvated_pdb": "artifacts/solvated.pdb"},
-                )
-
-        node = read_node(str(job_dir), node_id)
         assert node["status"] == "pending"
 
     def test_sync_progress_rereads_node_json_instead_of_stale_caller_data(self, job_dir):
@@ -1000,7 +972,6 @@ class TestCompleteNodeStrictArtifacts:
             node = read_node(str(job_dir), node_id)
             assert node["status"] == "completed"
             assert progress["nodes"][node_id]["status"] == "completed"
-            assert "state" in node["metadata"]["artifact_sha256"]
 
     def test_atomic_write_json_cleans_tmp_on_replace_failure(self, tmp_path, monkeypatch):
         from mdclaw import _node
@@ -1210,8 +1181,10 @@ class TestUpdateNodeStatusTool:
         before = read_node(str(job_dir), "prep_001")["updated_at"]
         # Same-second writes would match; patch updated_at to a clearly
         # older timestamp so we can observe the refresh.
-        update_node(str(job_dir), "prep_001",
-                    {"updated_at": "2000-01-01T00:00:00+00:00"})
+        node_json = job_dir / "nodes" / "prep_001" / "node.json"
+        stale = json.loads(node_json.read_text())
+        stale["updated_at"] = "2000-01-01T00:00:00+00:00"
+        node_json.write_text(json.dumps(stale))
         update_node_status(str(job_dir), "prep_001", "running")
         after = read_node(str(job_dir), "prep_001")["updated_at"]
         assert after != "2000-01-01T00:00:00+00:00"
@@ -1375,7 +1348,6 @@ class TestStateTransitions:
     def test_complete_node_clears_operational_metadata_before_sealing(self, job_dir):
         jd = str(job_dir)
         create_node(jd, "eq")
-        claim_node(jd, "eq_001", "agent-a", lease_seconds=60)
         add_node_need(
             jd,
             "eq_001",
@@ -1390,11 +1362,8 @@ class TestStateTransitions:
 
         node = read_node(jd, "eq_001")
         assert node["status"] == "completed"
-        assert "claimed_by" not in node["metadata"]
-        assert "claim_expires_at" not in node["metadata"]
         assert "open_needs" not in node["metadata"]
         entry = json.loads((job_dir / "progress.json").read_text())["nodes"]["eq_001"]
-        assert "claim" not in entry
         assert "open_needs_count" not in entry
 
     def test_complete_node_rejects_operational_metadata_payload(self, job_dir):
@@ -1575,7 +1544,6 @@ class TestStateTransitions:
     def test_failure_clears_operational_metadata_before_sealing(self, job_dir):
         jd = str(job_dir)
         create_node(jd, "eq")
-        claim_node(jd, "eq_001", "agent-a", lease_seconds=60)
         add_node_need(
             jd,
             "eq_001",
@@ -1589,8 +1557,6 @@ class TestStateTransitions:
         fail_node(jd, "eq_001", errors=["runtime failed"])
 
         metadata = read_node(jd, "eq_001").get("metadata", {})
-        assert "claimed_by" not in metadata
-        assert "claim_expires_at" not in metadata
         assert "open_needs" not in metadata
 
 
@@ -1610,60 +1576,6 @@ class TestUpdateNode:
         assert result["code"] == "node_terminal_transition_reserved"
         assert read_node(str(job_dir), "prep_001")["status"] == "pending"
 
-    def test_merge_dict(self, job_dir):
-        create_node(str(job_dir), "prep")
-        update_node(str(job_dir), "prep_001", {
-            "artifacts": {"merged_pdb": "artifacts/merged.pdb"}
-        })
-        update_node(str(job_dir), "prep_001", {
-            "artifacts": {"ligand_chemistry": "artifacts/ligand_chemistry.json"}
-        })
-        node = read_node(str(job_dir), "prep_001")
-        assert node["artifacts"]["merged_pdb"] == "artifacts/merged.pdb"
-        assert node["artifacts"]["ligand_chemistry"] == "artifacts/ligand_chemistry.json"
-
-    def test_append_warnings(self, job_dir):
-        create_node(str(job_dir), "prep")
-        update_node(str(job_dir), "prep_001", {"warnings": ["w1"]})
-        update_node(str(job_dir), "prep_001", {"warnings": ["w2"]})
-        node = read_node(str(job_dir), "prep_001")
-        assert node["warnings"] == ["w1", "w2"]
-
-    def test_overwrite_scalar(self, job_dir):
-        """Generic scalar merges still work for non-status fields."""
-        create_node(str(job_dir), "prep")
-        update_node(str(job_dir), "prep_001", {"label": "reheat"})
-        node = read_node(str(job_dir), "prep_001")
-        assert node["label"] == "reheat"
-
-    def test_update_node_refuses_identity_edits(self, job_dir):
-        create_node(str(job_dir), "prep")
-        with pytest.raises(ValueError, match="immutable node identity"):
-            update_node(str(job_dir), "prep_001", {
-                "conditions": {"temperature_kelvin": 300.0}
-            })
-
-    def test_update_node_refuses_status_edits(self, job_dir):
-        """update_node must not write the ``status`` field — that is
-        routed through update_node_status so the progress.json index
-        can never drift from node.json."""
-        create_node(str(job_dir), "prep")
-        with pytest.raises(ValueError, match="status"):
-            update_node(str(job_dir), "prep_001", {"status": "running"})
-
-    def test_update_node_refuses_completed_node_edits(self, job_dir):
-        create_node(str(job_dir), "prep")
-        complete_node(
-            str(job_dir),
-            "prep_001",
-            artifacts={"merged_pdb": "artifacts/merged.pdb"},
-        )
-
-        with pytest.raises(ValueError, match="sealed"):
-            update_node(str(job_dir), "prep_001", {
-                "metadata": {"post_completion_note": "late note"}
-            })
-
     def test_update_node_status_refuses_completed_node_edits(self, job_dir):
         create_node(str(job_dir), "prep")
         complete_node(
@@ -1678,12 +1590,9 @@ class TestUpdateNode:
         assert result["code"] == "node_terminal"
         assert read_node(str(job_dir), "prep_001")["status"] == "completed"
 
-    def test_update_node_refuses_failed_node_edits(self, job_dir):
+    def test_update_node_status_refuses_failed_node_edits(self, job_dir):
         create_node(str(job_dir), "prep")
         fail_node(str(job_dir), "prep_001", errors=["bad input"])
-
-        with pytest.raises(ValueError, match="terminal"):
-            update_node(str(job_dir), "prep_001", {"metadata": {"late": True}})
 
         result = update_node_status(str(job_dir), "prep_001", "running")
         assert result["success"] is False
@@ -1761,33 +1670,6 @@ class TestUpdateJobSummaries:
 
 class TestReadHelpers:
 
-    def test_find_nodes_all(self, job_dir):
-        create_node(str(job_dir), "prep")
-        create_node(str(job_dir), "solv")
-        create_node(str(job_dir), "eq")
-        nodes = find_nodes(str(job_dir))
-        assert len(nodes) == 3
-
-    def test_find_nodes_by_type(self, job_dir):
-        create_node(str(job_dir), "prep")
-        create_node(str(job_dir), "eq")
-        create_node(str(job_dir), "eq")
-        nodes = find_nodes(str(job_dir), node_type="eq")
-        assert len(nodes) == 2
-        assert all(n["type"] == "eq" for n in nodes.values())
-
-    def test_find_nodes_by_status(self, job_dir):
-        create_node(str(job_dir), "prep")
-        create_node(str(job_dir), "eq")
-        complete_node(str(job_dir), "prep_001",
-                      artifacts={"merged_pdb": "artifacts/merged.pdb"})
-        completed = find_nodes(str(job_dir), status="completed")
-        assert len(completed) == 1
-        assert "prep_001" in completed
-
-    def test_find_nodes_empty(self, tmp_path):
-        assert find_nodes(str(tmp_path)) == {}
-
     def test_get_ancestors_linear(self, job_dir):
         create_node(str(job_dir), "prep")
         create_node(str(job_dir), "solv", parent_node_ids=["prep_001"])
@@ -1804,17 +1686,6 @@ class TestReadHelpers:
         assert "topo_001" in ancestors
         assert "prep_001" in ancestors
         assert "prep_002" in ancestors
-
-    def test_get_children(self, job_dir):
-        create_node(str(job_dir), "eq")
-        create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
-        create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
-        children = get_children(str(job_dir), "eq_001")
-        assert set(children) == {"prod_001", "prod_002"}
-
-    def test_get_children_none(self, job_dir):
-        create_node(str(job_dir), "prep")
-        assert get_children(str(job_dir), "prep_001") == []
 
     def test_resolve_artifact(self, job_dir):
         create_node(str(job_dir), "eq")
@@ -1882,119 +1753,6 @@ class TestProgressIndexRebuild:
         progress = json.loads((job_dir / "progress.json").read_text())
         assert "prep_001" in progress["nodes"]
         assert "bad_001" not in progress["nodes"]
-
-
-class TestNodeClaim:
-
-    def test_claim_node_sets_metadata_and_progress_summary(self, job_dir):
-        jd = str(job_dir)
-        create_node(jd, "prod")
-
-        result = claim_node(jd, "prod_001", "agent-a", lease_seconds=60)
-
-        assert result["success"] is True
-        node = read_node(jd, "prod_001")
-        assert node["metadata"]["claimed_by"] == "agent-a"
-        assert node["metadata"]["claim_expires_at"] == result["claim_expires_at"]
-        progress = json.loads((job_dir / "progress.json").read_text())
-        assert progress["nodes"]["prod_001"]["claim"]["claimed_by"] == "agent-a"
-
-    def test_claim_node_rejects_active_other_agent_claim(self, job_dir):
-        jd = str(job_dir)
-        create_node(jd, "prod")
-        claim_node(jd, "prod_001", "agent-a", lease_seconds=60)
-
-        result = claim_node(jd, "prod_001", "agent-b", lease_seconds=60)
-
-        assert result["success"] is False
-        assert result["code"] == "node_already_claimed"
-        assert result["claimed_by"] == "agent-a"
-
-    def test_claim_node_allows_expired_claim_override(self, job_dir):
-        jd = str(job_dir)
-        create_node(jd, "prod")
-        expired = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
-        update_node(
-            jd,
-            "prod_001",
-            {
-                "metadata": {
-                    "claimed_by": "agent-a",
-                    "claim_expires_at": expired,
-                }
-            },
-        )
-
-        result = claim_node(jd, "prod_001", "agent-b", lease_seconds=60)
-
-        assert result["success"] is True
-        node = read_node(jd, "prod_001")
-        assert node["metadata"]["claimed_by"] == "agent-b"
-
-    def test_claim_node_rejects_invalid_existing_expiry(self, job_dir):
-        jd = str(job_dir)
-        create_node(jd, "prod")
-        update_node(
-            jd,
-            "prod_001",
-            {
-                "metadata": {
-                    "claimed_by": "agent-a",
-                    "claim_expires_at": "not-a-date",
-                }
-            },
-        )
-
-        result = claim_node(jd, "prod_001", "agent-b", lease_seconds=60)
-
-        assert result["success"] is False
-        assert result["code"] == "invalid_claim_expiry"
-        node = read_node(jd, "prod_001")
-        assert node["metadata"]["claimed_by"] == "agent-a"
-
-    def test_release_node_claim_removes_metadata_and_progress_summary(self, job_dir):
-        jd = str(job_dir)
-        create_node(jd, "prod")
-        claim_node(jd, "prod_001", "agent-a", lease_seconds=60)
-
-        result = release_node_claim(jd, "prod_001", agent_id="agent-a")
-
-        assert result["success"] is True
-        node = read_node(jd, "prod_001")
-        assert "claimed_by" not in node["metadata"]
-        assert "claim_expires_at" not in node["metadata"]
-        progress = json.loads((job_dir / "progress.json").read_text())
-        assert "claim" not in progress["nodes"]["prod_001"]
-
-    def test_release_node_claim_rejects_wrong_owner(self, job_dir):
-        jd = str(job_dir)
-        create_node(jd, "prod")
-        claim_node(jd, "prod_001", "agent-a", lease_seconds=60)
-
-        result = release_node_claim(jd, "prod_001", agent_id="agent-b")
-
-        assert result["success"] is False
-        assert result["code"] == "claim_owner_mismatch"
-
-    def test_claim_node_rejects_completed_node(self, job_dir):
-        jd = str(job_dir)
-        create_node(jd, "prod")
-        complete_node(jd, "prod_001", artifacts={"trajectory": "artifacts/t.dcd"})
-
-        result = claim_node(jd, "prod_001", "agent-a", lease_seconds=60)
-
-        assert result["success"] is False
-        assert result["code"] == "node_terminal"
-
-    def test_claim_node_rejects_failed_node(self, job_dir):
-        jd = str(job_dir)
-        create_node(jd, "prod")
-        fail_node(jd, "prod_001", errors=["runtime failed"])
-
-        result = claim_node(jd, "prod_001", "agent-a", lease_seconds=60)
-
-        assert result["success"] is False
-        assert result["code"] == "node_terminal"
 
 
 class TestNodeNeeds:
@@ -2283,17 +2041,14 @@ class TestDAGAutoResolve:
     def test_resolve_node_inputs_blocks_failed_parent_with_artifacts(self, job_dir):
         jd = str(job_dir)
         create_node(jd, "topo")
-        update_node(
-            jd,
-            "topo_001",
-            {
-                "artifacts": {
-                    "system_xml": "artifacts/system.xml",
-                    "topology_pdb": "artifacts/topology.pdb",
-                    "state_xml": "artifacts/state.xml",
-                }
-            },
-        )
+        node_json = job_dir / "nodes" / "topo_001" / "node.json"
+        data = json.loads(node_json.read_text())
+        data["artifacts"] = {
+            "system_xml": "artifacts/system.xml",
+            "topology_pdb": "artifacts/topology.pdb",
+            "state_xml": "artifacts/state.xml",
+        }
+        node_json.write_text(json.dumps(data))
         fail_node(jd, "topo_001", errors=["topology invalid"])
         create_node(jd, "eq", parent_node_ids=["topo_001"])
 
@@ -4044,12 +3799,10 @@ class TestNodeServerRegistration:
         from mdclaw.node import TOOLS
         assert "create_node" in TOOLS
 
-    def test_multi_agent_node_tools_registered(self):
+    def test_workflow_node_tools_registered(self):
         from mdclaw.node import TOOLS
         for tool_name in (
             "rebuild_progress_index",
-            "claim_node",
-            "release_node_claim",
             "manage_node_need",
         ):
             assert tool_name in TOOLS

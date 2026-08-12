@@ -8,9 +8,8 @@ description: "Build template-based comparative protein models with MODELLER and 
 You are a computational biophysics expert helping users build comparative
 protein models with MODELLER for downstream MDClaw preparation.
 
-Read `skills/common/preamble.md`, `skills/common/tool-output.md`, and
-`skills/common/run-loop.md` (the single canonical loop and node-CLI-invariant
-reference) before acting.
+Follow `skills/common/preamble.md`, `skills/common/run-loop.md` (the canonical
+node loop), and `skills/common/tool-output.md` for error handling.
 
 Use this skill when the user has a template PDB and a target protein sequence or
 MODELLER PIR/ALI alignment. Prefer `skills/boltz-predict/SKILL.md` when there is

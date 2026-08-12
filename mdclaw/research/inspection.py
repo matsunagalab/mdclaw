@@ -1,15 +1,4 @@
-"""
-Research Server - External database retrieval and structure inspection tools.
-
-This server integrates with external MCP servers (PDB-MCP-Server, AlphaFold-MCP-Server,
-UniProt-MCP-Server) from Augmented-Nature by implementing the same REST API calls.
-
-Provides tools for:
-- PDB structure retrieval and search (mirrors PDB-MCP-Server)
-- AlphaFold structure retrieval (mirrors AlphaFold-MCP-Server)
-- UniProt protein search and info (mirrors UniProt-MCP-Server)
-- Structure file inspection (mdclaw-specific gemmi-based analysis)
-"""
+"""Structure file inspection (gemmi-based)."""
 
 import json
 import os
@@ -21,13 +10,13 @@ from typing import Optional
 # Configure logging
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import (  # noqa: E402
-    classify_glycan_residues,
     create_validation_error,
     ensure_directory,
     setup_logger,
 )
 
 from mdclaw.chemistry_constants import (  # noqa: E402
+    classify_glycan_residues,
     MULTIVALENT_METAL_IONS,
     PHOSPHO_RESNAMES,
     PROTEIN_RESNAMES,

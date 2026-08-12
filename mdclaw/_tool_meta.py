@@ -64,39 +64,32 @@ def tool_parameter_examples(**examples: list[object]) -> Callable[[F], F]:
     return decorator
 
 
+def _marker(fn: Callable, attr: str, default):
+    """Read a marker attribute from ``fn`` or the callable it wraps."""
+    value = getattr(fn, attr, None)
+    if value is None:
+        wrapped = getattr(fn, "__wrapped__", None)
+        value = getattr(wrapped, attr, None) if wrapped is not None else None
+    return default if value is None else value
+
+
+def tool_node_type(fn: Callable) -> str | None:
+    """Return the declared node type for a ``@node_tool`` callable."""
+    node_type = _marker(fn, NODE_TYPE_ATTR, None)
+    return node_type if isinstance(node_type, str) and node_type else None
+
+
 def tool_requires_node(fn: Callable) -> bool:
     """True if ``fn`` (or the callable it wraps) is a ``@node_tool``."""
     return tool_node_type(fn) is not None
 
 
-def tool_node_type(fn: Callable) -> str | None:
-    """Return the declared node type for a ``@node_tool`` callable."""
-    node_type = getattr(fn, NODE_TYPE_ATTR, None)
-    if isinstance(node_type, str) and node_type:
-        return node_type
-    wrapped = getattr(fn, "__wrapped__", None)
-    wrapped_node_type = (
-        getattr(wrapped, NODE_TYPE_ATTR, None) if wrapped is not None else None
-    )
-    return wrapped_node_type if isinstance(wrapped_node_type, str) else None
-
-
 def tool_job_dir_is_data(fn: Callable) -> bool:
     """True if ``fn`` (or the callable it wraps) is a ``@job_dir_data_tool``."""
-    if getattr(fn, JOB_DIR_IS_DATA_ATTR, False):
-        return True
-    wrapped = getattr(fn, "__wrapped__", None)
-    return bool(wrapped is not None and getattr(wrapped, JOB_DIR_IS_DATA_ATTR, False))
+    return bool(_marker(fn, JOB_DIR_IS_DATA_ATTR, False))
 
 
 def tool_parameter_example_map(fn: Callable) -> dict[str, list[object]]:
     """Return declarative parameter examples attached to a tool."""
-    examples = getattr(fn, PARAMETER_EXAMPLES_ATTR, None)
-    if examples is None:
-        wrapped = getattr(fn, "__wrapped__", None)
-        examples = (
-            getattr(wrapped, PARAMETER_EXAMPLES_ATTR, None)
-            if wrapped is not None
-            else None
-        )
+    examples = _marker(fn, PARAMETER_EXAMPLES_ATTR, None)
     return dict(examples) if isinstance(examples, dict) else {}

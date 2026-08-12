@@ -27,7 +27,6 @@ from typing import List, Optional  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,
-    classify_glycan_residues,
     create_validation_error,
     create_unique_subdir,
     generate_job_id,
@@ -38,6 +37,7 @@ from mdclaw.research.nucleic import (  # noqa: E402
     modified_nucleic_support_report,
 )
 from mdclaw.chemistry_constants import (  # noqa: E402
+    classify_glycan_residues,
     AMINO_ACIDS,
     WATER_NAMES,
     is_standard_bare_ion_resname,

@@ -14,7 +14,7 @@ def test_in_table_a100_30k_returns_medium_confidence():
     assert out["gpu_type_normalized"] == "a100"
     assert out["confidence"] == "medium"
     assert out["ns_per_day"] == pytest.approx(870.0, rel=0.05)
-    assert "source" in out and "ambermd.org" in out["source"]
+    assert "source" in out and "AMBER" in out["source"]
 
 
 def test_in_table_h100_30k_returns_medium_confidence():

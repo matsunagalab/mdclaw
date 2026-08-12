@@ -11,9 +11,7 @@ signature, update the relevant section here and the matching skill examples.
   AlphaFold, and local files. In node mode it records `source_bundle.json`.
   For PDB/local PDB or mmCIF sources, explicit `assembly_ids` or
   `assembly_mode` requests generate Gemmi biological assembly candidates.
-- `download_structure(...)`: RCSB PDB compatibility wrapper.
 - `get_structure_info(...)`: PDB entry metadata.
-- `get_alphafold_structure(...)`: AlphaFold DB compatibility wrapper.
 - `register_local_structure(...)`: copy or symlink a local source structure.
 - `list_source_candidates(...)`: list normalized source-bundle candidates,
   including IDs, ranks, files, origin metadata, and candidate metrics.
@@ -21,11 +19,11 @@ signature, update the relevant section here and the matching skill examples.
   inspection. In node mode, defaults to the primary source candidate and accepts
   the same source candidate selectors as prep. Writes `inspection.json` and
   emits an event without changing node status.
-- `detect_ptm_sites(...)`: internal helper (not a registered CLI/MCP tool)
+- `detect_ptm_sites(...)`: internal helper (not a registered CLI tool)
   that scans a PDB/CIF for SEP/TPO/PTR sites. Used by `prepare_complex`; not
   in any server `TOOLS` dict, so it is not callable as `mdclaw detect_ptm_sites`.
-- `search_structures(...)`, `search_proteins(...)`, `get_protein_info(...)`,
-  `analyze_structure_details(...)`: external database helpers.
+- `search_structures(...)`, `search_proteins(...)`, `get_protein_info(...)`:
+  external database helpers.
 
 ## `structure/`
 
@@ -116,7 +114,6 @@ signature, update the relevant section here and the matching skill examples.
   `modeller_not_installed`, `modeller_execution_failed`.
 - `rdkit_validate_smiles(...)`: SMILES validation and canonicalization.
 - `pubchem_get_smiles_from_name(...)`: PubChem name lookup.
-- `analyze_plip_interactions(...)`: protein-ligand interaction analysis.
 
 ## `surrogate/`
 
@@ -132,8 +129,6 @@ signature, update the relevant section here and the matching skill examples.
   callers dispatch via `models_with_capability(...)` /
   `resolve_prediction_backend(...)`, so models are swappable without touching
   callers. See `docs/developer/model-backends.md` to add or swap a backend.
-- `setup_surrogate_backend(...)` / `check_surrogate_backend(...)`: backward-
-  compatible aliases that default to `model="bioemu"`.
 - `generate_surrogate_candidates(...)`: generate monomer source candidates with
   a sampling backend (currently BioEmu only). In node mode it writes
   `source_bundle.json` with `source_type="surrogate"` and
@@ -306,13 +301,6 @@ signature, update the relevant section here and the matching skill examples.
 - `pubmed_search(...)`: PubMed search.
 - `pubmed_fetch(...)`: article metadata fetch.
 
-## `metal/`
-
-- `detect_metal_ions(...)`: scan structures for metal ions. Standard bare ions
-  are handled by the active water-model XML during topology generation, with
-  exact residue-name coverage checked by `build_amber_system`; custom metal-site
-  chemistry requires `build_openmm_system(forcefield_xml=...)`.
-
 ## `slurm/`
 
 - `inspect_cluster(...)`: discover partitions, GPUs, and local policy.
@@ -354,7 +342,7 @@ signature, update the relevant section here and the matching skill examples.
   structured `node_wait_timeout` code instead of encouraging duplicate branches.
 - `explain_node(...)`: read-only node details plus execution-context validation
   and auto-resolved inputs for a candidate node.
-- `trace_failure(...)` / `explain_failure(...)`: read-only failed-node
+- `trace_failure(...)`: read-only failed-node
   diagnosis. Reads `metadata.errors`, the latest failure artifact, recent
   events, and parent/dependency status, then returns `recovery_options` and
   `next_commands` for explicit branch creation.

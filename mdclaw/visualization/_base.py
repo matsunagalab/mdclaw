@@ -454,9 +454,9 @@ def _register_preview_on_node(
         job_dir,
         node_id,
         "preview_registered",
-        tool=str(metadata.get("tool") or "render_structure_preview"),
         success=True,
         details={
+            "tool": str(metadata.get("tool") or "render_structure_preview"),
             "artifacts": artifacts,
             "metadata": metadata,
             "warnings": list(warnings or []),

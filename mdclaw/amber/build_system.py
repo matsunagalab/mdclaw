@@ -39,13 +39,15 @@ from pathlib import Path  # noqa: E402
 from typing import List, Optional, Dict, Any  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
-    CANONICAL_WATER_MODELS,
     ensure_directory, create_unique_subdir, generate_job_id,
     BaseToolWrapper, create_file_not_found_error, create_tool_not_available_error,
     create_validation_error,
     create_validation_error_from_guardrails, guardrail_messages,
-    is_glycan_residue_name,
     split_guardrail_results,
+)
+from mdclaw.chemistry_constants import (  # noqa: E402
+    CANONICAL_WATER_MODELS,
+    is_glycan_residue_name,
 )
 from mdclaw import forcefield_catalog as _ff_catalog  # noqa: E402
 

@@ -132,5 +132,3 @@ singularity exec --nv \
   independent of the OpenMM `cu118` build. Verify each with
   `mdclaw check_model_backend --model <name>`.
 - Boltz is pinned to `surrogate_server.BOLTZ_VERSION`; bump deliberately.
-- `setup_surrogate_backend` / `check_surrogate_backend` remain as
-  `bioemu`-defaulted aliases.

@@ -132,9 +132,14 @@ case "$RUNTIME" in
         fi
         # Bind cwd at the same absolute path used by the host. This keeps
         # relative and absolute arguments in one namespace, matching Docker.
+        # PKG_ROOT is bound and put on PYTHONPATH so the container runs the
+        # same mdclaw source as the host-side native tools (the SIF's baked
+        # package is only the dependency image).
         CWD="$(pwd)"
         exec "$CONTAINER_CMD" exec $NV_FLAG \
-            --bind "${CWD}:${CWD}" --pwd "${CWD}" \
+            --bind "${CWD}:${CWD}" --bind "${PKG_ROOT}:${PKG_ROOT}" \
+            --pwd "${CWD}" \
+            --env PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
             "$SIF" mdclaw "$@"
         ;;
     docker)

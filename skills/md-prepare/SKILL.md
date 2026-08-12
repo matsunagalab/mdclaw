@@ -35,11 +35,10 @@ Before the first state-changing command:
    complete `mdclaw <tool> --help`. Previewing output with `head`, `tail`, or
    `grep` is fine; before concluding that a tool or parameter is unavailable,
    confirm with `mdclaw --list-json <tool>`.
-Use IDs returned by tools, never literal example IDs. Read
-`skills/common/run-loop.md` for re-entry, shared-job, and failure detail;
-`skills/common/tool-output.md` for unfamiliar responses; and
-`skills/common/guardrail-codes.md` after a structured failure. Use
-`skills/md-prepare/setup.md` only to route to task-specific preparation pages.
+Use IDs returned by tools, never literal example IDs. Follow
+`skills/common/preamble.md`, `skills/common/run-loop.md` (the canonical node
+loop, re-entry, and shared-job reference), and `skills/common/tool-output.md`
+for error handling.
 
 ## Defaults — Source of Truth
 
@@ -110,14 +109,8 @@ same canonical `study_dir/jobs/<job_id>` layout.
 single-system bootstrap, the default is `explicit` unless the user explicitly
 asks for implicit solvent, vacuum/no-solvent, or a membrane workflow. When a
 study/job records `solvent_regime`, treat it as intent and map it to tool
-calls:
-
-| `solvent_regime` | prep call | next structural step | topology mode |
-|---|---|---|---|
-| `explicit` | `prepare_complex --solvent-type explicit` | `solvate_structure` | `build_amber_system` with `box_dimensions` |
-| `implicit` | `prepare_complex --solvent-type implicit` | skip solv | `build_amber_system --implicit-solvent <MODEL>` |
-| `vacuum` | `prepare_complex --solvent-type vacuum` | skip solv | `build_amber_system` without box or GB |
-| `membrane` | `prepare_complex --solvent-type explicit` | `embed_in_membrane` | `build_amber_system` with membrane box |
+calls with the "Regime -> Tool Calls" table in
+`skills/common/solvent-regimes.md`.
 
 Start from a study. For a simple one-system request, create one study job such
 as `jobs/main`; for broader investigations, register multiple jobs under the
@@ -142,8 +135,8 @@ use the HPacker-based `create_mutated_structure` branch in
    explicit|implicit|vacuum`. Read `inspection-and-chains.md` or
    `prepare-complex.md` when molecule selection is not trivial.
 5. When requested, create an explicit mutation/PTM prep branch using
-   `branches.md`. Read `ion-policy.md` or `prep-chemistry.md` only when the
-   corresponding chemistry is present.
+   `branches.md`. Read the ion policy in `skills/common/solvent-regimes.md` or
+   `prep-chemistry.md` only when the corresponding chemistry is present.
 6. For explicit solvent, create, explain, and run a `solv` node using
    `explicit-water.md`; for membrane use `membrane.md`. Skip `solv` for
    implicit/vacuum and use `implicit-water.md` or the vacuum section of
@@ -221,5 +214,6 @@ candidate should be included.
   is missing and has no safe default, or a structured failure requires a user
   decision.
 - **`human_in_the_loop`**: Pause at every decision checkpoint and confirm the
-  next action with the user. The full checkpoint list and the confirmation
-  loop is summarized in `skills/md-prepare/checkpoints.md`.
+  next action with the user: before source acquisition, chain/ligand selection,
+  the initial `prepare_complex`, optional mutation/PTM branches, solvation and
+  topology, and the equilibration handoff.

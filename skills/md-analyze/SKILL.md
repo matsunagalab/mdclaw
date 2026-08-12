@@ -5,10 +5,9 @@ description: "Molecular dynamics trajectory analysis using MDClaw CLI tools. Rou
 
 # MD Analyze
 
-Read `skills/common/preamble.md`, `skills/common/tool-output.md`, and
-`skills/common/run-loop.md` (the single canonical loop and node-CLI-invariant
-reference) before
-acting. Use `mdclaw inspect_job --job-dir <job_dir>` to confirm the job state
+Follow `skills/common/preamble.md`, `skills/common/run-loop.md` (the canonical
+node loop), and `skills/common/tool-output.md` for error handling.
+Use `mdclaw inspect_job --job-dir <job_dir>` to confirm the job state
 and identify the production or analysis node(s) that answer the analysis
 question.
 
@@ -57,8 +56,9 @@ Read by task:
 
 - Collective variables and bias energy from custom-force production runs:
   `skills/md-analyze/collective-variables.md`
-- Errors, missing artifacts, bad selections, or empty DCDs:
-  `skills/md-analyze/troubleshooting.md`
+- On errors (missing artifacts, bad selections, empty DCDs), act on the
+  returned `code`/`hints`. Do not silently switch atom selections; ask the
+  user if the requested selection does not match the topology.
 
 ## Step 0 Summary
 

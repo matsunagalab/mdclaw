@@ -12,16 +12,9 @@ Use the resulting JSON to decide:
 - Standard DNA/RNA chains to keep as nucleic acids.
 - Glycans to keep with the protein.
 - Ligands to include, exclude, or parameterize.
-- Source ions / metal ions. Keep standard bare ions only for explicit-solvent
-  systems by default; implicit solvent must drop explicit ion particles or
-  switch back to explicit solvent. A deliberate vacuum/no-solvent topology may
-  keep explicit ions. Default OPC covers common bare ions such as NA, CL, K, MG,
-  CA, MN, ZN, FE/FE2, CU, CO, NI, CD, and HG. Do not create extra parameter
-  artifacts for those ions. Non-OPC water models can differ; if topology returns
-  `unsupported_ion_for_water_model`, switch water model or rename the bare ion
-  to a template supported by the selected water XML when chemically equivalent.
-  Custom or coordination-specific metal chemistry requires a pre-converted
-  OpenMM ForceField XML.
+- Source ions / metal ions: keep standard bare ions for explicit solvent,
+  drop them for implicit; policy, water-model coverage, and metal-site XML
+  handling are in `skills/common/solvent-regimes.md`.
 - PTM sites that should be restored later with `phosphorylate_residues`.
 - Modified DNA/RNA residues. If
   `summary.modified_nucleic_support_status == "unsupported"`, report the

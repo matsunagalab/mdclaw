@@ -27,14 +27,12 @@ from mdclaw.solvation.membrane import (
 )
 
 TOOLS = {
-    "solvate_structure": solvate_structure,
-    "embed_in_membrane": embed_in_membrane,
-    "list_available_lipids": list_available_lipids,
+    fn.__name__: fn
+    for fn in (
+        solvate_structure,
+        embed_in_membrane,
+        list_available_lipids,
+    )
 }
 
-__all__ = [
-    "solvate_structure",
-    "embed_in_membrane",
-    "list_available_lipids",
-    "TOOLS",
-]
+__all__ = [*TOOLS, "TOOLS"]

@@ -3,8 +3,7 @@
 Heavy AI model backends (BioEmu, Boltz-2) ship their own Torch/CUDA stacks
 that conflict with the main mdclaw environment's OpenMM ``cu118`` pin, so each
 one runs from its own isolated venv. ``setup_model_backend`` /
-``check_model_backend`` create and inspect those venvs; ``setup_surrogate_backend``
-/ ``check_surrogate_backend`` remain as ``bioemu``-oriented aliases for
+``check_model_backend`` create and inspect those venvs.
 backward compatibility.
 
 BioEmu additionally supports conformational sampling via
@@ -310,14 +309,11 @@ class BoltzBackend(VenvBackend):
         )
 
 
-# Registry of isolated model backends. ``MODEL_BACKENDS`` is the source of
-# truth; ``SURROGATE_BACKENDS`` is a backward-compatible alias for callers and
-# tests that predate the generic naming.
+# Registry of isolated model backends.
 MODEL_BACKENDS = {
     "bioemu": BioEmuBackend(),
     "boltz": BoltzBackend(),
 }
-SURROGATE_BACKENDS = MODEL_BACKENDS
 
 
 

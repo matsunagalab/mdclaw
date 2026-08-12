@@ -22,9 +22,7 @@ def write_event(
     node_id: str,
     event_type: str,
     *,
-    tool: Optional[str] = None,
     success: Optional[bool] = None,
-    cli: Optional[str] = None,
     details: Optional[dict] = None,
 ) -> Path:
     """Write a single event file to ``job_dir/events/``.
@@ -47,12 +45,8 @@ def write_event(
         "node_id": node_id,
         "event_type": event_type,
     }
-    if tool is not None:
-        event["tool"] = tool
     if success is not None:
         event["success"] = success
-    if cli is not None:
-        event["cli"] = cli
     if details is not None:
         event["details"] = details
 

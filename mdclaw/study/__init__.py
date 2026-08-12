@@ -19,26 +19,18 @@ from mdclaw.study.plans import (
 from mdclaw.study.log import record_study_log
 
 TOOLS = {
-    "init_study": init_study,
-    "bootstrap_md_workflow": bootstrap_md_workflow,
-    "add_study_job": add_study_job,
-    "list_study_jobs": list_study_jobs,
-    "record_study_log": record_study_log,
-    "record_study_plan": record_study_plan,
-    "get_study_plan": get_study_plan,
-    "list_study_plans": list_study_plans,
-    "summarize_study": summarize_study,
+    fn.__name__: fn
+    for fn in (
+        init_study,
+        bootstrap_md_workflow,
+        add_study_job,
+        list_study_jobs,
+        record_study_log,
+        record_study_plan,
+        get_study_plan,
+        list_study_plans,
+        summarize_study,
+    )
 }
 
-__all__ = [
-    "init_study",
-    "bootstrap_md_workflow",
-    "add_study_job",
-    "list_study_jobs",
-    "record_study_log",
-    "record_study_plan",
-    "get_study_plan",
-    "list_study_plans",
-    "summarize_study",
-    "TOOLS",
-]
+__all__ = [*TOOLS, "TOOLS"]

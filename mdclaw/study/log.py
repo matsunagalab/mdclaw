@@ -25,89 +25,6 @@ def _append_jsonl(path: Path, record: dict) -> None:
             fh.write(line + "\n")
 
 
-def record_study_decision(
-    study_dir: str,
-    phase: str,
-    decision: str,
-    reason: str,
-    inputs: Optional[list[str]] = None,
-    outputs: Optional[list[str]] = None,
-    agent_id: Optional[str] = None,
-    metadata: Optional[dict] = None,
-) -> dict:
-    """Append one harness-independent decision record to ``decisions.jsonl``."""
-    return _record_study_log(
-        study_dir,
-        "decisions.jsonl",
-        {
-            "record_type": "decision",
-            "phase": phase,
-            "decision": decision,
-            "reason": reason,
-            "inputs": inputs or [],
-            "outputs": outputs or [],
-            "agent_id": agent_id,
-            "metadata": metadata or {},
-        },
-    )
-
-
-def record_study_question(
-    study_dir: str,
-    question: str,
-    status: str = "active",
-    parent_question_id: Optional[str] = None,
-    rationale: Optional[str] = None,
-    agent_id: Optional[str] = None,
-    metadata: Optional[dict] = None,
-) -> dict:
-    """Append a question or question-revision record to ``question_history.jsonl``."""
-    return _record_study_log(
-        study_dir,
-        "question_history.jsonl",
-        {
-            "record_type": "question",
-            "question": question,
-            "status": status,
-            "parent_question_id": parent_question_id,
-            "rationale": rationale,
-            "agent_id": agent_id,
-            "metadata": metadata or {},
-        },
-    )
-
-
-def record_token_usage(
-    study_dir: str,
-    phase: str,
-    purpose: str,
-    tokens: int,
-    result: Optional[str] = None,
-    agent_id: Optional[str] = None,
-    metadata: Optional[dict] = None,
-) -> dict:
-    """Append an optional token-ledger record for agentic campaign accounting."""
-    if tokens < 0:
-        return {
-            "success": False,
-            "errors": ["tokens must be non-negative"],
-            "warnings": [],
-        }
-    return _record_study_log(
-        study_dir,
-        "token_ledger.jsonl",
-        {
-            "record_type": "token_usage",
-            "phase": phase,
-            "purpose": purpose,
-            "tokens": int(tokens),
-            "result": result,
-            "agent_id": agent_id,
-            "metadata": metadata or {},
-        },
-    )
-
-
 def record_study_log(
     study_dir: str,
     record_type: str,
@@ -171,34 +88,52 @@ def record_study_log(
         }
 
     if record_type == "decision":
-        return record_study_decision(
+        return _record_study_log(
             study_dir,
-            phase=phase,
-            decision=decision,
-            reason=reason,
-            inputs=inputs,
-            outputs=outputs,
-            agent_id=agent_id,
-            metadata=metadata,
+            "decisions.jsonl",
+            {
+                "record_type": "decision",
+                "phase": phase,
+                "decision": decision,
+                "reason": reason,
+                "inputs": inputs or [],
+                "outputs": outputs or [],
+                "agent_id": agent_id,
+                "metadata": metadata or {},
+            },
         )
     if record_type == "question":
-        return record_study_question(
+        return _record_study_log(
             study_dir,
-            question=question,
-            status=status,
-            parent_question_id=parent_question_id,
-            rationale=rationale,
-            agent_id=agent_id,
-            metadata=metadata,
+            "question_history.jsonl",
+            {
+                "record_type": "question",
+                "question": question,
+                "status": status,
+                "parent_question_id": parent_question_id,
+                "rationale": rationale,
+                "agent_id": agent_id,
+                "metadata": metadata or {},
+            },
         )
-    return record_token_usage(
+    if tokens < 0:
+        return {
+            "success": False,
+            "errors": ["tokens must be non-negative"],
+            "warnings": [],
+        }
+    return _record_study_log(
         study_dir,
-        phase=phase,
-        purpose=purpose,
-        tokens=int(tokens),
-        result=result,
-        agent_id=agent_id,
-        metadata=metadata,
+        "token_ledger.jsonl",
+        {
+            "record_type": "token_usage",
+            "phase": phase,
+            "purpose": purpose,
+            "tokens": int(tokens),
+            "result": result,
+            "agent_id": agent_id,
+            "metadata": metadata or {},
+        },
     )
 
 

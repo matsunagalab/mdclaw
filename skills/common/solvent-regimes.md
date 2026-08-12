@@ -51,7 +51,10 @@ HMR is a build-time choice baked into `system.xml`; a run-side mismatch raises
 explicit path by default. Default OPC covers common ions such as NA, CL, K, MG,
 CA, MN, ZN, FE/FE2, CU, CO, NI, CD, and HG through its water XML. Other water
 models can differ; topology rejects retained bare ions absent from the active
-water XML with `unsupported_ion_for_water_model`. Custom or
+water XML with `unsupported_ion_for_water_model` (e.g. OPC supports `I` while
+TIP3P-like XMLs use `IOD`) — switch water model, or rename the bare ion to the
+selected model's template name when chemically equivalent. Do not create extra
+parameter artifacts for standard bare monatomic ions. Custom or
 coordination-specific metal chemistry requires a pre-converted OpenMM
 ForceField XML through `build_openmm_system(forcefield_xml=...)`.
 

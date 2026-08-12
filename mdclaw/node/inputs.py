@@ -1,13 +1,4 @@
-"""Node-based job graph management (schema v3).
-
-Each pipeline step (prep, solv, topo, min, eq, prod) is a *node* with its own
-directory, ``node.json``, lock file, and ``artifacts/`` folder.  Parent-child
-relationships form a DAG.  ``progress.json`` is a thin index of nodes.
-
-Design principle:
-    skill = what to run (orchestration, no state mutation)
-    tool  = run + record (execution + state via this module)
-"""
+"""DAG input resolution for each node type (explain_node, resolvers)."""
 
 import json
 import logging
@@ -21,7 +12,7 @@ from mdclaw.node.constants import DAG_GUIDANCE  # noqa: E402
 from mdclaw.node.graph import find_ancestor_artifact, get_ancestors  # noqa: E402
 from mdclaw.node.io import _load_json_artifact, _read_artifact_from_node, _read_continued_from, _read_metadata_field, _read_node_metadata, _sanitize_label  # noqa: E402
 from mdclaw.node.lifecycle import read_node, validate_node_execution_context  # noqa: E402
-from mdclaw.node.prod_chain import _collect_prod_energy_chain, _collect_prod_trajectory_chain, _find_ancestor_node_id, _select_md_restart_ancestor, _walk_prod_chain_from  # noqa: E402
+from mdclaw.node.prod_chain import _collect_prod_artifact_chain, _find_ancestor_node_id, _select_md_restart_ancestor, _walk_prod_chain_from  # noqa: E402
 from mdclaw.node.progress import _load_progress_v3  # noqa: E402
 
 
@@ -437,10 +428,8 @@ def _resolve_md_restart(job_dir: str, node_id: str) -> dict:
     return _select_md_restart_ancestor(job_dir, node_id)
 
 
-# Backwards-compatible alias for callers that import the prod-specific name.
 
 
-_resolve_prod_restart = _resolve_md_restart
 
 
 def _resolve_prod_custom_force(job_dir: str, node_id: str) -> dict:
@@ -698,11 +687,11 @@ def resolve_node_inputs(
         if n_parents == 1 and parent_types[0] == "prod":
             # Phase 1 single-prod shape: trajectory + energy chain
             # collected chronologically along the prod lineage.
-            result["trajectory_chain"] = _collect_prod_trajectory_chain(
-                job_dir, node_id
+            result["trajectory_chain"] = _collect_prod_artifact_chain(
+                job_dir, node_id, "trajectory"
             )
-            result["energy_chain"] = _collect_prod_energy_chain(
-                job_dir, node_id
+            result["energy_chain"] = _collect_prod_artifact_chain(
+                job_dir, node_id, "energy"
             )
         elif n_parents >= 1 and all(pt == "prod" for pt in parent_types):
             # Phase 3 multi-prod shape: each parent is an independent

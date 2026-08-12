@@ -30,11 +30,8 @@ mdclaw submit_job \
 
 The `--platform CUDA` in each run command is what makes these GPU jobs; the
 `--partition gpu --gpus 1` above are explicit-and-recommended, not required. See
-the GPU rule in `skills/hpc-run/SKILL.md` "Critical Rules" for the
-auto-detection behavior and multi-GPU / GRES forms.
-
-Do not pass `--system-xml-file`, `--topology-pdb-file`, `--state-xml-file`, or `--restart-from` in normal DAG
-commands. The compute-node CLI resolves topology and restart inputs from the DAG.
+the GPU rule and the no-manual-artifact-paths rule in `skills/hpc-run/SKILL.md`
+"Critical Rules".
 
 For `min -> eq -> prod`, create downstream nodes on the login node and submit
 them with `afterok:<upstream_slurm_id>` dependencies.

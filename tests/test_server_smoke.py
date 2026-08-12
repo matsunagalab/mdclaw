@@ -77,10 +77,11 @@ class TestResearchServer:
         assert result["action_contract"]["ion_chain_ids_when_selecting_chains"] == ["A"]
 
     @pytest.mark.asyncio
-    async def test_download_structure(self, tmp_path):
-        from mdclaw.research.fetch import download_structure
+    async def test_fetch_structure_pdb(self, tmp_path):
+        from mdclaw.research.fetch import fetch_structure
 
-        result = await download_structure(
+        result = await fetch_structure(
+            source="pdb",
             pdb_id="1AKE",
             format="pdb",
             output_dir=str(tmp_path),
@@ -136,19 +137,6 @@ class TestResearchServer:
         assert alphafold_result["success"] is True
         assert alphafold_result["source"] == "alphafold"
         assert alphafold_result["file_format"] == "cif"
-
-    def test_analyze_structure_details(self, small_pdb):
-        from mdclaw.research.structure_analysis import analyze_structure_details
-
-        result = analyze_structure_details(
-            structure_file=small_pdb,
-            ph=7.4,
-            detect_disulfides=False,
-            estimate_protonation=False,
-            check_missing=False,
-            identify_ligands=False,
-        )
-        assert result["success"] is True
 
     def test_inspect_molecules_records_under_node(self, small_pdb, tmp_path):
         """When job_dir/node_id are provided, inspect_molecules drops an
@@ -347,15 +335,16 @@ class TestResearchServer:
         assert node_data["status"] == "pending"
 
     @pytest.mark.asyncio
-    async def test_download_structure_node_mode(self, tmp_path):
+    async def test_fetch_structure_node_mode(self, tmp_path):
         from mdclaw._node import create_node, read_node
-        from mdclaw.research.fetch import download_structure
+        from mdclaw.research.fetch import fetch_structure
 
         job_dir = tmp_path / "job_dl"
         job_dir.mkdir()
         node = create_node(str(job_dir), "source")
 
-        result = await download_structure(
+        result = await fetch_structure(
+            source="pdb",
             pdb_id="1AKE",
             format="pdb",
             job_dir=str(job_dir),
@@ -1383,22 +1372,6 @@ class TestGenesisServer:
         result = pubchem_get_smiles_from_name(chemical_name="aspirin")
         assert result["success"] is True
         assert "smiles" in result
-
-
-# ---------------------------------------------------------------------------
-# metal_server
-# ---------------------------------------------------------------------------
-
-
-class TestMetalServer:
-    """Smoke tests for metal_server.py tools."""
-
-    def test_detect_metal_ions(self, small_pdb):
-        from mdclaw.metal.detect import detect_metal_ions
-
-        result = detect_metal_ions(pdb_file=small_pdb)
-        assert result["metal_count"] == 0
-        assert result["metals"] == []
 
 
 if __name__ == "__main__":

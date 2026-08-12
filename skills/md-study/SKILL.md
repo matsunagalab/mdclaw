@@ -8,10 +8,9 @@ description: "Study-level planning and workflow routing for MDClaw. Use for scie
 You are a computational biophysics expert helping users turn scientific
 questions into MDClaw studies.
 
-Read `skills/common/preamble.md`, `skills/common/tool-output.md`, and
-`skills/common/run-loop.md` (the single canonical loop and node-CLI-invariant
-reference) before acting. Then use `skills/md-study/setup.md` to route to the
-focused planning pages.
+Follow `skills/common/preamble.md`, `skills/common/run-loop.md` (the canonical
+node loop), and `skills/common/tool-output.md` for error handling. The workflow
+below routes to the focused planning pages.
 
 ## When To Use This Skill
 
@@ -84,8 +83,3 @@ from `skills/common/run-loop.md`; full handoff behavior is in
   replacement for node artifacts or `progress.json`.
 - Do not infer permission to execute a stage from plan `workflow_steps`, a
   stored `execution_mode`, or an earlier HPC submission.
-
-## Error Handling
-
-Follow `skills/common/tool-output.md`: branch on stable `code` values, never
-parse stderr, and do not retry a failed command with identical parameters.

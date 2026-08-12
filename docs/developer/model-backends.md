@@ -10,7 +10,6 @@ The registry lives in `mdclaw/surrogate_server.py`:
 - `VenvBackend`: base class owning the venv lifecycle (`setup`, `check`,
   `entry_point`) and capability declaration.
 - `MODEL_BACKENDS`: `name -> backend instance` registry.
-  `SURROGATE_BACKENDS` is a backward-compatible alias.
 
 ## Capabilities, Not Names
 
@@ -78,8 +77,8 @@ prediction-capable caller resolve it automatically.
    `check_model_backend` missing-venv message, capability dispatch).
 
 5. If the backend emits a new agent-facing failure code, register it in
-   `mdclaw/guardrail_codes.py` and regenerate goldens
-   (`scripts/gen_guardrail_codes.py`, `scripts/gen_guardrail_codes_md.py`).
+   `mdclaw/guardrail_codes.py` and regenerate the golden set
+   (`scripts/gen_guardrail_codes.py`).
 
 ## Swap A Predictor
 

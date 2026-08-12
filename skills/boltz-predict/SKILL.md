@@ -8,10 +8,23 @@ description: "AI-driven protein structure prediction using Boltz-2 for single pr
 You are a computational biophysics expert helping users predict protein
 structures using Boltz-2.
 
-Read `skills/common/preamble.md`, `skills/common/tool-output.md`, and
-`skills/common/run-loop.md` (the single canonical loop and node-CLI-invariant
-reference) before acting. Then use `skills/boltz-predict/setup.md` to route to
-the focused pages.
+Follow `skills/common/preamble.md`, `skills/common/run-loop.md` (the canonical
+node loop), and `skills/common/tool-output.md` for error handling.
+
+## Backend Runtime
+
+Boltz-2 is a heavy AI model with its own Torch/CUDA stack. It runs from an
+isolated venv managed by `setup_model_backend`, never from the conda `mdclaw`
+environment or the core runtime. If a run returns
+`code="boltz_backend_not_installed"`, install it once and retry:
+
+```bash
+mdclaw setup_model_backend --model boltz --device cuda   # or --device cpu
+mdclaw check_model_backend --model boltz
+```
+
+On a read-only SIF, point `MDCLAW_SURROGATE_DIR` at a writable (ideally
+shared) filesystem and bind-mount it so the venv and weight cache persist.
 
 ## When To Use This Skill
 
@@ -50,4 +63,5 @@ mode, sequence, or a named ligand is missing or ambiguous.
 4. Interpret results and hand off per
    `skills/boltz-predict/source-bundle-handoff.md`.
 
-On any structured failure, follow `skills/boltz-predict/error-handling.md`.
+On any structured failure, act on the returned `code` and `hints`
+(`skills/common/tool-output.md`).

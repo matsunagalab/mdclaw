@@ -8,10 +8,10 @@ and assembled into ``TOOLS``.
 from mdclaw.openmm_system.build import build_openmm_system
 
 TOOLS = {
-    "build_openmm_system": build_openmm_system,
+    fn.__name__: fn
+    for fn in (
+        build_openmm_system,
+    )
 }
 
-__all__ = [
-    "build_openmm_system",
-    "TOOLS",
-]
+__all__ = [*TOOLS, "TOOLS"]

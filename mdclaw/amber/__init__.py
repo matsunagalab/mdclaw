@@ -8,10 +8,10 @@ from mdclaw.amber.build_system import (
 )
 
 TOOLS = {
-    "build_amber_system": build_amber_system,
+    fn.__name__: fn
+    for fn in (
+        build_amber_system,
+    )
 }
 
-__all__ = [
-    "build_amber_system",
-    "TOOLS",
-]
+__all__ = [*TOOLS, "TOOLS"]

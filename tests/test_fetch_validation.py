@@ -19,11 +19,7 @@ from mdclaw._node import create_node, read_node
 
 pytest.importorskip("httpx")
 
-from mdclaw.research.fetch import (
-    download_structure,
-    fetch_structure,
-    get_alphafold_structure,
-)
+from mdclaw.research.fetch import fetch_structure
 from mdclaw.research.source_node import (
     list_source_candidates,
     register_local_structure,
@@ -216,64 +212,6 @@ class TestSourceStructureValidation:
         assert pending["status"] == "pending"
         assert pending["artifacts"] == {}
         assert not (job_dir / "nodes" / source_node / "artifacts" / "failure").exists()
-
-
-# ── compatibility wrappers ─────────────────────────────────────────────────
-
-
-# ── download_structure ─────────────────────────────────────────────────────
-
-
-class TestDownloadStructureValidation:
-
-    def test_missing_node_id(self, job_dir):
-        result = asyncio.run(download_structure(
-            pdb_id="1AKE",
-            job_dir=str(job_dir),
-            node_id="source_999",  # never created
-        ))
-        assert result["success"] is False
-        assert any("does not exist" in e for e in result["errors"])
-
-    def test_wrong_node_type(self, job_dir, prep_node):
-        result = asyncio.run(download_structure(
-            pdb_id="1AKE",
-            job_dir=str(job_dir),
-            node_id=prep_node,
-        ))
-        assert result["success"] is False
-        assert any("expected 'source'" in e for e in result["errors"])
-        # Crucial: the prep node must NOT have been mutated.
-        prep_data = read_node(str(job_dir), prep_node)
-        assert prep_data["status"] == "pending"
-        assert prep_data["artifacts"] == {}
-        assert "source_type" not in prep_data["metadata"]
-
-
-# ── get_alphafold_structure ────────────────────────────────────────────────
-
-
-class TestAlphafoldStructureValidation:
-
-    def test_missing_node_id(self, job_dir):
-        result = asyncio.run(get_alphafold_structure(
-            uniprot_id="P12345",
-            job_dir=str(job_dir),
-            node_id="source_999",
-        ))
-        assert result["success"] is False
-        assert any("does not exist" in e for e in result["errors"])
-
-    def test_wrong_node_type(self, job_dir, prep_node):
-        result = asyncio.run(get_alphafold_structure(
-            uniprot_id="P12345",
-            job_dir=str(job_dir),
-            node_id=prep_node,
-        ))
-        assert result["success"] is False
-        assert any("expected 'source'" in e for e in result["errors"])
-        prep_data = read_node(str(job_dir), prep_node)
-        assert prep_data["status"] == "pending"
 
 
 # ── register_local_structure ──────────────────────────────────────────────

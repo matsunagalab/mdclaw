@@ -25,18 +25,14 @@ from mdclaw.simulation.custom_forces import (  # noqa: F401
 )
 
 TOOLS = {
-    "export_state_pdb": export_state_pdb,
-    "inspect_openmm_platforms": inspect_openmm_platforms,
-    "run_minimization": run_minimization,
-    "run_equilibration": run_equilibration,
-    "run_production": run_production,
+    fn.__name__: fn
+    for fn in (
+        export_state_pdb,
+        inspect_openmm_platforms,
+        run_minimization,
+        run_equilibration,
+        run_production,
+    )
 }
 
-__all__ = [
-    "export_state_pdb",
-    "inspect_openmm_platforms",
-    "run_minimization",
-    "run_equilibration",
-    "run_production",
-    "TOOLS",
-]
+__all__ = [*TOOLS, "TOOLS"]

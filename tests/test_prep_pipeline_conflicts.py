@@ -11,7 +11,6 @@ are marked xfail with a note so the suite stays green while flagging the gap.
 Run with: conda run -n mdclaw pytest tests/test_prep_pipeline_conflicts.py -v
 """
 
-import pytest
 
 from mdclaw.structure.phosphorylation import (
     _apply_phosphorylation_to_pdb,

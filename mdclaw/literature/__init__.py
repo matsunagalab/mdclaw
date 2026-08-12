@@ -8,12 +8,11 @@ from mdclaw.literature.search import pubmed_search
 from mdclaw.literature.fetch import pubmed_fetch
 
 TOOLS = {
-    "pubmed_search": pubmed_search,
-    "pubmed_fetch": pubmed_fetch,
+    fn.__name__: fn
+    for fn in (
+        pubmed_search,
+        pubmed_fetch,
+    )
 }
 
-__all__ = [
-    "pubmed_search",
-    "pubmed_fetch",
-    "TOOLS",
-]
+__all__ = [*TOOLS, "TOOLS"]

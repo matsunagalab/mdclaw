@@ -2,7 +2,12 @@
 
 Implicit solvent (Generalized Born) models represent water as a
 continuum dielectric instead of explicit water molecules. Faster but
-less accurate than explicit water.
+less accurate than explicit water: no water-mediated interactions, less
+accurate for surface-exposed residues, salt-bridge stability may differ,
+and membrane systems are not supported. Read
+`skills/common/implicit-solvent-contract.md` for the supported model set
+(HCT, OBC1, OBC2, GBn, GBn2; GBn2 recommended), the build/run validation
+contract, and the research/external-XML paths.
 
 ## Decision Defaults
 
@@ -22,22 +27,12 @@ so the substitution is visible. `ff19SB` was parameterized against OPC
 explicit water and is not Amber25's recommended GB pair — a warning is
 emitted; pass `--forcefield ff14SBonlysc` to silence it.
 
-**GB model**: defaults to `GBn2` (igb=8) for accuracy. Other supported
-models are case-insensitive: `HCT`, `OBC1`, `OBC2`, `GBn`, `GBn2`.
-Unknown names fail-fast with `code="implicit_solvent_model_unsupported"`.
+**Ligand note**: if production later fails with the GBn2 neck-radius error,
+branch to `OBC2` per the fallback in `skills/md-production/implicit-water.md`;
+GBn2 remains the default starting model.
 
-**Ligand note**: GBn2 remains the default starting model, but GBn/GBn2
-neck corrections can fail for some GAFF or curated ligand atom types.
-If production fails with `Radii must be between 1 and 2 Angstroms for
-neck lookup`, branch a new `eq`/`prod` path from the same topology using
-`--implicit-solvent OBC2`.
-
-Prepare-time checkpoints (chain selection, ligand inclusion, confirmation
-loop) live in `setup.md`. Ion handling is different from explicit solvent:
-implicit solvent must not retain crystallographic or bulk ions as explicit
-particles. If the scientific request requires those ions, switch to the
-explicit-solvent path or make a deliberate vacuum/no-solvent choice. Otherwise
-exclude ion residues during preparation.
+Ion policy by regime is in `skills/common/solvent-regimes.md`: implicit
+solvent must not retain crystallographic or bulk ions as explicit particles.
 
 ---
 
@@ -71,9 +66,8 @@ ions are excluded and recorded in `component_disposition.json` before
 
 `build_amber_system` resolves the matching GB XML from
 `forcefield_catalog` (`implicit/gbn2.xml` for GBn2) and bakes the
-resulting `CustomGBForce` / `GBSAOBCForce` into the saved `system.xml`.
-The run-side shim verifies that force is present before honoring an
-`--implicit-solvent` request, so accidental vacuum builds are caught.
+resulting GB force into the saved `system.xml`; the run-side layers that
+validate this are in `skills/common/implicit-solvent-contract.md`.
 
 Calling contract:
 - No `--box-dimensions`, no `--water-model`. Combining `--implicit-solvent`
@@ -89,63 +83,11 @@ Calling contract:
   equilibration branch — the equilibration skill uses the same standard
   standalone `min` node followed by low-temperature warmup for all systems.
 
-### Implicit-solvent paths in MDClaw
-
-| Path | Command | Coverage |
-|---|---|---|
-| **Standard (recommended)** | `build_amber_system --implicit-solvent <MODEL>` | Full catalog integration; metadata + run-side topology guard match by canonical name. |
-| **Research, shipped XML** | `build_openmm_system --forcefield-xml … implicit/<model>.xml --implicit-solvent <MODEL>` | Same metadata contract, but the user owns the XML bundle. ``--implicit-solvent`` is required for the topology guard to match — pass the canonical name explicitly. |
-| **Research, external XML** | `build_openmm_system --forcefield-xml … <custom_GB>.xml` | Advanced escape hatch. mdclaw cannot canonicalize a third-party GB XML (e.g. the Greener group's `GB99dms.xml`), so the topo node's `metadata.implicit_solvent` stays `None` and the run-side topology guard cannot validate the build/runtime match. The user must manage XML correctness, GB-force presence, and run-time consistency themselves. |
-
-Officially supported implicit-water models (catalog + run-side guard
-recognition): **HCT, OBC1, OBC2, GBn, GBn2**.
-
-Failure codes you may see (build side):
-- `implicit_solvent_model_unsupported` — name is not in the catalog (typo
-  / drift). The error message lists the supported set.
-- `implicit_solvent_explicit_box_conflict` — `--implicit-solvent` paired
-  with `--box-dimensions`.
-- `implicit_solvent_xml_missing` (`build_openmm_system` only) — declared
-  model whose `implicit/<model>.xml` is not in `--forcefield-xml`.
-- `implicit_solvent_xml_ambiguous` (`build_openmm_system` only) —
-  multiple shipped `implicit/*.xml` in the bundle without an explicit
-  `--implicit-solvent`.
-- `implicit_solvent_force_missing` — XML loaded but the built System
-  carries no `GBSAOBCForce` / `CustomGBForce` /
-  `AmoebaGeneralizedKirkwoodForce`.
-
-Failure codes you may see (run side, after the topology resolver):
-- `implicit_solvent_topology_mismatch` — topo
-  `metadata.implicit_solvent` and the runtime `--implicit-solvent`
-  disagree after canonicalization. Aliases (`gbneck2` ↔ `GBn2`, `obc2`
-  ↔ `OBC2`, `igb1`–`igb8`) match; different models do not. Rebuild the
-  topo node, or rerun with the canonical name the topo carries.
-
-### Domain Knowledge
-
-**Generalized Born models** (fastest to most accurate):
-- **HCT** (igb=1): Fastest, least accurate
-- **OBC1** (igb=2): Good balance
-- **OBC2** (igb=5): Better than OBC1 for most proteins
-- **GBn** (igb=7): Improved neck correction
-- **GBn2** (igb=8): Best accuracy, recommended default
-
-**When to use implicit solvent**:
-- Rapid conformational sampling (folding studies)
-- Large systems where explicit water is too expensive
-- Screening many mutants or ligands quickly
-
-**Limitations**:
-- No explicit water-mediated interactions
-- Less accurate for surface-exposed residues
-- Membrane systems not supported
-- Salt bridge stability may differ from explicit water
-
 ---
 
 ## Handoff
 
 Verify the `topo` node is `completed` in `progress.json`, then follow the
-canonical handoff in `SKILL.md` step 9 (continue with
+canonical handoff in `SKILL.md` (continue with
 `skills/md-equilibration/SKILL.md` on this `job_dir`; shortcut
 `/md-equilibration`) when the current request continues beyond preparation.

@@ -1,15 +1,4 @@
-"""
-Research Server - External database retrieval and structure inspection tools.
-
-This server integrates with external MCP servers (PDB-MCP-Server, AlphaFold-MCP-Server,
-UniProt-MCP-Server) from Augmented-Nature by implementing the same REST API calls.
-
-Provides tools for:
-- PDB structure retrieval and search (mirrors PDB-MCP-Server)
-- AlphaFold structure retrieval (mirrors AlphaFold-MCP-Server)
-- UniProt protein search and info (mirrors UniProt-MCP-Server)
-- Structure file inspection (mdclaw-specific gemmi-based analysis)
-"""
+"""Source-bundle helpers shared by research tools."""
 
 import json
 import os

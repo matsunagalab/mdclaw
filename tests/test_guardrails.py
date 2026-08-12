@@ -752,9 +752,6 @@ def test_solvate_structure_node_mode_openmm_fallback_writes_artifacts_directly(t
     assert node_data["status"] == "completed"
     assert node_data["artifacts"]["solvated_pdb"] == "artifacts/solvated.pdb"
     assert node_data["artifacts"]["box_dimensions"] == "artifacts/box_dimensions.json"
-    sha = node_data["metadata"]["artifact_sha256"]
-    assert "solvated_pdb" in sha
-    assert "box_dimensions" in sha
 
 
 def test_embed_in_membrane_node_mode_autoresolves_prep_merged_pdb(tmp_path):

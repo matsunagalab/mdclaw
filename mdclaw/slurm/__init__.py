@@ -22,30 +22,20 @@ from mdclaw.slurm.monitor import (
 )
 
 TOOLS = {
-    "inspect_cluster": inspect_cluster,
-    "submit_job": submit_job,
-    "submit_array_job": submit_array_job,
-    "check_job": check_job,
-    "list_jobs": list_jobs,
-    "list_tracked_jobs": list_tracked_jobs,
-    "cancel_job": cancel_job,
-    "check_job_log": check_job_log,
-    "set_policy": set_policy,
-    "show_policy": show_policy,
-    "configure_container": configure_container,
+    fn.__name__: fn
+    for fn in (
+        inspect_cluster,
+        submit_job,
+        submit_array_job,
+        check_job,
+        list_jobs,
+        list_tracked_jobs,
+        cancel_job,
+        check_job_log,
+        set_policy,
+        show_policy,
+        configure_container,
+    )
 }
 
-__all__ = [
-    "inspect_cluster",
-    "submit_job",
-    "submit_array_job",
-    "check_job",
-    "list_jobs",
-    "list_tracked_jobs",
-    "cancel_job",
-    "check_job_log",
-    "set_policy",
-    "show_policy",
-    "configure_container",
-    "TOOLS",
-]
+__all__ = [*TOOLS, "TOOLS"]

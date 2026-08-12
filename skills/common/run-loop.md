@@ -49,7 +49,7 @@ DAG handoff instead of claiming a scientific answer.
    Run `inspect_job` immediately after bootstrap, when re-entering an existing
    job, before working a shared job, or before choosing among ambiguous branch
    parents. Read `params.solvent_regime`, `nodes`, `leaf_nodes`, `pending_nodes`,
-   `running_nodes`, `failed_nodes`, `claims`, and `open_needs`. If a relevant
+   `running_nodes`, `failed_nodes`, and `open_needs`. If a relevant
    node is already `running`, keep monitoring or explain that node; do not create
    a sibling retry unless it fails, the user requests a branch, or a tool result
    recommends superseding it. During one fresh, unambiguous serial run, do not
@@ -128,9 +128,8 @@ DAG handoff instead of claiming a scientific answer.
   before concluding that a tool or parameter is unavailable, confirm with
   `mdclaw --list-json <tool>`.
 
-The prepare-stage specialization of this loop (the compact source -> prep ->
-solv -> topo checklist) lives in `skills/md-prepare/happy-path.md`. Equilibration
-and production do not read it; they apply the loop above directly.
+The prepare-stage specialization of this loop is the `skills/md-prepare/SKILL.md`
+workflow; equilibration and production apply the loop above directly.
 
 ## Re-entry And Resume
 
@@ -143,9 +142,8 @@ A job DAG is collaborative: another agent may have advanced it earlier, may be
 running a node now, or may resume it later. `inspect_job` gives the shared state
 snapshot but does not take or check a lease.
 
-- Before working a node in a shared job, take a lease with `claim_node`, and
-  `release_node_claim` when done. Terminal nodes are immutable; create a new node.
-- For the full collaboration picture (claims, open needs, attempted nodes), use
+- Terminal nodes are immutable; create a new node instead of reworking one.
+- For the full collaboration picture (open needs, attempted nodes), use
   `mdclaw inspect_job --job-dir <job_dir>`.
 
 ## Substitution Rule

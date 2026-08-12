@@ -1,15 +1,4 @@
-"""
-Research Server - External database retrieval and structure inspection tools.
-
-This server integrates with external MCP servers (PDB-MCP-Server, AlphaFold-MCP-Server,
-UniProt-MCP-Server) from Augmented-Nature by implementing the same REST API calls.
-
-Provides tools for:
-- PDB structure retrieval and search (mirrors PDB-MCP-Server)
-- AlphaFold structure retrieval (mirrors AlphaFold-MCP-Server)
-- UniProt protein search and info (mirrors UniProt-MCP-Server)
-- Structure file inspection (mdclaw-specific gemmi-based analysis)
-"""
+"""Download cache for fetched structures."""
 
 import contextlib
 import fcntl
@@ -94,7 +83,7 @@ def _atomic_write_text(path: Path, data: str) -> None:
 def _cache_lock(cache_entry_dir: Path):
     """Hold an exclusive flock scoped to one PDB ID's cache directory.
 
-    Serializes concurrent download_structure calls for the same PDB ID across
+    Serializes concurrent fetch_structure calls for the same PDB ID across
     processes (e.g. SLURM array workers). Within-process concurrency is not
     served by flock, but the CLI entry point runs one download per subprocess.
     """
