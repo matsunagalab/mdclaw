@@ -25,7 +25,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "tool_renamed": "The tool was consolidated; call the replacement tool named in the message.",
     "file_not_found": "Verify the path and rerun only after the file exists.",
     "missing_local_file_path": "Provide a valid local file path for the input.",
-    "tool_not_available": "Stop local execution and report the missing external tool.",
+    "tool_not_available": "Confirm the exact name with 'mdclaw --list-json'; if an external binary is missing, report it.",
     "missing_required_arguments": "Add the listed required flags (see `mdclaw --list-json`).",
     "input_resolution_blocked": "Resolve inputs via the DAG or provide explicit paths.",
 
@@ -38,7 +38,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "node_not_started": "Execute the pending node before waiting on it.",
     "node_json_invalid": "node.json is corrupt; inspect the node directory and repair or recreate.",
     "node_terminal": "Node is terminal (completed/failed); branch a new node instead.",
-    "node_wait_timeout": "Waiting on the node timed out; check the running job or lease.",
+    "node_wait_timeout": "Waiting on the node timed out; check whether the job is still running.",
     "invalid_node_type": "Use one of: source, prep, solv, topo, min, eq, prod, analyze.",
     "node_type_mismatch": "Select or create a node whose type matches the requested tool.",
     "invalid_node_status": "Use a valid node status value.",

@@ -110,7 +110,9 @@ def test_build_amber_system_rejects_unknown_water_model_even_without_box_dimensi
 
     assert result["success"] is False
     assert result["error_type"] == "ValidationError"
-    assert "Unknown water model" in result["message"]
+    # The stable code is what an agent branches on; the message is prose and
+    # may be reworded without breaking anyone.
+    assert result["code"] == "unknown_water_model"
 
 
 def test_workflow_missing_inputs_are_structured():
@@ -675,8 +677,8 @@ def test_solvate_structure_blocks_opc_on_openmm_fallback(tmp_path):
 
     assert result["success"] is False
     assert result["error_type"] == "ValidationError"
-    assert "OpenMM fallback cannot safely produce 'opc'" in result["message"]
-    assert any("Install AmberTools/packmol-memgen" in hint for hint in result["hints"])
+    assert result["code"] == "openmm_fallback_unsupported_water_model"
+    assert any("AmberTools" in hint for hint in result["hints"])
 
 
 def test_openmm_fallback_water_model_invariants():

@@ -766,7 +766,8 @@ async def search_structures(
         query: Search term (protein name, keyword, or PDB ID)
         limit: Maximum number of results (default: 10, max: 100)
         include_details: If True, fetch metadata (title, resolution, etc.) for each hit
-        rank_for_md: If True, re-rank results by MD suitability score
+        rank_for_md: If True, order results by experimental method, then
+            resolution (see the ordering note above).
         target_organism: Deprecated; retained for signature compatibility.
             Use ``organism`` for API-level filtering.
         experimental_method: Filter by experimental method at API level. Options:
@@ -818,18 +819,7 @@ async def search_structures(
         "query": query,
         "results": [],
         "total_count": 0,
-        "ranking_method": "md_suitability" if rank_for_md else "relevance",
-        "md_score_info": {
-            "max_score": 120,
-            "base_score": 100,
-            "organism_bonus": 20,
-            "interpretation": {
-                "100-120": "Excellent for MD",
-                "80-99": "Good for MD",
-                "60-79": "Usable with caution",
-                "<60": "Not recommended",
-            },
-        } if rank_for_md else None,
+        "ranking_method": "method_then_resolution" if rank_for_md else "relevance",
         "filters_applied": {},
         "errors": [],
         "warnings": [],
@@ -911,7 +901,6 @@ async def search_structures(
                     include_validation=rank_for_md,
                 )
 
-                # Apply MD suitability scoring and re-rank
                 if rank_for_md:
                     # Deterministic MD-oriented ordering: prefer X-ray, then
                     # cryo-EM, then NMR; within a method, best (lowest)
@@ -1112,7 +1101,3 @@ async def _fetch_structure_summaries(
 
     return results
 
-
-# =============================================================================
-# MD Suitability Scoring Functions
-# =============================================================================

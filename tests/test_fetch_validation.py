@@ -264,6 +264,8 @@ class TestCreateNodeSourceInvariant:
             parent_node_ids=["source_001"],
         )
         assert result["success"] is False
+        # Pin the stable code, not just the prose: an agent branches on this.
+        assert result["code"] == "source_cannot_have_parents"
         assert "DAG root" in result["error"]
 
     def test_source_with_dependency_rejected(self, job_dir):
@@ -274,6 +276,7 @@ class TestCreateNodeSourceInvariant:
             dependency_node_ids=["source_001"],
         )
         assert result["success"] is False
+        assert result["code"] == "source_cannot_have_dependencies"
         assert "DAG root" in result["error"]
 
     def test_non_source_with_parent_still_allowed(self, job_dir):

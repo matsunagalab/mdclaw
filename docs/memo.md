@@ -7,6 +7,84 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-13 — Independent review of the simplification, and what it found in the tests
+
+A codex advisor (gpt-5.6-sol, xhigh) was stood up in a Herdr pane and asked to
+review commit a9c6255 without being told what to conclude. It found real
+defects the author's own tests had not, and its second pass — an audit of the
+test suite itself — found more. Both passes verified every claim by mutation:
+break the implementation, check whether the test notices.
+
+**Defects the review found in a9c6255** (all fixed):
+
+- Seven of the twelve removed tools fell through to an argparse dump on stderr
+  (exit 2, empty stdout), breaking the "every failure is JSON on stdout with a
+  stable code" contract. The advisor framed this as an incomplete compatibility
+  layer and recommended restoring aliases; the maintainer's question — "why
+  care, we deleted them?" — produced the better diagnosis. Measurement showed a
+  never-existed name behaves identically, so this was a pre-existing hole in the
+  CLI that the deletions merely joined, and the fix is one generic
+  unknown-subcommand handler, not a seven-entry tombstone table (which would
+  have re-created exactly the hand-maintained name list this refactor deleted).
+  `--list-json` already answered such names correctly, so both paths now share
+  one resolver.
+- Three migration hints silently dropped the old tool's defaults
+  (`setup_model_backend` requires `--model`; `fetch_structure` defaults to CIF
+  where `get_alphafold_structure` defaulted to PDB), and the comment above
+  `_RENAMED_TOOLS` still claimed the Python functions survived for direct
+  importers — false since a9c6255 deleted them.
+- `search_structures` still advertised the deleted 0–120 MD-suitability rubric
+  (`ranking_method: "md_suitability"`, `md_score_info` with interpretation
+  bands) while computing a plain method-then-resolution sort, and a skill page
+  claimed chain composition entered the ranking.
+- **A regression this refactor introduced**: routing `setup_logger` through the
+  root logger made merely importing mdclaw attach a root handler, so a host
+  application's own records started printing. Fixed with a package-level
+  NullHandler; `literature/_base.py` turned out to have been doing the same
+  thing via `logging.basicConfig` since well before this work.
+- budget validation, loosened to a shape check because "no Python code reads
+  these numbers", had the wrong test: the reader is a later *agent*
+  (`md-production` takes production length from `derived.target_*`). Restored
+  as enums/types/signs only — and the first restoration was itself buggy
+  (`headroom_hours` unchecked rather than sign-unconstrained, explicit nulls
+  passing, enum checks raising TypeError on list input, NaN/Infinity accepted).
+
+**What the test audit found.** The suite was green throughout, which turned out
+to mean less than it looks:
+
+- `test_direct_args_win_over_structure_analysis` asserted nothing at all. A
+  first fix made it assert — and mutation testing showed it *still* passed with
+  the precedence inverted, because the rule applies to what reaches
+  `clean_protein`, and that block never runs when the fixture returns no
+  proteins. The original author knew ("full precedence is exercised in the
+  end-to-end test") but no such test exists. Now stubs a protein through and
+  inspects `clean_protein`'s actual kwargs; mutation fails it.
+- `test_removed_tools_are_deliberate` did not implement its own docstring: it
+  claimed to fail when a server still imports, but used a hardcoded core-server
+  list — which still named the deleted `benchmark` server, and let any
+  non-core tool vanish silently.
+- Tests pinned prose where the contract is a code: rewriting a failure's `code`
+  to `unhandled_error` left them green. `test_representative_tool_failures`
+  hid this structurally by passing raw results straight through
+  `finalize_error`, which defaults a missing code to `unhandled_error`.
+- `_run_cli` discarded the exit status; the guardrail-registry tests skipped
+  (rather than failed) if the registry went missing; two live-API tests were
+  unconditionally skipped placeholders behind a `--runslow` flag that does not
+  exist; stage mappings survived for two tools deleted in a9c6255.
+
+The lesson worth keeping: a green suite is evidence that the tests pass, not
+that they guard anything. Every fix in this entry was checked by breaking the
+implementation first. Also, a reviewer can identify a real defect and still
+recommend the wrong remedy — the unknown-tool finding was correct, its proposed
+fix would have partly undone the simplification.
+
+Still open: old job dirs carry `claim` metadata that the agent-facing index no
+longer surfaces (a migration warning was proposed, not written), and
+`test_registry` still skips on any ImportError, so an accidental import typo in
+a server can hide its tools from discovery without failing anything.
+
+---
+
 ## 2026-08-13 — MDPrepBench pi+deepseek revalidation after the simplification: 40/40 at 1.0
 
 The de-over-engineered tree (previous entry) was revalidated with the same

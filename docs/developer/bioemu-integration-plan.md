@@ -1,5 +1,10 @@
 # MD surrogate source を mdclaw に統合する改善案
 
+> **Partly superseded (2026-08-13, commit a9c6255).** Command examples below
+> that use `setup_surrogate_backend` / `check_surrogate_backend` are stale;
+> use `setup_model_backend --model bioemu` / `check_model_backend --model
+> bioemu`. The design rationale is unchanged.
+
 ## 結論
 
 BioEmu 統合は、最初から「surrogate ensemble → sidechain 復元 → 自動選択 → k 並列 MD → 集約解析」まで一気通貫に作ると複雑になりすぎる。MVP は **MD surrogate 由来の複数構造を mdclaw の `source_bundle` として、side-chain 込みの all-atom PDB として作れること**に絞る。

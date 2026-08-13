@@ -290,6 +290,51 @@ class TestCliPreflightJson:
         assert node["status"] == "pending"
         assert not (job_dir / "nodes" / prep_id / "artifacts" / "failure").exists()
 
+    def test_unknown_tool_name_is_json_not_argparse(self, capsys):
+        from mdclaw._cli import main
+
+        # Any name the CLI does not have — a typo, an invented name, or a tool
+        # dropped in an earlier release — must come back as JSON on stdout, not
+        # an argparse dump on stderr, so an agent can branch on the code.
+        for name in ("totally_made_up_tool", "detect_metal_ions"):
+            with pytest.raises(SystemExit) as exc:
+                main([name])
+            assert exc.value.code == 1
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["success"] is False
+            assert payload["code"] == "tool_not_available"
+            assert payload["context"]["tool"] == name
+
+    def test_unknown_tool_name_suggests_close_match(self, capsys):
+        from mdclaw._cli import main
+
+        with pytest.raises(SystemExit):
+            main(["inspect_moleculs"])
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["context"]["suggestions"] == ["inspect_molecules"]
+        assert any("inspect_molecules" in hint for hint in payload["hints"])
+
+    def test_renamed_and_unknown_agree_across_entry_paths(self, capsys):
+        from mdclaw._cli import main
+
+        # Running a name and introspecting it must return the same code, so an
+        # agent that checks first is not sent down a different recovery path.
+        for name, expected in (
+            ("record_study_decision", "tool_renamed"),
+            ("detect_metal_ions", "tool_not_available"),
+        ):
+            with pytest.raises(SystemExit):
+                main([name])
+            direct = json.loads(capsys.readouterr().out)
+            with pytest.raises(SystemExit):
+                main(["--list-json", name])
+            introspected = json.loads(capsys.readouterr().out)
+            assert direct["code"] == expected
+            assert introspected["code"] == expected
+            assert direct["context"].get("replacement") == introspected[
+                "context"
+            ].get("replacement")
+
     def test_json_input_missing_required_args_is_json(self, capsys):
         from mdclaw._cli import main
 

@@ -12,23 +12,18 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import xml.etree.ElementTree as ET
 from typing import Any
 
 import httpx
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
+from mdclaw._common import setup_logger
 
-# Suppress noisy loggers
-for noisy_logger in ["httpx", "httpcore"]:
-    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+# setup_logger, not basicConfig: configuring the root logger at import time
+# would make an application that merely imports mdclaw start emitting its own
+# records. It also quiets httpx/httpcore for us.
+logger = setup_logger(__name__)
 
 # NCBI E-utilities base URL
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"

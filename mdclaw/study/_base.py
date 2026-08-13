@@ -9,6 +9,7 @@ prepared physical systems derived from it.
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,10 +74,106 @@ def _load_study(study_dir: str | Path) -> dict:
     return data
 
 
+_BUDGET_COMPUTE_TARGETS = frozenset({"local", "hpc", "none"})
+_BUDGET_CONFIDENCES = frozenset({"low", "medium", "high"})
+
+
+def _is_number(value: Any) -> bool:
+    """True for a real, finite number. NaN/Infinity are rejected: they survive
+    JSON round-trips but make every downstream comparison meaningless."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def _one_of(allowed: frozenset) -> Any:
+    """Membership test that tolerates unhashable JSON values (list/dict)."""
+    return lambda v: isinstance(v, str) and v in allowed
+
+
 def _validate_budget_block(budget: Any) -> list[str]:
-    """The optional ``budget`` block is advisory agent metadata: require an
-    object, leave field-level judgement to the planner that wrote it."""
-    return [] if isinstance(budget, dict) else ["plan.budget must be an object"]
+    """Check the machine-checkable invariants of the optional ``budget`` block.
+
+    The block is written during md-study planning and read back later by
+    md-production, which may take production length from
+    ``derived.target_ns_per_replicate`` / ``target_replicates_per_job``
+    (``skills/md-study/compute-budget.md``). That reader is an agent, not
+    Python, so nothing downstream would reject "0 replicates" or a negative GPU
+    count — it would simply plan against it days later, far from the mistake.
+    Enums, types, and signs are therefore enforced here, at the write; the
+    scientific judgement behind the numbers stays with the planner.
+    """
+    if not isinstance(budget, dict):
+        return ["plan.budget must be an object"]
+
+    errors: list[str] = []
+    nested = {}
+    for key in ("throughput", "derived"):
+        if key not in budget:
+            nested[key] = {}
+        elif isinstance(budget[key], dict):
+            nested[key] = budget[key]
+        else:
+            errors.append(
+                f"plan.budget.{key} must be an object; got {budget[key]!r}"
+            )
+            nested[key] = {}
+
+    def _positive_int(v: Any) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+    def _non_negative(v: Any) -> bool:
+        return _is_number(v) and v >= 0
+
+    def _positive(v: Any) -> bool:
+        return _is_number(v) and v > 0
+
+    def _is_str(v: Any) -> bool:
+        return isinstance(v, str)
+
+    throughput, derived = nested["throughput"], nested["derived"]
+    # (path, container, key, nullable, predicate, requirement). ``nullable``
+    # marks the two free-text labels the skill says may be null; everywhere
+    # else an explicit null is as wrong as a wrong type, so presence of the
+    # key — not "is not None" — decides whether a field is checked.
+    checks = (
+        ("compute_target", budget, "compute_target", False,
+         _one_of(_BUDGET_COMPUTE_TARGETS),
+         f"one of {sorted(_BUDGET_COMPUTE_TARGETS)}"),
+        ("gpu_type", budget, "gpu_type", True, _is_str, "a string or null"),
+        ("gpu_count", budget, "gpu_count", False, _positive_int, "a positive integer"),
+        ("wall_time_hours", budget, "wall_time_hours", False,
+         _non_negative, "a non-negative number"),
+        ("notes", budget, "notes", True, _is_str, "a string or null"),
+        ("throughput.ns_per_day_per_gpu", throughput, "ns_per_day_per_gpu", False,
+         _positive, "a positive number"),
+        ("throughput.source", throughput, "source", False, _is_str, "a string"),
+        ("throughput.confidence", throughput, "confidence", False,
+         _one_of(_BUDGET_CONFIDENCES), f"one of {sorted(_BUDGET_CONFIDENCES)}"),
+        ("derived.target_ns_per_replicate", derived, "target_ns_per_replicate", False,
+         _positive, "a positive number"),
+        ("derived.target_replicates_per_job", derived, "target_replicates_per_job", False,
+         _positive_int, "a positive integer"),
+        ("derived.total_simulation_ns", derived, "total_simulation_ns", False,
+         _positive, "a positive number"),
+        ("derived.expected_wallclock_hours", derived, "expected_wallclock_hours", False,
+         _non_negative, "a non-negative number"),
+        # headroom_hours is still type-checked; only its sign is unconstrained,
+        # because a negative value records a plan that is over budget.
+        ("derived.headroom_hours", derived, "headroom_hours", False,
+         _is_number, "a number"),
+    )
+    for path, container, key, nullable, is_valid, requirement in checks:
+        if key not in container:
+            continue
+        value = container[key]
+        if value is None and nullable:
+            continue
+        if not is_valid(value):
+            errors.append(f"plan.budget.{path} must be {requirement}; got {value!r}")
+    return errors
 
 
 def _validate_study_plan(plan: Any) -> list[str]:

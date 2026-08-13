@@ -187,19 +187,5 @@ class TestServerSetup:
         assert "pubmed_fetch" in TOOLS
 
 
-@pytest.mark.slow
-@pytest.mark.asyncio
-class TestLiveAPI:
-    """Tests that require live API access (marked slow)."""
-
-    async def test_pubmed_search_live(self):
-        """Live search returns results."""
-        pytest.skip("Requires network access - run with --runslow")
-
-    async def test_pubmed_fetch_live(self):
-        """Live fetch returns article details."""
-        pytest.skip("Requires network access - run with --runslow")
-
-
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

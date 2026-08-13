@@ -1,5 +1,11 @@
 # Deploy Simplification And Model-Backend Clarification Plan
 
+> **Superseded in part (2026-08-13, commit a9c6255).** The alias decision
+> below was reversed: `setup_surrogate_backend` / `check_surrogate_backend`
+> were removed, and `setup_model_backend` / `check_model_backend` require an
+> explicit `--model`. Invoking an old name returns a `tool_renamed` error
+> naming the replacement. The rest of this plan still stands.
+
 Status: implemented (2026-07-02). Boltz pinned to 2.2.1 in
 `mdclaw/surrogate_server.py` (`BOLTZ_VERSION`). Follow-up: backends now declare
 capabilities (`supports_sampling` / `supports_prediction`) and callers dispatch

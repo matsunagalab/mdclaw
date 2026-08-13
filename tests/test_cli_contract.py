@@ -88,17 +88,33 @@ def test_removed_tools_are_deliberate():
     Dependency-gated servers are tolerated: only fail when a *core* server's
     tool disappears while the server itself still imports.
     """
+    import importlib
+
     from mdclaw._cli import _discover_tools
+    from mdclaw._registry import SERVER_REGISTRY
 
     golden = _load_golden()
     current = set(_discover_tools())
     missing = sorted(set(golden) - current)
 
-    # Servers that are always importable without heavy scientific deps.
-    core_servers = {"node", "study", "benchmark", "evidence", "throughput"}
-    unexpected = [name for name in missing if golden[name]["server"] in core_servers]
+    # Ask whether the owning server actually imports here, rather than trusting
+    # a hand-maintained list of "core" servers: a list goes stale (it still
+    # named the deleted `benchmark` server) and lets a tool from any
+    # unlisted server disappear unnoticed.
+    unexpected = []
+    for name in missing:
+        server = golden[name]["server"]
+        module_path = SERVER_REGISTRY.get(server)
+        if module_path is None:
+            unexpected.append(f"{name} (server '{server}' is no longer registered)")
+            continue
+        try:
+            importlib.import_module(module_path)
+        except ImportError:
+            continue  # dependency-gated server; absent for want of deps, not deleted
+        unexpected.append(f"{name} (server '{server}' imports fine here)")
     if unexpected:
         pytest.fail(
-            "Core tools vanished from discovery without a golden update: "
+            "Tools vanished from discovery without a golden update: "
             + ", ".join(unexpected)
         )

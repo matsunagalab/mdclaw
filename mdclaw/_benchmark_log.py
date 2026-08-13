@@ -28,8 +28,6 @@ def _benchmark_stage_for_tool(tool_name: str) -> str:
         "embed_in_membrane": "prep",
         "build_amber_system": "topo",
         "build_openmm_system": "topo",
-        "package_openmm_submission": "package",
-        "package_mdprep_submission": "package",
         "run_minimization": "min",
         "export_state_pdb": "export",
         "run_equilibration": "eq",

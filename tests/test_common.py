@@ -79,3 +79,33 @@ def test_file_lock_does_not_unlock_failed_lock(monkeypatch, tmp_path):
             pass
 
     assert calls == [lock_mod.fcntl.LOCK_EX]
+
+
+def test_importing_mdclaw_does_not_configure_the_root_logger():
+    """Library etiquette: importing mdclaw must not attach a handler to the
+    root logger, or the host application's own records start appearing on
+    stderr. The CLI installs the real handler in _cli._configure_logging.
+    """
+    import logging
+    import subprocess
+    import sys
+
+    script = (
+        "import logging;"
+        "from mdclaw._cli import _discover_tools;"
+        "_discover_tools();"
+        "print(len(logging.getLogger().handlers));"
+        "h = logging.getLogger('mdclaw').handlers;"
+        "print(len(h));"
+        "print(','.join(type(x).__name__ for x in h))"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    )
+    root_handlers, mdclaw_handlers, handler_types = proc.stdout.split()
+    assert root_handlers == "0", "importing mdclaw added a root logger handler"
+    # Exactly one NullHandler, attached once at package import rather than on
+    # every setup_logger call. The types come from the child process: asserting
+    # on this process's logger would pass no matter what the child did.
+    assert mdclaw_handlers == "1"
+    assert handler_types == "NullHandler"

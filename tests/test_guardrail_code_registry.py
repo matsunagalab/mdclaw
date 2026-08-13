@@ -45,12 +45,13 @@ def test_guardrail_codes_match_golden():
     )
 
 
-def test_emitted_codes_are_registered_when_registry_exists():
-    """Once the SSOT registry lands, every emitted code must be registered."""
-    try:
-        from mdclaw.guardrail_codes import GUARDRAIL_CODES
-    except ImportError:
-        pytest.skip("mdclaw.guardrail_codes SSOT registry not present yet")
+def test_emitted_codes_are_registered():
+    """Every emitted code must be registered in the SSOT registry.
+
+    The registry is mandatory, so a missing import is a failure rather than a
+    reason to skip: skipping would turn its disappearance into a silent pass.
+    """
+    from mdclaw.guardrail_codes import GUARDRAIL_CODES
 
     found = iter_guardrail_codes()
     unregistered = sorted(found - set(GUARDRAIL_CODES))
@@ -62,10 +63,7 @@ def test_emitted_codes_are_registered_when_registry_exists():
 
 def test_registry_has_no_stale_codes():
     """The SSOT registry must not carry codes the package never emits."""
-    try:
-        from mdclaw.guardrail_codes import GUARDRAIL_CODES
-    except ImportError:
-        pytest.skip("mdclaw.guardrail_codes SSOT registry not present yet")
+    from mdclaw.guardrail_codes import GUARDRAIL_CODES
 
     found = iter_guardrail_codes()
     stale = sorted(set(GUARDRAIL_CODES) - found)
@@ -76,10 +74,7 @@ def test_registry_has_no_stale_codes():
 
 
 def test_every_registered_code_has_an_action():
-    try:
-        from mdclaw.guardrail_codes import GUARDRAIL_CODES
-    except ImportError:
-        pytest.skip("mdclaw.guardrail_codes SSOT registry not present yet")
+    from mdclaw.guardrail_codes import GUARDRAIL_CODES
 
     empty = sorted(code for code, action in GUARDRAIL_CODES.items() if not str(action).strip())
     assert not empty, "These registered codes have an empty action: " + ", ".join(empty)

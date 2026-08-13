@@ -9,7 +9,7 @@ requiring the full conda env.
 import json
 import textwrap
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -731,26 +731,68 @@ def test_prepare_complex_propagates_large_missing_gap_recommendation(
 class TestPrecedence:
 
     def test_direct_args_win_over_structure_analysis(self, mini_pdb, monkeypatch, tmp_path):
-        """Direct --disulfide-pairs must override structure_analysis.disulfide_bonds."""
-        _short_circuit_heavy_steps(monkeypatch)
-        with patch("mdclaw.structure.prepare_complex.clean_protein") as mock_clean:
-            mock_clean.return_value = {"success": True, "output_file": None, "operations": [], "warnings": [], "errors": [], "statistics": {}, "disulfide_bonds": []}
-            sa = {
-                "disulfide_bonds": [
-                    {"chain1": "A", "resnum1": 1, "chain2": "A", "resnum2": 2, "form_bond": True}
+        """Direct disulfide_pairs must beat structure_analysis.disulfide_bonds.
+
+        The precedence (direct args > structure_analysis > auto-detect) is
+        applied where ``sa_disulfide_pairs`` is assembled for clean_protein, and
+        that block only runs when split_molecules yields a protein file. The
+        earlier ``result["disulfide_bonds"]`` field never sees structure_analysis
+        at all, so asserting on it would pass no matter which input won — this
+        test therefore stubs split to return one protein and inspects exactly
+        what clean_protein was handed.
+        """
+        import importlib
+
+        _pc = importlib.import_module("mdclaw.structure.prepare_complex")
+        protein_file = tmp_path / "protein_A.pdb"
+        protein_file.write_text(SSBOND_MINI_PDB)
+
+        def fake_split(*args, **kwargs):
+            return {
+                "success": True,
+                "output_dir": str(kwargs.get("output_dir", ".")),
+                "protein_files": [str(protein_file)],
+                "ligand_files": [],
+                "ion_files": [],
+                "water_files": [],
+                "chain_file_info": [
+                    {"chain_id": "A", "file": str(protein_file), "type": "protein"}
                 ],
-                "histidine_states": [{"chain": "A", "resnum": 50, "state": "HIE"}],
+                "all_chains": [{"chain_id": "A", "type": "protein"}],
+                "errors": [],
             }
-            direct = [{"cys1": {"chain": "A", "resnum": 99}, "cys2": {"chain": "A", "resnum": 100}}]
-            prepare_complex(
-                structure_file=str(mini_pdb),
-                output_dir=str(tmp_path / "out"),
-                select_chains=["A"],
-                structure_analysis=sa,
-                disulfide_pairs=direct,
-                histidine_states={"A:99": "HIP"},
-            )
-            # Since stubbed split returns no proteins, clean_protein is not
-            # actually called. Precedence is visible through result shape:
-        # (The important assertion is that no error is raised when both are
-        # provided; full precedence is exercised in the end-to-end test.)
+
+        def fake_merge(*args, **kwargs):
+            return {"success": True, "output_file": None, "statistics": {}}
+
+        mock_clean = MagicMock(return_value={
+            "success": True, "output_file": str(protein_file), "operations": [],
+            "warnings": [], "errors": [], "statistics": {}, "disulfide_bonds": [],
+        })
+        monkeypatch.setattr(_pc, "split_molecules", fake_split)
+        monkeypatch.setattr(_pc, "merge_structures", fake_merge)
+        monkeypatch.setattr(_pc, "clean_protein", mock_clean)
+
+        sa = {
+            "disulfide_bonds": [
+                {"chain1": "A", "resnum1": 1, "chain2": "A", "resnum2": 2, "form_bond": True}
+            ],
+            "histidine_states": [{"chain": "A", "resnum": 50, "state": "HIE"}],
+        }
+        direct = [{"cys1": {"chain": "A", "resnum": 99}, "cys2": {"chain": "A", "resnum": 100}}]
+        prepare_complex(
+            structure_file=str(mini_pdb),
+            output_dir=str(tmp_path / "out"),
+            select_chains=["A"],
+            structure_analysis=sa,
+            disulfide_pairs=direct,
+            histidine_states={"A:99": "HIP"},
+        )
+
+        assert mock_clean.called, "clean_protein was never reached; precedence untested"
+        handed = mock_clean.call_args.kwargs["disulfide_pairs"]
+        assert handed is not None
+        # The direct pair (99/100) reached clean_protein; the structure_analysis
+        # pair (1/2) did not.
+        assert [(p["resnum1"], p["resnum2"]) for p in handed] == [(99, 100)]
+        assert mock_clean.call_args.kwargs["histidine_states"] == {"A:99": "HIP"}

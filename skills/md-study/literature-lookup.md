@@ -10,8 +10,8 @@ For a direct run of one named PDB (see `skills/md-study/direct-run.md`), this is
 optional: a single `get_structure_info` is enough and `pubmed_search` can be
 skipped. The contract below is for multi-system or comparative studies.
 
-1. **Structure candidates** — run `search_structures` (use `--rank-for-md` for
-   MD-suitability ordering by resolution, method, and chain composition) and/or
+1. **Structure candidates** — run `search_structures` (use `--rank-for-md` to
+   order by experimental method, then resolution) and/or
    `get_structure_info --pdb-id <id>` for any candidate the user named. Note
    resolution, method, chain composition, ligands, and bound cofactors that
    matter to the hypothesis (Ca2+, peptide, NADP, lipid, etc.).

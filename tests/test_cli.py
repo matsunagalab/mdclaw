@@ -812,14 +812,18 @@ class TestArgparseConstruction:
         assert payload["tools"][0]["name"] == "run_minimization"
         assert "description" not in payload["tools"][0]
 
+        # A consolidated name names its replacement whichever way it is asked
+        # about: an agent that introspects before calling must not be told less
+        # than one that just calls.
         with pytest.raises(SystemExit) as exc_info:
             main(["--list-json", "record_study_decision"])
         assert exc_info.value.code == 1
         output = capsys.readouterr().out
         assert len(output.splitlines()) == 1
         payload = json.loads(output)
-        assert payload["code"] == "tool_not_available"
+        assert payload["code"] == "tool_renamed"
         assert payload["context"]["tool"] == "record_study_decision"
+        assert payload["context"]["replacement"].startswith("record_study_log")
 
         with pytest.raises(SystemExit) as exc_info:
             main(["--list-json", "not_a_real_mdclaw_tool"])
@@ -1741,8 +1745,6 @@ def test_benchmark_min_stage_is_reserved_for_run_minimization():
 
     assert _benchmark_stage_for_tool("run_minimization") == "min"
     assert _benchmark_stage_for_tool("create_node") == "dag"
-    assert _benchmark_stage_for_tool("package_mdprep_submission") == "package"
-    assert _benchmark_stage_for_tool("package_openmm_submission") == "package"
     assert _benchmark_stage_for_tool("export_state_pdb") == "export"
 
 

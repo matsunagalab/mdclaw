@@ -67,6 +67,9 @@ allow-direct-references = true
 packages = ["mdclaw"]
 
 [tool.pytest.ini_options]
+# Bare `pytest` at the repo root would otherwise also collect stray test files
+# left in gitignored agent scratch under benchmark_runs/, and fail collection.
+testpaths = ["tests"]
 markers = [
     "slow: tests requiring conda scientific packages (deselect with '-m not slow')",
     "integration: full pipeline tests (deselect with '-m not integration')",

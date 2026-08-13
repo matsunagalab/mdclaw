@@ -590,12 +590,14 @@ class TestCreateNode:
     def test_invalid_type(self, job_dir):
         result = create_node(str(job_dir), "invalid_type")
         assert result["success"] is False
+        assert result["code"] == "invalid_node_type"
         assert "Invalid node_type" in result["error"]
 
     def test_invalid_parent_ref(self, job_dir):
         result = create_node(str(job_dir), "solv",
                              parent_node_ids=["nonexistent_001"])
         assert result["success"] is False
+        assert result["code"] == "referenced_node_missing"
         assert "does not exist" in result["error"]
 
     def test_bootstraps_progress(self, job_dir):
@@ -1042,6 +1044,7 @@ class TestContinueFromSugar:
         jd, prod_id = job_with_prod
         result = create_node(str(jd), "eq", continue_from=prod_id)
         assert result["success"] is False
+        assert result["code"] == "continue_from_invalid_node_type"
         assert "only valid for node_type='prod'" in result["error"]
 
     def test_continue_from_rejects_mixed_parents(self, job_with_prod):
@@ -1064,6 +1067,7 @@ class TestContinueFromSugar:
         result = create_node(str(jd), "prod", continue_from="prod_999")
         assert result["success"] is False
         # Unknown reference is caught by the standard parent-ref check
+        assert result["code"] == "referenced_node_missing"
         assert "does not exist" in result["error"]
 
 
@@ -3685,6 +3689,7 @@ class TestSourceStudyContext:
         assert create_node(jd, "source")["success"] is True
         result = create_node(jd, "source")
         assert result["success"] is False
+        assert result["code"] == "source_already_exists"
         assert "already has a source root" in result["error"]
 
     def test_rejects_prep_with_multiple_source_lineages(self, job_dir):

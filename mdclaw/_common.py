@@ -16,6 +16,11 @@ from mdclaw.guardrail_codes import guardrail_action
 
 logger = logging.getLogger(__name__)
 
+# Library etiquette, attached once: the package logger swallows records when the
+# application configured no handlers, and never emits on its behalf. The CLI
+# installs the real stderr handler on the root logger in _cli._configure_logging.
+logging.getLogger("mdclaw").addHandler(logging.NullHandler())
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -56,15 +61,8 @@ def setup_logger(name: str, level: int | None = None) -> logging.Logger:
     log = logging.getLogger(name)
     log.setLevel(level)
 
-    # Loggers propagate to the root logger, which owns the single stderr
-    # handler. Install it on first use for library callers; the CLI installs
-    # its own in _configure_logging.
-    root = logging.getLogger()
-    if not root.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(name)s - %(levelname)s - %(message)s"))
-        root.addHandler(handler)
-
+    # Handlers are not attached here: records propagate to whatever the
+    # application configured (see the package NullHandler above).
     return log
 
 

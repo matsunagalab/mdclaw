@@ -133,11 +133,18 @@ case "$RUNTIME" in
         # Bind cwd at the same absolute path used by the host. This keeps
         # relative and absolute arguments in one namespace, matching Docker.
         # PKG_ROOT is bound and put on PYTHONPATH so the container runs the
-        # same mdclaw source as the host-side native tools (the SIF's baked
-        # package is only the dependency image).
+        # same mdclaw source as the host-side native tools (the image's baked
+        # package is only the dependency layer).
         CWD="$(pwd)"
-        exec "$CONTAINER_CMD" exec $NV_FLAG \
-            --bind "${CWD}:${CWD}" --bind "${PKG_ROOT}:${PKG_ROOT}" \
+        # Arrays, not word-split strings: a bind path may contain spaces.
+        PKG_BIND=()
+        if [ "$PKG_ROOT" != "$CWD" ]; then
+            PKG_BIND=(--bind "${PKG_ROOT}:${PKG_ROOT}")
+        fi
+        NV=()
+        [ -n "$NV_FLAG" ] && NV=("$NV_FLAG")
+        exec "$CONTAINER_CMD" exec "${NV[@]}" \
+            --bind "${CWD}:${CWD}" "${PKG_BIND[@]}" \
             --pwd "${CWD}" \
             --env PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
             "$SIF" mdclaw "$@"
@@ -153,10 +160,23 @@ case "$RUNTIME" in
             USER_FLAG="--user $(id -u):$(id -g)"
         fi
         # Bind cwd at its absolute path so absolute paths in arguments still resolve.
-        # This mirrors Singularity's default behavior of binding $HOME.
+        # This mirrors Singularity's default behavior of binding $HOME. PKG_ROOT
+        # is mounted and put on PYTHONPATH for the same reason as the Singularity
+        # branch: the container must run this checkout, not the image's baked
+        # package, or host-side native tools and container tools drift apart.
         CWD="$(pwd)"
-        exec docker run --rm $GPU_FLAG $USER_FLAG \
-            -v "${CWD}:${CWD}" -w "${CWD}" \
+        # Arrays, not word-split strings: a mount path may contain spaces.
+        PKG_MOUNT=()
+        if [ "$PKG_ROOT" != "$CWD" ]; then
+            PKG_MOUNT=(-v "${PKG_ROOT}:${PKG_ROOT}")
+        fi
+        GPU=()
+        [ -n "$GPU_FLAG" ] && GPU=($GPU_FLAG)
+        USER_ARGS=()
+        [ -n "$USER_FLAG" ] && USER_ARGS=($USER_FLAG)
+        exec docker run --rm "${GPU[@]}" "${USER_ARGS[@]}" \
+            -v "${CWD}:${CWD}" "${PKG_MOUNT[@]}" -w "${CWD}" \
+            -e PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
             "$DOCKER_IMAGE" mdclaw "$@"
         ;;
     *)

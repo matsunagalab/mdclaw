@@ -140,16 +140,27 @@ def test_representative_tool_failures_satisfy_contract():
     from mdclaw.simulation.equilibrate import run_equilibration
     from mdclaw.solvation import solvate_structure
 
+    # Each tool's own stable code is pinned here, before finalize_error runs:
+    # finalize_error defaults a missing code to "unhandled_error", so checking
+    # only the finalized envelope would still pass if a tool stopped
+    # classifying its own failure.
     failures = [
-        solvate_structure(pdb_file=None),
-        run_equilibration(system_xml_file=None, topology_pdb_file=None),
-        build_amber_system(
-            pdb_file="missing.pdb", forcefield="ff19SB", water_model="opccc"
+        ("missing_pdb_file", solvate_structure(pdb_file=None)),
+        (
+            "missing_xml_topology_inputs",
+            run_equilibration(system_xml_file=None, topology_pdb_file=None),
+        ),
+        (
+            "unknown_water_model",
+            build_amber_system(
+                pdb_file="missing.pdb", forcefield="ff19SB", water_model="opccc"
+            ),
         ),
     ]
 
-    for raw in failures:
+    for expected_code, raw in failures:
         assert raw.get("success") is False
+        assert raw.get("code") == expected_code
         # The CLI boundary finalizes every failure; the contract must hold there.
         _assert_contract(finalize_error(raw))
 
@@ -159,11 +170,20 @@ def test_representative_tool_failures_satisfy_contract():
 # ---------------------------------------------------------------------------
 
 
-def _run_cli(*args: str) -> dict:
+def _run_cli(*args: str, expected_exit: int = 1) -> dict:
+    """Run the CLI and return its stdout JSON, pinning the exit status too.
+
+    Exit code is half the contract (docs/developer/cli-internals.md): a tool
+    that printed a correct failure envelope but exited 0 would still break every
+    caller that branches on status.
+    """
     proc = subprocess.run(
         [sys.executable, "-m", "mdclaw._cli", *args],
         capture_output=True,
         text=True,
+    )
+    assert proc.returncode == expected_exit, (
+        f"expected exit {expected_exit}, got {proc.returncode}; stderr={proc.stderr[:400]}"
     )
     return json.loads(proc.stdout)
 

@@ -13,6 +13,7 @@ Output is always JSON on stdout; logs go to stderr.
 
 import argparse
 import asyncio
+import difflib
 import inspect
 import json
 import logging
@@ -35,11 +36,13 @@ from mdclaw._tool_meta import (
     tool_requires_node,
 )
 
-# Tools consolidated during the schema-v3 refactor. Old names are no longer
-# registered as CLI subcommands; invoking one returns a structured
-# ``tool_renamed`` error pointing at the replacement so weak agents get a
-# deterministic recovery signal instead of an argparse "invalid choice" dump.
-# The underlying Python functions still exist for direct importers.
+# Consolidated tools whose work still exists under another name. Invoking an
+# old name returns a structured ``tool_renamed`` error naming the replacement,
+# so an agent gets the migration target rather than the generic
+# ``tool_not_available`` reply every other unknown name receives. Each value
+# must reproduce the OLD tool's behavior, including defaults the replacement
+# does not share. Names whose functionality was removed outright belong in
+# neither table — they are simply unknown tools.
 _RENAMED_TOOLS = {
     "record_study_decision": "record_study_log --record-type decision",
     "record_study_question": "record_study_log --record-type question",
@@ -50,9 +53,9 @@ _RENAMED_TOOLS = {
     "update_node_status": "update_workflow_state (--node-id/--status)",
     "update_job_params": "update_workflow_state (--params)",
     "download_structure": "fetch_structure --source pdb --pdb-id <ID>",
-    "get_alphafold_structure": "fetch_structure --source alphafold --uniprot-id <ID>",
-    "setup_surrogate_backend": "setup_model_backend",
-    "check_surrogate_backend": "check_model_backend",
+    "get_alphafold_structure": "fetch_structure --source alphafold --uniprot-id <ID> --format pdb",
+    "setup_surrogate_backend": "setup_model_backend --model bioemu",
+    "check_surrogate_backend": "check_model_backend --model bioemu",
     "explain_failure": "trace_failure",
 }
 
@@ -710,25 +713,73 @@ def _tool_parameter_schemas(tool_name: str, fn) -> list[dict]:
     return params
 
 
+def _missing_tool_error(tool_name: str, tools: dict[str, dict]) -> dict:
+    """Explain a name the CLI cannot run, however the agent asked for it.
+
+    A consolidated name yields the replacement command; anything else yields
+    the generic 'no such tool' reply. Running the name and introspecting it
+    with ``--list-json`` therefore give the same answer — an agent that checks
+    before calling must not be told less than one that just calls.
+    """
+    replacement = _RENAMED_TOOLS.get(tool_name)
+    if replacement is None:
+        return _unknown_tool_error(tool_name, tools)
+    return {
+        "success": False,
+        "error_type": "ValidationError",
+        "code": "tool_renamed",
+        "message": f"Tool '{tool_name}' was consolidated. Use: {replacement}.",
+        "errors": [f"{tool_name} was renamed/merged into {replacement}"],
+        "warnings": [],
+        "hints": [
+            f"Run 'mdclaw {replacement.split()[0]} --help' for the new interface.",
+            "See `mdclaw --list-json` for the current tool surface.",
+        ],
+        "context": {
+            "tool": tool_name,
+            "replacement": replacement,
+            "code": "tool_renamed",
+        },
+        "recoverable": True,
+    }
+
+
+def _unknown_tool_error(tool_name: str, tools: dict[str, dict]) -> dict:
+    """Structured 'no such tool' reply for any name the CLI does not have.
+
+    Typos, invented names, and tools dropped in an earlier release all land
+    here. The CLI must never answer an unknown name with an argparse dump on
+    stderr: agents recover from a stable ``code`` on stdout, so a name they
+    guessed wrong has to come back as JSON like every other failure.
+    """
+    suggestions = difflib.get_close_matches(tool_name, tools, n=3, cutoff=0.85)
+    hints = ["Run 'mdclaw --list-json' to see exact available tool names."]
+    if suggestions:
+        hints.insert(0, f"Did you mean: {', '.join(suggestions)}?")
+    return {
+        "success": False,
+        "error_type": "ValidationError",
+        "code": "tool_not_available",
+        "message": f"Unknown MDClaw tool '{tool_name}'",
+        "errors": [f"Tool '{tool_name}' is not present in CLI discovery"],
+        "warnings": [],
+        "hints": hints,
+        "context": {
+            "tool": tool_name,
+            "code": "tool_not_available",
+            "suggestions": suggestions,
+        },
+        "recoverable": True,
+    }
+
+
 def _tool_list_json(
     tools: dict[str, dict],
     requested_tool: str | None = None,
 ) -> dict:
     """Build a machine-readable projection of all tools or one exact tool."""
     if requested_tool is not None and requested_tool not in tools:
-        return {
-            "success": False,
-            "error_type": "ValidationError",
-            "code": "tool_not_available",
-            "message": f"Unknown MDClaw tool '{requested_tool}'",
-            "errors": [f"Tool '{requested_tool}' is not present in CLI discovery"],
-            "warnings": [],
-            "hints": [
-                "Run 'mdclaw --list-json' to see exact available tool names.",
-            ],
-            "context": {"tool": requested_tool, "code": "tool_not_available"},
-            "recoverable": True,
-        }
+        return _missing_tool_error(requested_tool, tools)
 
     selected_tools = (
         {requested_tool: tools[requested_tool]}
@@ -787,32 +838,13 @@ def main(argv: list[str] | None = None) -> None:
 
     tools = _discover_tools()
 
-    # Intercept consolidated tool names before argparse so the agent gets a
-    # structured ``tool_renamed`` code instead of an "invalid choice" error.
+    # Catch any name the CLI does not have before argparse sees it, so the
+    # agent gets a structured code on stdout instead of an "invalid choice"
+    # dump on stderr.
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     subcommand = _detect_subcommand(raw_argv)
-    if subcommand in _RENAMED_TOOLS:
-        replacement = _RENAMED_TOOLS[subcommand]
-        _json_error_and_exit({
-            "success": False,
-            "error_type": "ValidationError",
-            "code": "tool_renamed",
-            "message": (
-                f"Tool '{subcommand}' was consolidated. Use: {replacement}."
-            ),
-            "errors": [f"{subcommand} was renamed/merged into {replacement}"],
-            "warnings": [],
-            "hints": [
-                f"Run 'mdclaw {replacement.split()[0]} --help' for the new interface.",
-                "See `mdclaw --list-json` for the current tool surface.",
-            ],
-            "context": {
-                "tool": subcommand,
-                "replacement": replacement,
-                "code": "tool_renamed",
-            },
-            "recoverable": True,
-        })
+    if subcommand is not None and subcommand not in tools:
+        _json_error_and_exit(_missing_tool_error(subcommand, tools))
 
     parser = _build_parser(tools)
     args = parser.parse_args(argv)
