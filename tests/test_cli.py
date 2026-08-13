@@ -835,6 +835,29 @@ class TestArgparseConstruction:
         assert payload["code"] == "tool_not_available"
         assert payload["context"]["tool"] == "not_a_real_mdclaw_tool"
 
+    def test_node_required_tools_name_their_workflow_entry(self):
+        """A node-required tool must say where job_dir/node_id come from.
+
+        Introspecting a tool before calling it is what the skill tells agents to
+        do. Returning "these two are required" without naming the route left
+        them holding a parameter list and no way in — the observed prelude to
+        improvising outside the DAG.
+        """
+        from mdclaw._cli import _discover_tools, _tool_list_json
+
+        tools = _discover_tools()
+        payload = _tool_list_json(tools, "prepare_complex")
+        entry = payload["tools"][0]["workflow_entry"]
+        assert any("bootstrap_md_workflow" in step for step in entry)
+        assert any("create_node" in step and "prep" in step for step in entry)
+        assert any("explain_node" in step for step in entry)
+        assert any(step.endswith("prepare_complex ...") for step in entry)
+
+        # Tools that run without node context must not carry the route.
+        plain = _tool_list_json(tools, "inspect_molecules")["tools"][0]
+        assert plain["requires_node"] is False
+        assert "workflow_entry" not in plain
+
     def test_optional_params_are_typed_in_parser_and_list_json(self):
         from mdclaw._cli import _build_parser, _discover_tools, _tool_list_json
 

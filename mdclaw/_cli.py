@@ -795,16 +795,30 @@ def _tool_list_json(
     for tool_name, info in sorted(selected_tools.items()):
         description = info["description"]
         summary = description.split("\n")[0].strip() if description else ""
+        requires_node = info.get("requires_node", tool_requires_node(info["fn"]))
+        node_type = info.get("node_type", tool_node_type(info["fn"]))
         tool_payload = {
             "name": tool_name,
             "server": info["server"],
             "summary": summary,
             "is_async": info["is_async"],
-            "requires_node": info.get("requires_node", tool_requires_node(info["fn"])),
-            "node_type": info.get("node_type", tool_node_type(info["fn"])),
+            "requires_node": requires_node,
+            "node_type": node_type,
             "job_dir_is_data": info.get("job_dir_is_data", tool_job_dir_is_data(info["fn"])),
             "parameters": _tool_parameter_schemas(tool_name, info["fn"]),
         }
+        if requires_node:
+            # Saying "job_dir and node_id are required" without saying where
+            # they come from leaves an agent that introspects before calling —
+            # which is what the skill tells it to do — holding a parameter list
+            # and no route into the workflow. Name the route here.
+            tool_payload["workflow_entry"] = [
+                "mdclaw bootstrap_md_workflow --study-dir <study_dir> "
+                "--question <question> --md-goal <goal>",
+                f"mdclaw create_node --job-dir <job_dir> --node-type {node_type}",
+                "mdclaw explain_node --job-dir <job_dir> --node-id <node_id>",
+                f"mdclaw --job-dir <job_dir> --node-id <node_id> {tool_name} ...",
+            ]
         if requested_tool is None:
             tool_payload["description"] = description
         payload["tools"].append(tool_payload)

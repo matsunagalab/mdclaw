@@ -608,10 +608,32 @@ def inspect_molecules(
             if chain["chain_type"] == "ligand"
             for name in chain["residue_names"]
         })
+        # Which detected metals the default explicit water XML already covers.
+        # Computed here because both preparation_guidance and notes report it.
+        _default_opc_ions = _ff_catalog.standard_ion_resnames_for_water("opc")
+        standard_bare_metal_residues = [
+            item for item in multivalent_metal_residues
+            if item["resname"] in _default_opc_ions
+        ]
+        unsupported_metal_residues = [
+            item for item in multivalent_metal_residues
+            if item["resname"] not in _default_opc_ions
+        ]
+
         result["preparation_guidance"] = {
             "ions": {
                 "residue_names": ion_residue_names,
                 "classification": "ion_not_ligand",
+                # Answered here, as stable values, because this is where an
+                # agent asking "what do I do with this metal?" is already
+                # looking. The scope is deliberately narrow: it says templates
+                # exist for the bare ion, not that a coordination site is
+                # scientifically modelled.
+                "bare_ion_templates": (
+                    "missing" if unsupported_metal_residues else "available"
+                ),
+                "bare_ion_templates_water_model": "opc",
+                "bare_ion_templates_scope": "nonbonded_bare_ion_only",
                 "explicit_solvent_action": (
                     "kept_by_default_unless_select_chains_is_used"
                 ),
@@ -731,21 +753,15 @@ def inspect_molecules(
                 "task names one as the target."
             )
 
-        default_opc_ions = _ff_catalog.standard_ion_resnames_for_water("opc")
-        standard_bare_metal_residues = [
-            item for item in multivalent_metal_residues
-            if item["resname"] in default_opc_ions
-        ]
         result["notes"] = {
-            "metal_parameterization_required": False,
+            # Derived, not asserted: hardcoding False would keep claiming "no
+            # parameters needed" for a metal the catalog does not cover.
+            "metal_parameterization_required": bool(unsupported_metal_residues),
             "standard_bare_metal_residues": standard_bare_metal_residues,
             "metal_handling": (
-                "Standard bare metal ion(s) detected. The default explicit "
-                "OPC water XML loaded by build_amber_system already provides "
-                "nonbonded templates for these residue names, so keep them as "
-                "ions on the explicit path. Do not create extra parameter "
-                "artifacts for standard bare ions. If the scientific model needs bonded "
-                "or coordination-specific metal-site parameters, supply a "
+                "Standard bare metal ion(s) detected; keep them as ions on the "
+                "explicit path and do not create extra parameter artifacts. "
+                "Bonded or coordination-specific metal-site chemistry needs a "
                 "pre-converted OpenMM ForceField XML through "
                 "build_openmm_system(forcefield_xml=...)."
             ) if standard_bare_metal_residues else None,

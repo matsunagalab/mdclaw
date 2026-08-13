@@ -13,9 +13,10 @@ chemistry, or branch handling, use the conditional links in `SKILL.md`.
 
 ## Preparation Prerequisite
 
-Confirm that the selected `prep` node is completed. If inspection found
-multivalent metals or PTMs, finish the matching explicit prep branch before
-solvation.
+Confirm that the selected `prep` node is completed. A standard bare metal ion
+needs no extra branch — `inspect_molecules` reports
+`preparation_guidance.ions.bare_ion_templates`; only `missing` (or a PTM) needs
+the matching explicit prep branch before solvation.
 
 Before solvation, verify that any source ions intentionally kept by the request
 are present in the prep `merged_pdb`. If the user requested implicit solvent,

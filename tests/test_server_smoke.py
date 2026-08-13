@@ -67,6 +67,9 @@ class TestResearchServer:
         assert result["preparation_guidance"]["ions"] == {
             "residue_names": ["ZN"],
             "classification": "ion_not_ligand",
+            "bare_ion_templates": "available",
+            "bare_ion_templates_water_model": "opc",
+            "bare_ion_templates_scope": "nonbonded_bare_ion_only",
             "explicit_solvent_action": "kept_by_default_unless_select_chains_is_used",
             "do_not_select_ions_with": [
                 "--include-ligand-ids",
@@ -137,6 +140,35 @@ class TestResearchServer:
         assert alphafold_result["success"] is True
         assert alphafold_result["source"] == "alphafold"
         assert alphafold_result["file_format"] == "cif"
+
+    def test_inspect_molecules_reports_bare_ion_template_status(self, tmp_path):
+        """The metal verdict belongs where an agent reading about ions sees it.
+
+        A P26-style run that never learns the default water XML already covers
+        ZN goes looking for force-field files itself; on a host with large
+        network mounts one `find /` then costs the entire task budget. The
+        answer is therefore stable values on preparation_guidance.ions, not
+        prose buried elsewhere.
+        """
+        from mdclaw.research.inspection import inspect_molecules
+
+        pdb = tmp_path / "zn_site.pdb"
+        pdb.write_text(
+            "ATOM      1  N   HIS A  94      10.000  10.000  10.000  1.00  0.00           N\n"
+            "ATOM      2  CA  HIS A  94      11.000  10.000  10.000  1.00  0.00           C\n"
+            "HETATM    3 ZN    ZN A 262      12.000  10.000  10.000  1.00  0.00          ZN\n"
+            "END\n"
+        )
+        result = inspect_molecules(structure_file=str(pdb))
+        assert result["success"] is True
+        ions = result["preparation_guidance"]["ions"]
+        assert ions["bare_ion_templates"] == "available"
+        assert ions["bare_ion_templates_water_model"] == "opc"
+        # Scope-limited on purpose: templates existing for the bare ion is not a
+        # claim that the coordination site is scientifically modelled.
+        assert ions["bare_ion_templates_scope"] == "nonbonded_bare_ion_only"
+        # Derived from the catalog rather than asserted.
+        assert result["notes"]["metal_parameterization_required"] is False
 
     def test_inspect_molecules_records_under_node(self, small_pdb, tmp_path):
         """When job_dir/node_id are provided, inspect_molecules drops an

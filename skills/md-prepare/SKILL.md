@@ -135,8 +135,8 @@ use the HPacker-based `create_mutated_structure` branch in
    explicit|implicit|vacuum`. Read `inspection-and-chains.md` or
    `prepare-complex.md` when molecule selection is not trivial.
 5. When requested, create an explicit mutation/PTM prep branch using
-   `branches.md`. Read the ion policy in `skills/common/solvent-regimes.md` or
-   `prep-chemistry.md` only when the corresponding chemistry is present.
+   `branches.md` or `prep-chemistry.md`. For ions, act on
+   `inspect_molecules.preparation_guidance.ions` rather than page-hunting.
 6. For explicit solvent, create, explain, and run a `solv` node using
    `explicit-water.md`; for membrane use `membrane.md`. Skip `solv` for
    implicit/vacuum and use `implicit-water.md` or the vacuum section of

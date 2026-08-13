@@ -7,6 +7,76 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-14 — Why P26 kept timing out: it never entered the workflow
+
+`P26_prep_zinc_metalloenzyme_2cba` (carbonic anhydrase II, catalytic Zn) was the
+only MDPrepBench task pi + deepseek failed repeatedly — 3 timeouts in 4 attempts
+against a 30-min cap, while P27 (Mn), P30 (Zn+DNA) and P06 (Ca) passed first try.
+
+**One thing separates the runs.** Both successes ran the canonical workflow
+(bootstrap -> inspect_job -> create_node -> explain_node -> inspect_molecules ->
+prepare_complex -> minimize). All three failures reached none of it: two called
+no workflow tool at all, one only introspected `--list-json prepare_complex`.
+And every failure ends on a filesystem-wide `find /` — neither success runs one.
+This host mounts ~390 TB of NFS under `/` (117T + 99T + 98T + 73T); measured,
+`find / -name ions.xml -path '*amber*'` does not finish in 60 s. One such command
+consumes the whole remaining budget, which is why the transcripts stop at 2.2 /
+16.6 / 17.9 min but the runs die at 30.
+
+So the chain is: skip `inspect_molecules` -> never learn the default water XML
+already covers ZN -> go establish it yourself -> grep force-field XMLs ->
+`find /` -> budget gone.
+
+**Both of my hypotheses were wrong, and the evidence says so.**
+
+- "The CLI cannot answer whether Zn is supported." False. On the real 2CBA,
+  `inspect_molecules` already returned `metal_parameterization_required: false`
+  plus a note that the default OPC water XML provides the templates. My first
+  check used a bare-ZN-only stub PDB that never reached the metal-detection path
+  — the test was wrong, not the tool.
+- "My skills consolidation buried the ion policy by deleting
+  `skills/md-prepare/ion-policy.md`." Refuted decisively by the advisor: the
+  July P26 success never read that page (only the spine and explicit-water.md).
+  Nor did July's P27, which instead parsed `amber19/opc.xml` inside the
+  container by hand. The over-verification habit predates a9c6255 entirely.
+
+**Fixed anyway, where the agent actually looked:**
+
+- The verdict was prose in `notes.metal_handling`, far from the ion guidance.
+  `preparation_guidance.ions` now carries stable values — `bare_ion_templates`,
+  `bare_ion_templates_water_model`, `bare_ion_templates_scope`. The scope name is
+  deliberately narrow: templates existing for a bare ion is not a claim that the
+  coordination site is scientifically modelled.
+- `metal_parameterization_required` was hardcoded `False` regardless of the
+  catalog check. Latent today (every multivalent metal in the detector is in the
+  OPC catalog) but a lie waiting to happen; now derived.
+- `explicit-water.md` told the agent that finding multivalent metals means
+  finishing "the matching explicit prep branch". A standard bare ion needs no
+  branch, and that sentence invites exactly the investigation that killed these
+  runs. It predates a9c6255.
+- `--list-json <node tool>` said `job_dir` and `node_id` are required without
+  saying where they come from — the agent that introspected before calling got a
+  parameter list and no way in. Node-required tools now carry `workflow_entry`.
+
+Skills net -3 lines (the duplicated ion sentence in `prepare-complex.md` and the
+page-hunting route in `SKILL.md` are gone); no new tool.
+
+**What this does not establish.** One passing run would not prove anything: the
+pre-fix state also passed 1 in 4. Divergence is model-level variance and these
+changes do not forbid it — they put the answer and the way back where a
+diverging agent was already looking. The reliable guard is at the harness shell
+boundary (refuse `find` rooted at `/`, `/home`, `/data*`; cap discovery commands
+and kill the process group), which belongs to MDPrepBench, not MDClaw.
+
+**Also learned:** pi's provider config changed. `spark1-vllm` is gone;
+`deepseek-cloudflare/deepseek-v4-flash` now points at the same local vLLM
+(`http://192.168.1.61:8000/v1`). The first rerun died in 0 min on
+`Model "spark1-vllm/deepseek-v4-flash" not found` — an environment change, not a
+code one. The memo entry of 2026-08-13 that called the spark1 name the real one
+is superseded.
+
+---
+
 ## 2026-08-13 — v0.6.5: MDAnalysis in, image rebuilt, and a lint that started screaming
 
 The runtime image was rebuilt so this week's simplification actually ships, and

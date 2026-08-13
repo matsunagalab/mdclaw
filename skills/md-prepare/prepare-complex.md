@@ -23,10 +23,6 @@ add `--source-candidate-id <candidate_id>` to the validated
 For NMR-style model numbering, `--source-model-index 2` selects the second
 model-derived candidate.
 
-On the explicit path, retain standard bare crystallographic ions by including
-`ion` in `--include-types`; for implicit solvent, `--solvent-type implicit`
-excludes them during prep. Full ion policy: `skills/common/solvent-regimes.md`.
-
 For chain-associated ligands, use `inspect_molecules.associated_ligand_candidates`.
 If the task names a target residue/cofactor such as `NDP`, `ATP`, or `AP5`,
 prefer residue-name scoped selection by adding `--select-chains A B
