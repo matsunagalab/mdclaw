@@ -7,6 +7,58 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-13 — v0.6.5: MDAnalysis in, image rebuilt, and a lint that started screaming
+
+The runtime image was rebuilt so this week's simplification actually ships, and
+MDAnalysis was added beside mdtraj. Both went into one build rather than two:
+`container/Dockerfile` copies `mdclaw/` before the conda stage, so any source
+change forces a full rebuild including the OpenMM source build (~1 h), and
+sequencing them would have cost that twice plus a second ~15 GB push for the
+same end state. The dependency risk was retired first — `pip install --dry-run
+MDAnalysis` inside the published image showed 2.10.0 resolving with no
+numpy/scipy movement, adding only GridDataFormats, mmtf-python, mrcfile,
+msgpack and threadpoolctl.
+
+MDAnalysis is declared in `pyproject.toml` next to mdtraj, which is the one
+place that reaches both targets: the conda env through `environment.yml`'s
+`pip: -e .`, and the image through `pip install ".[dev]"` in stage 1.
+
+Version bumped to 0.6.5 because `bin/mdclaw` derives the default Docker tag
+from `plugin.json`: leaving it at 0.6.4 would either strand Docker users on the
+old image or redefine a published release tag. `:0.6.5` and `:latest` now share
+`sha256:6d5ff025…`; `:0.6.4` is untouched.
+
+Verified on the image (19/19 container tests, GPU) and again on the SIF: 77
+tools, v0.6.5, MDAnalysis 2.10.0, mdtraj 1.11.1, CUDA present, and — checked
+deliberately — the *baked* package answers an unknown tool with
+`tool_not_available` JSON and a renamed one with its replacement. That check
+matters now that `bin/mdclaw` binds the checkout: ordinary work would no longer
+notice a stale baked package, but plugin users run exactly that copy. Full
+suite on the new SIF: 1349 passed, 3 skipped.
+
+**What the swap exposed.** ruff went 0.15.21 → 0.16.2, and since
+`pyproject.toml` selected no rules, `ruff check mdclaw/ tests/` — the command
+CLAUDE.md tells contributors to run — went from clean to **1,492 findings**
+overnight. Nothing in the code changed; the defaults widened. A lint that
+always screams is a lint everyone learns to ignore, which is the same failure
+mode as the flaky test in the previous entry. The rule set the code was written
+under (`E4, E7, E9, F`) is now pinned, and both ruff versions agree on the
+result.
+
+Pinning then surfaced three unused imports I had introduced and not seen,
+because my final lint runs had narrowed to `mdclaw/` and skipped `tests/`. It
+also left the 17 pre-existing E702/E741 violations in two test files visible;
+those are fixed too, so the documented command is actually green rather than
+green-if-you-ignore-the-usual-noise.
+
+**Unresolved host issue:** `/` is at 100% (5.2 G free), which is what made the
+first `singularity pull` fail — SIF conversion was redirected to `/home` via
+`SINGULARITY_TMPDIR`. Docker holds 221 GB of images and 190 GB of build cache,
+371 GB reclaimable. Left alone deliberately: pruning the cache makes the next
+image build much slower, and that is the maintainer's call.
+
+---
+
 ## 2026-08-13 — Independent review of the simplification, and what it found in the tests
 
 A codex advisor (gpt-5.6-sol, xhigh) was stood up in a Herdr pane and asked to

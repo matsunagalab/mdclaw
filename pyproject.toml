@@ -80,3 +80,11 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+# Pin the rule set the code was written under. Without this, `ruff check` uses
+# whatever defaults the ruff in the current container happens to ship, and the
+# 0.15 -> 0.16 bump alone turned a clean tree into ~1500 findings — a lint that
+# always screams is a lint everyone learns to ignore. Widen deliberately, in a
+# commit that also fixes what the new rules find.
+select = ["E4", "E7", "E9", "F"]

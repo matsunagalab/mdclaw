@@ -48,6 +48,18 @@ singularity exec --nv \
   mdclaw.sif bash /work/test.sh
 ```
 
+
+`singularity pull` unpacks the whole ~15 GB image before writing the SIF, and it
+does that under `/tmp`. On a host whose root filesystem is small or full the
+pull dies mid-layer with `no space left on device`. Point both temp locations at
+a filesystem with room to spare rather than clearing space under `/`:
+
+```bash
+export SINGULARITY_TMPDIR=/path/with/room/tmp
+export SINGULARITY_CACHEDIR=/path/with/room/cache
+singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest
+```
+
 ### Never Run Singularity Inside A User Namespace
 
 Do not wrap `singularity` in `unshare -Ur`, `unshare -U`, or any other user

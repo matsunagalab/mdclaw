@@ -15,7 +15,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
 
 # Make the repo-root ``scripts`` package importable regardless of pytest's
 # import mode / rootdir handling.

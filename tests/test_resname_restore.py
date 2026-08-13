@@ -38,18 +38,21 @@ def test_restore_numbering_undoes_pdb4amber_renumber(tmp_path):
         _atom(4, "N", "GLY", "A", 2),
         _atom(5, "N", "MET", "B", 215), _atom(6, "N", "LEU", "B", 216),
     ]) + "\nEND\n"
-    rf = tmp_path / "ref.pdb"; tf = tmp_path / "tgt.pdb"
-    rf.write_text(ref); tf.write_text(tgt)
+    rf = tmp_path / "ref.pdb"
+    tf = tmp_path / "tgt.pdb"
+    rf.write_text(ref)
+    tf.write_text(tgt)
     assert restore_residue_numbering_from_reference(tf, rf) is not None
-    keys = [(l[21], l[22:26].strip()) for l in tf.read_text().splitlines()
-            if l.startswith("ATOM  ")]
+    keys = [(line[21], line[22:26].strip()) for line in tf.read_text().splitlines()
+            if line.startswith("ATOM  ")]
     # B residues restored to 1,2; the added H stays in A:1
     assert keys == [("A", "1"), ("A", "1"), ("A", "1"),
                     ("A", "2"), ("B", "1"), ("B", "2")]
 
 
 def test_restore_numbering_bails_on_residue_count_mismatch(tmp_path):
-    rf = tmp_path / "ref.pdb"; tf = tmp_path / "tgt.pdb"
+    rf = tmp_path / "ref.pdb"
+    tf = tmp_path / "tgt.pdb"
     rf.write_text(_atom(1, "N", "ALA", "A", 1) + "\nEND\n")
     tf.write_text(_atom(1, "N", "ALA", "A", 9) + "\n"
                   + _atom(2, "N", "GLY", "A", 10) + "\nEND\n")
@@ -86,7 +89,7 @@ def test_restores_every_protonation_and_ptm_name(tmp_path, canonical, normalized
     src_path.write_text(src)
     out = restore_resnames_from_source_pdb(exp, src_path)
     assert out is not None
-    line = next(l for l in out.splitlines() if l.startswith("ATOM  "))
+    line = next(line for line in out.splitlines() if line.startswith("ATOM  "))
     assert line[17:21].strip() == canonical          # name restored
     assert line[30:54] == exp.splitlines()[0][30:54]  # coords byte-identical
 
@@ -169,7 +172,7 @@ def test_restore_by_key_tolerates_added_atoms(tmp_path):
               + _line(2, "OD2", "ASP", "A", 3) + "\n"
               + _line(3, "HD2", "ASP", "A", 3) + "\nEND\n")   # added H
     out = restore_resnames_by_residue_key(export, src)
-    names = [l[17:20].strip() for l in out.splitlines() if l.startswith("ATOM  ")]
+    names = [line[17:20].strip() for line in out.splitlines() if line.startswith("ATOM  ")]
     assert names == ["ASH", "ASH", "ASH"]      # all 3 records relabelled by key
 
 
@@ -184,8 +187,8 @@ def test_restore_by_key_excludes_mutated_position(tmp_path):
     out = restore_resnames_by_residue_key(
         export, src, exclude_keys={("A", "   5", " ")}
     )
-    names = [(l[22:26].strip(), l[17:20].strip())
-             for l in out.splitlines() if l.startswith("ATOM  ")]
+    names = [(line[22:26].strip(), line[17:20].strip())
+             for line in out.splitlines() if line.startswith("ATOM  ")]
     assert names == [("3", "ASH"), ("5", "ALA")]   # ASH restored, ALA kept
 
 
@@ -196,7 +199,7 @@ def test_restore_by_key_leaves_added_residue_untouched(tmp_path):
     export = (_line(1, "N", "ASP", "A", 3) + "\n"
               + _line(2, "O", "HOH", "B", 1) + "\nEND\n")
     out = restore_resnames_by_residue_key(export, src)
-    names = [l[17:20].strip() for l in out.splitlines() if l.startswith("ATOM  ")]
+    names = [line[17:20].strip() for line in out.splitlines() if line.startswith("ATOM  ")]
     assert names == ["ASH", "HOH"]
 
 
@@ -224,9 +227,9 @@ def test_render_simulation_pdb_restores_names_after_openmm_load(tmp_path):
     text = render_simulation_pdb_preserving_resnames(
         loaded.topology, loaded.positions, str(src)
     )
-    names = [l[17:20].strip() for l in text.splitlines() if l.startswith("ATOM  ")]
+    names = [line[17:20].strip() for line in text.splitlines() if line.startswith("ATOM  ")]
     assert names == ["GLH", "GLH"]          # restored, not the normalized GLU
-    coords = [l[30:54] for l in text.splitlines() if l.startswith("ATOM  ")]
+    coords = [line[30:54] for line in text.splitlines() if line.startswith("ATOM  ")]
     assert len(coords) == 2                  # coordinates intact
 
 
@@ -248,7 +251,7 @@ def test_render_simulation_pdb_falls_back_without_source(tmp_path):
         loaded.topology, loaded.positions, None
     )
     assert any(
-        l[17:20].strip() == "ALA"
-        for l in text.splitlines()
-        if l.startswith("ATOM  ")
+        line[17:20].strip() == "ALA"
+        for line in text.splitlines()
+        if line.startswith("ATOM  ")
     )

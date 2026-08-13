@@ -5,7 +5,8 @@ These encode the 10 conflict cases found by the multi-agent audit so the
 re-running LLM agents each round. Each test is a fast, deterministic,
 function-level check (no network, no full prepare_complex run).
 
-Cases that are FIXED assert the corrected behavior; cases not yet addressed
+Cases that are FIXED assert the corrected behavior
+cases not yet addressed
 are marked xfail with a note so the suite stays green while flagging the gap.
 
 Run with: conda run -n mdclaw pytest tests/test_prep_pipeline_conflicts.py -v
@@ -48,7 +49,8 @@ def test_case3_phosphorylate_refuses_mismatched_residue(tmp_path):
     pdb = ("ATOM      1  N   ALA A  65       0.000   0.000   0.000  1.00  0.00\n"
            "ATOM      2  CA  ALA A  65       1.000   0.000   0.000  1.00  0.00\n"
            "ATOM      3  CB  ALA A  65       1.000   1.000   0.000  1.00  0.00\nEND\n")
-    src = tmp_path / "in.pdb"; out = tmp_path / "out.pdb"
+    src = tmp_path / "in.pdb"
+    out = tmp_path / "out.pdb"
     src.write_text(pdb)
     res = _apply_phosphorylation_to_pdb(
         src, out, [{"chain": "A", "resnum": 65, "target": "SEP"}]
@@ -89,11 +91,13 @@ def test_case9_pdb4amber_renumber_restored(tmp_path):
     tgt = ("ATOM      1  N   ALA A   1       0.0   0.0   0.0\n"
            "ATOM      2  N   MET B 215       3.0   0.0   0.0\n"
            "ATOM      3  N   LEU B 216       4.0   0.0   0.0\nEND\n")
-    rf = tmp_path / "ref.pdb"; tf = tmp_path / "tgt.pdb"
-    rf.write_text(ref); tf.write_text(tgt)
+    rf = tmp_path / "ref.pdb"
+    tf = tmp_path / "tgt.pdb"
+    rf.write_text(ref)
+    tf.write_text(tgt)
     assert restore_residue_numbering_from_reference(tf, rf) is not None
-    keys = [(l[21], l[22:26].strip()) for l in tf.read_text().splitlines()
-            if l.startswith("ATOM  ")]
+    keys = [(line[21], line[22:26].strip()) for line in tf.read_text().splitlines()
+            if line.startswith("ATOM  ")]
     assert keys == [("A", "1"), ("B", "1"), ("B", "2")]
 
 
@@ -150,7 +154,8 @@ def test_case10_topology_index_targets_correct_reused_chain(tmp_path):
            + _ser_block(5, "B", 10)     # block 1, chain 'B'
            + _ser_block(9, "A", 65)     # block 2, chain 'A' (reused id)
            + "END\n")
-    src = tmp_path / "in.pdb"; out = tmp_path / "out.pdb"
+    src = tmp_path / "in.pdb"
+    out = tmp_path / "out.pdb"
     src.write_text(pdb)
     res = _apply_phosphorylation_to_pdb(
         src, out,
@@ -168,7 +173,8 @@ def test_case10_reused_chain_without_index_is_ambiguous(tmp_path):
     # must be reported ambiguous (fail-clear), never applied to the first 'A'.
     pdb = (_ser_block(1, "A", 65) + _ser_block(5, "B", 10)
            + _ser_block(9, "A", 65) + "END\n")
-    src = tmp_path / "in.pdb"; out = tmp_path / "out.pdb"
+    src = tmp_path / "in.pdb"
+    out = tmp_path / "out.pdb"
     src.write_text(pdb)
     res = _apply_phosphorylation_to_pdb(
         src, out, [{"chain": "A", "resnum": 65, "target": "SEP"}],

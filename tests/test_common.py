@@ -86,7 +86,6 @@ def test_importing_mdclaw_does_not_configure_the_root_logger():
     root logger, or the host application's own records start appearing on
     stderr. The CLI installs the real handler in _cli._configure_logging.
     """
-    import logging
     import subprocess
     import sys
 
