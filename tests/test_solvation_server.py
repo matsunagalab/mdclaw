@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -1904,8 +1905,16 @@ def test_embed_in_membrane_runs_parallel_packmol_race(tmp_path, monkeypatch):
         "END\n"
     )
     calls = []
+    # Hold every lane until all four have entered the runner. The race is meant
+    # to cancel lanes that have not started once a winner is accepted, so
+    # without this barrier the winner can be decided before the last lane is
+    # scheduled, its future gets cancelled, and the call is never recorded —
+    # which made this test fail roughly half the time. The timeout keeps a real
+    # regression (fewer lanes started) a loud failure instead of a hang.
+    lanes_started = threading.Barrier(4, timeout=30)
 
     def fake_run(args, *, cwd, timeout, cancel_event):
+        lanes_started.wait()
         calls.append((list(args), Path(cwd)))
         output_path = Path(args[args.index("-o") + 1])
         output_path.write_text(

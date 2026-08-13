@@ -78,6 +78,24 @@ implementation first. Also, a reviewer can identify a real defect and still
 recommend the wrong remedy — the unknown-tool finding was correct, its proposed
 fix would have partly undone the simplification.
 
+**A flaky test that predates all of this.** The full suite then failed on
+`test_embed_in_membrane_runs_parallel_packmol_race`. It is not a regression:
+at HEAD it passed 2 of 5 runs, and at `dce72c6` — before any of today's work —
+1 of 5. Every "full suite green" claim in this memo, including today's, was
+partly luck. The implementation is right: the race cancels lanes that have not
+started once a winner is accepted, and a sibling test exists for exactly that.
+The test's premise was wrong — it assumed all four lanes always reach the
+runner, so whenever one lane finished before the last was scheduled, the
+cancelled lane went unrecorded and the count came up short. Fixed with a
+`threading.Barrier(4, timeout=30)` in the stubbed runner: every lane must
+arrive before any returns, which is deterministic (10/10) and still fails
+loudly if a real regression starts fewer lanes. Worth noting that a test
+failing 40–80% of the time was in a position to hide someone's real regression
+for as long as it existed — the same failure mode the 2026-08-11 entry
+describes.
+
+Full suite after all of the above: 1349 passed, 3 skipped, 0 failed; ruff clean.
+
 Still open: old job dirs carry `claim` metadata that the agent-facing index no
 longer surfaces (a migration warning was proposed, not written), and
 `test_registry` still skips on any ImportError, so an accidental import typo in
