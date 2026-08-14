@@ -187,14 +187,19 @@ def parse_mutation_specs(
         return {}, []
     parsed: dict[tuple[str, int, str], str] = {}
     normalized_specs: list[str] = []
-    for raw in mutation_specs:
+    # ``--mutations`` is nargs="+", so several mutations arrive as separate
+    # tokens. Agents reliably quote them into one comma-joined token instead, so
+    # accept any comma/whitespace separation rather than failing on notation.
+    for raw in [tok for item in mutation_specs for tok in re.split(r"[,\s]+", item)]:
         spec = raw.strip().upper()
         if not spec:
             continue
         match = _MUTATION_RE.match(spec)
         if not match:
             raise ValueError(
-                f"Invalid mutation spec '{raw}'. Use L99A or A:L99A notation."
+                f"Invalid mutation spec '{raw}'. Use L99A or A:L99A notation "
+                f"(chain-qualified). Pass several mutations as separate tokens, "
+                f"e.g. --mutations L99A M102Q."
             )
         from_code = match.group("from")
         to_code = match.group("to")

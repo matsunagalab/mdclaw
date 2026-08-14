@@ -93,6 +93,65 @@ def test_parse_chain_qualified_mutation_spec(tmp_path):
     assert specs == ["A:L99A"]
 
 
+def _two_residue_pdb() -> str:
+    """Chain A with LEU99 and MET102, so two mutations can be requested."""
+    return "\n".join(
+        [
+            _atom_line(1, "N", "LEU", "A", 99, 0.0, 0.0, 0.0, "N"),
+            _atom_line(2, "CA", "LEU", "A", 99, 1.0, 0.0, 0.0, "C"),
+            _atom_line(3, "C", "LEU", "A", 99, 2.0, 0.0, 0.0, "C"),
+            _atom_line(4, "CB", "LEU", "A", 99, 1.0, 1.0, 0.0, "C"),
+            _atom_line(5, "N", "MET", "A", 102, 4.0, 0.0, 0.0, "N"),
+            _atom_line(6, "CA", "MET", "A", 102, 5.0, 0.0, 0.0, "C"),
+            _atom_line(7, "C", "MET", "A", 102, 6.0, 0.0, 0.0, "C"),
+            _atom_line(8, "CB", "MET", "A", 102, 5.0, 1.0, 0.0, "C"),
+            "END",
+            "",
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "specs",
+    [
+        ["L99A", "M102Q"],       # nargs="+" the way the CLI declares it
+        ["L99A,M102Q"],          # one quoted, comma-joined token
+        ["L99A, M102Q"],         # comma plus a space
+        ["L99A M102Q"],          # one quoted, space-separated token
+    ],
+    ids=["separate-tokens", "comma-joined", "comma-space", "quoted-space"],
+)
+def test_parse_accepts_any_separator_between_mutations(tmp_path, specs):
+    """A task asking for two mutations must not fail on how they were quoted.
+
+    In MDPrepBench P09 the agent passed ``--mutations "L99A,M102Q"``; the parser
+    rejected it, the node was sealed as failed, and the agent spent the rest of
+    its 60-minute budget grepping the repository for the cause.
+    """
+    from mdclaw.sidechain_packer import parse_mutation_specs, read_protein_residues
+
+    pdb = tmp_path / "input.pdb"
+    pdb.write_text(_two_residue_pdb())
+
+    mapping, normalized = parse_mutation_specs(specs, read_protein_residues(pdb))
+
+    assert mapping == {("A", 99, " "): "ALA", ("A", 102, " "): "GLN"}
+    # the parser normalizes to the chain-qualified form regardless of separator
+    assert normalized == ["A:L99A", "A:M102Q"]
+
+
+def test_invalid_mutation_error_says_how_to_pass_several(tmp_path):
+    """The message has to name the multi-mutation form, not just the notation —
+    knowing 'L99A is valid' does not tell you how to ask for two of them."""
+    from mdclaw.sidechain_packer import parse_mutation_specs, read_protein_residues
+
+    pdb = tmp_path / "input.pdb"
+    pdb.write_text(_protein_pdb())
+
+    with pytest.raises(ValueError, match=r"--mutations L99A M102Q"):
+        parse_mutation_specs(["L99A/M102Q"], read_protein_residues(pdb))
+
+
 def test_parse_unqualified_mutation_rejects_ambiguous_residue(tmp_path):
     from mdclaw.sidechain_packer import parse_mutation_specs, read_protein_residues
 

@@ -7,6 +7,150 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-15 — Baseline 0.875, then three fixes before the real K=3
+
+`passk3_20260814_v2_pi_rep1` finished 40/40: **overall_score 0.875**, five tasks
+`failed` with `missing_raw_artifacts` — the four 60-min timeouts (P09, P13, P19,
+P24) plus P36. 11.7 h of task time, of which **4.0 h (34 %) went to those four
+hung commands**. This run is the pre-fix baseline; it cannot be one of the three
+repeats, because the fixes below change the system under test.
+
+**1. `parse_mutation_specs` accepts any separator, and says so when it doesn't.**
+`--mutations` is `nargs="+"`, so the CLI wants `--mutations L99A M102Q`. P09's
+agent passed `"L99A,M102Q"`, `_MUTATION_RE` rejected the single token, the node
+was sealed terminal, and the agent spent its remaining 55 minutes grepping the
+repo for why. Now each token is split on `[,\s]+` first, and the error names the
+multi-mutation form instead of only the single-mutation notation. Four
+separator forms are covered by tests; mutation-tested 3/3 (drop the split, split
+on whitespace only, drop the hint from the message).
+
+**2. Per-command watchdog for the agent** —
+`MDPrepBench/tools/pi_shell_timeout.sh`. pi resolves its shell through
+`settings.json` `shellPath` and invokes it as `<shellPath> -c "<command>"`
+(`pi-coding-agent dist/utils/shell.js`), so pointing that at a wrapper caps every
+command. 600 s: the longest legitimate command in the July 40-task run was
+257.7 s (p99 63 s). The setting is global but the wrapper only wraps when `$PWD`
+is inside a MDPrepBench run, so other pi sessions are untouched
+(backup: `~/.pi/agent/settings.json.bak-20260815`).
+
+Verified separately, not end to end. Proven: pi does route through the wrapper
+(logged a real `-c echo …` invocation, one `-c` per command, so no persistent
+session shell to kill); and the wrapper caps correctly (exit 124, process-group
+kill confirmed with marker files, partial output still returned). Not proven: a
+long command inside pi actually returning 124 — repeated attempts stalled in pi
+before it issued any tool call, and **a control run with `shellPath` removed
+stalled identically**, so that is pi flakiness, not the wrapper. Check the first
+hour of the run for any tool call over ~615 s. Worst case equals rep1's
+behaviour, so this cannot make things worse.
+
+**3. `MDCLAW_RUNTIME=singularity` in the sweep env.** `bin/mdclaw` probes for a
+conda env before falling through to Singularity, and `conda env list` costs
+1.3 s on a host that has no `mdclaw` env. Measured `bin/mdclaw --version`:
+**3.8 s → 2.4 s**. Left as an env var rather than a code change — the probe is
+correct on hosts that do have the env.
+
+---
+
+## 2026-08-15 — Correction of the correction: there is no pi floor, and the four timeouts are hung commands
+
+The entry below claims a "quantisation floor inside the pi harness" and cites
+`cat common/run-loop.md` taking 7.19 s. The cursor advisor refuted it and I
+verified both claims against the transcripts myself.
+
+**1. The 7 s "floor" was a batching artifact.** When one assistant message
+issues several toolCalls, all their results are recorded at one timestamp, so
+every sibling inherits the slowest one's elapsed time. Measured over rep1:
+
+| | n | median | in the 6.4–7.6 s band |
+|---|---|---|---|
+| plain shell, `batch=1`, no mdclaw | 466 | **0.11 s** | 2 |
+| plain shell, batched, no mdclaw | — | — | 25, **all 25 with an mdclaw sibling** |
+
+The `cat` at 7.19 s was batched with an mdclaw call. There is no harness floor.
+
+**2. The transcript timing method is accurate.** The agent itself ran
+`time mdclaw …` 17 times. Comparing the shell's own `real` against the
+toolCall→toolResult window: **median gap 0.05 s**, across commands from 0.55 s
+to 263 s. So toolCall→toolResult *is* the command's wall time — no harness
+overhead to subtract. That kills the "~3 s recording overhead" theory too.
+
+**3. The four 60-min timeouts are not model generation.** Each burned 42–55
+minutes inside a single environment-probing command:
+
+- P09 — `grep -rln "mutation_spec_invalid\|hpacker" <benchmark_runs tree>`, toolCall never answered
+- P24 — a hand-written `min.py` on the host venv, toolCall never answered
+- P13 — 42.2 min in one completed call: `which tleap parmchk2 antechamber; ls /opt/anaconda3/...`
+- P19 — 51.7 min in one completed call: host-venv python probing `openmm.__file__`
+
+My earlier reading ("P09 spent 3.1 min of 60 in tool calls, so the rest is
+generation") was an artifact of my own script: it yielded only calls that had a
+matching toolResult, so a hung command was invisible, and batch double-counting
+inflated the others. Same failure mode as P26 in the entry two below — the agent
+leaves the workflow and scans a huge tree.
+
+**4. The lazy-preload win does not show up in the benchmark.** Solo, read-only
+mdclaw calls: July min 5.71 s / median 6.07 s; now min 6.44 s / median 7.00 s.
+The floor went **up ~0.9 s** since July. The direct A/B (5.91 → 2.90 s) is real
+and reproducible, and the transcript timings are trustworthy per (2), so the two
+must be measuring different work — benchmark calls are `create_node` /
+`explain_node` / `inspect_job` against a job dir on NFS, not `--list-json`.
+**Unresolved.** Do not claim the fix sped up the benchmark.
+
+**5. Verified MDClaw bug behind P09.** `--mutations` is `nargs="+"`
+(`mdclaw/_cli.py:450`), so the correct form is `--mutations L99A M102Q`. The
+agent passed `"L99A,M102Q"`; `_MUTATION_RE` (`mdclaw/sidechain_packer.py:178`)
+anchors a single token, so it cannot match, and the message
+(`mdclaw/sidechain_packer.py:196-198`) is *"Invalid mutation spec 'L99A,M102Q'.
+Use L99A or A:L99A notation."* — it never says how to pass more than one. The
+task asks for two mutations. The agent tried `"L99A M102Q"` quoted, failed
+again, and went grepping. The failure also sealed `prep_002` as terminal, so
+retrying on that node was refused.
+
+---
+
+## 2026-08-14 (later) — Correction: the "per-mdclaw-invocation latency" numbers in the entry below are pi's floor, not mdclaw's cost
+
+The entry below reports light-call latency of 6.04 s (July) vs 7.19 s (Aug) and
+treats it as mdclaw's per-call cost. **It is not.** In the same transcripts:
+
+```
+cat common/run-loop.md                        7.19 s
+ls -la && grep -c "^ATOM" 2LZM.cif ...        6.92 s
+[read] .../solver_workspace/.agents/skills/…  7.43 s
+```
+
+`cat` of a local file does not take seven seconds. A histogram of all 1511 tool
+round-trips in the running sweep is bimodal — 732 calls under 0.5 s, a near-empty
+valley from 3–6 s, then 385 calls piled at 6.5–7.5 s. July shows the same shape
+with the pile at 6.0–6.5 s. That is a quantisation floor inside the pi harness,
+applied to anything that does not return almost instantly, and it is what those
+medians were measuring. The floor rising ~0.7 s between July and August is a pi
+change, not ours.
+
+So the lazy-preload win is real but invisible here. Same-moment A/B in the
+benchmark's own solver workspace, while the sweep was running:
+
+| | median |
+|---|---|
+| checkout, lazy preload | **2.90 s** |
+| SIF baked package, import-time preload | 5.91 s |
+| via `bin/mdclaw` (adds the wrapper) | 3.65 s |
+
+pi reports all three as ~7 s. Benchmark wall time cannot measure mdclaw CLI
+latency; only direct timing can.
+
+**Second finding, not yet fixed:** `bin/mdclaw` calls `_conda_env_exists()`
+before falling through to Singularity, and `conda env list` costs **1.06 s** of
+the 1.30 s wrapper overhead — on a host that has no `mdclaw` conda env at all.
+Reading `~/.conda/environments.txt` answers the same question instantly. Holding
+the change until the K=3 sweep finishes so the three repeats stay comparable.
+
+**Third:** the 60-min cap is being consumed by model generation, not by tools.
+Of the four timeouts in rep1 so far, P09 spent 3.1 min of its 60 inside tool
+calls and P24 spent 0.3 min. Making the CLI faster cannot fix those.
+
+---
+
 ## 2026-08-14 — The pass^k sweep ran slow: contention, not the refactor — but it exposed a 3.4 s tax on every CLI call
 
 I stopped the K=3 pass^k sweep at rep1 19/40 because tasks were taking ~1.7×
