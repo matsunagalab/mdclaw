@@ -7,6 +7,72 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-14 — The pass^k sweep ran slow: contention, not the refactor — but it exposed a 3.4 s tax on every CLI call
+
+I stopped the K=3 pass^k sweep at rep1 19/40 because tasks were taking ~1.7×
+the July wall time, and went looking for a regression in the de-over-engineering
+work. **There is none.** What the transcripts actually show:
+
+| metric (21 tasks in common) | July 20 | Aug 14 |
+|---|---|---|
+| per-`mdclaw`-invocation latency, light calls | 6.04 s median | 7.19 s median |
+| `build_amber_system` (CPU, tleap), same tasks | 1026 s total | 938 s (0.91×) |
+| `solvate_structure` (CPU), same tasks | 701 s total | 771 s (1.10×) |
+| `run_minimization` (GPU), same tasks | 384 s total | 868 s (**2.26×**) |
+
+Only the GPU step inflated, and only for the first ~4 h of the run: hourly
+medians went 121.8 -> 99.0 -> 79.7 -> 48.7 -> 14.2 -> 10.5 s, i.e. back to
+July's 13–19 s by +5 h. Same task, same system, `platform: CUDA` in both,
+identical `max_iterations`, `restraint_count` (1309) and final energies. That is
+host contention — this box shares 7× A6000 with other jobs — not code.
+
+**The `bin/mdclaw` PKG_ROOT bind is not the cost either.** A/B, 10 reps each,
+`mdclaw --list-json inspect_molecules`: with the bind + NFS `PYTHONPATH`
+5.82 s, against the SIF's baked package 6.06 s. Within noise, and the bind side
+is if anything faster. My earlier "+1.7 s per call" was a cold-cache artifact.
+
+**What the hunt did find: `import mdclaw` cost 4.6 s, of which 4.5 s was
+`import torch`.** `mdclaw/__init__.py` ran `_preload_torch_for_openmm_torch()`
+at import time — every CLI call, including `--list-json`, `inspect_job` and
+`create_node`, dlopened libtorch's CUDA libraries to keep the openmm-torch
+plugin working (the June-29/July-7 fix for PythonTorchForce). Breakdown inside
+the SIF: singularity `exec true` 0.38 s, + python start 0.46 s, + `import
+mdclaw` 4.51 s, + full `_discover_tools()` 5.81 s.
+
+Two measured facts turned that into a fix:
+
+1. `importlib.util.find_spec("torch")` gives the library path without executing
+   torch: 3.48 s -> 1.46 s.
+2. The dlopen does **not** have to precede `import openmm`. It must precede the
+   *plugin scan*, and the scan can be re-run: dlopen, then
+   `Platform.loadPluginsFromDirectory(Platform.getDefaultPluginsDirectory())`,
+   and the CUDA kernel registers. Verified three ways on an A6000 — `early`
+   (today's order) OK, `late` without a rescan fails with "Platform does not
+   support the requested kernel" exactly like no preload at all, `late` **with**
+   the rescan OK (71.25 kJ/mol from a real PythonTorchForce Context).
+
+So the preload moved out of `mdclaw/__init__.py` into
+`custom_forces._preload_libtorch_cuda()`, called from `_import_openmmtorch()` —
+the one code path that needs it. `MDCLAW_PRELOAD_TORCH_FOR_OPENMM` is gone; a
+knob for a cost nobody pays any more is just more surface.
+
+Result, 8 reps each: **5.91 s -> 2.62 s per CLI call (2.26×)**. At ~30 mdclaw
+invocations per MDPrepBench task that is ~100 s/task, ~11 % of a 15-min task,
+and ~3 h off a 120-task K=3 sweep.
+
+`tests/test_torch_preload.py` was rewritten for the new contract and
+mutation-tested: dropping the rescan, reversing the c10/torch_cuda order,
+dropping RTLD_GLOBAL, rescanning on CPU-only torch, going back to `import
+torch`, and re-adding the preload to `mdclaw/__init__.py` are all caught.
+
+**Lesson.** Two of my three suspects (the PKG_ROOT bind, "the model got slower")
+were wrong, and the July-vs-today medians said so within minutes — but only
+after I stopped comparing *inter-event gaps* and started comparing *the same
+step on the same task*. Aggregate latency hides which layer moved; a paired
+comparison names it.
+
+---
+
 ## 2026-08-14 — Why P26 kept timing out: it never entered the workflow
 
 `P26_prep_zinc_metalloenzyme_2cba` (carbonic anhydrase II, catalytic Zn) was the

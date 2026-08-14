@@ -214,9 +214,52 @@ def _load_mdtraj_topology(topology_pdb_file: str, system):
     return mdtraj_top
 
 
+def _preload_libtorch_cuda() -> None:
+    """Make libtorch's CUDA symbols resident, then re-run OpenMM's plugin scan.
+
+    ``libOpenMMTorchCUDA.so`` resolves its libtorch_cuda symbols at plugin-scan
+    time. A bare ``import torch`` is not enough: torch dlopens
+    ``libtorch_cuda.so`` lazily on first CUDA use, so at scan time the plugin
+    fails to load and a PythonTorchForce Context later dies with "Platform does
+    not support the requested kernel". We dlopen the CUDA libraries here with
+    ``RTLD_GLOBAL`` so the plugin can see their symbols, WITHOUT initializing a
+    CUDA context (no stray GPU memory, no device pinning), and then rescan the
+    plugin directory because ``import openmm`` has already scanned it once.
+
+    ``find_spec`` locates torch on disk without executing it — importing torch
+    just to read its path cost ~2 s on every call. Best-effort: torch-less or
+    CPU-only installs leave the CUDA kernel unavailable and CPU/Reference work.
+    """
+    import ctypes
+    import importlib.util
+    import os
+
+    spec = importlib.util.find_spec("torch")
+    if spec is None or not spec.submodule_search_locations:
+        return
+    lib_dir = os.path.join(list(spec.submodule_search_locations)[0], "lib")
+    # Order matters: libtorch_cuda.so depends on libc10_cuda.so. Both resolve
+    # their own further deps via their $ORIGIN RPATH inside torch/lib.
+    loaded = False
+    for name in ("libc10_cuda.so", "libtorch_cuda.so"):
+        path = os.path.join(lib_dir, name)
+        if os.path.exists(path):
+            try:
+                ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+            except OSError:
+                return
+            loaded = True
+    if not loaded:
+        return
+    from openmm import Platform
+
+    Platform.loadPluginsFromDirectory(Platform.getDefaultPluginsDirectory())
+
+
 def _import_openmmtorch():
     """Lazy import of the openmm-torch plugin; raises a stable code if absent."""
     try:
+        _preload_libtorch_cuda()
         import openmmtorch  # noqa: F401
 
         return openmmtorch
