@@ -25,7 +25,7 @@ assert platform.machine() in {"aarch64", "arm64"}, platform.machine()
 assert torch.cuda.is_available(), "PyTorch cannot see a CUDA GPU"
 assert torch.version.cuda is not None, "PyTorch is a CPU-only build"
 
-fusefix = "/opt/mdclaw/lib/libmdclaw_fusefix.so"
+fusefix = os.environ["MDCLAW_FUSEFIX_LIB"]
 assert fusefix in os.environ.get("LD_PRELOAD", "").split(":"), os.environ.get(
     "LD_PRELOAD"
 )

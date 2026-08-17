@@ -79,6 +79,26 @@ must be run directly from the SIF and exercises both OpenMM PME and
 `torch.fft`. An unpacked directory is not an equivalent acceptance test for
 this specific failure mode.
 
+### One Smoke Test, Two Images
+
+`container/scripts/test-container.sh` runs against both images, so a contract
+that only one image makes is gated on the environment variable that declares
+it. `check_declared <VAR> <description> <command>` skips when `<VAR>` is unset
+and reports `SKIP` rather than `FAIL`:
+
+| variable | declared by | gates |
+| --- | --- | --- |
+| `MDCLAW_CUDA_TOOLKIT_VERSION` | arm64 image (`13.0`) | exact NVRTC version; the check still runs everywhere and only asserts a version when the variable is set |
+| `MDCLAW_CUFFT_MIN_VERSION` | arm64 image (`12.1.0.78`) | cuFFT floor and API level |
+| `MDCLAW_FUSEFIX_LIB` | arm64 image | the FUSE preload shim being present and mapped |
+
+The amd64 / CUDA 11.8 image declares none of the last two, ships cuFFT from the
+CUDA 11.8 family, and has no shim, so both checks skip there. Adding a contract
+that belongs to one image means declaring a variable in that image's Dockerfile
+and gating the check on it — not forking the script. `MDCLAW_FUSEFIX_LIB` is
+also the single definition of the shim path: the runtime assertions in the
+Dockerfile and in `test-rikyu-gpu.sh` read it instead of repeating the literal.
+
 Do not publish this image under `ghcr.io/matsunagalab/mdclaw:latest`. After
 push, record the registry digest and test the artifact pulled by digest rather
 than only the local Docker image:

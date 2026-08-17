@@ -26,6 +26,21 @@ check() {
     fi
 }
 
+# Some contracts belong to one image only: the arm64 / CUDA 13 image declares
+# them through environment variables its Dockerfile sets. Running the same
+# script against an image that never made the promise is not a failure, so
+# skip the check instead of failing it.
+check_declared() {
+    local var="$1"
+    local desc="$2"
+    shift 2
+    if [ -z "${!var:-}" ]; then
+        echo "  SKIP: $desc ($var not declared by this image)"
+        return
+    fi
+    check "$desc" "$@"
+}
+
 echo "=== MDClaw Container Verification ==="
 echo ""
 
@@ -87,14 +102,14 @@ expected = os.environ.get('MDCLAW_CUDA_TOOLKIT_VERSION')
 assert expected is None or actual == expected, (actual, expected)
 print(f'NVRTC {actual}')
 "
-check "cuFFT runtime contract" python -c "
+check_declared MDCLAW_CUFFT_MIN_VERSION "cuFFT runtime contract" python -c "
 import ctypes
 import os
 import re
 import sys
 from pathlib import Path
 
-minimum = tuple(map(int, os.environ.get('MDCLAW_CUFFT_MIN_VERSION', '12.1.0.78').split('.')))
+minimum = tuple(map(int, os.environ['MDCLAW_CUFFT_MIN_VERSION'].split('.')))
 files = list((Path(sys.prefix) / 'lib').glob('libcufft.so.12.*'))
 versions = []
 for path in files:
@@ -108,11 +123,11 @@ assert cufft.cufftGetVersion(ctypes.byref(api_version)) == 0
 assert api_version.value >= 12010, api_version.value
 print(f'cuFFT {max(versions)}, API={api_version.value}')
 "
-check "cuFFT FUSE preload shim contract" python -c "
+check_declared MDCLAW_FUSEFIX_LIB "cuFFT FUSE preload shim contract" python -c "
 import os
 from pathlib import Path
 
-shim = '/opt/mdclaw/lib/libmdclaw_fusefix.so'
+shim = os.environ['MDCLAW_FUSEFIX_LIB']
 assert shim in os.environ.get('LD_PRELOAD', '').split(':')
 assert Path(shim).is_file()
 assert shim in Path('/proc/self/maps').read_text()

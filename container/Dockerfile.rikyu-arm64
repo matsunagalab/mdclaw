@@ -226,6 +226,7 @@ ENV PATH="/opt/mdclaw/bin:$PATH" \
     MDCLAW_CUDA_TOOLKIT_VERSION="13.0" \
     MDCLAW_CUDA_MATH_LIBS_VERSION="13.1" \
     MDCLAW_CUFFT_MIN_VERSION="12.1.0.78" \
+    MDCLAW_FUSEFIX_LIB="/opt/mdclaw/lib/libmdclaw_fusefix.so" \
     PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages" \
     OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins" \
     LD_PRELOAD="/opt/mdclaw/lib/libmdclaw_fusefix.so" \
@@ -241,7 +242,7 @@ RUN /opt/mdclaw/bin/python - <<'PY'
 import os
 from pathlib import Path
 
-shim = "/opt/mdclaw/lib/libmdclaw_fusefix.so"
+shim = os.environ["MDCLAW_FUSEFIX_LIB"]
 assert shim in os.environ["LD_PRELOAD"].split(":"), os.environ["LD_PRELOAD"]
 assert Path(shim).is_file()
 assert shim in Path("/proc/self/maps").read_text()
