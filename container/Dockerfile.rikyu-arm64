@@ -1,0 +1,311 @@
+# syntax=docker/dockerfile:1.7
+#
+# MDClaw runtime for Linux arm64 systems with CUDA 13.x GPUs.
+#
+# Build on an arm64 host (Apple Silicon Docker Desktop is supported):
+#   docker build --platform linux/arm64 \
+#     -f container/Dockerfile.rikyu-arm64 \
+#     -t ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev .
+#
+# The published OCI image can be converted to SIF with Apptainer:
+#   apptainer pull mdclaw-rikyu-arm64-cuda13-dev.sif \
+#     docker://ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev
+
+ARG MINIFORGE_IMAGE="condaforge/miniforge3:24.11.3-0@sha256:bcfc04b3562faa8dfd48f3767e2bd7b73a8529f9611b508d42e5bd227db1342d"
+ARG CUDA_DEVEL_IMAGE="nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:5dc1bca23d05bd37b011be68ec470c03b403a5da07ec3a86e41af9470e9d0cc6"
+ARG CUDA_RUNTIME_IMAGE="nvidia/cuda:13.0.2-runtime-ubuntu24.04@sha256:6a0e31b59e70890446f2c17356d6efc0d54260090a8c63d6ca7c2ad049db95d2"
+
+# =============================================================================
+# Stage 1: Build and pack the arm64 conda environment
+# =============================================================================
+FROM --platform=linux/arm64 ${MINIFORGE_IMAGE} AS conda-base
+
+WORKDIR /build
+
+RUN test "$(dpkg --print-architecture)" = "arm64" && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends build-essential git ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY environment.yml pyproject.toml README.md ./
+COPY mdclaw/ mdclaw/
+
+# The generic environment pins OpenMM below CUDA 13 and PyTorch below 2.8.
+# This image instead resolves the arm64/CUDA 13 GPU packages in the same
+# transaction as the OpenFF/JAX dependencies.
+# The pip subsection is also installed separately, after GPU PyTorch exists,
+# to prevent pip from selecting an unrelated CPU wheel as an indirect
+# dependency of HPacker/e3nn.
+ARG PYTORCH_VERSION="2.10.0"
+RUN sed -E \
+      -e '/^[[:space:]]+- (openmm|openmm-torch|pytorch|cuda-version)([<>= ].*)?$/d' \
+      -e '/^  - pip:/,$d' \
+      environment.yml > environment-arm64-cuda13.yml && \
+    printf '  - pytorch=%s=*cuda130*\n  - cuda-version>=13.1,<13.2\n  - libcufft>=12.1.0.78\n' \
+      "${PYTORCH_VERSION}" >> environment-arm64-cuda13.yml && \
+    CONDA_OVERRIDE_CUDA=13.1 mamba env create \
+      -f environment-arm64-cuda13.yml -n mdclaw && \
+    mamba clean -afy
+
+RUN mamba run -n mdclaw pip install --no-cache-dir \
+      ".[dev]" \
+      "openff-pablo @ git+https://github.com/openforcefield/openff-pablo.git@v0.2.2"
+
+# Apply packmol-memgen's NumPy compatibility patch, matching the generic image.
+RUN SITE_PACKAGES=$(mamba run -n mdclaw python -c "import site; print(site.getsitepackages()[0])") && \
+    PATCH_FILE="$SITE_PACKAGES/packmol_memgen/lib/pdbremix/v3numpy.py" && \
+    if [ -f "$PATCH_FILE" ]; then \
+        sed -i.bak "s/np\\.float)/float)/g; s/np\\.int)/int)/g" "$PATCH_FILE" && \
+        rm -f "${PATCH_FILE}.bak"; \
+    fi
+
+RUN mamba run -n mdclaw python -c \
+      "import platform, torch; assert platform.machine() == 'aarch64'; assert torch.version.cuda == '13.0'; print(torch.__version__, torch.version.cuda)" && \
+    mamba run -n mdclaw python -c \
+      "import re, sys; from pathlib import Path; files=list((Path(sys.prefix)/'lib').glob('libcufft.so.12.*')); versions=[tuple(map(int, re.search(r'libcufft\\.so\\.(\\d+(?:\\.\\d+)+)$', str(path)).group(1).split('.'))) for path in files if re.search(r'libcufft\\.so\\.(\\d+(?:\\.\\d+)+)$', str(path))]; assert versions and max(versions) >= (12, 1, 0, 78), (files, versions); print('cuFFT', '.'.join(map(str, max(versions))))" && \
+    mamba run -n mdclaw python -c \
+      "import MDAnalysis as mda, mdtraj; print('MDAnalysis', mda.__version__, 'MDTraj', mdtraj.__version__)" && \
+    mamba install -n base -y conda-pack && \
+    conda-pack -n mdclaw -o /build/mdclaw_env.tar.gz \
+      --ignore-editable-packages --ignore-missing-files && \
+    mamba clean -afy
+
+# =============================================================================
+# Stage 2: Build OpenMM and openmm-torch against CUDA 13.0
+# =============================================================================
+FROM --platform=linux/arm64 ${CUDA_DEVEL_IMAGE} AS openmm-builder
+
+ARG BUILD_JOBS="4"
+ARG OPENMM_VERSION="8.5.1"
+ARG OPENMM_TORCH_COMMIT="b6532900ad825cb3d12193817a1e34a7f46ae6a3"
+
+RUN test "$(dpkg --print-architecture)" = "arm64" && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      build-essential \
+      ca-certificates \
+      cmake \
+      doxygen \
+      git \
+      ninja-build \
+      swig && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /opt/mdclaw
+COPY --from=conda-base /build/mdclaw_env.tar.gz /tmp/mdclaw_env.tar.gz
+RUN tar -xzf /tmp/mdclaw_env.tar.gz -C /opt/mdclaw && \
+    rm /tmp/mdclaw_env.tar.gz && \
+    /opt/mdclaw/bin/python /opt/mdclaw/bin/conda-unpack
+
+ENV PATH="/opt/mdclaw/bin:$PATH" \
+    CUDA_HOME="/usr/local/cuda"
+
+# The packed conda environment includes CUDA 13.1 user-space tools. Always use
+# the base image compiler explicitly so OpenMM/NVRTC stay on the 13.0 contract.
+RUN /usr/local/cuda/bin/nvcc --version | grep -q "release 13.0"
+
+RUN /opt/mdclaw/bin/pip install --no-cache-dir cython
+
+RUN git clone --depth 1 --branch "${OPENMM_VERSION}" \
+      https://github.com/openmm/openmm.git /build/openmm
+
+RUN cmake -S /build/openmm -B /build/openmm/build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/opt/mdclaw \
+      -DCUDAToolkit_ROOT=/usr/local/cuda \
+      -DPYTHON_EXECUTABLE=/opt/mdclaw/bin/python \
+      -DOPENMM_BUILD_CUDA_LIB=ON \
+      -DOPENMM_BUILD_OPENCL_LIB=OFF \
+      -DOPENMM_BUILD_C_AND_FORTRAN_WRAPPERS=OFF && \
+    cmake --build /build/openmm/build --parallel "${BUILD_JOBS}" && \
+    cmake --install /build/openmm/build && \
+    cmake --build /build/openmm/build --target PythonInstall --parallel "${BUILD_JOBS}"
+
+RUN /opt/mdclaw/bin/python -c \
+      "import openmm; assert openmm.__version__.startswith('8.5.1'); print('OpenMM', openmm.__version__)"
+
+RUN mkdir -p /build/openmm-torch && \
+    cd /build/openmm-torch && \
+    git init -q && \
+    git remote add origin https://github.com/openmm/openmm-torch.git && \
+    git fetch --depth 1 origin "${OPENMM_TORCH_COMMIT}" && \
+    git checkout -q FETCH_HEAD
+
+# openmm-torch contains compiled CUDA code, unlike OpenMM's NVRTC kernels.
+# Explicitly build SASS for compute capability 10.0 and retain PTX for forward
+# compatibility. Keep the compiler on CUDA 13.0 as well: OpenMM uses NVRTC at
+# runtime, and PTX emitted by a newer minor toolkit may be rejected by a driver
+# whose maximum supported CUDA toolkit is 13.0.
+ENV TORCH_CUDA_ARCH_LIST="10.0+PTX"
+RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c \
+      "import pathlib, torch; print(pathlib.Path(torch.__file__).resolve().parent / 'share' / 'cmake' / 'Torch')") && \
+    cmake -S /build/openmm-torch -B /build/openmm-torch/build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/opt/mdclaw \
+      -DCUDAToolkit_ROOT=/usr/local/cuda \
+      -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+      -DOPENMM_DIR=/opt/mdclaw \
+      -DPYTHON_EXECUTABLE=/opt/mdclaw/bin/python \
+      -DTorch_DIR="${TORCH_CMAKE_DIR}" \
+      -DCMAKE_CUDA_ARCHITECTURES=100 \
+      -DCMAKE_CXX_FLAGS="-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE" \
+      -DNN_BUILD_CUDA_LIB=ON \
+      -DNN_BUILD_OPENCL_LIB=OFF && \
+    cmake --build /build/openmm-torch/build --parallel "${BUILD_JOBS}" && \
+    cmake --install /build/openmm-torch/build && \
+    cmake --build /build/openmm-torch/build --target PythonInstall --parallel "${BUILD_JOBS}"
+
+RUN /opt/mdclaw/bin/python -c \
+      "import openmmtorch; assert hasattr(openmmtorch, 'PythonTorchForce'); print('openmm-torch PythonTorchForce OK')"
+
+# Rootless container runtimes can mount SIF/OCI files through FUSE.  Pre-fault
+# cuFFT's file-backed mappings so CUDA does not need to service FUSE page faults
+# while creating FFT plans.  Build this tiny LD_PRELOAD shim in the devel stage
+# so the final runtime does not need a compiler.
+COPY container/mdclaw_fusefix.c /tmp/mdclaw_fusefix.c
+RUN gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
+      -Wl,-z,relro,-z,now \
+      -o /opt/mdclaw/lib/libmdclaw_fusefix.so \
+      /tmp/mdclaw_fusefix.c -ldl && \
+    rm /tmp/mdclaw_fusefix.c && \
+    LD_PRELOAD=/opt/mdclaw/lib/libmdclaw_fusefix.so \
+      /opt/mdclaw/bin/python -c \
+      "from pathlib import Path; assert '/opt/mdclaw/lib/libmdclaw_fusefix.so' in Path('/proc/self/maps').read_text(); print('cuFFT FUSE preload shim OK')"
+
+# Partition the packed environment before the final-stage COPY. Keeping the
+# Python tree, shared libraries, and CUDA targets in separate OCI layers avoids
+# a single multi-gigabyte blob that is fragile to transfer through HPC registry
+# proxies and Apptainer.
+RUN mkdir -p /opt/mdclaw-layer-parts && \
+    mv /opt/mdclaw/lib/python3.12 /opt/mdclaw-layer-parts/python3.12 && \
+    mv /opt/mdclaw/lib /opt/mdclaw-layer-parts/lib && \
+    mv /opt/mdclaw/targets /opt/mdclaw-layer-parts/targets
+
+# =============================================================================
+# Stage 3: Slim CUDA 13.0 arm64 runtime
+# =============================================================================
+FROM --platform=linux/arm64 ${CUDA_RUNTIME_IMAGE}
+
+ARG GIT_REVISION="unknown"
+ARG WARM_MEMBRANE_CACHE="0"
+
+LABEL org.opencontainers.image.title="MDClaw arm64 CUDA 13 runtime" \
+      org.opencontainers.image.description="MDClaw Linux arm64 runtime with CUDA 13.0 NVRTC, CUDA 13.1 math libraries, OpenMM, AmberTools, and PyTorch." \
+      org.opencontainers.image.source="https://github.com/matsunagalab/mdclaw" \
+      org.opencontainers.image.documentation="https://github.com/matsunagalab/mdclaw/blob/main/docs/developer/container.md" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.revision="${GIT_REVISION}" \
+      org.opencontainers.image.vendor="matsunagalab" \
+      com.nvidia.cuda.version="13.0.2" \
+      io.mdclaw.cuda.math-libs.version="13.1" \
+      io.mdclaw.cuda.cufft.minimum-version="12.1.0.78" \
+      io.mdclaw.runtime.fuse-prefault="libcufft.so"
+
+RUN test "$(dpkg --print-architecture)" = "arm64" && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates \
+      libgl1 \
+      libglib2.0-0 \
+      libsm6 \
+      libxrender1 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=openmm-builder /opt/mdclaw /opt/mdclaw
+COPY --from=openmm-builder /opt/mdclaw-layer-parts/lib/ /opt/mdclaw/lib/
+COPY --from=openmm-builder /opt/mdclaw-layer-parts/python3.12/ /opt/mdclaw/lib/python3.12/
+COPY --from=openmm-builder /opt/mdclaw-layer-parts/targets/ /opt/mdclaw/targets/
+
+# OpenMM compiles kernels at runtime. The runtime CUDA image does not include
+# NVRTC, so copy NVRTC and its builtins from the devel stage.
+COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc.so* /opt/mdclaw/lib/
+COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc-builtins.so* /opt/mdclaw/lib/
+
+ENV PATH="/opt/mdclaw/bin:$PATH" \
+    AMBERHOME="/opt/mdclaw" \
+    MDCLAW_CUDA_TOOLKIT_VERSION="13.0" \
+    MDCLAW_CUDA_MATH_LIBS_VERSION="13.1" \
+    MDCLAW_CUFFT_MIN_VERSION="12.1.0.78" \
+    PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages" \
+    OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins" \
+    LD_PRELOAD="/opt/mdclaw/lib/libmdclaw_fusefix.so" \
+    LD_LIBRARY_PATH="/opt/mdclaw/lib:/opt/mdclaw/lib/python3.12/site-packages/torch/lib:${LD_LIBRARY_PATH}" \
+    NVIDIA_VISIBLE_DEVICES="all" \
+    NVIDIA_DRIVER_CAPABILITIES="compute,utility" \
+    MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR="/opt/mdclaw/share/membrane_patches"
+
+# Confirm that the final image contains and loads the shim.  GPU acceptance is
+# performed from the resulting SIF because a normal Docker filesystem does not
+# exercise the affected FUSE path.
+RUN /opt/mdclaw/bin/python - <<'PY'
+import os
+from pathlib import Path
+
+shim = "/opt/mdclaw/lib/libmdclaw_fusefix.so"
+assert shim in os.environ["LD_PRELOAD"].split(":"), os.environ["LD_PRELOAD"]
+assert Path(shim).is_file()
+assert shim in Path("/proc/self/maps").read_text()
+print("cuFFT FUSE preload shim active")
+PY
+
+# Fail the build if the final runtime accidentally receives NVRTC from a newer
+# toolkit. OpenMM compiles its CUDA kernels with this library at Context
+# creation time, so this version is a runtime compatibility contract.
+RUN /opt/mdclaw/bin/python - <<'PY'
+import ctypes
+
+nvrtc = ctypes.CDLL("libnvrtc.so")
+major = ctypes.c_int()
+minor = ctypes.c_int()
+assert nvrtc.nvrtcVersion(ctypes.byref(major), ctypes.byref(minor)) == 0
+assert (major.value, minor.value) == (13, 0), (major.value, minor.value)
+print(f"NVRTC {major.value}.{minor.value}")
+PY
+
+# The CUDA compiler and NVRTC stay on 13.0 for driver/PTX compatibility, while
+# the conda CUDA math libraries use the 13.1 family. cuFFT 12.1 is required for
+# compute capability 10.0 FFT workloads. Verify the actual runtime library,
+# not only the solver metadata.
+RUN /opt/mdclaw/bin/python - <<'PY'
+import ctypes
+import os
+import re
+import sys
+from pathlib import Path
+
+minimum = tuple(map(int, os.environ["MDCLAW_CUFFT_MIN_VERSION"].split(".")))
+files = list((Path(sys.prefix) / "lib").glob("libcufft.so.12.*"))
+versions = []
+for path in files:
+    match = re.search(r"libcufft\.so\.(\d+(?:\.\d+)+)$", str(path))
+    if match:
+        versions.append(tuple(map(int, match.group(1).split("."))))
+assert versions and max(versions) >= minimum, (files, versions, minimum)
+
+cufft = ctypes.CDLL("libcufft.so.12")
+api_version = ctypes.c_int()
+assert cufft.cufftGetVersion(ctypes.byref(api_version)) == 0
+assert api_version.value >= 12010, api_version.value
+print(
+    "cuFFT",
+    ".".join(map(str, max(versions))),
+    f"API={api_version.value}",
+)
+PY
+
+COPY scripts/warmup_membrane_cache.py /opt/mdclaw/share/warmup_membrane_cache.py
+RUN if [ "${WARM_MEMBRANE_CACHE}" = "1" ]; then \
+      /opt/mdclaw/bin/python /opt/mdclaw/share/warmup_membrane_cache.py \
+        --out "${MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR}"; \
+    else \
+      mkdir -p "${MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR}" && \
+      echo "Skipping membrane patch cache validation for this development image."; \
+    fi
+
+COPY container/scripts/entrypoint.sh /opt/mdclaw/bin/entrypoint.sh
+RUN chmod +x /opt/mdclaw/bin/entrypoint.sh
+
+WORKDIR /work
+
+ENTRYPOINT ["/opt/mdclaw/bin/entrypoint.sh"]
+CMD ["mdclaw", "--version"]

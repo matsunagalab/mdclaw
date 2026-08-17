@@ -1,8 +1,8 @@
 # Container Runtime Build And Distribution
 
 The container is MDClaw's packaged scientific runtime. It contains the `mdclaw`
-CLI plus CUDA runtime, PyTorch, AmberTools, OpenMM, and PyMOL
-(`pymol-open-source`, for headless structure previews).
+CLI plus CUDA runtime, PyTorch, AmberTools, OpenMM, PyMOL
+(`pymol-open-source`, for headless structure previews), MDTraj, and MDAnalysis.
 
 Heavy AI model backends (BioEmu, Boltz-2) are intentionally **not** baked into
 the image. They ship their own Torch/CUDA stacks that conflict with the OpenMM
@@ -35,6 +35,84 @@ docker push ghcr.io/matsunagalab/mdclaw:latest
 ```
 
 The GHCR package must be public for unauthenticated Singularity pulls.
+
+## Arm64 / CUDA 13 Development Image
+
+The arm64/CUDA 13 development image is kept separate from the generic
+`linux/amd64` / CUDA 11.8 image:
+
+```bash
+revision=$(git rev-parse --short=12 HEAD)
+image="ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev-${revision}"
+
+docker build --platform linux/arm64 \
+  --build-arg GIT_REVISION="$(git rev-parse HEAD)" \
+  --build-arg BUILD_JOBS=4 \
+  -f container/Dockerfile.rikyu-arm64 \
+  -t "$image" .
+docker push "$image"
+```
+
+The Dockerfile uses the arm64 manifests of CUDA 13.0.2 on Ubuntu 24.04, builds
+OpenMM 8.5.1 against CUDA 13.0, and compiles `openmm-torch` for compute
+capability 10.0 (`sm_100`). PyTorch is the CUDA 13.0 arm64 conda-forge build.
+Keep the OpenMM compiler and NVRTC toolkit at or below the maximum CUDA version
+supported by the host driver: OpenMM compiles kernels at Context creation, and
+a driver can reject PTX emitted by a newer minor toolkit with
+`CUDA_ERROR_UNSUPPORTED_PTX_VERSION`.
+
+The dynamically loaded conda CUDA math libraries are resolved from the CUDA
+13.1 family, with `libcufft>=12.1.0.78`. This split keeps NVRTC at 13.0 for PTX
+compatibility while retaining a consistent CUDA math-library stack. Build and
+smoke tests assert both version contracts. The packed runtime is copied into
+several OCI layers so no single application layer must carry the complete
+multi-gigabyte conda environment during an Apptainer pull.
+
+Some rootless Apptainer installations mount SIF files through FUSE. On affected
+driver/runtime combinations, OpenMM PME and `torch.fft` can fail when CUDA
+faults in a page from the FUSE-backed cuFFT mapping even though the library is
+intact. The arm64 image therefore preloads `libmdclaw_fusefix.so`, a small shim
+that applies `MADV_POPULATE_READ` to cuFFT's private writable mappings after
+they are loaded. It leaves the pages file-backed and shared. The generic
+container smoke verifies that the shim is present and loaded; the GPU smoke
+must be run directly from the SIF and exercises both OpenMM PME and
+`torch.fft`. An unpacked directory is not an equivalent acceptance test for
+this specific failure mode.
+
+Do not publish this image under `ghcr.io/matsunagalab/mdclaw:latest`. After
+push, record the registry digest and test the artifact pulled by digest rather
+than only the local Docker image:
+
+```bash
+apptainer pull mdclaw-rikyu-arm64-cuda13-dev.sif \
+  "docker://ghcr.io/matsunagalab/mdclaw-rikyu@sha256:<digest>"
+apptainer exec --nv mdclaw-rikyu-arm64-cuda13-dev.sif \
+  bash /path/to/container/scripts/test-container.sh
+apptainer exec --nv mdclaw-rikyu-arm64-cuda13-dev.sif \
+  bash /path/to/container/scripts/test-rikyu-gpu.sh
+```
+
+The MDClaw package already contains the representative bundled membrane-patch
+cache. The development build skips revalidating or regenerating that cache by
+default. Pass `--build-arg WARM_MEMBRANE_CACHE=1` to make cache validation and
+regeneration a build-time gate for a release candidate.
+
+Some institutional network paths interrupt long single-blob OCI downloads. If
+an Apptainer pull repeatedly fails on the same large layer, do not loop the
+same transfer indefinitely. Convert the already-verified Docker image to SIF
+on a trusted arm64 Linux system, then transfer the SIF with a resumable tool
+and verify its checksum:
+
+```bash
+docker save -o mdclaw-arm64.tar "$image"
+singularity build mdclaw-arm64.sif docker-archive:mdclaw-arm64.tar
+sha256sum mdclaw-arm64.sif
+
+rsync --partial --append --progress mdclaw-arm64.sif user@host:
+ssh user@host sha256sum mdclaw-arm64.sif
+```
+
+The two SHA-256 values must match before running the transferred SIF.
 
 ## Singularity
 

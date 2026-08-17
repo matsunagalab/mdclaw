@@ -11,6 +11,10 @@ dependencies:
   - matplotlib
   - pymol-open-source
   - pymbar>=4.2.0,<5
+  # Keep both analysis ecosystems available. MDClaw itself uses MDTraj, while
+  # MDAnalysis is useful for external/adaptive-sampling analysis code and has
+  # compiled conda-forge packages for Linux arm64.
+  - mdanalysis>=2.8,<3
   # --- openmmforcefields-unification (PR3+) ---
   # OpenMM 8.5.1 is the floor for openmmforcefields>=0.15.1; 8.6 brings
   # SourceWithCMAP fixes used by the ff19SB and phosaa19SB conversions.
