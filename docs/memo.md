@@ -7,6 +7,55 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-18 — Merged arm64 image verified on Rikyu; the shim contract holds
+
+Pulled the merge onto Rikyu (`c000`, GB200, driver 580.173.02) and checked the
+parts the merging host could not. The entry below flagged the
+`MDCLAW_FUSEFIX_LIB` indirection as unverified because that host had no arm64
+builder; it verifies clean.
+
+**The build-time assertions pass.** The published SIF predates
+`MDCLAW_FUSEFIX_LIB`, so it was injected to reproduce what a rebuilt image will
+see. Both `RUN` assertions in `Dockerfile.rikyu-arm64` — the devel-stage
+`LD_PRELOAD` check and the final-stage one that reads the variable — succeed.
+The sanitized `container/mdclaw_fusefix.c` also compiles under the stricter
+flags the Dockerfile now uses (`-Wall -Wextra -Werror -Wl,-z,relro,-z,now`,
+gcc 13.3 aarch64), and the freshly compiled shim still fixes `torch.fft` on the
+GPU. The rewrite that dropped the site-specific comments changed no behavior.
+
+**The `check_declared` gate is presence-based in all three states**, tested on
+the same SIF: undeclared → `SKIP` (20 passed), declared and correct → `PASS`
+(21 passed), declared with a bad path → `FAIL` (20 passed / 1 failed). It cannot
+silently pass.
+
+`test-rikyu-gpu.sh` from the SIF: `ARM64_CUDA13_GPU_SMOKE=PASS`, including
+`openmm_pme_cufft=PASS` and `pytorch_cufft=PASS` — the two checks the old script
+lacked, which is why two broken images passed it 5/5 before the merge.
+`test-container.sh`, 304 unit tests, and `ruff check mdclaw/ tests/` are clean.
+
+**Fixed here: the SLURM GPU directive.** `_generate_sbatch_script` emitted
+`#SBATCH --gpus-per-node=N`, which Rikyu's job-submit plugin rejects outright
+(`[AI4S] Specify GPUs with --gpus=N (-G N). Per-node forms ... are not
+supported`), so every `submit_job` with a GPU failed at submission. This is site
+policy, not a bug — both spellings are valid Slurm — but the per-node form is
+unusable on Rikyu, so both script generators now emit `--gpus=N`. The two forms
+are equivalent at the default `--nodes=1` and differ beyond it: `--gpus-per-node`
+is per node, `--gpus` is the job total, so `--nodes 4 --gpus 2` meant 8 GPUs
+before and 2 now. Nothing in-tree submits multi-node GPU jobs (`nodes` defaults
+to 1, and `skills/hpc-run` has no multi-node example), so `--gpus` now means the
+job total everywhere. Keeping both spellings was rejected because it would leave
+Rikyu with no multi-node GPU path at all. Validated end to end on Rikyu with
+the fix in place: 1AKE chain A, apo, ff19SB/OPC, 49,671 atoms, submitted as
+`min` -> `eq` -> `prod` with `afterok` dependencies (`--gpus=1`, 1x GB200).
+All three `COMPLETED`; 100 ps NPT production held 300.6 +/- 1.2 K and
+1.028 +/- 0.002 g/mL.
+
+**Housekeeping:** `.gitignore` no longer excludes `RIKYU.md`, which says on its
+first line not to commit it. `RIKYU-SIF-REBUILD.md` is superseded by
+`docs/developer/container.md` plus the entry below.
+
+---
+
 ## 2026-08-18 — Rikyu arm64 image merged to main; one smoke test now serves both
 
 `container/rikyu-arm64` (13 commits, last touched 2026-08-01) is on `main` as a
