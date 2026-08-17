@@ -7,6 +7,46 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-18 — Rikyu arm64 image merged to main; one smoke test now serves both
+
+`container/rikyu-arm64` (13 commits, last touched 2026-08-01) is on `main` as a
+merge commit. Both Dockerfiles now live side by side and share
+`environment.yml`, `pyproject.toml`, `container/scripts/test-container.sh`, and
+`docs/developer/container.md`:
+
+| | `container/Dockerfile` | `container/Dockerfile.rikyu-arm64` |
+| --- | --- | --- |
+| arch / CUDA | x86_64, 11.8 | arm64, 13.0 (NVRTC) + 13.1 math libs |
+| OpenMM | 8.2.0 | 8.5.1, `openmm-torch` at `sm_100` |
+| publishes to | `ghcr.io/matsunagalab/mdclaw:latest` | `ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev-<rev>` |
+
+**The merge itself was nearly clean.** One conflict: the MDAnalysis floor, main
+at `>=2.7` from v0.6.5 and the branch at `>=2.8,<3` because linux-aarch64
+conda-forge builds start at 2.8. Took `>=2.8,<3` — satisfies both, matches
+`environment.yml`, and the published image already carries 2.10.0.
+
+**Sharing the smoke test was the part that actually broke.** Two of the checks
+the branch added assume the arm64 image: the cuFFT contract globs
+`libcufft.so.12.*`, and the shim contract requires `libmdclaw_fusefix.so` in
+`LD_PRELOAD`. Run against the published amd64 SIF, the merged script gave
+**19 passed / 2 failed**. Fixed with `check_declared <VAR> <desc> <cmd>`, which
+skips when the image never declared the contract. Same script, same SIF:
+**19 passed / 0 failed**, two `SKIP` lines. The gate is presence-based rather
+than a permanent no-op — forcing `MDCLAW_CUFFT_MIN_VERSION` and
+`MDCLAW_FUSEFIX_LIB` into the amd64 SIF reproduces both failures, so the arm64
+image (which sets both) is still held to them.
+
+`MDCLAW_FUSEFIX_LIB` is new and is now the single definition of the shim path;
+the Dockerfile's runtime assertion and `test-rikyu-gpu.sh` read it instead of
+repeating the literal.
+
+**Not verified here:** the arm64 image was not rebuilt — no arm64 builder on
+this host. The `MDCLAW_FUSEFIX_LIB` indirection touches a build-time `RUN`
+assertion in `Dockerfile.rikyu-arm64`, so the next Rikyu build is the first real
+test of it. Nothing is pushed; `main` is local-only and ahead of `origin/main`.
+
+---
+
 ## 2026-08-15 — Baseline 0.875, then three fixes before the real K=3
 
 `passk3_20260814_v2_pi_rep1` finished 40/40: **overall_score 0.875**, five tasks
