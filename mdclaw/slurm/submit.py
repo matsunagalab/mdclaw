@@ -73,7 +73,7 @@ def submit_job(
         nodes: Number of nodes (default: 1).
         ntasks: Number of tasks (default: 1).
         cpus_per_task: CPUs per task (default: 1).
-        gpus: GPUs per node via --gpus-per-node (default: 0 = no GPU).
+        gpus: Total GPUs for the job via --gpus (default: 0 = no GPU).
             If left at 0 (and gres is unset) but the run command requests a GPU
             OpenMM platform (--platform CUDA/OpenCL), this is auto-set to 1 and
             a warning is emitted, so a CUDA run never lands on a CPU-only node.

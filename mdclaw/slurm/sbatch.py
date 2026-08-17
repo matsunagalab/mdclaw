@@ -63,7 +63,10 @@ def _generate_sbatch_script(
     if gres:
         lines.append(f"#SBATCH --gres={gres}")
     elif gpus > 0:
-        lines.append(f"#SBATCH --gpus-per-node={gpus}")
+        # Job-total form. Some sites reject the per-node spellings
+        # (--gpus-per-node, --gres=gpu:N) because the scheduler owns node
+        # placement, and --gpus is equivalent at the default --nodes=1.
+        lines.append(f"#SBATCH --gpus={gpus}")
     lines.append(f"#SBATCH --time={time_limit}")
     if memory:
         lines.append(f"#SBATCH --mem={memory}")
@@ -165,7 +168,10 @@ def _generate_array_sbatch_script(
     if gres:
         lines.append(f"#SBATCH --gres={gres}")
     elif gpus > 0:
-        lines.append(f"#SBATCH --gpus-per-node={gpus}")
+        # Job-total form. Some sites reject the per-node spellings
+        # (--gpus-per-node, --gres=gpu:N) because the scheduler owns node
+        # placement, and --gpus is equivalent at the default --nodes=1.
+        lines.append(f"#SBATCH --gpus={gpus}")
     lines.append(f"#SBATCH --time={time_limit}")
     if memory:
         lines.append(f"#SBATCH --mem={memory}")

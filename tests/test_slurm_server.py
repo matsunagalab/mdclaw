@@ -195,7 +195,7 @@ class TestSubmitJob:
         # The generated script should have our SBATCH headers
         content = Path(result["script_file"]).read_text()
         assert "#SBATCH --job-name=wrap_test" in content
-        assert "#SBATCH --gpus-per-node=1" in content
+        assert "#SBATCH --gpus=1" in content
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=False)
     def test_sbatch_not_available(self, mock_check):
@@ -265,7 +265,7 @@ class TestSubmitJob:
         )
         assert result["success"] is True
         content = Path(result["script_file"]).read_text()
-        assert "#SBATCH --gpus-per-node=1" in content
+        assert "#SBATCH --gpus=1" in content
         assert any("Auto-set --gpus 1" in w for w in result["warnings"])
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
@@ -293,7 +293,7 @@ class TestSubmitJob:
         assert result["success"] is True
         content = Path(result["script_file"]).read_text()
         assert "#SBATCH --partition=gpu" in content
-        assert "#SBATCH --gpus-per-node=1" in content
+        assert "#SBATCH --gpus=1" in content
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
     @patch("mdclaw.slurm._base.run_command")
@@ -310,7 +310,7 @@ class TestSubmitJob:
         )
         assert result["success"] is True
         content = Path(result["script_file"]).read_text()
-        assert "#SBATCH --gpus-per-node=2" in content
+        assert "#SBATCH --gpus=2" in content
         assert not any("Auto-set --gpus 1" in w for w in result["warnings"])
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
@@ -329,7 +329,7 @@ class TestSubmitJob:
         assert result["success"] is True
         content = Path(result["script_file"]).read_text()
         assert "#SBATCH --gres=gpu:a100:2" in content
-        assert "--gpus-per-node" not in content
+        assert "--gpus=" not in content
         assert not any("Auto-set --gpus 1" in w for w in result["warnings"])
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
@@ -348,7 +348,7 @@ class TestSubmitJob:
             result = submit_job(script=cmd, output_dir=str(tmp_path))
             assert result["success"] is True
             content = Path(result["script_file"]).read_text()
-            assert "--gpus-per-node" not in content
+            assert "--gpus=" not in content
             assert "--gres" not in content
             assert not any("Auto-set --gpus 1" in w for w in result["warnings"])
 
@@ -2027,7 +2027,7 @@ class TestSubmitArrayJob:
         )
         assert result["success"] is True, result
         content = Path(result["script_file"]).read_text()
-        assert "#SBATCH --gpus-per-node=1" in content
+        assert "#SBATCH --gpus=1" in content
         assert any("Auto-set --gpus 1" in w for w in result["warnings"])
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
