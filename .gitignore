@@ -123,3 +123,6 @@ summary_*.json
 .mdclaw_session
 .witness_sweep.sh
 .witness_summary.py
+
+# Local operator notes for a specific site (see the file's own header)
+/RIKYU.md
