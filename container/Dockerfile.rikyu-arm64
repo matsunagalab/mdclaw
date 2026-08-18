@@ -203,6 +203,15 @@ RUN curl -fsSL \
       /opt/mdclaw/lib/python3.12/site-packages/_modeller.so && \
     rm -rf /tmp/modeller /tmp/modeller.tar.gz
 
+# Fail the build if the hand-assembled layout leaves the extension unresolvable.
+# `armv8-gnu` bundles gfortran and hdf5 but not glib, which MODELLER also needs;
+# it comes from the conda environment already unpacked at /opt/mdclaw/lib, so a
+# dependency change there would otherwise only surface at first use.
+RUN ldd /opt/mdclaw/lib/modeller-${MODELLER_VERSION}/lib/armv8-gnu/python3.3/_modeller.so \
+      | tee /tmp/modeller-ldd.txt && \
+    ! grep -q "not found" /tmp/modeller-ldd.txt && \
+    rm -f /tmp/modeller-ldd.txt
+
 # Partition the packed environment before the final-stage COPY. Keeping the
 # Python tree, shared libraries, and CUDA targets in separate OCI layers avoids
 # a single multi-gigabyte blob that is fragile to transfer through HPC registry

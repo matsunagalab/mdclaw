@@ -141,7 +141,11 @@ install_dir = Path(match.group(1))
 assert install_dir.is_dir(), install_dir
 expected = os.environ['MDCLAW_MODELLER_VERSION']
 assert expected in install_dir.name, (install_dir, expected)
-print(f'MODELLER {expected} at {install_dir}')
+try:
+    import _modeller
+except ImportError as exc:
+    raise AssertionError(f'MODELLER extension will not load: {exc}') from exc
+print(f'MODELLER {expected} at {install_dir}, extension loads')
 "
 check_declared MDCLAW_FUSEFIX_LIB "cuFFT FUSE preload shim contract" python -c "
 import os

@@ -92,6 +92,45 @@ first line not to commit it. `RIKYU-SIF-REBUILD.md` is superseded by
 
 ---
 
+## 2026-08-18 — arm64 MODELLER verified under emulation; glib was the missing piece
+
+Registered `qemu-aarch64` binfmt on floyd (`docker run --privileged
+tonistiigi/binfmt --install arm64`; host-wide, reversible with `--uninstall`)
+and built a probe image that applies **only** the MODELLER block of
+`Dockerfile.rikyu-arm64`, copied verbatim out of that file by the generator so
+the probe cannot drift from the real build. Full emulated build of the rikyu
+image was not attempted — measured qemu overhead is ~8.7x and the MODELLER step
+was the only unverified part.
+
+The tarball route works on real aarch64: `uname -m` = `aarch64`, the installed
+`libmodeller.so.14` is ELF machine 183 (AArch64), `config.py` keeps the `XXXX`
+placeholder, and with `KEY_MODELLER10v8` injected at run time `import modeller`
+succeeds.
+
+**Found by doing this, and only findable on arm64: `libglib-2.0.so.0` is
+missing from the tarball.** `armv8-gnu/` bundles gfortran and hdf5 but not glib,
+while the *conda* package does bundle it — which is why the x86 dry run passed.
+`ldd` on `_modeller.so` shows glib as the one unresolved library. The real image
+is fine because the conda environment at `/opt/mdclaw/lib` provides
+`libglib-2.0.so.0` (confirmed in the new amd64 SIF) and the rikyu
+`LD_LIBRARY_PATH` already puts that directory first — but that is an implicit
+transitive dependency holding up a hard requirement, so two guards were added:
+
+- `Dockerfile.rikyu-arm64` now runs `ldd` on `_modeller.so` after the install
+  and fails the build on any `not found`.
+- The shared smoke check no longer stops at parsing `config.py`; it does
+  `import _modeller`, which loads the compiled object. That needs no licence —
+  the licence check lives in `modeller/__init__.py`, after the extension
+  imports — so it works on an unlicensed image. Verified in all three states:
+  broken probe -> `AssertionError: MODELLER extension will not load:
+  libglib-2.0.so.0 ...`, fixed probe -> `extension loads`, amd64 SIF -> 20
+  passed / 0 failed, old SIF -> `SKIP`.
+
+Still unverified: the full rikyu build end to end, and `test-rikyu-gpu.sh`,
+which needs a real GPU and must run from the SIF.
+
+---
+
 ## 2026-08-18 — Correction: MODELLER *does* run on arm64; rikyu gets it too
 
 **This overturns the arm64 conclusion in the entry below.** I claimed MODELLER
