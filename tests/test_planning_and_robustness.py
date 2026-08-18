@@ -17,6 +17,7 @@ from mdclaw._node import (
     begin_node,
     create_node,
     explain_node,
+    fail_node,
     inspect_job,
     read_node,
     update_job_params,
@@ -180,6 +181,53 @@ class TestAutoParent:
         assert res["success"]
         assert "auto_resolved_parent" not in res
         assert read_node(str(job_dir), res["node_id"])["parent_node_ids"] == []
+
+    def test_pending_min_blocks_eq_falling_through_to_topo(self, job_dir):
+        # Pre-creating min -> eq -> prod for dependency-chained HPC submission:
+        # min is still pending, so eq must not silently attach to topo and skip
+        # minimization.
+        ids = _explicit_chain_through(job_dir, "topo")
+        min_res = create_node(str(job_dir), "min", parent_node_ids=[ids["topo"]])
+        assert min_res["success"]
+
+        res = create_node(str(job_dir), "eq")
+
+        assert res["success"]
+        assert "auto_resolved_parent" not in res
+        assert read_node(str(job_dir), res["node_id"])["parent_node_ids"] == []
+
+    def test_failed_min_blocks_eq_falling_through_to_topo(self, job_dir):
+        ids = _explicit_chain_through(job_dir, "topo")
+        min_res = create_node(str(job_dir), "min", parent_node_ids=[ids["topo"]])
+        fail_node(str(job_dir), min_res["node_id"], errors=["minimization diverged"])
+
+        res = create_node(str(job_dir), "eq")
+
+        assert "auto_resolved_parent" not in res
+
+    def test_completed_min_still_auto_attaches_eq(self, job_dir):
+        ids = _explicit_chain_through(job_dir, "min")
+
+        res = create_node(str(job_dir), "eq")
+
+        assert res["auto_resolved_parent"] == ids["min"]
+
+    def test_legacy_dag_without_min_still_attaches_eq_to_topo(self, job_dir):
+        # No min node was ever created: topo remains a valid legacy eq parent.
+        ids = _explicit_chain_through(job_dir, "topo")
+
+        res = create_node(str(job_dir), "eq")
+
+        assert res["auto_resolved_parent"] == ids["topo"]
+
+    def test_pending_solv_blocks_topo_falling_through_to_prep(self, job_dir):
+        ids = _explicit_chain_through(job_dir, "prep")
+        solv_res = create_node(str(job_dir), "solv", parent_node_ids=[ids["prep"]])
+        assert solv_res["success"]
+
+        res = create_node(str(job_dir), "topo")
+
+        assert "auto_resolved_parent" not in res
 
     def test_explicit_parent_disables_auto(self, job_dir):
         src = _complete(job_dir, "source", {"source_bundle": "artifacts/sb.json"})

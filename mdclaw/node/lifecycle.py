@@ -77,17 +77,34 @@ def _auto_resolve_parent(node_type: str, nodes_index: dict) -> Optional[str]:
     Only the preferred forward edge is considered, and only completed *leaf*
     nodes (not already a parent of another node) are eligible so the new node
     attaches to the current frontier.
+
+    A less-preferred parent type is only reached when the preferred one is
+    absent from the job entirely. Present-but-incomplete never falls through,
+    so pre-creating a whole ``min -> eq -> prod`` chain for dependency-chained
+    HPC submission cannot silently attach ``eq`` to ``topo`` and skip ``min``.
     """
     referenced: set[str] = set()
     for info in nodes_index.values():
         referenced.update(info.get("parents", []))
 
     for parent_type in _AUTO_PARENT_PREFERENCE.get(node_type, ()):  # priority order
-        completed = [
+        present = [
             nid for nid, info in nodes_index.items()
-            if info.get("type") == parent_type and info.get("status") == "completed"
+            if info.get("type") == parent_type
+        ]
+        completed = [
+            nid for nid in present
+            if nodes_index[nid].get("status") == "completed"
         ]
         if not completed:
+            if present:
+                # The preferred stage exists but has not completed. That is a
+                # chain still being built (or a failed stage), not a legacy DAG
+                # that never had this stage. Falling through to the next
+                # preference would silently skip it -- an eq attaching to topo
+                # and bypassing min, for example -- so require an explicit
+                # --parent-node-ids choice instead.
+                return None
             continue
         leaves = [nid for nid in completed if nid not in referenced] or completed
         if len(leaves) == 1:
@@ -99,14 +116,23 @@ def _auto_resolve_parent(node_type: str, nodes_index: dict) -> Optional[str]:
 
 
 def _auto_parent_candidates(node_type: str, nodes_index: dict) -> list[str]:
-    """Return completed candidates from the first usable parent stage."""
+    """Return completed candidates from the first usable parent stage.
+
+    Stops at the first parent stage that exists at all, so an incomplete
+    preferred stage is never papered over with candidates from a
+    less-preferred one -- matching ``_auto_resolve_parent``.
+    """
     for parent_type in _AUTO_PARENT_PREFERENCE.get(node_type, ()):
-        candidates = sorted(
+        present = [
             nid for nid, info in nodes_index.items()
-            if info.get("type") == parent_type and info.get("status") == "completed"
+            if info.get("type") == parent_type
+        ]
+        if not present:
+            continue
+        return sorted(
+            nid for nid in present
+            if nodes_index[nid].get("status") == "completed"
         )
-        if candidates:
-            return candidates
     return []
 
 
