@@ -58,9 +58,11 @@ The GHCR package must be public for unauthenticated Singularity pulls.
 ## Arm64 / CUDA 13 Development Image
 
 The arm64/CUDA 13 development image is kept separate from the generic
-`linux/amd64` / CUDA 11.8 image. `container/scripts/build-rikyu-arm64.sh` runs
-the build and the non-GPU verification; `--push` also pushes it. The underlying
-commands are:
+`linux/amd64` / CUDA 11.8 image. `container/scripts/build-rikyu-arm64.sh` covers
+the whole flow — build, non-GPU verification, `--push` to GHCR, and `--sif PATH`
+to convert and install the SIF (verified first, previous file kept as
+`PATH.bak`). It takes docker or podman, whichever works. The underlying commands
+are:
 
 ```bash
 revision=$(git rev-parse --short=12 HEAD)
@@ -88,6 +90,13 @@ qemu-user overhead on this codebase is ~8.7x (a MODELLER comparative model:
 13.5 s native, 116.6 s emulated), so a build that takes ~20 minutes natively
 runs for hours. The build script refuses to run on a non-arm64 host for this
 reason.
+
+A login node is fine as long as it matches the compute nodes and can run a
+container engine. Two things commonly bite there: `docker` may need group
+membership (the script falls back to rootless podman), and `/tmp` is often too
+small — the image is ~15 GB and the SIF conversion unpacks it again, so point
+`TMPDIR`, `APPTAINER_TMPDIR` and `APPTAINER_CACHEDIR` at a filesystem with ~60 GB
+free. The script warns when the scratch filesystem looks too small.
 
 The Dockerfile uses the arm64 manifests of CUDA 13.0.2 on Ubuntu 24.04, builds
 OpenMM 8.5.1 against CUDA 13.0, and compiles `openmm-torch` for compute
