@@ -29,8 +29,8 @@ candidate rather than patch a large missing loop inside PDBFixer.
 - Optional number of models. Default to `1`; use `3-5` when the user wants a
   small candidate set for ranking.
 
-MODELLER ships in the amd64 container but is licensed: export a
-`KEY_MODELLER*` variable such as `KEY_MODELLER10v8` before running.
+MODELLER ships in the container but is licensed: export a `KEY_MODELLER*`
+variable such as `KEY_MODELLER10v8` before running.
 
 ## Step 0: Confirm
 
@@ -87,8 +87,8 @@ Use the JSON result:
 - `code`: stable failure reason when present.
 
 If `code=modeller_license_env_missing`, tell the user to export a
-`KEY_MODELLER*` variable. If `code=modeller_not_installed`, the runtime ships no
-MODELLER (the arm64 image has no build); run in the amd64 container.
+`KEY_MODELLER*` variable. If `code=modeller_not_installed`, the runtime is not
+an MDClaw container; both images ship MODELLER.
 
 ## Handoff
 

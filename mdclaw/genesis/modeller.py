@@ -751,10 +751,10 @@ def modeller_from_alignment(
         if "No module named 'modeller'" in stderr:
             result["code"] = "modeller_not_installed"
             result["errors"].append(
-                "The amd64 MDClaw container ships MODELLER; run there. The arm64 "
-                "image cannot: the salilab channel publishes no linux-aarch64 "
-                "build and MODELLER's core is distributed as x86_64 binaries "
-                "only. Outside the container: conda install salilab::modeller"
+                "Both MDClaw container images ship MODELLER; run in one of "
+                "them. Outside the container, install it yourself: "
+                "conda install salilab::modeller on x86_64, or the generic "
+                "tarball from salilab.org, which also carries an aarch64 build"
             )
         else:
             result["code"] = "modeller_execution_failed"

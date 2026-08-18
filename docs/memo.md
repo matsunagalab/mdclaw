@@ -92,6 +92,46 @@ first line not to commit it. `RIKYU-SIF-REBUILD.md` is superseded by
 
 ---
 
+## 2026-08-18 — Correction: MODELLER *does* run on arm64; rikyu gets it too
+
+**This overturns the arm64 conclusion in the entry below.** I claimed MODELLER
+could not run on arm64 Linux, that building on rikyu would not help, and that
+only x86_64 emulation remained. That was wrong. I inspected the *conda package*
+— which ships only `lib/x86_64-intel8/`, Intel-Fortran-linked — and generalised
+from it to the whole distribution without checking the generic tarball.
+
+`https://salilab.org/modeller/10.8/modeller-10.8.tar.gz` (38 MB) ships five
+architectures: `armv6l-gnu`, **`armv8-gnu`**, `i386-absoft`, `i386-intel8`,
+`x86_64-intel8`. `libmodeller.so.14` under `armv8-gnu` is `ELF 64-bit LSB shared
+object, ARM aarch64`, gfortran-linked (`libgfortran.so.5`, no Intel runtime),
+and the `Install` script detects `aarch64:Linux:*` and offers "5) Linux on
+64-bit ARM". The conda channel is the limitation, not MODELLER.
+
+The Python side works too: the tarball's `python3.3/_modeller.so` is a
+stable-ABI (abi3) build, so one binary covers Python 3.3+. Verified on x86 by
+importing the tarball's `python3.3` extension under the SIF's **Python 3.12** —
+`import modeller` and `Environ()` both succeed. Same layout exists under
+`armv8-gnu`, so rikyu's Python 3.12 is covered.
+
+`Dockerfile.rikyu-arm64` now installs it from the tarball, laid out by hand
+(modlib + src + bin/*.top + bin/lib + lib/armv8-gnu, symlinked into
+site-packages) rather than via the interactive `Install`, matching the shape the
+conda package produces so nothing downstream can tell the images apart. Proven
+on x86 first with the equivalent `x86_64-intel8` layout — 57 MB, config.py left
+at the `XXXX` placeholder, runtime `KEY_MODELLER*` injection working. Both
+images now declare `MDCLAW_MODELLER_VERSION`, so both run the smoke check.
+
+**Not verified:** the arm64 image was not built — this host's buildx offers only
+`linux/amd64 (+4), linux/386` and `qemu-aarch64` binfmt is unregistered (needs
+root). The tarball path needs a build on rikyu itself to confirm.
+
+Emulation was measured before the tarball came up, and is no longer needed. For
+the record, qemu-user does work: same 9UWI comparative model, native **13.5 s**
+vs **116.6 s** under `qemu-x86_64-static` — **8.7x**, import 0.22 -> 1.22 s.
+Same-arch TCG, so an arm64 host would differ somewhat, but the order stands.
+
+---
+
 ## 2026-08-18 — MODELLER now ships in the amd64 image; two defects fixed on the way
 
 `modeller_from_alignment` and the `modeller-predict` skill had **no working

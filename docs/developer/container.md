@@ -12,11 +12,16 @@ importing MODELLER, so each user supplies their own key per run and no key is
 ever in the image. Verified against MODELLER 10.8: installing without a key
 succeeds, and an injected key is what MODELLER actually validates.
 
-It is installed in `container/Dockerfile` rather than in `environment.yml`
-because the `salilab` channel publishes **linux-64 only** — there is no
-linux-aarch64 build, and `Dockerfile.rikyu-arm64` derives its environment from
-that same shared file. The arm64 image therefore has no MODELLER, does not set
-`MDCLAW_MODELLER_VERSION`, and skips the smoke check accordingly.
+The two images install it by different routes because the `salilab` conda
+channel publishes **linux-64 only**. The amd64 image installs the conda package
+from `container/Dockerfile` — not from `environment.yml`, which
+`Dockerfile.rikyu-arm64` shares and which would then fail to solve on arm64.
+The arm64 image takes MODELLER from the generic tarball instead, which ships an
+aarch64 build (`lib/armv8-gnu`, gfortran-linked) beside the x86_64 one; its
+`python3.3` extension is a stable-ABI (abi3) build that Python 3.12 loads, and
+it is laid out to match the conda package so nothing downstream can tell the
+images apart. Both declare `MDCLAW_MODELLER_VERSION`, so both run the smoke
+check.
 
 Heavy AI model backends (BioEmu, Boltz-2) are intentionally **not** baked into
 the image. They ship their own Torch/CUDA stacks that conflict with the OpenMM

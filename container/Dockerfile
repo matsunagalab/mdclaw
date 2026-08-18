@@ -65,7 +65,8 @@ RUN sed -e '/- -e \./d' -e '/openmm-torch/d' environment.yml > environment-docke
 # MODELLER, for `modeller_from_alignment` and the modeller-predict skill.
 # Installed here rather than in environment.yml because the salilab channel
 # publishes linux-64 only, and Dockerfile.rikyu-arm64 derives its environment
-# from that same shared file — adding it there would break the arm64 build.
+# from that same shared file — adding it there would break the arm64 solve.
+# That image installs the aarch64 build from the generic tarball instead.
 # No license key is baked in: mdclaw injects a synthetic `modeller.config`
 # from a KEY_MODELLER* environment variable at call time
 # (mdclaw/genesis/modeller.py), so the image ships the unlicensed package and

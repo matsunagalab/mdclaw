@@ -85,6 +85,7 @@ RUN test "$(dpkg --print-architecture)" = "arm64" && \
       build-essential \
       ca-certificates \
       cmake \
+      curl \
       doxygen \
       git \
       ninja-build \
@@ -172,6 +173,36 @@ RUN gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
       /opt/mdclaw/bin/python -c \
       "from pathlib import Path; assert '/opt/mdclaw/lib/libmdclaw_fusefix.so' in Path('/proc/self/maps').read_text(); print('cuFFT FUSE preload shim OK')"
 
+# MODELLER, for `modeller_from_alignment` and the modeller-predict skill. The
+# salilab conda channel used by the amd64 image is linux-64 only, but the
+# generic tarball ships an aarch64 build (`lib/armv8-gnu`, gfortran-linked)
+# beside the x86_64 one, and its `python3.3` extension is a stable-ABI (abi3)
+# build that Python 3.12 loads. Laid out here by hand rather than through the
+# interactive `Install` script so the build stays reproducible; the layout
+# matches what the conda package produces, so nothing downstream can tell the
+# two images apart. No license key is baked in — config.py keeps the upstream
+# `XXXX` placeholder and mdclaw injects a KEY_MODELLER* value at call time.
+ARG MODELLER_VERSION="10.8"
+RUN curl -fsSL \
+      "https://salilab.org/modeller/${MODELLER_VERSION}/modeller-${MODELLER_VERSION}.tar.gz" \
+      -o /tmp/modeller.tar.gz && \
+    mkdir -p /tmp/modeller && \
+    tar -xzf /tmp/modeller.tar.gz -C /tmp/modeller && \
+    src="/tmp/modeller/modeller-${MODELLER_VERSION}" && \
+    dst="/opt/mdclaw/lib/modeller-${MODELLER_VERSION}" && \
+    test -d "${src}/lib/armv8-gnu" && \
+    mkdir -p "${dst}/lib" "${dst}/bin" && \
+    cp -pR "${src}/modlib" "${src}/src" "${dst}/" && \
+    cp -pR "${src}"/bin/*.top "${src}/bin/lib" "${dst}/bin/" && \
+    cp -pR "${src}/lib/armv8-gnu" "${dst}/lib/" && \
+    printf "install_dir = r'%s/'\nlicense = r'XXXX'\n" "${dst}" \
+      > "${dst}/modlib/modeller/config.py" && \
+    ln -s "${dst}/modlib/modeller" \
+      /opt/mdclaw/lib/python3.12/site-packages/modeller && \
+    ln -s "${dst}/lib/armv8-gnu/python3.3/_modeller.so" \
+      /opt/mdclaw/lib/python3.12/site-packages/_modeller.so && \
+    rm -rf /tmp/modeller /tmp/modeller.tar.gz
+
 # Partition the packed environment before the final-stage COPY. Keeping the
 # Python tree, shared libraries, and CUDA targets in separate OCI layers avoids
 # a single multi-gigabyte blob that is fragile to transfer through HPC registry
@@ -227,10 +258,11 @@ ENV PATH="/opt/mdclaw/bin:$PATH" \
     MDCLAW_CUDA_MATH_LIBS_VERSION="13.1" \
     MDCLAW_CUFFT_MIN_VERSION="12.1.0.78" \
     MDCLAW_FUSEFIX_LIB="/opt/mdclaw/lib/libmdclaw_fusefix.so" \
+    MDCLAW_MODELLER_VERSION="10.8" \
     PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages" \
     OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins" \
     LD_PRELOAD="/opt/mdclaw/lib/libmdclaw_fusefix.so" \
-    LD_LIBRARY_PATH="/opt/mdclaw/lib:/opt/mdclaw/lib/python3.12/site-packages/torch/lib:${LD_LIBRARY_PATH}" \
+    LD_LIBRARY_PATH="/opt/mdclaw/lib:/opt/mdclaw/lib/modeller-10.8/lib/armv8-gnu:/opt/mdclaw/lib/python3.12/site-packages/torch/lib:${LD_LIBRARY_PATH}" \
     NVIDIA_VISIBLE_DEVICES="all" \
     NVIDIA_DRIVER_CAPABILITIES="compute,utility" \
     MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR="/opt/mdclaw/share/membrane_patches"
