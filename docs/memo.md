@@ -7,6 +7,185 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-18 — レビューを受けた膜配向の修正。「回転不変」という私の主張は誤りだった
+
+pane の cursor agent (GPT-5.6) に db7d509 をレビューさせたところ、P1 が 3 件出た。
+特に痛かったのは **power iteration の初期ベクトル固定**で、`_principal_axis` が
+`v0 = [1,1,1]` から始めるため、真の第1固有ベクトルがそれと直交すると成分がゼロのまま
+収束しない。レビュアーが実際の 20 残基ヘリックスを回転させて再現し **90.0 度ずれる**ことを
+示した。私のランダム回転5回のテストが通っていたのは、厳密な直交が測度ゼロだから運が
+良かっただけで、**「任意の開始フレームから同一」という docstring の主張は誤りだった**。
+`numpy.linalg.eigh` に置換して 0.00 度。あわせて λ2/λ1 の縮退検査を入れ、方向の定まらない
+点群 (球状、短すぎるセグメント) には `None` を返すようにした。5L7D の実測 6.4 度は不変。
+
+**配向がパッキングの内部ステップだった**のも P1。`orient_fn` は
+`embed_with_membrane_patch_tiles` のステップ1 からしか呼ばれておらず、
+`--membrane-backend packmol-memgen` を選ぶと配向指定が全部無視され packmol-memgen 内部の
+MEMEMBED が走っていた。ユーザから「配向の話になぜ patch が出てくるのか」と指摘され、
+症状ではなく構造が問題だと整理できた。配向を `embed_in_membrane` の前段へ引き上げ、
+両パッキング経路とも `preoriented` で配向済み構造を受け取る形にした。レビュアーの案の方が
+私の当初案 (packmol-memgen 内部の MEMEMBED にフラグ注入) より良い。
+
+**最大の設計ミスは別にあった。** ユーザに「膜トポロジーはどこで使っているのか」「TMbed は
+どこで使っているのか」と繰り返し問われて判明したが、`embed_in_membrane` は TMbed を呼んで
+おらず、`--membrane-topology-file` を渡し忘れると**黙って MEMEMBED 経路に落ちていた**。
+膜系を作る以上トポロジーは必須の入力なのに、任意のオプションとして扱っていた。これは
+「MDClaw が MEMEMBED に `-n` を渡していなかったから SMO が裏返った」のと同じ構図で、
+必要な情報をコードが取りに行っていなかった。既定を `auto_predict_topology=True` に変え、
+トポロジーが無ければ自分で TMbed を実行するようにした。予測不能なら従来どおり MEMEMBED に
+落ちるが、**必ず warnings に理由を残す** (黙って落ちるのが問題だったため)。
+
+P2 は 4 件。(1) topology consistency が生の z を膜中心と比較しており、周期境界を跨いだ残基が
+反対側と判定されていた → 最小イメージ化。(2) 残基キーが resseq のみで chain を無視しており、
+残基番号を共有するホモ多量体で両 protomer が平均されて整合率 0.5 になっていた →
+(chain, resseq, icode) に。膜蛋白では多量体が普通なので実害が大きい。(3) TMbed の
+subprocess に timeout が無く、存在しない model_dir は黙って HuggingFace ダウンロードへ
+フォールバックしていた → timeout 1800s と `tmbed_model_dir_missing`。(4) 新パラメータが
+`actual_conditions` に無く、条件を正しく記録した DAG ほど `condition_missing` で実行不能に
+なっていた → 追加。トポロジーは可変な絶対パスではなく**内容の SHA-256** を記録する
+(レビュアーの提案。パスは環境で変わるがハッシュなら同一性を検証できる)。
+
+**レビュアーの数値に合わせなかった点が1つある。** PBC の再現例として提示された入力
+(headgroup 20..80 に対し out=30 / in=70) は、膜中心 50 に対して out が下・in が上という
+自己矛盾で、0.0 が返るのが正しい。物理的に意味のある「残基が周期境界を跨ぐ」ケースで
+検証し直し、3 パターンとも 1.0 になることを確認した。
+
+**beta barrel の扱いも確定。** テンソル和 Σaaᵀ がレビュアー環境では barrel を 0.0-2.2 度に
+改善したが、私の手元では 2OMF 17.3 度 (符号合わせ平均 14.5 度より悪化) / 4K3B 11.7 度
+(同 31.1 度より改善) と一貫しなかった。セグメントを全部そろえられるかに強く依存すると
+見ている。決着まで barrel は MEMEMBED `-b` に回す現状維持。判定は TMbed の H/B クラスで、
+7AHL (strand 2本) / 1UUN MspA (3本) / 4K3B BamA (16本) を含む実バレル5件すべてが拒否され、
+SMO (helix 7本) のみ通ることを確認済み。論文が「取り逃すのは 2-4 ストランドのもの」と
+書いていたので穴だと推測したが、実測で否定された。
+
+実系確認: `--membrane-topology-file` を渡さず1コマンドで solv_006 を構築し、
+orientation_method=tm-segments、membrane_center_z=0.0、geometry passed、
+topology_consistency 10/10。回帰テスト 33 本、558 passed。
+
+**未着手**: PPM バックエンド (`/opt/mdclaw/bin/immers` は SIF に既存)、MEMEMBED `-f` への
+非膜残基受け渡し、study 文書の文字列マッチ由来 barrel フラグより TMbed 判定を優先する件。
+また packmol-memgen 経路はユニットテストと構造変更で確認しただけで、フルボックス packing を
+実走させていない。
+
+---
+
+## 2026-08-18 — 訂正: DB 由来ベンチ設計を MDDB 単独に変更、逐次ゲートと σ_FF 加算式を撤回
+
+**同日の前エントリ「公開 MD DB (GPCRmd / MDDB) 由来ベンチの実測と検証層の設計」を訂正する。**
+実測値そのものは概ね維持されるが、**供給源の選択と検証設計の中核 3 点が誤っていた**。
+改訂版は `docs/research/db_derived_benchmark_validation.md` (rev.2)。
+
+**方針変更 (ユーザ判断).** GPCRmd は RIKEN でのライセンス上の扱いが難しいため供給源から外した。**MDDB 単独**にする。
+
+**独立レビューで判明した設計上の誤り 4 点** (cursor advisor pane, Opus 4.8, 読み取り専用で実施):
+
+1. **`observable_fidelity` を「唯一の新規軸」としたのは誤り。** 軌道から観測量を再計算して
+   自己申告値と突き合わせる primitive は既存: `MDPrepBench/mdprepbench/scoring.py:882-947` と
+   `:1076-1124` (`_check_observable_recompute_consistency`)、
+   `MDStudyBench/mdstudybench/scoring.py:1033-1075` (`direction_grounding`) と
+   `:1078-1126` (`observable_recompute_consistency`)。新規なのは
+   **DB の固定参照軌道をエージェント入力にする task mode と DB provenance 付き check contract** だけ。
+2. **「軸 k は k-1 が通ったときのみ評価」という逐次ゲートは自己矛盾。** 物理妥当性に落ちた提出でも
+   組成・自己申告値・主張整合性の診断は独立に可能で、それを捨てるのは掲げた目的 (原因帰属) を捨てること。
+   **全軸を独立に評価し、`passed` / `failed` / `not_evaluable` / `not_attempted` を区別し、
+   最終合否だけを非補償ゲートにする**に変更。
+3. **`δ = k·sqrt(σ_rep² + σ_FF²)` を撤回。** この式は力場差が平均ゼロのランダム変動で、
+   単一 σ_FF が系・観測量をまたいで転用可能であることを仮定する。実際は系依存の系統バイアスなので
+   単一分散に畳めない。同様に「Δ なら力場オフセットが相殺される」も一般には成立しない
+   (相殺は bias が両条件で同じ場合のみ)。
+4. **旧 L4 を 2 軸に分割。** `observable_recompute` (selection/alignment/PBC/実装版の問題) と
+   `ensemble_reproduction` (sampling/力場/初期条件/protocol の問題) は失敗原因が異なる。
+   後者は matched-protocol / diagnostic-only / calibrated の 3 モードに分け、
+   matched-protocol なら σ_FF は不要 (「σ_FF が測れなければ絶対値タスクを一切作らない」は強すぎた)。
+
+**新規に見つかった scorer バグ.** `DeterministicCheck.capability` の明示 override
+(`MDPrepBench/mdprepbench/models.py:291-306`) が capability profile 集計で無視される。
+`CheckResult` (`models.py:1079-1085`) が capability を保持せず、`scoring.py:3662-3685` が常に
+`DEFAULT_CHECK_CAPABILITY` を引くため。現行 P01-P40 は override 未使用なので今の得点には影響しないが、
+自動生成タスクが capability を明示し始めると公開契約と実際の集計が食い違う。**タスク量産前に修正が必要。**
+
+**MDDB 単独 + CC-BY 限定にした結果の実測 (定義つき).**
+
+- ライセンス: CC-BY 4.0 が 4511、CC0 19、**CC 系でないものが 24** (AFL 3.0 が 9、Apache 2.0 が 5、
+  MIT 4、LGPL 2、記載なし 4)。タスク生成はこの 24 件を除外する。
+- **膜系の軸は実質失われた。** 実バイアレイヤ (`LIPIRES>=100`) は 30 件だが **20 件が非 CC**
+  (CLC / Nav 5WEO / TARP / HCN / CTL1、および唯一の GPCR `OTRMG` `OTRMGb` も非 CC)。
+  CC-BY の膜系は 10 件で全て SARS-CoV-2 のウイルス膜。
+  **P18 膜系が全モデル失敗する既知の弱点を DB 由来タスクで補強する道は閉じた。** 膜系は手書きで扱う。
+- **力場感度の測定源は MDDB 内に存在する。** 同一 PDB が複数力場で登録された群が **11、全て CC-BY**。
+  `6VXX` が 6 力場、`6M0J` が 5、`1FZX` / `1ICK` / `1SK5` / `3GGI` が 4
+  (OL15 / OL21 / ParmBSC1 / Tumuc1、各 2 entry) で、核酸 4 系は力場比較目的の study に見える。
+  ただし同一 PDB でもリガンドパラメータ・プロトネーション・欠損ループ・イオン強度・ensemble・
+  engine・軌道長・初期構造が交絡しうるため、**matched を確認するまで力場感度に帰属しない**。
+
+**計数の定義の問題.** 前エントリの「脂質を含む 43 件」は定義なしで誤読を招く。
+`LIPIRES>0` は 43、`LIPIRES>=100` は 30、`MEMBRANES` 非空は 10 で、どれを指すかで意味が変わる。
+また `totalFrames` 296128391 は summary エンドポイントの集計値で、project 一覧の総和 287267536 とは
+別の量である (3% 差)。**以後、計数は必ず定義とともに記す。**
+
+**次の 4 手 (いずれも MD 不要).** (1) 核酸 4 系 16 entry の matched-protocol 検証、
+(2) 解析契約レジストリの最小版 (観測量 1 つで MDDB 前計算値と自前再計算値のずれを測る)、
+(3) `observable_recompute` タスク 10 本、(4) 上記 scorer バグの修正と回帰テスト。
+
+---
+
+## 2026-08-18 — 公開 MD DB (GPCRmd / MDDB) 由来ベンチの実測と検証層の設計
+
+MDPrepBench / MDStudyBench を公開 MD データベースから自動生成できるかの調査。
+設計は `docs/research/db_derived_benchmark_validation.md` に分離。ここには実測値と判断だけ残す。
+
+**実測 (API / 公開ページを直接叩いた).**
+
+- MDDB (`https://mmb.mddbr.eu/api/rest/v1/`, 無認証): 4554 projects / 14138 MD /
+  296M frames / 33.6 TB。`LICENSE` は 4511 件が CC-BY 4.0。条件ベクトル
+  (`FF` `TEMP` `WAT` `ENSEMBLE` `TIMESTEP` `LENGTH` `SOL` `NA` `CL` `MEMBRANES` `PDBIDS`) が機械可読。
+  前計算解析が約 4500 系 × 10 種 (`rmsds` 4551 / `fluctuation` 4551 / `rgyr` 4551 / `sasa` 4552 /
+  `pca` 4552 / `tmscores` 3285 / `hbonds` 2318 / `interactions` 2398、膜系は `apl` `thickness`
+  `lipid-order` `mem-map`) で JSON 時系列としてそのまま取得できる。`mdcount>=2` が 1328 project
+  (10 replicas が 605、6 が 271、8 が 160、9 が 152)。
+- **MDDB に GPCR はほぼ無い。** 全 4554 中で脂質を含むのは 43 件のみ、うち GPCR は
+  `OTRMG` / `OTRMGb` (ヒトオキシトシン受容体, 7RYC, Amber ff14SB, 3 replicas, LIPIRES=256) の 1 系だけ。
+  残りは CLC (8-9 replicas)、Nav (5WEO)、TARP γ2/γ7、HCN、CTL1、SARS-CoV-2 spike/膜、
+  および LIPIRES=1 の界面活性剤単分子系。膜系タスクで MDDB は GPCRmd の代替にならない。
+- GPCRmd: API とファイル DL はログイン必須 (DL は 1 リクエスト 5 dynamics 上限) だが、
+  **`/dynadb/dynamics/id/<id>/` の report ページは無認証で完全な条件表を返す**。
+  ID 36 実測: 3REY.A / Inactive / TIP3P / POPC / Cl 191 mM, Na 159 mM /
+  Water 22376, POPC 207, Cl 77, Na 64 / 100039 atoms / CHARMM36m / 4.0 fs / Replicates 3 / 1.5 µs。
+  `/dynadb/datasets/` は無認証で 773 の view ID を Complex / Apoform ペアとして公開。
+- **GPCRmd は CHARMM 一様ではない。** 実在 24 ID をサンプルして 12 件パースできたうち、
+  1 件が ff19SB/lipid21/GAFF2 + AMBER PMEMD.CUDA (ID 2322)。CHARMM も 36 / 36m Feb2016 /
+  May2015 / c36 Jul2021 と版が割れ、エンジンは ACEMD / ACEMD3 / GROMACS 2021.3 / PMEMD、
+  膜は POPC 単一が 6 件で残り 4 件が混合 (DOPC/DPPC/DSPC/SDPC、POPC+CHL1、POPG+CO1+POPC)。
+  Nature Methods 2020 のコアが一様なだけで、以後のコミュニティ投稿は多様化している。
+- 24 ID 中 12 は report ページを取得できず (500 / no report)。773 は上限であって使える N ではない。
+  8/24-8/28 は GPCRmd メンテナンス予定。
+
+**既存ハーネスの状態 (grep で確認).**
+
+- MDPrepBench: `check_type` は 24 種すべて**バージョン無し**。集計は重み付き平均 (補償的) +
+  `_HARD_FAIL_CHECK_TYPES` クランプ。軸は `identity` / `physical_validity` / `fidelity` / `provenance`。
+- MDStudyBench: `region_water_occupancy@1` 形式で**バージョン有り**。
+  `grounded_correct = valid_execution AND claim_supported AND truth_agreement` の非補償 AND。
+- **どちらにも solve 時のネットワーク遮断が無い** (`run.py` に該当制御なし)。
+  参照 DB を使うベンチではこれが最大の穴で、エージェントが参照そのものを取得できると全層が同時に無効化される。
+
+**判断.**
+
+- 検証は 7 層 (`identity` / `physical_validity` / `composition_fidelity` / `execution_validity` /
+  `observable_fidelity` / `claim_support` / `truth_agreement`) に分け、層をまたぐ補償はしない。
+  外部 DB が要るのは 3 層だけで、残り 4 層は DB なしで先に固められる。
+- 新規語彙は `observable_fidelity` の 1 つだけ。参照軌道を固定入力として渡す層で、**MD を走らせない**ので CI に載る。
+- 力場一致は要件にしない。組成照合・参照軌道の再解析・ペア差分のいずれも参照の力場に依存しないため。
+  「GPCRmd が CHARMM だから使いにくい」が効くのは絶対値を参照に合わせにいく設計だけで、それは採らない。
+- 自前 MD と参照を絶対値で比べる層 (L4b) は σ_FF が測れる場合のみ作る。
+  測定源は「GPCRmd 内で同一 PDB が CHARMM コアと Amber 投稿の両方に現れるペア」。無ければ作らない。
+
+**次の 3 手 (いずれも MD 不要).** (1) MDDB の 1328 project から観測量ごとの σ_rep を算出、
+(2) GPCRmd 773 ID をクロールして同一 PDB の力場違いペアを探索し L4b の可否を決める、
+(3) `observable_fidelity` タスクを 10 本作る。
+
+---
+
 ## 2026-08-18 — TMbed を導入し、膜配向を「探索」から「予測に従う」に変えた
 
 別メンバーの SMO 膜構築が壊れた件を調べた結果、MEMEMBED / PPM が構造だけから
@@ -64,9 +243,34 @@ overlap_fraction 0.792 は MEMEMBED 構築の 0.798 とほぼ一致し、両者�
 
 回帰テスト 17 本を `tests/test_membrane_topology.py` に追加。CLI contract golden を再生成。
 
-**未対応**: SIF の再ビルドはしていない。Dockerfile と environment.yml は更新済みなので、
-次回ビルド時に反映される。それまで `predict_membrane_topology` は `tmbed_unavailable`
-を返す (構造化エラーとして扱われる)。
+**追記 (同日、レビュー中に判明した2件)**
+
+(a) **beta barrel には効かない。** 「セグメント種別を区別していないが大丈夫か」と自問して
+測ったところ、OPM 正解に対し 1QJP OmpA (8ストランド) は 2.0 度だが **2OMF OmpF
+(16ストランド) は 14.5 度**。短いセグメントを混ぜると 41.7 度に悪化する (ここから
+`MIN_SEGMENT_CA_ATOMS = 8` が実際に効いていることも確認できた)。バレルのストランドは
+法線から ~40 度傾いて樽の周りを回るので、軸平均は弱い推定量になる。端残基の重心差という
+別案も試したが改善しない (OmpA 10.0 度 / OmpF 15.5 度)。MEMEMBED には専用の `-b` モードが
+あるので、そちらに回すことにした。
+
+「そもそも barrel をどう認識するのか」は **TMbed が答える**。TMbed の出力クラスは H (ヘリックス)
+と B (ストランド) が別で、論文 Table 1 で β-TMP recall 93.8 ± 7.5% / FPR 0.1 ± 0.1%、
+Table 3 で TMB セグメント recall 95.0% / precision 99.2% と報告されている。
+
+論文が「取り逃したバレルは全て 2-4 ストランドのもの」と書いていたので、そこが穴だと
+推測したが **実測で否定された**: 7AHL α-hemolysin (protomer 2ストランド) → strand 2本、
+1UUN MspA (論文が名指しした例) → strand 3本、4K3B BamA → strand 16本。いずれも
+is_transmembrane=True で正しく分類。実バレル 5 件すべてが
+`tm_orientation_beta_barrel_unsupported` で拒否され、SMO (helix 7本) のみ通ることを確認。
+推測で限界を書かず測ったのが正解だった。
+
+(b) **ビルドが TMbed ステップで失敗した (設計どおりのガード動作)。** 原因は `protobuf` 不足。
+transformers が ProtT5 の SentencePiece トークナイザを展開するのに必要だが、TMbed が
+依存として宣言していない。`SentencePieceExtractor requires the protobuf library` で落ちる。
+`environment.yml` に追加。ローカル検証時は明示的に入れていたので露見していなかった。
+
+**未対応**: SIF の再ビルドは進行中。それまで `predict_membrane_topology` は
+`tmbed_unavailable` を返す (構造化エラーとして扱われる)。
 
 ---
 

@@ -43,14 +43,26 @@ MEMBRANE_CLASSES = frozenset({TMBED_TMH, TMBED_TMB})
 
 DEFAULT_MIN_SEGMENT_LENGTH = 5
 TMBED_MODEL_DIR_ENV = "MDCLAW_TMBED_MODEL_DIR"
+# TMbed downloads the ProtT5 encoder on a model-directory miss, which on a
+# compute node without outbound network hangs rather than failing. Bound it.
+DEFAULT_TMBED_TIMEOUT_SECONDS = 1800
 
 
-def _tmbed_model_dir(explicit: Optional[str]) -> Optional[str]:
-    """Resolve the TMbed model directory (bundled in the image by default)."""
-    for candidate in (explicit, os.environ.get(TMBED_MODEL_DIR_ENV)):
-        if candidate and Path(candidate).is_dir():
-            return str(Path(candidate).resolve())
-    return None
+def _tmbed_model_dir(explicit: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Resolve the TMbed model directory, and say so when an explicit one is bad.
+
+    Silently ignoring a wrong ``model_dir`` sends TMbed to HuggingFace instead,
+    which is a long wait ending in a network error on an offline node.
+    """
+    if explicit:
+        path = Path(explicit)
+        if path.is_dir():
+            return str(path.resolve()), None
+        return None, f"model_dir does not exist: {explicit}"
+    bundled = os.environ.get(TMBED_MODEL_DIR_ENV)
+    if bundled and Path(bundled).is_dir():
+        return str(Path(bundled).resolve()), None
+    return None, None
 
 
 def _chain_sequences(structure_file: Path) -> list[dict[str, Any]]:
@@ -170,6 +182,7 @@ def predict_membrane_topology(
     model_dir: Optional[str] = None,
     use_gpu: bool = True,
     min_segment_length: int = DEFAULT_MIN_SEGMENT_LENGTH,
+    timeout_seconds: int = DEFAULT_TMBED_TIMEOUT_SECONDS,
 ) -> dict:
     """Predict transmembrane segments and inside/outside topology with TMbed.
 
@@ -261,7 +274,14 @@ def predict_membrane_topology(
         "-p", str(pred_path),
         "--out-format", "1",
     ]
-    resolved_model_dir = _tmbed_model_dir(model_dir)
+    resolved_model_dir, model_dir_error = _tmbed_model_dir(model_dir)
+    if model_dir_error:
+        result["code"] = "tmbed_model_dir_missing"
+        result["errors"].append(
+            f"{model_dir_error}. Point --model-dir at the bundled encoder "
+            f"({TMBED_MODEL_DIR_ENV}) or omit it."
+        )
+        return result
     if resolved_model_dir:
         cmd += ["-m", resolved_model_dir]
     cmd.append("--use-gpu" if use_gpu else "--no-use-gpu")
@@ -270,10 +290,21 @@ def predict_membrane_topology(
     try:
         proc = subprocess.run(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=timeout_seconds,
         )
     except FileNotFoundError as exc:
         result["code"] = "tmbed_unavailable"
         result["errors"].append(f"TMbed could not be launched: {exc}")
+        return result
+    except subprocess.TimeoutExpired as exc:
+        pred_path.unlink(missing_ok=True)
+        result["code"] = "tmbed_timeout"
+        result["errors"].append(
+            f"TMbed did not finish within {timeout_seconds}s. If the ProtT5 "
+            "encoder is not present locally it is fetched over the network, "
+            "which stalls on nodes without outbound access. stderr tail: "
+            + tail_for_agent(exc.stderr or "")
+        )
         return result
 
     if proc.returncode != 0 or not pred_path.is_file():

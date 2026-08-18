@@ -64,3 +64,7 @@ dependencies:
     # leaflet each end of the protein faces, which structure-based orientation
     # (MEMEMBED, PPM) has to guess at and can get backwards.
     - tmbed @ git+https://github.com/BernhoferM/TMbed.git@v1.0.2
+    # transformers needs protobuf to extract the SentencePiece model for the
+    # ProtT5 tokenizer, and TMbed does not declare it. Without it the encoder
+    # download dies with "SentencePieceExtractor requires the protobuf library".
+    - protobuf

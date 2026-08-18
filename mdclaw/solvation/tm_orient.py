@@ -22,6 +22,14 @@ segment boundary by up to five residues — TMbed's stated accuracy — leaves i
 Taking one principal axis over all transmembrane residues at once is markedly
 worse (22 degrees): the helices are individually tilted by 10-37 degrees and it
 is their *average* that tracks the normal, not the shape of the bundle.
+
+This does **not** extend to beta barrels. Barrel strands are tilted ~40 degrees
+from the normal and wind around the barrel, so their axes carry a much weaker
+signal: measured against OPM, 1QJP (OmpA, 8 strands) lands at 2.0 degrees but
+2OMF (OmpF, 16 strands) only at 14.5 degrees, and admitting shorter segments
+degrades it to 41.7 degrees rather than improving it. MEMEMBED has a dedicated
+beta-barrel mode (`-b`) for exactly this shape, so barrels are refused here and
+routed there instead.
 """
 
 import math
@@ -37,6 +45,24 @@ logger = setup_logger(__name__)
 
 MIN_SEGMENT_CA_ATOMS = 8
 MIN_SEGMENTS_FOR_AXIS = 1
+# Above this share of strand segments the shape is a beta barrel, not a helix
+# bundle, and averaging segment axes is the wrong estimator (see module docstring).
+MAX_STRAND_SEGMENT_FRACTION = 0.5
+# A segment's axis is only meaningful when the largest covariance eigenvalue
+# clearly dominates the next one; above this ratio the point cloud has no
+# distinguished direction and any axis returned would be arbitrary.
+MAX_DEGENERACY_RATIO = 0.5
+
+
+def segments_are_beta_barrel(segments) -> bool:
+    """True when the transmembrane segments are predominantly beta strands."""
+    kinds = [str(s.get("kind", "")).lower() for s in (segments or [])]
+    if not kinds:
+        return False
+    return (
+        sum(1 for k in kinds if k == "strand") / len(kinds)
+        > MAX_STRAND_SEGMENT_FRACTION
+    )
 
 
 def _read_ca_and_atoms(pdb_file: Path) -> tuple[dict[tuple[str, int], list[float]], list[str]]:
@@ -59,31 +85,31 @@ def _read_ca_and_atoms(pdb_file: Path) -> tuple[dict[tuple[str, int], list[float
 
 
 def _principal_axis(points: list[list[float]]) -> Optional[list[float]]:
-    """First principal axis of a point cloud, via power iteration on the covariance."""
-    n = len(points)
-    if n < 3:
+    """First principal axis of a point cloud, or None if it is not well defined.
+
+    Solved directly on the 3x3 covariance matrix. An earlier version ran power
+    iteration from a fixed start vector, which silently returned that start
+    vector whenever it happened to be orthogonal to the true first eigenvector —
+    a real 20-residue helix rotated into that position came back 90 degrees off.
+    A direct symmetric eigendecomposition has no start vector to get wrong.
+
+    Returns None when the top two eigenvalues are too close to separate: a
+    segment whose points are spherical or too short has no meaningful axis, and
+    reporting an arbitrary one would quietly corrupt the averaged normal.
+    """
+    import numpy as np
+
+    if len(points) < 3:
         return None
-    cx = sum(p[0] for p in points) / n
-    cy = sum(p[1] for p in points) / n
-    cz = sum(p[2] for p in points) / n
-    cov = [[0.0] * 3 for _ in range(3)]
-    for p in points:
-        d = (p[0] - cx, p[1] - cy, p[2] - cz)
-        for i in range(3):
-            for j in range(3):
-                cov[i][j] += d[i] * d[j]
-    v = [1.0, 1.0, 1.0]
-    for _ in range(200):
-        w = [sum(cov[i][j] * v[j] for j in range(3)) for i in range(3)]
-        norm = math.sqrt(sum(c * c for c in w))
-        if norm < 1e-12:
-            return None
-        new = [c / norm for c in w]
-        if sum(abs(new[i] - v[i]) for i in range(3)) < 1e-12:
-            v = new
-            break
-        v = new
-    return v
+    coords = np.asarray(points, dtype=float)
+    centred = coords - coords.mean(axis=0)
+    eigenvalues, eigenvectors = np.linalg.eigh(centred.T @ centred)
+    largest, second = float(eigenvalues[-1]), float(eigenvalues[-2])
+    if largest <= 1e-12:
+        return None
+    if second / largest > MAX_DEGENERACY_RATIO:
+        return None
+    return [float(component) for component in eigenvectors[:, -1]]
 
 
 def _normalize(v: list[float]) -> list[float]:
@@ -135,6 +161,15 @@ def orient_protein_with_tm_segments(
     result: dict[str, Any] = {"success": False, "warnings": [], "errors": []}
     segments = (membrane_topology or {}).get("segments") or []
     regions = (membrane_topology or {}).get("regions") or []
+    if segments_are_beta_barrel(segments):
+        result["code"] = "tm_orientation_beta_barrel_unsupported"
+        result["errors"].append(
+            "The predicted segments are mostly beta strands. Averaging strand "
+            "axes is a poor estimator for a barrel (14.5 degrees off on OmpF "
+            "versus ~6 for a helix bundle); orient with "
+            "--orientation-method memembed --memembed-beta-barrel instead."
+        )
+        return result
     if not segments:
         result["code"] = "tm_orientation_no_segments"
         result["errors"].append(

@@ -2,6 +2,7 @@
 
 import os
 import sys
+import hashlib
 import json
 import re
 import shutil
@@ -256,6 +257,7 @@ def _parse_pdb_xyz_line(line: str) -> Optional[dict]:
         "name": padded[12:16].strip(),
         "resname": padded[17:21].strip().upper(),
         "chain": padded[21].strip(),
+        "icode": padded[26].strip(),
         "resseq": resseq,
         "x": x,
         "y": y,
@@ -365,6 +367,7 @@ def _topology_consistency_report(
     membrane_topology: Optional[dict],
     headgroup_z_min: float,
     headgroup_z_max: float,
+    box_c: float,
 ) -> Optional[dict]:
     """Check that non-TM regions sit on the side the topology predicts.
 
@@ -387,11 +390,28 @@ def _topology_consistency_report(
         return None
 
     midplane = 0.5 * (headgroup_z_min + headgroup_z_max)
-    by_residue: dict[int, list[float]] = {}
+    # Key on the whole residue identity. Keying on the residue number alone
+    # merges chains, so a homodimer whose two protomers share numbering has its
+    # opposite-facing copies averaged into the midplane and reads as
+    # inconsistent no matter how it is built.
+    by_residue: dict[tuple[str, int, str], list[float]] = {}
     for atom in protein_atoms:
         resseq = atom.get("resseq")
         if isinstance(resseq, int):
-            by_residue.setdefault(resseq, []).append(atom["z"])
+            key = (
+                str(atom.get("chain") or "").strip() or "A",
+                resseq,
+                str(atom.get("icode") or "").strip(),
+            )
+            by_residue.setdefault(key, []).append(atom["z"])
+
+    def _residue_zs(chain: str, resseq: int) -> list[float]:
+        return [
+            z
+            for key, values in by_residue.items()
+            if key[0] == chain and key[1] == resseq
+            for z in values
+        ]
 
     checked: list[dict] = []
     for region in regions:
@@ -403,17 +423,27 @@ def _topology_consistency_report(
             end = int(region["end"])
         except (KeyError, TypeError, ValueError):
             continue
-        zs = [z for r in range(start, end + 1) for z in by_residue.get(r, [])]
-        if not zs:
+        chain = str(region.get("chain") or "").strip() or "A"
+        # Compare in the periodic image of the midplane. The protein's raw z
+        # values and the bilayer can sit in different images, and the same
+        # geometry wrapped differently would otherwise flip every verdict.
+        offsets = [
+            _minimum_image_delta(z - midplane, box_c)
+            for r in range(start, end + 1)
+            for z in _residue_zs(chain, r)
+        ]
+        if not offsets:
             continue
-        mean_z = sum(zs) / len(zs)
+        mean_offset = sum(offsets) / len(offsets)
         expected_positive = side == "out"
         checked.append({
+            "chain": chain,
             "start": start,
             "end": end,
             "expected_side": side,
-            "mean_z": mean_z,
-            "consistent": (mean_z > midplane) == expected_positive,
+            "mean_z": midplane + mean_offset,
+            "offset_from_midplane": mean_offset,
+            "consistent": (mean_offset > 0.0) == expected_positive,
         })
 
     if not checked:
@@ -505,6 +535,7 @@ def _membrane_embedding_geometry_report(
         membrane_topology=membrane_topology,
         headgroup_z_min=headgroup_z_min,
         headgroup_z_max=headgroup_z_max,
+        box_c=box_c,
     )
     min_topology_consistency = 0.75
     if topology_report is not None:
@@ -722,6 +753,42 @@ def _orient_protein_with_memembed(
             "given); verify the extracellular side ends up at +z."
         )
     return result
+
+
+def _membrane_topology_digest(topology_file: Optional[str]) -> Optional[str]:
+    """SHA-256 of a membrane topology file, for reproducible node conditions."""
+    if not topology_file:
+        return None
+    try:
+        return hashlib.sha256(
+            Path(topology_file).read_bytes()
+        ).hexdigest()
+    except OSError:
+        return None
+
+
+def _resolve_auto_orientation(
+    membrane_topology: Optional[dict],
+) -> tuple[str, bool, Optional[str]]:
+    """Choose an orientation backend from the predicted topology.
+
+    Returns ``(method, route_to_beta_barrel, warning)``. Beta barrels go to
+    MEMEMBED's dedicated ``-b`` mode: their strands tilt ~40 degrees from the
+    normal and wind around the barrel, so averaging segment axes is a much
+    weaker estimator there than for a helix bundle. TMbed reports strands as a
+    distinct class, so this is read off the prediction rather than guessed.
+    """
+    from mdclaw.solvation.tm_orient import segments_are_beta_barrel
+
+    segments = (membrane_topology or {}).get("segments")
+    if not segments:
+        return "memembed", False, None
+    if segments_are_beta_barrel(segments):
+        return "memembed", True, (
+            "predicted topology is a beta barrel; orienting with MEMEMBED -b "
+            "instead of transmembrane-segment axes."
+        )
+    return "tm-segments", False, None
 
 
 def _make_orientation_fn(
@@ -1701,6 +1768,7 @@ def embed_in_membrane(
     memembed_search_type: int = MEMEMBED_DEFAULT_SEARCH_TYPE,
     membrane_topology_file: Optional[str] = None,
     orientation_method: str = "auto",
+    auto_predict_topology: bool = True,
     salt: bool = True,
     salt_c: str = "Na+",
     salt_a: str = "Cl-",
@@ -1989,6 +2057,15 @@ def embed_in_membrane(
                 "preoriented": preoriented,
                 "memembed_beta_barrel": memembed_beta_barrel,
                 "memembed_force_span": memembed_force_span,
+                "orientation_method": orientation_method,
+                "n_terminal_side": n_terminal_side,
+                "memembed_search_type": memembed_search_type,
+                "auto_predict_topology": auto_predict_topology,
+                # The file path is machine-specific; the content is what has to
+                # match for a rerun to mean the same thing.
+                "membrane_topology_sha256": _membrane_topology_digest(
+                    membrane_topology_file
+                ),
                 "salt": salt,
                 "salt_c": salt_c,
                 "salt_a": salt_a,
@@ -2071,6 +2148,66 @@ def embed_in_membrane(
         result["warnings"].append(
             "enabled MEMEMBED beta-barrel mode from job/task context"
         )
+    
+    # Check packmol-memgen availability.  A warm patch-cache hit can still build
+    # a membrane without the packer, but a cold patch build (and the full
+    # packmol-memgen backend) cannot.
+    packmol_memgen_available = packmol_memgen_wrapper.is_available()
+    if not packmol_memgen_available and membrane_backend == "packmol-memgen":
+        result["errors"].append("packmol-memgen not found in PATH")
+        result["errors"].append("Hint: Install AmberTools or activate the mdclaw conda environment")
+        logger.error("packmol-memgen not available")
+        if job_dir and node_id:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=result.get("errors", []))
+        return result
+
+    # Setup output directory
+    _node_mode = job_dir and node_id
+    if _node_mode:
+        from mdclaw._node import begin_node
+        out_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        begin_node(job_dir, node_id)
+    else:
+        base_dir = Path(output_dir) if output_dir else WORKING_DIR
+        out_dir = create_unique_subdir(base_dir, "solvate")
+    result["output_dir"] = str(out_dir)
+
+    # Membrane topology is a required input for placing a protein in a bilayer,
+    # not an optional extra: it says which residues cross the membrane and which
+    # side everything else is on. Predict it here rather than making the caller
+    # remember a separate command — a forgotten --membrane-topology-file used to
+    # fall back to MEMEMBED silently, which is the same class of mistake as not
+    # telling MEMEMBED the topology in the first place.
+    if membrane_topology_file:
+        pass
+    elif auto_predict_topology and str(orientation_method or "auto").lower() != "memembed":
+        from mdclaw.membrane_topology.tmbed import predict_membrane_topology
+
+        prediction = predict_membrane_topology(
+            structure_file=str(pdb_path),
+            output_dir=str(out_dir),
+        )
+        result["membrane_topology_prediction"] = {
+            "success": prediction.get("success"),
+            "code": prediction.get("code"),
+            "n_terminal_side": prediction.get("n_terminal_side"),
+            "segment_count": len(prediction.get("segments") or []),
+        }
+        if prediction.get("success"):
+            membrane_topology_file = prediction.get("membrane_topology_file")
+            result["warnings"].extend(prediction.get("warnings", []))
+        else:
+            # Degrade to the structure-based search rather than failing: the
+            # predictor is an improvement on MEMEMBED, not a prerequisite for it.
+            result["warnings"].append(
+                "membrane topology prediction unavailable "
+                f"({prediction.get('code')}); falling back to MEMEMBED "
+                "orientation, which infers the membrane and its direction from "
+                "the structure alone."
+            )
+
     membrane_topology: Optional[dict] = None
     if membrane_topology_file:
         try:
@@ -2099,9 +2236,13 @@ def embed_in_membrane(
             return fail_node_from_result(job_dir, node_id, result)
         return result
     if resolved_orientation == "auto":
-        resolved_orientation = (
-            "tm-segments" if (membrane_topology or {}).get("segments") else "memembed"
+        resolved_orientation, barrel_routed, routing_warning = (
+            _resolve_auto_orientation(membrane_topology)
         )
+        if barrel_routed:
+            memembed_beta_barrel = True
+        if routing_warning:
+            result["warnings"].append(routing_warning)
     if resolved_orientation == "tm-segments" and not (membrane_topology or {}).get("segments"):
         result["errors"].append(
             "orientation_method=tm-segments needs transmembrane segments; pass "
@@ -2119,36 +2260,54 @@ def embed_in_membrane(
     result["parameters"]["memembed_search_type"] = memembed_search_type
     result["parameters"]["orientation_method"] = resolved_orientation
     result["parameters"]["membrane_topology_file"] = membrane_topology_file
-    
-    # Check packmol-memgen availability.  A warm patch-cache hit can still build
-    # a membrane without the packer, but a cold patch build (and the full
-    # packmol-memgen backend) cannot.
-    packmol_memgen_available = packmol_memgen_wrapper.is_available()
-    if not packmol_memgen_available and membrane_backend == "packmol-memgen":
-        result["errors"].append("packmol-memgen not found in PATH")
-        result["errors"].append("Hint: Install AmberTools or activate the mdclaw conda environment")
-        logger.error("packmol-memgen not available")
-        if job_dir and node_id:
-            from mdclaw._node import fail_node
-            fail_node(job_dir, node_id, errors=result.get("errors", []))
-        return result
-
-    # Setup output directory
-    _node_mode = job_dir and node_id
-    if _node_mode:
-        from mdclaw._node import begin_node
-        out_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
-        out_dir.mkdir(parents=True, exist_ok=True)
-        begin_node(job_dir, node_id)
-    else:
-        base_dir = Path(output_dir) if output_dir else WORKING_DIR
-        out_dir = create_unique_subdir(base_dir, "solvate")
-    result["output_dir"] = str(out_dir)
 
     # Copy input file to output directory for packmol-memgen
     import shutil
     input_copy = out_dir / pdb_path.name
     shutil.copy(pdb_path, input_copy)
+
+    # Orient once, here, before any packing backend is chosen. Orientation used
+    # to live inside the patch-tile assembler, which meant the packing backend
+    # silently decided how the protein was placed: --membrane-backend
+    # packmol-memgen ignored every orientation option and let packmol-memgen run
+    # its own MEMEMBED. Deciding it up front makes the two independent, so a
+    # backend change cannot move the protein.
+    oriented_input = input_copy
+    orientation_metadata: Optional[dict] = None
+    if not preoriented:
+        orient_result = _make_orientation_fn(
+            method=resolved_orientation,
+            membrane_topology=membrane_topology,
+            beta_barrel=memembed_beta_barrel,
+            force_span=memembed_force_span,
+            n_terminal_side=n_terminal_side,
+            search_type=memembed_search_type,
+        )(protein_pdb=input_copy, out_dir=out_dir)
+        result["warnings"].extend(orient_result.get("warnings", []))
+        if not orient_result.get("success"):
+            result["errors"].extend(
+                orient_result.get("errors", ["membrane orientation failed"])
+            )
+            result["code"] = orient_result.get(
+                "code", "membrane_orientation_failed"
+            )
+            if _node_mode:
+                from mdclaw._node import fail_node_from_result
+                return fail_node_from_result(job_dir, node_id, result)
+            return result
+        oriented_input = Path(str(orient_result["oriented_pdb"]))
+        orientation_metadata = (
+            orient_result.get("memembed") or orient_result.get("tm_orientation")
+        )
+        result["orientation"] = {
+            "method": resolved_orientation,
+            "oriented_pdb": str(oriented_input),
+            "membrane_center_z": orient_result.get("membrane_center_z"),
+            "details": orientation_metadata,
+        }
+    # Everything downstream now receives a structure already in the membrane
+    # frame (normal on z, midplane at z = 0).
+    packing_preoriented = True
 
     # Output file
     output_file = out_dir / f"{output_name}.pdb"
@@ -2199,7 +2358,7 @@ def embed_in_membrane(
             result["patch_cold_build_notice"] = notice
 
         patch_result = embed_with_membrane_patch_tiles(
-            protein_pdb=input_copy,
+            protein_pdb=oriented_input,
             output_file=output_file,
             output_dir=out_dir,
             lipids=lipids,
@@ -2220,8 +2379,8 @@ def embed_in_membrane(
             cache_mode=membrane_cache_mode,
             cache_dir=membrane_cache_dir,
             carve_padding=membrane_carve_padding,
-            preoriented=preoriented,
-            membrane_center_z=0.0 if preoriented else None,
+            preoriented=packing_preoriented,
+            membrane_center_z=0.0,
             packmol_memgen_runner=(
                 _run_packmol_memgen_noninteractive
                 if packmol_memgen_available
@@ -2229,14 +2388,7 @@ def embed_in_membrane(
             ),
             packmol_path=packmol_path,
             equilibrate_fn=_equilibrate_membrane_patch,
-            orient_fn=_make_orientation_fn(
-                method=resolved_orientation,
-                membrane_topology=membrane_topology,
-                beta_barrel=memembed_beta_barrel,
-                force_span=memembed_force_span,
-                n_terminal_side=n_terminal_side,
-                search_type=memembed_search_type,
-            ),
+            orient_fn=None,
             net_charge_fn=(
                 (
                     lambda *, pdb_file, box_dims: _compute_membrane_net_charge(
@@ -2415,7 +2567,7 @@ def embed_in_membrane(
     }
     if salt:
         try:
-            packmol_charge_report = _membrane_packmol_charge_delta(input_copy)
+            packmol_charge_report = _membrane_packmol_charge_delta(oriented_input)
         except Exception as exc:  # noqa: BLE001
             result["code"] = "forcefield_template_contract_unavailable"
             result["errors"].append(
@@ -2459,7 +2611,7 @@ def embed_in_membrane(
             '--dist', str(dist),
             '--dist_wat', str(dist_wat),
             '--leaflet', str(leaflet),
-            '--pdb', str(input_copy),
+            '--pdb', str(oriented_input),
             '-o', str(output_file),
             '--packlog', str(packlog),
             '--nloop', str(nloop),
@@ -2468,16 +2620,9 @@ def embed_in_membrane(
             '--tolerance', '2.0'  # Default packmol tolerance
         ]
 
-        if preoriented:
-            args.append('--preoriented')
-        elif memembed_beta_barrel:
-            args.append('--barrel')
-
-        if memembed_force_span:
-            result["warnings"].append(
-                "memembed_force_span is only applied by the patch-tile MEMEMBED "
-                "path; packmol-memgen does not expose MEMEMBED -l directly."
-            )
+        # The protein was oriented above, so packmol-memgen must not run its own
+        # MEMEMBED and undo that choice.
+        args.append('--preoriented')
 
         if salt and packmol_charge_delta:
             args.extend(["--charge_pdb_delta", str(packmol_charge_delta)])
@@ -2556,7 +2701,7 @@ def embed_in_membrane(
                     base_args=args,
                     attempt_plan=attempt_plan,
                     lanes=effective_race_lanes,
-                    input_copy=input_copy,
+                    input_copy=oriented_input,
                     out_dir=out_dir,
                     output_name=output_name,
                     membrane_timeout=membrane_timeout,
@@ -2644,7 +2789,7 @@ def embed_in_membrane(
                 attempt_args = _build_membrane_attempt_args(
                     base_args=args,
                     attempt={**attempt, "lane": attempt_index},
-                    input_copy=input_copy,
+                    input_copy=oriented_input,
                     output_file=output_file,
                     packlog=packlog,
                     salt_override_active=salt_override_active,
@@ -2819,7 +2964,7 @@ def embed_in_membrane(
             if result.get("success") and result.get("output_file"):
                 restored_output = Path(str(result["output_file"]))
                 restore_report = _restore_packmol_solute_identity(
-                    input_copy,
+                    oriented_input,
                     restored_output,
                 )
                 result.update(restore_report)

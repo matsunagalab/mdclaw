@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 
 import pytest
 
@@ -193,10 +195,10 @@ def test_orient_from_tm_segments_needs_segments(tmp_path):
 
 
 def _sided_atoms(flip: int = 1):
-    atoms = []
-    for resseq, z in ((5, -30.0), (35, 30.0), (65, -30.0)):
-        atoms.append({"resseq": resseq, "z": flip * z})
-    return atoms
+    return [
+        {"chain": "A", "resseq": resseq, "icode": "", "z": flip * z}
+        for resseq, z in ((5, -30.0), (35, 30.0), (65, -30.0))
+    ]
 
 
 def test_topology_consistency_detects_an_inverted_insertion():
@@ -210,12 +212,14 @@ def test_topology_consistency_detects_an_inverted_insertion():
         membrane_topology=_BUNDLE_TOPOLOGY,
         headgroup_z_min=-20.0,
         headgroup_z_max=20.0,
+        box_c=200.0,
     )
     flipped = _topology_consistency_report(
         protein_atoms=_sided_atoms(-1),
         membrane_topology=_BUNDLE_TOPOLOGY,
         headgroup_z_min=-20.0,
         headgroup_z_max=20.0,
+        box_c=200.0,
     )
 
     assert upright["consistency_fraction"] == 1.0
@@ -228,4 +232,357 @@ def test_topology_consistency_is_skipped_without_topology():
         membrane_topology=None,
         headgroup_z_min=-20.0,
         headgroup_z_max=20.0,
+        box_c=200.0,
     ) is None
+
+
+def test_beta_barrel_segments_are_refused(tmp_path):
+    """Barrels must not be oriented by averaging segment axes.
+
+    Barrel strands tilt ~40 degrees from the normal and wind around the barrel,
+    so their axes carry far less signal than helices: measured against OPM this
+    lands 14.5 degrees off on OmpF versus ~6 for a helix bundle. MEMEMBED has a
+    dedicated -b mode for that shape.
+    """
+    pdb = _two_helix_bundle(tmp_path)
+    barrel = {
+        "segments": [
+            {"chain": "A", "start": 11, "end": 30, "kind": "strand"},
+            {"chain": "A", "start": 41, "end": 60, "kind": "strand"},
+        ],
+        "regions": _BUNDLE_TOPOLOGY["regions"],
+    }
+
+    result = orient_protein_with_tm_segments(
+        protein_pdb=pdb, out_dir=tmp_path, membrane_topology=barrel
+    )
+
+    assert not result["success"]
+    assert result["code"] == "tm_orientation_beta_barrel_unsupported"
+    assert "memembed" in result["errors"][0]
+
+
+def test_helix_majority_is_not_treated_as_a_barrel():
+    from mdclaw.solvation.tm_orient import segments_are_beta_barrel
+
+    assert not segments_are_beta_barrel([{"kind": "helix"}] * 7)
+    assert not segments_are_beta_barrel([])
+    assert segments_are_beta_barrel([{"kind": "strand"}] * 8)
+    # a lone strand call among helices must not flip the whole classification
+    assert not segments_are_beta_barrel(
+        [{"kind": "helix"}] * 6 + [{"kind": "strand"}]
+    )
+
+
+def test_auto_orientation_routes_barrels_to_memembed():
+    """A barrel prediction must not silently take the segment-axis path."""
+    from mdclaw.solvation.membrane import _resolve_auto_orientation
+
+    method, barrel, warning = _resolve_auto_orientation(
+        {"segments": [{"kind": "strand"}] * 8}
+    )
+
+    assert method == "memembed"
+    assert barrel is True
+    assert "beta barrel" in warning
+
+
+def test_auto_orientation_uses_segments_for_helix_bundles():
+    from mdclaw.solvation.membrane import _resolve_auto_orientation
+
+    assert _resolve_auto_orientation({"segments": [{"kind": "helix"}] * 7}) == (
+        "tm-segments", False, None
+    )
+
+
+def test_auto_orientation_falls_back_without_topology():
+    from mdclaw.solvation.membrane import _resolve_auto_orientation
+
+    assert _resolve_auto_orientation(None) == ("memembed", False, None)
+    assert _resolve_auto_orientation({"segments": []}) == ("memembed", False, None)
+
+
+def _stub_prediction(monkeypatch, payload):
+    """Replace the TMbed call so the default path can be tested without it."""
+    import mdclaw.membrane_topology.tmbed as tmbed_module
+
+    monkeypatch.setattr(
+        tmbed_module, "predict_membrane_topology", lambda **kwargs: payload
+    )
+    return payload
+
+
+def test_embed_predicts_topology_by_default(monkeypatch, tmp_path):
+    """Membrane embedding must fetch the topology itself.
+
+    Regression: the topology was an optional flag, so forgetting it silently
+    reverted to MEMEMBED inferring the membrane direction from the structure —
+    the same failure the topology exists to prevent.
+    """
+    from mdclaw.solvation import membrane
+
+    topology_file = tmp_path / "membrane_topology.json"
+    topology_file.write_text(
+        json.dumps({
+            "n_terminal_side": "out",
+            "segments": [{"chain": "A", "start": 11, "end": 30, "kind": "helix"}],
+            "regions": [{"chain": "A", "start": 1, "end": 10, "side": "in"}],
+        })
+    )
+    _stub_prediction(monkeypatch, {
+        "success": True,
+        "membrane_topology_file": str(topology_file),
+        "n_terminal_side": "out",
+        "segments": [{"chain": "A", "start": 11, "end": 30, "kind": "helix"}],
+        "warnings": [],
+    })
+    monkeypatch.setattr(
+        membrane, "embed_with_membrane_patch_tiles",
+        lambda **kwargs: {"success": False, "code": "stopped_after_orientation",
+                          "errors": ["stopped"], "warnings": []},
+    )
+
+    result = membrane.embed_in_membrane(
+        pdb_file=str(_two_helix_bundle(tmp_path)), output_dir=str(tmp_path / "out")
+    )
+
+    assert result["membrane_topology_prediction"]["success"] is True
+    assert result["parameters"]["orientation_method"] == "tm-segments"
+    assert result["parameters"]["n_terminal_side"] == "out"
+
+
+def test_embed_falls_back_loudly_when_prediction_is_unavailable(monkeypatch, tmp_path):
+    """Degrading to MEMEMBED is allowed, but never silently."""
+    from mdclaw.solvation import membrane
+
+    _stub_prediction(monkeypatch, {
+        "success": False, "code": "tmbed_unavailable",
+        "n_terminal_side": None, "segments": [], "warnings": [],
+    })
+    monkeypatch.setattr(
+        membrane, "embed_with_membrane_patch_tiles",
+        lambda **kwargs: {"success": False, "code": "stopped_after_orientation",
+                          "errors": ["stopped"], "warnings": []},
+    )
+
+    result = membrane.embed_in_membrane(
+        pdb_file=str(_two_helix_bundle(tmp_path)), output_dir=str(tmp_path / "out")
+    )
+
+    assert result["parameters"]["orientation_method"] == "memembed"
+    assert any("tmbed_unavailable" in w for w in result["warnings"])
+
+
+def test_embed_skips_prediction_when_a_topology_file_is_given(monkeypatch, tmp_path):
+    from mdclaw.solvation import membrane
+
+    called = []
+    import mdclaw.membrane_topology.tmbed as tmbed_module
+    monkeypatch.setattr(
+        tmbed_module, "predict_membrane_topology",
+        lambda **kwargs: called.append(kwargs) or {"success": False, "code": "x"},
+    )
+    topology_file = tmp_path / "topo.json"
+    topology_file.write_text(json.dumps({
+        "n_terminal_side": "in",
+        "segments": [{"chain": "A", "start": 11, "end": 30, "kind": "helix"}],
+        "regions": [],
+    }))
+    monkeypatch.setattr(
+        membrane, "embed_with_membrane_patch_tiles",
+        lambda **kwargs: {"success": False, "code": "stopped", "errors": ["x"], "warnings": []},
+    )
+
+    result = membrane.embed_in_membrane(
+        pdb_file=str(_two_helix_bundle(tmp_path)),
+        output_dir=str(tmp_path / "out"),
+        membrane_topology_file=str(topology_file),
+    )
+
+    assert called == []
+    assert result["parameters"]["n_terminal_side"] == "in"
+
+
+def test_principal_axis_survives_an_orthogonal_starting_direction():
+    """The axis must not depend on any internal reference direction.
+
+    Regression: power iteration started from a fixed [1,1,1] and returned it
+    unchanged whenever the true axis was orthogonal to it — 90 degrees wrong,
+    silently. Random-rotation tests miss this because exact orthogonality has
+    measure zero.
+    """
+    from mdclaw.solvation.tm_orient import _principal_axis
+
+    # a straight 20-point helix axis lying exactly perpendicular to [1,1,1]
+    axis = (1.0 / math.sqrt(2), -1.0 / math.sqrt(2), 0.0)
+    points = [[axis[k] * 1.5 * i for k in range(3)] for i in range(20)]
+
+    estimated = _principal_axis(points)
+
+    assert estimated is not None
+    dot = abs(sum(estimated[k] * axis[k] for k in range(3)))
+    assert dot > 0.999, f"axis {estimated} is not aligned with {axis}"
+
+
+def test_principal_axis_rejects_a_direction_less_point_cloud():
+    """A cloud with no dominant direction must not report an arbitrary axis."""
+    from mdclaw.solvation.tm_orient import _principal_axis
+
+    corners = [
+        [x, y, z]
+        for x in (-1.0, 1.0) for y in (-1.0, 1.0) for z in (-1.0, 1.0)
+    ]
+
+    assert _principal_axis(corners) is None
+
+
+def test_orientation_happens_before_the_packing_backend_is_chosen(monkeypatch, tmp_path):
+    """Orientation must not be an internal step of one packing backend.
+
+    Regression: orientation lived inside the patch-tile assembler, so
+    --membrane-backend packmol-memgen bypassed every orientation option and let
+    packmol-memgen run its own MEMEMBED. Choosing a packing backend must not
+    move the protein.
+    """
+    from mdclaw.solvation import membrane
+
+    topology_file = tmp_path / "topo.json"
+    topology_file.write_text(json.dumps({
+        "n_terminal_side": "out",
+        "segments": [
+            {"chain": "A", "start": 11, "end": 30, "kind": "helix"},
+            {"chain": "A", "start": 41, "end": 60, "kind": "helix"},
+        ],
+        "regions": _BUNDLE_TOPOLOGY["regions"],
+    }))
+    monkeypatch.setattr(
+        membrane, "embed_with_membrane_patch_tiles",
+        lambda **kwargs: {"success": False, "code": "stopped", "errors": ["x"],
+                          "warnings": [], "_seen": kwargs},
+    )
+
+    result = membrane.embed_in_membrane(
+        pdb_file=str(_two_helix_bundle(tmp_path)),
+        output_dir=str(tmp_path / "out"),
+        membrane_topology_file=str(topology_file),
+    )
+
+    assert result["orientation"]["method"] == "tm-segments"
+    assert Path(result["orientation"]["oriented_pdb"]).is_file()
+    assert result["orientation"]["membrane_center_z"] == 0.0
+
+
+def test_packing_receives_an_already_oriented_structure(monkeypatch, tmp_path):
+    """The packing stage must be told the protein is already in the frame."""
+    from mdclaw.solvation import membrane
+
+    seen = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return {"success": False, "code": "stopped", "errors": ["x"], "warnings": []}
+
+    monkeypatch.setattr(membrane, "embed_with_membrane_patch_tiles", _capture)
+    topology_file = tmp_path / "topo.json"
+    topology_file.write_text(json.dumps({
+        "n_terminal_side": "out",
+        "segments": [{"chain": "A", "start": 11, "end": 30, "kind": "helix"},
+                     {"chain": "A", "start": 41, "end": 60, "kind": "helix"}],
+        "regions": _BUNDLE_TOPOLOGY["regions"],
+    }))
+
+    membrane.embed_in_membrane(
+        pdb_file=str(_two_helix_bundle(tmp_path)),
+        output_dir=str(tmp_path / "out"),
+        membrane_topology_file=str(topology_file),
+    )
+
+    assert seen["preoriented"] is True
+    assert seen["membrane_center_z"] == 0.0
+    assert seen["orient_fn"] is None
+    assert seen["protein_pdb"].name == "oriented_protein.pdb"
+
+
+def _sided_pair(z_out, z_in, chain_out="A", chain_in="A"):
+    return [
+        {"chain": chain_out, "resseq": 1, "icode": "", "z": z_out},
+        {"chain": chain_in, "resseq": 2, "icode": "", "z": z_in},
+    ]
+
+
+_SIDED_TOPOLOGY = {
+    "regions": [
+        {"chain": "A", "start": 1, "end": 1, "side": "out"},
+        {"chain": "A", "start": 2, "end": 2, "side": "in"},
+    ]
+}
+
+
+def test_topology_consistency_unwraps_residues_across_the_periodic_boundary():
+    """A residue wrapped to the far side of the box is still on its own side.
+
+    Regression: raw z values were compared against the midplane, so a region
+    that happened to wrap read as sitting on the opposite face and a correctly
+    built system could be failed.
+    """
+    unwrapped = _topology_consistency_report(
+        protein_atoms=_sided_pair(30.0, -30.0),
+        membrane_topology=_SIDED_TOPOLOGY,
+        headgroup_z_min=-20.0, headgroup_z_max=20.0, box_c=100.0,
+    )
+    wrapped = _topology_consistency_report(
+        protein_atoms=_sided_pair(30.0, 70.0),   # the "in" residue wrapped
+        membrane_topology=_SIDED_TOPOLOGY,
+        headgroup_z_min=-20.0, headgroup_z_max=20.0, box_c=100.0,
+    )
+
+    assert unwrapped["consistency_fraction"] == 1.0
+    assert wrapped["consistency_fraction"] == 1.0
+
+
+def test_topology_consistency_keeps_chains_apart():
+    """Two protomers sharing residue numbering must not be averaged together."""
+    topology = {
+        "regions": [
+            {"chain": "A", "start": 1, "end": 1, "side": "out"},
+            {"chain": "B", "start": 1, "end": 1, "side": "in"},
+        ]
+    }
+    atoms = [
+        {"chain": "A", "resseq": 1, "icode": "", "z": 30.0},
+        {"chain": "B", "resseq": 1, "icode": "", "z": -30.0},
+    ]
+
+    report = _topology_consistency_report(
+        protein_atoms=atoms, membrane_topology=topology,
+        headgroup_z_min=-20.0, headgroup_z_max=20.0, box_c=100.0,
+    )
+
+    assert report["consistency_fraction"] == 1.0
+
+
+def test_predict_membrane_topology_rejects_a_missing_model_dir(tmp_path):
+    """A wrong model_dir must fail, not silently fall through to a download."""
+    result = predict_membrane_topology(
+        sequence="ACDEFGHIKLMNPQRSTVWY" * 3,
+        output_dir=str(tmp_path),
+        model_dir=str(tmp_path / "not-here"),
+    )
+
+    assert not result["success"]
+    assert result["code"] == "tmbed_model_dir_missing"
+
+
+def test_membrane_topology_digest_is_content_based(tmp_path):
+    """Node conditions must record what the topology said, not where it lived."""
+    from mdclaw.solvation.membrane import _membrane_topology_digest
+
+    payload = json.dumps({"segments": [], "regions": []})
+    first = tmp_path / "a.json"
+    second = tmp_path / "b.json"
+    first.write_text(payload)
+    second.write_text(payload)
+
+    assert _membrane_topology_digest(str(first)) == _membrane_topology_digest(str(second))
+    assert _membrane_topology_digest(None) is None
+    assert _membrane_topology_digest(str(tmp_path / "missing.json")) is None
