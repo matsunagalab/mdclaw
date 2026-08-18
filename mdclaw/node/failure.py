@@ -69,6 +69,7 @@ def record_node_failure(
     stderr_tail: Optional[str] = None,
     traceback_text: Optional[str] = None,
     exit_code: Optional[int | str] = None,
+    same_invocation: bool = False,
 ) -> dict[str, Any]:
     """Persist the structured failure evidence for ``node_id``.
 
@@ -76,6 +77,16 @@ def record_node_failure(
     ``metadata.failure_code`` and ``artifacts.failure``. Full CLI/tool evidence
     lives under ``artifacts/failure/latest`` and can be inspected by
     :func:`trace_failure`.
+
+    A node is normally sealed by the tool itself, so a second record for a
+    terminal node is treated as a later third-party observation and filed under
+    ``artifacts/failure/observations``. Pass ``same_invocation=True`` when the
+    caller is the very run that just failed the node (the CLI wrapper knows the
+    tool name, argv and exit code that the tool could not record itself). That
+    evidence replaces ``latest`` instead of being demoted, so
+    :func:`trace_failure` reports the real failure code rather than the
+    stripped-down record the tool wrote on its way out. The sealed ``node.json``
+    is still never rewritten.
     """
     if not isinstance(result, dict):
         result = {
@@ -89,7 +100,11 @@ def record_node_failure(
     node_dir = jd / "nodes" / node_id
     node = read_node(str(jd), node_id)
     terminal_status = node.get("status") if node.get("status") in {"completed", "failed"} else None
-    failure_dir = _failure_bundle_dir(node_dir, observation=terminal_status is not None)
+    enriches_latest = same_invocation and terminal_status == "failed"
+    failure_dir = _failure_bundle_dir(
+        node_dir,
+        observation=terminal_status is not None and not enriches_latest,
+    )
     failure_dir.mkdir(parents=True, exist_ok=True)
 
     tool_result_path = failure_dir / "tool_result.json"
@@ -135,7 +150,9 @@ def record_node_failure(
             write_event(
                 str(jd),
                 node_id,
-                "terminal_node_failure_observed",
+                "node_failure_evidence_enriched"
+                if enriches_latest
+                else "terminal_node_failure_observed",
                 success=False,
                 details={
                     "observation_artifact": manifest_rel,

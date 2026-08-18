@@ -1474,6 +1474,54 @@ class TestStateTransitions:
         assert "/observations/" in observation["failure_artifact"]
         assert (job_dir / "nodes" / "eq_001" / observation["failure_artifact"]).is_file()
 
+    def test_same_invocation_failure_evidence_replaces_latest(self, job_dir):
+        """The CLI record of the run that failed the node must own ``latest``.
+
+        Regression: a tool seals its own node through ``fail_node`` without the
+        tool name, argv or exit code, and the CLI's fuller record landed in
+        ``observations`` because the node was already terminal. ``trace_failure``
+        only reads ``latest``, so it reported ``failure_code: null`` for a
+        failure whose code had in fact been captured milliseconds earlier.
+        """
+        create_node(str(job_dir), "solv")
+        fail_node(str(job_dir), "solv_001", errors=["membrane build failed"])
+        sealed = read_node(str(job_dir), "solv_001")
+
+        enriched = record_node_failure(
+            str(job_dir),
+            "solv_001",
+            {
+                "success": False,
+                "code": "membrane_neutralization_failed",
+                "errors": ["membrane build failed"],
+            },
+            tool="embed_in_membrane",
+            argv=["_cli.py", "embed_in_membrane", "--lipids", "POPC"],
+            exit_code=1,
+            stderr_tail="net-charge evaluation failed",
+            same_invocation=True,
+        )
+
+        assert "/observations/" not in enriched["failure_artifact"]
+        assert "/latest/" in enriched["failure_artifact"]
+
+        manifest = json.loads(
+            (job_dir / "nodes" / "solv_001" / enriched["failure_artifact"]).read_text()
+        )
+        assert manifest["code"] == "membrane_neutralization_failed"
+        assert manifest["tool"] == "embed_in_membrane"
+        assert manifest["argv"][1] == "embed_in_membrane"
+        assert manifest["exit_code"] == 1
+        assert (
+            job_dir / "nodes" / "solv_001" / manifest["files"]["stderr_tail"]
+        ).read_text() == "net-charge evaluation failed"
+
+        # the sealed node record itself is still untouched
+        assert read_node(str(job_dir), "solv_001") == sealed
+
+        traced = trace_failure(str(job_dir), "solv_001")
+        assert traced["failure_code"] == "membrane_neutralization_failed"
+
     def test_trace_failure_returns_evidence_and_branch_option(self, job_dir):
         create_node(str(job_dir), "topo")
         complete_node(

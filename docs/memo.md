@@ -7,6 +7,51 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-18 — 同一実行の失敗証跡が `observations/` に流れ、`trace_failure` が原因を言えなくなっていた
+
+HPacker の cap バグを追う過程で気づいた別件。`trace_failure` が
+`failure_code: null` を返し、`tool` / `argv` / `exit_code` もすべて null だった。
+`skills/common/tool-output.md` は「安定した `code` で分岐せよ、`errors` を parse するな」と
+定めているので、規約が想定する分岐材料が存在しない状態だった。実際これで誤誘導された。
+
+**証跡は完全に採取されていた。置き場所だけが間違っていた。** 失敗は二段階で記録される:
+
+1. ツールが `fail_node(...)` を呼び、貧弱な記録を `artifacts/failure/latest/` に書いて封印。
+   (`fail_node` の呼び出しは repo 全体で 108 件あり、`code=` を渡しているものは 0 件。)
+2. 直後に CLI の `_record_cli_node_failure` が `tool` / `argv` / `exit_code` /
+   stdout・stderr tail を揃えた完全な記録で `record_node_failure` を呼ぶ。
+3. ところが `node/failure.py` は「ノードが既に terminal なら後追い観測」と判定するため、
+   **同一実行の記録が** `artifacts/failure/observations/<時刻>/` へ降格される。
+4. `trace_failure` は `node.artifacts.failure` が指す `latest/` しか読まない。
+
+実測 (`jobs/d473y/nodes/solv_001`): `latest/` は 04:35:25.660 に 599 B / 4 キー / `code: null`、
+`observations/` は **32 ms 後**の 04:35:25.692 に 2870 B / 12 キー / code 完備。同一実行である。
+
+修正は `record_node_failure` に `same_invocation: bool = False` を足し、CLI 側から
+`same_invocation=True` を渡すだけ (差分 ~20 行)。true かつ既に `failed` なら observation 扱いを
+やめて `latest/` を差し替える。**封印済み `node.json` は書き換えない** —
+`tests/test_node.py` の不変条件であり、`trace_failure` は既に
+`metadata.failure_code` → `manifest.code` → `tool_result.code` とフォールバックするので不要。
+イベントも `terminal_node_failure_observed` と `node_failure_evidence_enriched` で区別する。
+
+実系で確認: 壊れた `prep_002` から `solv_003` を作って同じ失敗を再現したところ、
+`observations/` は生成されず `latest/` に code=`membrane_neutralization_failed`、
+tool=`embed_in_membrane`、argv、exit_code=1、stdout/stderr tail が揃った。
+`trace_failure` の `failure_code` も埋まり、`tool_result` は 4 キーから 17 キーになり
+`hints` / `next_action` / `recoverable` も届くようになった。
+
+**やらなかったこと。** 当初は `fail_node` 108 箇所すべてに `code=` を足す移行 (うち 96 件は
+機械的置換) を計画したが、オーバーエンジニアリングと判断して撤回した。スキルが使う唯一の経路は
+CLI であり、それは上記で完全に直る。副作用として `node.json` の `metadata.failure_code` は
+空のままなので `inspect_job` の `failed_nodes` には `failure_code` が出ない。これは今回報告された
+症状ではないので、必要になった時点で別途扱う。`membrane_neutralization_failed` の hint 文言
+(「bulk water を増やせ」) が原因と無関係な件も、実益が薄いと判断して保留のまま。
+
+回帰テスト 1 本を `tests/test_node.py` に追加。修正前のコードで失敗することを `git stash` で確認済み。
+`ruff` clean、383 passed。
+
+---
+
 ## 2026-08-18 — 訂正: cap 破壊の犯人は `prepare_complex` ではなく `create_mutated_structure`
 
 **同日の前エントリ「SMO 5L7D D473Y / G497W membrane MD; `--cap-termini` produces

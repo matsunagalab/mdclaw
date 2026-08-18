@@ -553,6 +553,10 @@ def _record_cli_node_failure(
             stdout_tail=stdout_tail,
             stderr_tail=stderr_tail,
             traceback_text=traceback_text,
+            # This is the run that just failed the node, not a later observer:
+            # the tool sealed the node without the tool name, argv or exit code,
+            # so this record has to own `latest` for trace_failure to see them.
+            same_invocation=True,
         )
     except Exception:
         # Failure recording must never mask the tool failure that is already
