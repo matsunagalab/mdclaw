@@ -39,6 +39,18 @@ def _parse_pir_alignment(path: Path) -> dict[str, str]:
     return {c: "".join(v).replace("*", "") for c, v in seqs.items()}
 
 
+def _effective_alignment_path(alignment_path) -> Path:
+    """The alignment MODELLER actually used, which is not always the one passed.
+
+    ``AutoModel.auto_align()`` aligns the seed and writes the result beside it as
+    ``<alnfile>.ali``, leaving the seed file itself unaligned — its template
+    entry still has no residues. Prefer the aligned file when it exists.
+    """
+    path = Path(alignment_path)
+    aligned = path.with_name(path.name + ".ali")
+    return aligned if aligned.exists() else path
+
+
 def _pdb_residue_order(path: Path):
     """Ordered residue keys per chain plus CA coordinates, in file order.
 
@@ -80,15 +92,22 @@ def _map_model_to_template(alignment_path, target_code, template_code, model_pat
     file order, and gap-filled residues simply have no entry in ``pairs``.
     """
     warnings: list[str] = []
-    if not Path(alignment_path).exists():
-        return {}, [], [f"alignment file not found: {alignment_path}"]
-    aln = _parse_pir_alignment(Path(alignment_path))
-    target_aln = aln.get(target_code)
-    template_aln = aln.get(template_code)
+    resolved = _effective_alignment_path(alignment_path)
+    if not resolved.exists():
+        return {}, [], [f"alignment file not found: {resolved}"]
+    aln = _parse_pir_alignment(resolved)
+    missing = [c for c in (target_code, template_code) if c not in aln]
+    if missing:
+        warnings.append(
+            f"alignment {resolved.name} has no entry for {missing}; found {sorted(aln)}"
+        )
+        return {}, [], warnings
+    target_aln = aln[target_code]
+    template_aln = aln[template_code]
     if not target_aln or not template_aln:
         warnings.append(
-            f"alignment does not contain both {target_code!r} and {template_code!r}; "
-            f"found {sorted(aln)}"
+            f"alignment {resolved.name} has an empty sequence for "
+            f"{target_code if not target_aln else template_code!r}"
         )
         return {}, [], warnings
     if len(target_aln) != len(template_aln):

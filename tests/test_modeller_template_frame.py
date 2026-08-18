@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from mdclaw.genesis.modeller import (
+    _effective_alignment_path,
     _map_model_to_template,
     _parse_pir_alignment,
     _restore_template_frame,
@@ -141,4 +142,31 @@ def test_unusable_alignment_is_reported_not_raised(tmp_path, case):
         model, template, bad, "tgt", "tpl", apply_transform=True
     )
     assert info["applied"] is False
-    assert any("does not contain both" in w for w in info["warnings"])
+    assert any("has no entry for" in w for w in info["warnings"])
+
+
+def test_auto_align_output_is_preferred_over_the_seed(tmp_path, case):
+    """AutoModel.auto_align() writes ``<alnfile>.ali`` and leaves the seed alone.
+
+    Pointing the frame check at the seed silently reads an unaligned template
+    entry, so the resolver has to prefer the file MODELLER actually produced.
+    """
+    template, model, aligned = case
+    seed = tmp_path / "seed.ali"
+    # The seed as _write_modeller_seed_alignment leaves it: no template residues.
+    seed.write_text(
+        ">P1;tgt\nsequence:tgt:::::::0.00: 0.00\n"
+        f"{TARGET_ALN}*\n>P1;tpl\nstructureX:tpl:::::::0.00: 0.00\n*\n"
+    )
+    assert _effective_alignment_path(seed) == seed
+
+    # Once align2d has written seed.ali.ali, that is the alignment to read.
+    produced = tmp_path / "seed.ali.ali"
+    produced.write_text(aligned.read_text())
+    assert _effective_alignment_path(seed) == produced
+
+    info = _restore_template_frame(
+        model, template, seed, "tgt", "tpl", apply_transform=True
+    )
+    assert info["applied"] is True
+    assert info["ca_rmsd_after_fit"] == pytest.approx(0.0, abs=1e-3)
