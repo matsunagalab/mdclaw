@@ -58,7 +58,9 @@ The GHCR package must be public for unauthenticated Singularity pulls.
 ## Arm64 / CUDA 13 Development Image
 
 The arm64/CUDA 13 development image is kept separate from the generic
-`linux/amd64` / CUDA 11.8 image:
+`linux/amd64` / CUDA 11.8 image. `container/scripts/build-rikyu-arm64.sh` runs
+the build and the non-GPU verification; `--push` also pushes it. The underlying
+commands are:
 
 ```bash
 revision=$(git rev-parse --short=12 HEAD)
@@ -71,6 +73,21 @@ docker build --platform linux/arm64 \
   -t "$image" .
 docker push "$image"
 ```
+
+### Where To Build It
+
+Any arm64 Linux host with Docker; nothing in the image is specific to rikyu.
+The build needs **no GPU** — `CONDA_OVERRIDE_CUDA` covers the CUDA solve, and
+OpenMM compiles its kernels at Context creation rather than at build time. A GPU
+is needed only for `test-rikyu-gpu.sh`, which must run from the SIF.
+
+Building on an x86_64 host is possible but rarely worth it: it needs qemu binfmt
+registered as root (`docker run --privileged tonistiigi/binfmt --install arm64`)
+and then emulates the entire OpenMM and `openmm-torch` compile. Measured
+qemu-user overhead on this codebase is ~8.7x (a MODELLER comparative model:
+13.5 s native, 116.6 s emulated), so a build that takes ~20 minutes natively
+runs for hours. The build script refuses to run on a non-arm64 host for this
+reason.
 
 The Dockerfile uses the arm64 manifests of CUDA 13.0.2 on Ubuntu 24.04, builds
 OpenMM 8.5.1 against CUDA 13.0, and compiles `openmm-torch` for compute
