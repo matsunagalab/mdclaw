@@ -7,6 +7,69 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-18 — TMbed を導入し、膜配向を「探索」から「予測に従う」に変えた
+
+別メンバーの SMO 膜構築が壊れた件を調べた結果、MEMEMBED / PPM が構造だけから
+上下の向きを推定しており、大きな可溶性ドメインがそれを狂わせることが分かった。
+TMbed (Bernhofer & Rost 2022, ProtT5 埋め込み + CNN + Viterbi) は配列だけから
+TM セグメントと inside/outside を返し、Viterbi の文法が「TM を横切るたびに内外が
+反転する」ことを強制するのでトポロジーが構造的に整合する。膜外の質量がいくらあっても
+影響を受けない — まさに構造ベース手法が間違える所を埋める。
+
+**OPM/PPM の 5L7D 正解に対する実測** (これが設計の根拠):
+
+| | 膜法線の誤差 | 中心面ずれ |
+|---|---|---|
+| TMセグメントのヘリックス軸を平均 (完璧な境界) | **6.2°** | +0.4 A |
+| 境界を ±5 残基ゆらす (TMbed の実精度) | 6.5 ± 1.0° (最悪 9.5°) | +0.5 ± 1.3 A |
+| TM を1本まるごと見落とし | 最悪 11.3° | <= 0.7 A |
+| 全TM残基をまとめて PCA | **22.0°** ← これはダメ |
+
+要点は「ヘリックスごとに軸を出して平均する」こと。個々の傾斜は 10-37° とばらつき、
+束全体の形は法線ではない。境界誤差には極めて頑健で、乱数を使う GA と違い決定論的。
+
+**実データでの end-to-end**: TMbed を実際に 5L7D に走らせると n_terminal_side=out
+(SMO の CRD は細胞外、正解) と 7 本の TM ヘリックスを返し、OPM 由来の正解境界と
+±3 残基以内で一致した。その予測だけで配向すると OPM 正解を **z の RMS 1.26 A、
+相関 +0.9995** で再現。ランダム剛体変換を掛けても結果は完全に同一 (回転不変)。
+3セグメント分割構造 (A/B/C 鎖) でも鎖ごとに正しく処理した。
+
+**実装** (4点):
+
+1. `embed_in_membrane` に `--n-terminal-side in|out` を追加し MEMEMBED `-n` へ渡す。
+   従来 MDClaw は `-n` を渡しておらず、**上下の向きを指定する手段が無かった**。
+   あわせて `-s` を渡すようにし既定を 3 (GA 5回) に。MEMEMBED 自身の既定は 0 (GA 1回)
+   で、packmol-memgen より探索が浅い状態だった。
+2. 新サーバ `mdclaw/membrane_topology/` に `predict_membrane_topology`。構造 / 配列 /
+   FASTA を受け、`membrane_topology.json` (segments, 側つき regions, n_terminal_side)
+   を書く。構造入力なら author 残基番号をそのまま持ち回るので下流がそのまま使える。
+3. `mdclaw/solvation/tm_orient.py` に決定論的配向。`--orientation-method`
+   (auto/memembed/tm-segments) で選択、auto はトポロジーがあれば tm-segments。
+4. geometry check にトポロジー整合性を追加。**上限としての overlap_fraction は使えない**
+   ことが分かった: OPM 正解でも TMD のみ構築は 0.798、全長は 0.582 で、構築の性質に
+   依存するため固定閾値に意味が無い。代わりに「非TM領域が予測された側にあるか」を見る。
+   OPM 正解で 8/8、上下反転させると 0/8 と綺麗に分離する。閾値 0.75。
+
+**モデルは SIF に焼き込む** (ユーザ指定)。TMbed の CNN 重みはパッケージ同梱だが
+ProtT5 (2.3 GB) は初回実行時に HuggingFace から落ちる設計で、読み取り専用 SIF と
+外部ネットワークの無い計算ノードでは失敗する。Dockerfile で `tmbed download
+--model-dir $MDCLAW_TMBED_MODEL_DIR` を実行し、無ければビルドを失敗させる。
+SIF は 4.6 GB → 約 6.9 GB になる見込み。
+
+実系での統合確認: d473y の prep_004 から solv_004 を作り
+`--membrane-topology-file` 付きで構築 → `orientation_method=tm-segments` が自動選択、
+`n_terminal_side=out` を継承、geometry check が `topology_consistency 10/10 = 1.00`。
+overlap_fraction 0.792 は MEMEMBED 構築の 0.798 とほぼ一致し、両者の配向が
+一致していることも確認できた。
+
+回帰テスト 17 本を `tests/test_membrane_topology.py` に追加。CLI contract golden を再生成。
+
+**未対応**: SIF の再ビルドはしていない。Dockerfile と environment.yml は更新済みなので、
+次回ビルド時に反映される。それまで `predict_membrane_topology` は `tmbed_unavailable`
+を返す (構造化エラーとして扱われる)。
+
+---
+
 ## 2026-08-18 — 同一実行の失敗証跡が `observations/` に流れ、`trace_failure` が原因を言えなくなっていた
 
 HPacker の cap バグを追う過程で気づいた別件。`trace_failure` が

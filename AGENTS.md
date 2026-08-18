@@ -13,6 +13,8 @@ scientific investigation in the Amber/OpenMM ecosystem. It combines:
 - `skills/*/SKILL.md` instructions for translating scientific intent into MD
   actions.
 - Boltz-2 for AI structure prediction.
+- TMbed for sequence-based transmembrane segment and inside/outside
+  topology prediction, used to orient membrane systems.
 - AmberTools (`pdb4amber`, `cpptraj`) for structure preparation support.
 - HPacker for mutation-side-chain reconstruction and surrogate side-chain
   packing.

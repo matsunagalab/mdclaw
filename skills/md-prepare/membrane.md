@@ -21,12 +21,28 @@ branch instead of overriding the solv input path. On success the solv node
 records `is_membrane=true`, so build topology with
 `build_amber_system --is-membrane` (see `explicit-water.md`).
 
+## Orientation
+
+Predict the topology first; it decides which leaflet each end faces:
+
+```bash
+mdclaw predict_membrane_topology --structure-file <prep merged/mutated pdb> \
+  --output-dir <dir>
+mdclaw --job-dir <job_dir> --node-id <solv_node_id> embed_in_membrane \
+  --lipids POPC --ratio "1" --membrane-topology-file <dir>/membrane_topology.json
+```
+
+With a topology file `embed_in_membrane` derives the membrane normal from the
+transmembrane helix axes (`--orientation-method` defaults to `auto`), and the
+post-build check verifies every non-membrane region sits on the predicted side.
+Without one it falls back to MEMEMBED, which infers the up/down direction from
+the structure and can insert a protein with a large soluble domain upside down;
+pass `--n-terminal-side in|out` when you know it.
+
 Use `--preoriented` only for structures that are already in a membrane frame
 (for example OPM/PPM-derived coordinates). For beta-barrel membrane proteins,
 pass `--memembed-beta-barrel` unless the job/task path or study text already
-contains beta-barrel wording. The patch-tile backend passes MEMEMBED `-b` in
-that mode, consumes MEMEMBED's oriented coordinates, and aligns the cached
-lipid patch to MEMEMBED's dummy-membrane midplane.
+contains beta-barrel wording.
 
 By default the tool writes `membrane_embedding_geometry.json` and fails with
 `membrane_embedding_geometry_failed` when a PBC-aware post-build check shows

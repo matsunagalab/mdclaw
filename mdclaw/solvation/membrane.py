@@ -246,11 +246,17 @@ def _parse_pdb_xyz_line(line: str) -> Optional[dict]:
         z = float(padded[46:54])
     except ValueError:
         return None
+    try:
+        resseq: Optional[int] = int(padded[22:26])
+    except ValueError:
+        resseq = None
     return {
         "line": line,
         "record": padded[:6].strip(),
         "name": padded[12:16].strip(),
         "resname": padded[17:21].strip().upper(),
+        "chain": padded[21].strip(),
+        "resseq": resseq,
         "x": x,
         "y": y,
         "z": z,
@@ -353,10 +359,80 @@ def _infer_beta_barrel_from_context(
     )
 
 
+def _topology_consistency_report(
+    *,
+    protein_atoms: list[dict],
+    membrane_topology: Optional[dict],
+    headgroup_z_min: float,
+    headgroup_z_max: float,
+) -> Optional[dict]:
+    """Check that non-TM regions sit on the side the topology predicts.
+
+    The intersection test alone cannot tell a correctly embedded protein from
+    one inserted upside down or swallowed by the bilayer: it only asks whether
+    the protein reaches the headgroups at all. When a predicted topology is
+    available, every non-transmembrane stretch has a known side, so their
+    signed positions relative to the midplane are a direct, orientation-
+    sensitive test. A flipped protein inverts every one of them at once.
+
+    ``membrane_topology`` is the ``predict_membrane_topology`` payload:
+    ``segments`` (transmembrane residue ranges) plus ``regions`` (non-TM
+    stretches labelled ``in``/``out``). Returns ``None`` when no usable
+    topology is supplied.
+    """
+    if not isinstance(membrane_topology, dict):
+        return None
+    regions = membrane_topology.get("regions")
+    if not isinstance(regions, list) or not regions:
+        return None
+
+    midplane = 0.5 * (headgroup_z_min + headgroup_z_max)
+    by_residue: dict[int, list[float]] = {}
+    for atom in protein_atoms:
+        resseq = atom.get("resseq")
+        if isinstance(resseq, int):
+            by_residue.setdefault(resseq, []).append(atom["z"])
+
+    checked: list[dict] = []
+    for region in regions:
+        side = str(region.get("side", "")).lower()
+        if side not in {"in", "out"}:
+            continue
+        try:
+            start = int(region["start"])
+            end = int(region["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        zs = [z for r in range(start, end + 1) for z in by_residue.get(r, [])]
+        if not zs:
+            continue
+        mean_z = sum(zs) / len(zs)
+        expected_positive = side == "out"
+        checked.append({
+            "start": start,
+            "end": end,
+            "expected_side": side,
+            "mean_z": mean_z,
+            "consistent": (mean_z > midplane) == expected_positive,
+        })
+
+    if not checked:
+        return None
+    consistent = sum(1 for entry in checked if entry["consistent"])
+    return {
+        "regions_checked": len(checked),
+        "regions_consistent": consistent,
+        "consistency_fraction": consistent / len(checked),
+        "midplane_z": midplane,
+        "regions": checked,
+    }
+
+
 def _membrane_embedding_geometry_report(
     *,
     pdb_file: Path,
     box_dimensions: Optional[dict],
+    membrane_topology: Optional[dict] = None,
 ) -> dict:
     """PBC-aware post-build check that the protein intersects the bilayer."""
     atoms: list[dict] = []
@@ -424,6 +500,19 @@ def _membrane_embedding_geometry_report(
     if overlap_fraction < min_overlap_fraction:
         failure_reasons.append("protein_does_not_intersect_bilayer_headgroup_span")
 
+    topology_report = _topology_consistency_report(
+        protein_atoms=protein_atoms,
+        membrane_topology=membrane_topology,
+        headgroup_z_min=headgroup_z_min,
+        headgroup_z_max=headgroup_z_max,
+    )
+    min_topology_consistency = 0.75
+    if topology_report is not None:
+        report["topology_consistency"] = topology_report
+        report["min_topology_consistency"] = min_topology_consistency
+        if topology_report["consistency_fraction"] < min_topology_consistency:
+            failure_reasons.append("protein_topology_inconsistent_with_bilayer_sides")
+
     report.update({
         "status": "failed" if failure_reasons else "passed",
         "passed": not failure_reasons,
@@ -446,10 +535,12 @@ def _record_membrane_embedding_geometry(
     out_dir: Path,
     output_file: Path,
     box_dimensions: Optional[dict],
+    membrane_topology: Optional[dict] = None,
 ) -> dict:
     report = _membrane_embedding_geometry_report(
         pdb_file=output_file,
         box_dimensions=box_dimensions,
+        membrane_topology=membrane_topology,
     )
     result["embedding_geometry"] = report
     try:
@@ -479,18 +570,56 @@ def _record_membrane_embedding_geometry(
     return report
 
 
+MEMEMBED_DEFAULT_SEARCH_TYPE = 3
+N_TERMINAL_SIDES = ("in", "out")
+
+
+def _normalize_n_terminal_side(value: str | None) -> str | None:
+    """Normalize the N-terminal membrane side to MEMEMBED's ``in``/``out``."""
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"", "auto", "none"}:
+        return None
+    aliases = {
+        "in": "in", "inside": "in", "cytoplasmic": "in", "intracellular": "in",
+        "down": "in",
+        "out": "out", "outside": "out", "extracellular": "out",
+        "periplasmic": "out", "up": "out",
+    }
+    if normalized not in aliases:
+        raise ValueError(
+            f"Unsupported n_terminal_side {value!r}; use one of: "
+            + ", ".join(N_TERMINAL_SIDES)
+        )
+    return aliases[normalized]
+
+
 def _orient_protein_with_memembed(
     *,
     protein_pdb: Path,
     out_dir: Path,
     beta_barrel: bool = False,
     force_span: bool = False,
+    n_terminal_side: str | None = None,
+    search_type: int = MEMEMBED_DEFAULT_SEARCH_TYPE,
 ) -> dict:
     """Orient a protein into the membrane frame (normal = z) using MEMEMBED.
 
     Returns ``{success, oriented_pdb, warnings, errors}``. Membrane dummy atoms
     that MEMEMBED adds (resname ``DUM``) are stripped so only the oriented solute
     is handed to the patch-tile assembler.
+
+    ``n_terminal_side`` ("in" or "out") fixes which side of the bilayer the
+    first residue sits on. MEMEMBED otherwise infers the topology from its
+    knowledge-based potential, which a large soluble domain can mislead — for a
+    receptor whose N-terminal domain is extracellular, an inferred "in" flips
+    the whole protein. Predict it (e.g. with ``predict_membrane_topology``)
+    rather than leaving it to the potential.
+
+    ``search_type`` maps to MEMEMBED ``-s``; 3 (genetic algorithm repeated five
+    times) is what packmol-memgen itself uses, and is the default here. MEMEMBED
+    would otherwise default to a single GA run.
     """
     result: dict = {"success": False, "warnings": [], "errors": []}
     memembed_path = shutil.which("memembed")
@@ -502,9 +631,13 @@ def _orient_protein_with_memembed(
         )
         return result
 
+    normalized_side = _normalize_n_terminal_side(n_terminal_side)
     out_dir = Path(out_dir)
     raw_oriented = out_dir / "memembed_oriented.pdb"
     cmd = [memembed_path, "-o", str(raw_oriented)]
+    cmd += ["-s", str(int(search_type))]
+    if normalized_side:
+        cmd += ["-n", normalized_side]
     if beta_barrel:
         cmd.append("-b")
     if force_span:
@@ -579,9 +712,51 @@ def _orient_protein_with_memembed(
     result["memembed"] = {
         "beta_barrel": beta_barrel,
         "force_span": force_span,
+        "n_terminal_side": normalized_side,
+        "search_type": int(search_type),
         "dummy_membrane": dummy_report,
     }
+    if normalized_side is None:
+        result["warnings"].append(
+            "MEMEMBED inferred the membrane topology itself (no n_terminal_side "
+            "given); verify the extracellular side ends up at +z."
+        )
     return result
+
+
+def _make_orientation_fn(
+    *,
+    method: str,
+    membrane_topology: Optional[dict],
+    beta_barrel: bool,
+    force_span: bool,
+    n_terminal_side: Optional[str],
+    search_type: int,
+):
+    """Pick the orientation backend used by the patch-tile assembler."""
+    if method == "tm-segments":
+        from mdclaw.solvation.tm_orient import orient_protein_with_tm_segments
+
+        def _orient(protein_pdb, out_dir):
+            return orient_protein_with_tm_segments(
+                protein_pdb=protein_pdb,
+                out_dir=out_dir,
+                membrane_topology=membrane_topology or {},
+            )
+
+        return _orient
+
+    def _orient_memembed(protein_pdb, out_dir):
+        return _orient_protein_with_memembed(
+            protein_pdb=protein_pdb,
+            out_dir=out_dir,
+            beta_barrel=beta_barrel,
+            force_span=force_span,
+            n_terminal_side=n_terminal_side,
+            search_type=search_type,
+        )
+
+    return _orient_memembed
 
 
 def _vector_to_nm_tuple(vector) -> tuple[float, float, float]:
@@ -1522,6 +1697,10 @@ def embed_in_membrane(
     preoriented: bool = False,
     memembed_beta_barrel: bool = False,
     memembed_force_span: bool = False,
+    n_terminal_side: Optional[str] = None,
+    memembed_search_type: int = MEMEMBED_DEFAULT_SEARCH_TYPE,
+    membrane_topology_file: Optional[str] = None,
+    orientation_method: str = "auto",
     salt: bool = True,
     salt_c: str = "Na+",
     salt_a: str = "Cl-",
@@ -1892,8 +2071,54 @@ def embed_in_membrane(
         result["warnings"].append(
             "enabled MEMEMBED beta-barrel mode from job/task context"
         )
+    membrane_topology: Optional[dict] = None
+    if membrane_topology_file:
+        try:
+            membrane_topology = json.loads(
+                Path(membrane_topology_file).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError) as exc:
+            result["errors"].append(f"could not read membrane_topology_file: {exc}")
+            result["code"] = "membrane_topology_file_invalid"
+            if job_dir and node_id:
+                from mdclaw._node import fail_node_from_result
+                return fail_node_from_result(job_dir, node_id, result)
+            return result
+        if n_terminal_side is None:
+            n_terminal_side = membrane_topology.get("n_terminal_side")
+
+    resolved_orientation = str(orientation_method or "auto").strip().lower()
+    if resolved_orientation not in {"auto", "memembed", "tm-segments"}:
+        result["errors"].append(
+            f"Unsupported orientation_method {orientation_method!r}; use "
+            "auto, memembed, or tm-segments."
+        )
+        result["code"] = "membrane_orientation_method_invalid"
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(job_dir, node_id, result)
+        return result
+    if resolved_orientation == "auto":
+        resolved_orientation = (
+            "tm-segments" if (membrane_topology or {}).get("segments") else "memembed"
+        )
+    if resolved_orientation == "tm-segments" and not (membrane_topology or {}).get("segments"):
+        result["errors"].append(
+            "orientation_method=tm-segments needs transmembrane segments; pass "
+            "--membrane-topology-file from predict_membrane_topology."
+        )
+        result["code"] = "membrane_orientation_topology_required"
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(job_dir, node_id, result)
+        return result
+
     result["parameters"]["memembed_beta_barrel"] = memembed_beta_barrel
     result["parameters"]["memembed_force_span"] = memembed_force_span
+    result["parameters"]["n_terminal_side"] = n_terminal_side
+    result["parameters"]["memembed_search_type"] = memembed_search_type
+    result["parameters"]["orientation_method"] = resolved_orientation
+    result["parameters"]["membrane_topology_file"] = membrane_topology_file
     
     # Check packmol-memgen availability.  A warm patch-cache hit can still build
     # a membrane without the packer, but a cold patch build (and the full
@@ -2004,11 +2229,13 @@ def embed_in_membrane(
             ),
             packmol_path=packmol_path,
             equilibrate_fn=_equilibrate_membrane_patch,
-            orient_fn=lambda protein_pdb, out_dir: _orient_protein_with_memembed(
-                protein_pdb=protein_pdb,
-                out_dir=out_dir,
+            orient_fn=_make_orientation_fn(
+                method=resolved_orientation,
+                membrane_topology=membrane_topology,
                 beta_barrel=memembed_beta_barrel,
                 force_span=memembed_force_span,
+                n_terminal_side=n_terminal_side,
+                search_type=memembed_search_type,
             ),
             net_charge_fn=(
                 (
@@ -2069,6 +2296,7 @@ def embed_in_membrane(
                     out_dir=out_dir,
                     output_file=Path(str(result["output_file"])),
                     box_dimensions=result.get("box_dimensions"),
+                    membrane_topology=membrane_topology,
                 )
                 if not result.get("success"):
                     metadata_file = out_dir / "membrane_metadata.json"
@@ -2604,6 +2832,7 @@ def embed_in_membrane(
                         out_dir=out_dir,
                         output_file=restored_output,
                         box_dimensions=result.get("box_dimensions"),
+                        membrane_topology=membrane_topology,
                     )
         
     except Exception as e:

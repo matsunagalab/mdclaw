@@ -139,6 +139,19 @@ signature, update the relevant section here and the matching skill examples.
   `source_bundle.json` with `source_type="surrogate"` and
   `origin.kind="bioemu"` for BioEmu candidates.
 
+## `membrane_topology/`
+
+- `predict_membrane_topology(...)`: TMbed (ProtT5 embeddings + CNN + Viterbi)
+  labels every residue as transmembrane helix/strand, signal peptide, or
+  non-membrane inside/outside, from sequence alone. Accepts a structure (author
+  residue numbering is carried into the result), a raw sequence, or FASTA.
+  Writes `membrane_topology.json` with `segments`, sided `regions`, and
+  `n_terminal_side`, all of which `embed_in_membrane` consumes. Because it works
+  from sequence it is unaffected by however much soluble mass hangs off the
+  membrane region, which is exactly what misleads structure-based orientation.
+  The ProtT5 encoder is baked into the container at
+  `MDCLAW_TMBED_MODEL_DIR`; `model_dir` overrides it.
+
 ## `solvation/`
 
 - `solvate_structure(...)`: explicit water box generation. In node mode the PDB
@@ -158,10 +171,26 @@ signature, update the relevant section here and the matching skill examples.
   swapping bulk waters for ions. Beta-barrel proteins can request MEMEMBED
   `-b` via `memembed_beta_barrel`; MDClaw also enables it from beta-barrel
   wording in the job/task context. `memembed_force_span` passes MEMEMBED `-l` on
-  the patch-tile path. A PBC-aware post-build geometry check writes
+  the patch-tile path. `n_terminal_side` (`in`/`out`) passes MEMEMBED `-n`, which
+  fixes which leaflet the first residue faces; without it MEMEMBED infers the
+  topology from its knowledge-based potential, and a large soluble domain can
+  invert the whole protein. `memembed_search_type` maps to MEMEMBED `-s` and
+  defaults to 3 (genetic algorithm repeated five times), matching what
+  packmol-memgen itself uses; MEMEMBED's own default is a single GA run.
+  `orientation_method` selects the orientation backend: `memembed`,
+  `tm-segments`, or `auto` (the default — `tm-segments` when a topology is
+  supplied, otherwise `memembed`). `tm-segments` needs
+  `membrane_topology_file` from `predict_membrane_topology` and derives the
+  normal from the transmembrane helix axes instead of searching for the slab;
+  see `mdclaw/solvation/tm_orient.py` for the accuracy measured against the
+  PPM/OPM reference. A PBC-aware post-build geometry check writes
   `membrane_embedding_geometry.json` and fails with
   `membrane_embedding_geometry_failed` if the protein does not intersect the
-  bilayer headgroup span. The cold build runs once per composition and is
+  bilayer headgroup span. When a `membrane_topology_file` is supplied the same
+  check also verifies that each non-membrane region sits on the side the
+  topology predicts (`topology_consistency`) and fails below 0.75 — the
+  intersection test alone passes an upside-down insertion, which inverts every
+  region at once. The cold build runs once per composition and is
   surfaced via `warnings`, `patch_cold_build_notice`, and `patch_build`.
   Patch cold-build topology generation disables Pablo CCD auto-download
   (`pablo_auto_download=False`) because the patch contains known local

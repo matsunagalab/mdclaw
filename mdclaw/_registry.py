@@ -17,4 +17,5 @@ SERVER_REGISTRY = {
     "study": "mdclaw.study",
     "evidence": "mdclaw.evidence",
     "throughput": "mdclaw.throughput",
+    "membrane_topology": "mdclaw.membrane_topology",
 }
