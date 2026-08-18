@@ -16,6 +16,221 @@ from mdclaw.genesis._base import (
 )
 
 
+def _parse_pir_alignment(path: Path) -> dict[str, str]:
+    """Return ``{code: aligned_sequence}`` from a MODELLER PIR/ALI alignment.
+
+    Each entry is a ``>P1;<code>`` line, one descriptor line, then the aligned
+    sequence, terminated by ``*``. Chain breaks stay in as ``/``.
+    """
+    seqs: dict[str, list[str]] = {}
+    code = None
+    state = 0  # 0 = outside, 1 = descriptor line, 2 = sequence lines
+    for line in path.read_text().splitlines():
+        if line.startswith(">P1;"):
+            code = line[4:].strip()
+            seqs[code] = []
+            state = 1
+            continue
+        if state == 1:
+            state = 2
+            continue
+        if state == 2 and code is not None:
+            seqs[code].append(line.strip())
+    return {c: "".join(v).replace("*", "") for c, v in seqs.items()}
+
+
+def _pdb_residue_order(path: Path):
+    """Ordered residue keys per chain plus CA coordinates, in file order.
+
+    Returns ``(chain_order, residues, ca)``: the chain ids as first seen, a map
+    of chain id to its ``(resseq, icode)`` keys in order, and a map of
+    ``(chain, resseq, icode)`` to the CA coordinate triple.
+    """
+    chain_order: list[str] = []
+    residues: dict[str, list[tuple[int, str]]] = {}
+    ca: dict[tuple[str, int, str], tuple[float, float, float]] = {}
+    seen: set[tuple[str, int, str]] = set()
+    for line in path.read_text().splitlines():
+        if not line.startswith(("ATOM", "HETATM")):
+            continue
+        chain = line[21]
+        key = (int(line[22:26]), line[26])
+        if chain not in residues:
+            residues[chain] = []
+            chain_order.append(chain)
+        if (chain, *key) not in seen:
+            seen.add((chain, *key))
+            residues[chain].append(key)
+        if line[12:16].strip() == "CA":
+            ca[(chain, *key)] = (
+                float(line[30:38]),
+                float(line[38:46]),
+                float(line[46:54]),
+            )
+    return chain_order, residues, ca
+
+
+def _map_model_to_template(alignment_path, target_code, template_code, model_path, template_path):
+    """Pair model residues with their template counterparts via the alignment.
+
+    MODELLER numbers a model ``1..N`` over the target sequence, so the aligned
+    columns are the only link back to the template's author numbering. Returns
+    ``(pairs, order, warnings)``: ``pairs`` maps a model residue key to the
+    template residue key it was modeled on, ``order`` is the model's residues in
+    file order, and gap-filled residues simply have no entry in ``pairs``.
+    """
+    warnings: list[str] = []
+    if not Path(alignment_path).exists():
+        return {}, [], [f"alignment file not found: {alignment_path}"]
+    aln = _parse_pir_alignment(Path(alignment_path))
+    target_aln = aln.get(target_code)
+    template_aln = aln.get(template_code)
+    if not target_aln or not template_aln:
+        warnings.append(
+            f"alignment does not contain both {target_code!r} and {template_code!r}; "
+            f"found {sorted(aln)}"
+        )
+        return {}, [], warnings
+    if len(target_aln) != len(template_aln):
+        warnings.append("aligned sequences differ in length; cannot map residues")
+        return {}, [], warnings
+
+    _, model_res, _ = _pdb_residue_order(Path(model_path))
+    tpl_chains, tpl_res, _ = _pdb_residue_order(Path(template_path))
+    model_order = [(c, *k) for c in model_res for k in model_res[c]]
+    # Walk the columns, advancing each side only on a real residue.
+    pairs: dict[tuple, tuple] = {}
+    ti = mi = 0                      # indices into model / template residue runs
+    tpl_flat = [(c, *k) for c in tpl_chains for k in tpl_res[c]]
+    for tgt_char, tpl_char in zip(target_aln, template_aln):
+        if tgt_char == "/" or tpl_char == "/":
+            continue
+        tgt_res = tgt_char != "-"
+        tpl_hit = tpl_char != "-"
+        if tgt_res and tpl_hit and ti < len(model_order) and mi < len(tpl_flat):
+            pairs[model_order[ti]] = tpl_flat[mi]
+        if tgt_res:
+            ti += 1
+        if tpl_hit:
+            mi += 1
+    if ti != len(model_order):
+        warnings.append(
+            f"alignment covers {ti} target residues but the model has {len(model_order)}"
+        )
+    if mi != len(tpl_flat):
+        warnings.append(
+            f"alignment covers {mi} template residues but the template has {len(tpl_flat)}"
+        )
+    return pairs, model_order, warnings
+
+
+def _restore_template_frame(
+    model_path,
+    template_path,
+    alignment_path,
+    target_code,
+    template_code,
+    apply_transform: bool,
+) -> dict:
+    """Measure, and optionally undo, a model's drift from its template.
+
+    MODELLER writes a model in its own frame and numbered from 1, which is fine
+    for de novo comparative modeling but wrong when the model is a *repair* of
+    the template (``loop_refinement`` filling missing residues): the result no
+    longer superposes on the structure it came from, so any ligand, partner
+    chain, or membrane orientation taken from the original silently misplaces.
+
+    Always reports the in-place CA deviation so the drift cannot pass unnoticed.
+    With ``apply_transform`` the model is rewritten superposed on the template
+    and renumbered to the template's author numbering, with gap-filled residues
+    taking the numbers between their flanking neighbours.
+    """
+    import numpy as np
+
+    info: dict = {"applied": False, "warnings": []}
+    model_path, template_path = Path(model_path), Path(template_path)
+    for label, path in (("model", model_path), ("template", template_path)):
+        if not path.exists():
+            info["warnings"].append(f"{label} file not found: {path}")
+            return info
+    pairs, model_order, warnings = _map_model_to_template(
+        alignment_path, target_code, template_code, model_path, template_path
+    )
+    info["warnings"].extend(warnings)
+    if not pairs:
+        info["warnings"].append("no model/template residue pairs; frame check skipped")
+        return info
+
+    _, _, model_ca = _pdb_residue_order(model_path)
+    _, _, tpl_ca = _pdb_residue_order(template_path)
+    common = [(m, t) for m, t in pairs.items() if m in model_ca and t in tpl_ca]
+    if len(common) < 3:
+        info["warnings"].append(
+            f"only {len(common)} paired CA atoms; need 3 to superpose"
+        )
+        return info
+
+    P = np.array([model_ca[m] for m, _ in common])
+    Q = np.array([tpl_ca[t] for _, t in common])
+    info["paired_ca_atoms"] = len(common)
+    info["ca_rmsd_in_place"] = round(
+        float(np.sqrt(((P - Q) ** 2).sum(1).mean())), 3
+    )
+
+    Pc, Qc = P.mean(0), Q.mean(0)
+    U, _, Vt = np.linalg.svd((P - Pc).T @ (Q - Qc))
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    R = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+    fitted = (P - Pc) @ R.T + Qc
+    info["ca_rmsd_after_fit"] = round(
+        float(np.sqrt(((fitted - Q) ** 2).sum(1).mean())), 3
+    )
+    if not apply_transform:
+        return info
+
+    # Template numbering for paired residues; gap-filled residues continue from
+    # the previous paired number. Refuse to renumber if that would collide.
+    renumber: dict[tuple, tuple[str, int]] = {}
+    prev_chain, prev_num = None, None
+    for key in model_order:
+        if key in pairs:
+            tpl_chain, tpl_num = pairs[key][0], pairs[key][1]
+            renumber[key] = (tpl_chain, tpl_num)
+            prev_chain, prev_num = tpl_chain, tpl_num
+        elif prev_num is not None:
+            prev_num += 1
+            renumber[key] = (prev_chain, prev_num)
+        else:
+            renumber[key] = (key[0], key[1])
+    taken = list(renumber.values())
+    if len(set(taken)) != len(taken):
+        info["warnings"].append(
+            "template numbering would collide with gap-filled residues; "
+            "coordinates were fitted but numbering was left as MODELLER wrote it"
+        )
+        renumber = {}
+
+    out_lines = []
+    for line in model_path.read_text().splitlines():
+        if not line.startswith(("ATOM", "HETATM")):
+            out_lines.append(line)
+            continue
+        key = (line[21], int(line[22:26]), line[26])
+        xyz = np.array(
+            [float(line[30:38]), float(line[38:46]), float(line[46:54])]
+        )
+        x, y, z = (xyz - Pc) @ R.T + Qc
+        chain, num = renumber.get(key, (line[21], int(line[22:26])))
+        out_lines.append(
+            f"{line[:21]}{chain}{num:>4}{line[26:30]}"
+            f"{x:8.3f}{y:8.3f}{z:8.3f}{line[54:]}"
+        )
+    model_path.write_text("\n".join(out_lines) + "\n")
+    info["applied"] = True
+    info["residues_renumbered"] = len(renumber)
+    return info
+
+
 def _has_modeller_license_env() -> bool:
     """Return True when the user provided a MODELLER license via env vars."""
     return any(
@@ -259,6 +474,7 @@ def modeller_from_alignment(
     loop_models: int = 2,
     loop_min_length: int = 1,
     loop_max_length: int = 30,
+    template_frame: bool = False,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
@@ -286,6 +502,14 @@ def modeller_from_alignment(
     typical missing-residue stretches). To model the missing residues of a
     structure, pass that structure as the template and its full
     sequence (e.g. from SEQRES) as the target.
+
+    ``template_frame=True`` rewrites each model superposed on the template and
+    renumbered to the template's author numbering. MODELLER otherwise emits a
+    model in its own frame numbered from 1, which silently breaks the repair
+    case: a loop-filled receptor no longer superposes on the structure it came
+    from, so a ligand, partner chain, or membrane orientation carried over from
+    the original lands in the wrong place. The in-place CA deviation is reported
+    either way under ``selected_model.template_frame``.
 
     MODELLER is an optional dependency. Users install it separately (for example,
     ``conda install salilab::modeller``) and provide their license via a
@@ -508,7 +732,10 @@ def modeller_from_alignment(
         if "No module named 'modeller'" in stderr:
             result["code"] = "modeller_not_installed"
             result["errors"].append(
-                "Install MODELLER separately with: conda install salilab::modeller"
+                "The amd64 MDClaw container ships MODELLER; run there. The arm64 "
+                "image cannot: the salilab channel publishes no linux-aarch64 "
+                "build and MODELLER's core is distributed as x86_64 binaries "
+                "only. Outside the container: conda install salilab::modeller"
             )
         else:
             result["code"] = "modeller_execution_failed"
@@ -563,6 +790,35 @@ def modeller_from_alignment(
             fail_node(job_dir, node_id, errors=result["errors"])
         return result
 
+    # MODELLER writes each model in its own frame, numbered from 1. Report that
+    # drift always, and undo it when the caller wants the model to stay a
+    # drop-in replacement for the template (see _restore_template_frame).
+    for model in successful_models:
+        model_path = Path(model.get("path") or model.get("name", ""))
+        if not model_path.is_absolute():
+            model_path = (out_dir / model_path).resolve()
+        if not model_path.exists():
+            continue
+        frame = _restore_template_frame(
+            model_path,
+            template_copy,
+            alignment_path,
+            target_code_clean,
+            template_code_clean,
+            apply_transform=template_frame,
+        )
+        model["template_frame"] = frame
+        if model_path == selected_path:
+            result["selected_model"]["template_frame"] = frame
+            result["warnings"].extend(frame.get("warnings", []))
+            drift = frame.get("ca_rmsd_in_place")
+            if drift is not None and not frame.get("applied") and drift > 1.0:
+                result["warnings"].append(
+                    f"model sits {drift} A (CA RMSD) from the template and was not "
+                    "refitted; pass template_frame=True if the model must "
+                    "superpose on the template it repairs"
+                )
+
     if _node_mode:
         try:
             from mdclaw.research.source_core import (
@@ -589,6 +845,7 @@ def modeller_from_alignment(
                 "multichain": multichain,
                 "loop_refinement": loop_refinement,
                 "loop_models": loop_models if loop_refinement else None,
+                "template_frame": template_frame,
                 "alignment_file": str(Path(alignment_file).expanduser()) if alignment_file else None,
                 "generated_alignment": str(alignment_path),
                 "auto_align": auto_align,

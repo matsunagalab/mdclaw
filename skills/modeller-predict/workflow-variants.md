@@ -51,7 +51,13 @@ the target, and add `--loop-refinement`. The base model builds the missing
 residues; MODELLER `LoopModel` then rebuilds every gap loop. `--loop-models`
 sets how many refined loop models to generate (best by DOPE selected);
 `--loop-min-length` / `--loop-max-length` bound which gap loops are refined
-(defaults 1..30).
+(defaults 1..30) — raise the max above the largest gap or it stays unrefined.
+
+Add `--template-frame`. MODELLER writes the model in its own frame numbered
+from 1, so without it a repaired receptor no longer superposes on the structure
+it came from and any ligand, partner chain, or membrane orientation kept from
+the original lands in the wrong place. The tool reports the in-place CA
+deviation under `selected_model.template_frame` either way.
 
 ```bash
 mdclaw --job-dir <job_dir> --node-id <source_node_id> modeller_from_alignment \
@@ -61,6 +67,7 @@ mdclaw --job-dir <job_dir> --node-id <source_node_id> modeller_from_alignment \
   --target-sequences "<chainA SEQRES>" "<chainB SEQRES>" \
   --target-code "9OPW_filled" \
   --loop-refinement \
+  --template-frame \
   --num-models 1 \
   --loop-models 4
 ```

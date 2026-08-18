@@ -106,7 +106,12 @@ signature, update the relevant section here and the matching skill examples.
   number of refined loop models per base model; `loop_min_length` /
   `loop_max_length` bound which gap loops are refined. To model the missing
   residues of a structure, pass that structure as the template and its full
-  sequence (e.g. from SEQRES) as the target. In node mode, the selected model is
+  sequence (e.g. from SEQRES) as the target, and set `template_frame=True` so
+  the model is written superposed on the template and renumbered to its author
+  numbering — MODELLER otherwise emits its own frame numbered from 1, which
+  misplaces any ligand or partner chain carried over from the original. The
+  in-place CA deviation is reported under `selected_model.template_frame` either
+  way. In node mode, the selected model is
   registered as the source bundle candidate with MODELLER metadata and ranking
   details. Guardrail `code`s: `modeller_target_sequence_conflict`,
   `modeller_target_sequence_required`, `modeller_chain_count_mismatch`,
