@@ -7,6 +7,42 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-18 — `eq` could silently skip `min`; found by running the onboarding guide
+
+Wrote a RIKYU onboarding guide for the hackathon and ran it end to end as a new
+member would — fresh clone under `/data1/rkp00048/$USER`, shared arm64 SIF, 4AKE
+chain A, apo, 100 ps NVT + 100 ps NPT + 100 ps production on SLURM. It works:
+`min` 18 s, `eq` 45 s, `prod` 38 s, **1 min 41 s of GPU time**, 300.34 +/- 0.90 K
+and 1.018 +/- 0.001 g/mL. 4AKE is the open form, so at a 15 A buffer it solvates
+to ~90,000 atoms — nearly twice 1AKE's 49,671.
+
+**The run exposed a real bug.** Submitting `min` -> `eq` -> `prod` as
+dependency-chained SLURM jobs means creating all three nodes before any of them
+runs. `_auto_resolve_parent` walks `_AUTO_PARENT_PREFERENCE["eq"] = ("min",
+"topo")` and falls through to the next entry whenever the preferred one has no
+*completed* node. With `min_001` still pending, `eq` silently attached to
+`topo_001` — equilibrating from the topology-time state and skipping
+minimization entirely. `explain_node` reported `ready_to_run: true` with no
+warnings, because `topo` is a legitimate `eq` parent for legacy DAGs.
+
+The fix distinguishes *absent* from *not yet complete*: a less-preferred parent
+type is now only reached when the preferred type has no nodes in the job at all.
+Present-but-incomplete (or failed) returns `None`, so `create_node` demands an
+explicit `--parent-node-ids` — the same structured `node_context_required` that
+`prod` already gave in this situation. `_auto_parent_candidates` stops at the
+same place so the error never advertises a `topo` candidate while a `min`
+exists. Legacy `topo -> eq` DAGs with no `min` node are untouched.
+
+This also covers `topo`, whose preference is `("solv", "prep")`: a pending
+`solv` no longer falls through to `prep` and builds an unsolvated topology.
+
+Verified in the live workflow, not just unit tests — re-running the guide, the
+bare `create_node --node-type eq` now fails with `node_context_required` instead
+of quietly mis-parenting, and the corrected chain gives a DAG with 7 completed
+nodes, 0 failed, 0 orphaned.
+
+---
+
 ## 2026-08-18 — Merged arm64 image verified on Rikyu; the shim contract holds
 
 Pulled the merge onto Rikyu (`c000`, GB200, driver 580.173.02) and checked the
