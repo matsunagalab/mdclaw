@@ -92,6 +92,71 @@ first line not to commit it. `RIKYU-SIF-REBUILD.md` is superseded by
 
 ---
 
+## 2026-08-18 — MODELLER now ships in the amd64 image; two defects fixed on the way
+
+`modeller_from_alignment` and the `modeller-predict` skill had **no working
+runtime anywhere**. MODELLER was in neither `environment.yml`,
+`container/Dockerfile`, `Dockerfile.rikyu-arm64`, nor `pyproject.toml`, so no
+image could contain it; the SIF is read-only, so the skill's
+`conda install salilab::modeller` advice was unreachable there; and
+`check_model_backend --model modeller` answers `Available models:
+['bioemu', 'boltz']`. Confirmed absent in all four local SIFs (0.6.5).
+
+**The license was never the blocker.** mdclaw's runner builds a synthetic
+`modeller.config` from `KEY_MODELLER*` and seeds it into `sys.modules` before
+importing MODELLER, taking only `install_dir` from the installed config.
+Verified against 10.8: installing with no key succeeds and leaves
+`license = r'XXXX'`; an injected key is what MODELLER validates (a wrong one
+fails with `check_lice_E> Invalid license key: FAKEKEY123`, naming the injected
+value, not the placeholder). So the image ships the package unlicensed and each
+user supplies a key at runtime.
+
+Installed from `container/Dockerfile`, not `environment.yml`, because the
+salilab channel is **linux-64 only** and the rikyu arm64 image derives its
+environment from that same shared file. New image: 20 smoke checks pass
+(`PASS: MODELLER installed`), SIF 5.2 GB at `mdclaw-modeller.sif`.
+
+**arm64 is not portable, and building on rikyu does not change that.** salilab
+publishes linux-64 and osx-arm64 but no linux-aarch64 and no noarch; bioconda
+and conda-forge have nothing. `conda install` downloads prebuilt binaries, so
+the build host is irrelevant. Nor can it be compiled: Salilab's own
+`INSTALLATION` says *"The source code is not generally available"*; the shipped
+`src/` holds only 45 SWIG `.i` files and headers, there is no build system, and
+the one Linux target `lib/x86_64-intel8/` links the Intel Fortran runtime
+(`libifcore.so.5`, `libimf.so`), which has no ARM build. Only Salilab can fix
+this.
+
+### Two defects found by actually using it on 9UWI
+
+1. **Models came back in MODELLER's own frame, numbered from 1.** Fine for de
+   novo homology modeling, wrong for the `loop_refinement` repair case the skill
+   advertises. On 9UWI chain A (V1aR; 269 resolved, 40 missing over three gaps
+   incl. a 33-residue ICL3) the returned model sat **9.86 A** CA RMSD from its
+   own template, numbered 1..309 instead of 43..351 — so the atosiban taken from
+   the same cryo-EM entry landed in the wrong place, with nothing in the output
+   saying so. New `--template-frame` refits and renumbers via the PIR alignment:
+   **9.858 -> 0.484 A** over 269 paired CAs, 309 residues renumbered to 43..351,
+   and the receptor/atosiban interface returns at **311 of 324** crystal contacts
+   with zero clash under 2.0 A. The in-place deviation is now always reported.
+
+2. **The frame check read the wrong alignment file.** `AutoModel.auto_align()`
+   aligns the seed, writes the result beside it as `<alnfile>.ali`, and leaves
+   the seed untouched with an empty template entry. The first implementation read
+   the seed, found no template residues, and skipped restoration on every
+   auto-aligned run — the exact case it was written for. Its warning said the
+   alignment "does not contain both 'v1arA' and '9uwiA'" while printing "found
+   ['9uwiA', 'v1arA']", because one branch handled missing and empty entries.
+
+Tests: `tests/test_modeller_template_frame.py`, 6 cases, no MODELLER needed.
+162 passed across genesis/registry/cli.
+
+**Not done:** 9UWI itself is parked at `source_001` (fetch complete,
+`solvent_regime=membrane`). Atosiban's GAFF parameterization — `MPT`,
+`A1EQM` (O-ethyl-D-Tyr), `ORN`, `NH2` plus an MPT-CYS thioether macrocycle — is
+untried and is the likely next obstacle.
+
+---
+
 ## 2026-08-18 — Rikyu arm64 image merged to main; one smoke test now serves both
 
 `container/rikyu-arm64` (13 commits, last touched 2026-08-01) is on `main` as a
