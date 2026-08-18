@@ -325,42 +325,6 @@ def _shift_pdb_atom_lines_z(lines: list[str], dz: float) -> list[str]:
     return shifted
 
 
-def _infer_beta_barrel_from_context(
-    *,
-    job_dir: Optional[str],
-    pdb_file: Optional[Path],
-) -> bool:
-    """Infer beta-barrel intent from nearby workflow/task text."""
-    haystacks: list[str] = []
-    if job_dir:
-        job_path = Path(job_dir)
-        haystacks.extend(str(part) for part in job_path.parts[-4:])
-        for path in (
-            job_path / "progress.json",
-            job_path.parent.parent / "study_plan.json",
-            job_path.parent.parent / "study.json",
-        ):
-            if path.exists():
-                try:
-                    haystacks.append(path.read_text(encoding="utf-8", errors="ignore"))
-                except OSError:
-                    pass
-    if pdb_file:
-        haystacks.append(str(pdb_file))
-
-    text = "\n".join(haystacks).lower()
-    return any(
-        needle in text
-        for needle in (
-            "beta_barrel",
-            "beta-barrel",
-            "beta barrel",
-            "β-barrel",
-            "β barrel",
-        )
-    )
-
-
 def _topology_consistency_report(
     *,
     protein_atoms: list[dict],
@@ -800,7 +764,19 @@ def _make_orientation_fn(
     n_terminal_side: Optional[str],
     search_type: int,
 ):
-    """Pick the orientation backend used by the patch-tile assembler."""
+    """Pick the orientation backend."""
+    if method == "ppm":
+        from mdclaw.solvation.ppm_orient import orient_protein_with_ppm
+
+        def _orient_ppm(protein_pdb, out_dir):
+            return orient_protein_with_ppm(
+                protein_pdb=protein_pdb,
+                out_dir=out_dir,
+                n_terminal_side=n_terminal_side,
+            )
+
+        return _orient_ppm
+
     if method == "tm-segments":
         from mdclaw.solvation.tm_orient import orient_protein_with_tm_segments
 
@@ -1827,9 +1803,9 @@ def embed_in_membrane(
         preoriented: Protein is pre-oriented for membrane (default: False)
                      Set to True if using OPM-derived structures or PPM server output.
                      If False, MEMEMBED will orient the protein automatically.
-        memembed_beta_barrel: Use MEMEMBED beta-barrel mode (``-b``). MDClaw
-                     also enables this automatically when the job/task context
-                     contains beta-barrel wording.
+        memembed_beta_barrel: Use MEMEMBED beta-barrel mode (``-b``). The
+                     predicted topology sets this on its own when the segments
+                     are strands.
         memembed_force_span: Pass MEMEMBED ``-l`` to force the target to span
                      the membrane.
         salt: Add salt ions (default: True)
@@ -2139,16 +2115,6 @@ def embed_in_membrane(
             fail_node(job_dir, node_id, errors=result.get("errors", []))
         return result
 
-    if (
-        not preoriented
-        and not memembed_beta_barrel
-        and _infer_beta_barrel_from_context(job_dir=job_dir, pdb_file=pdb_path)
-    ):
-        memembed_beta_barrel = True
-        result["warnings"].append(
-            "enabled MEMEMBED beta-barrel mode from job/task context"
-        )
-    
     # Check packmol-memgen availability.  A warm patch-cache hit can still build
     # a membrane without the packer, but a cold patch build (and the full
     # packmol-memgen backend) cannot.
@@ -2225,10 +2191,10 @@ def embed_in_membrane(
             n_terminal_side = membrane_topology.get("n_terminal_side")
 
     resolved_orientation = str(orientation_method or "auto").strip().lower()
-    if resolved_orientation not in {"auto", "memembed", "tm-segments"}:
+    if resolved_orientation not in {"auto", "memembed", "tm-segments", "ppm"}:
         result["errors"].append(
             f"Unsupported orientation_method {orientation_method!r}; use "
-            "auto, memembed, or tm-segments."
+            "auto, memembed, tm-segments, or ppm."
         )
         result["code"] = "membrane_orientation_method_invalid"
         if job_dir and node_id:

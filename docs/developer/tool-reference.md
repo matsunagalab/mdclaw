@@ -169,17 +169,25 @@ signature, update the relevant section here and the matching skill examples.
   the cached patch to MEMEMBED's dummy-membrane midplane, tile the patch to
   cover it, carve overlaps with periodic-boundary awareness, and neutralize by
   swapping bulk waters for ions. Beta-barrel proteins can request MEMEMBED
-  `-b` via `memembed_beta_barrel`; MDClaw also enables it from beta-barrel
-  wording in the job/task context. `memembed_force_span` passes MEMEMBED `-l` on
+  `-b` via `memembed_beta_barrel`, and the predicted topology sets it on its own
+  when the segments are strands. `memembed_force_span` passes MEMEMBED `-l` on
   the patch-tile path. `n_terminal_side` (`in`/`out`) passes MEMEMBED `-n`, which
   fixes which leaflet the first residue faces; without it MEMEMBED infers the
   topology from its knowledge-based potential, and a large soluble domain can
   invert the whole protein. `memembed_search_type` maps to MEMEMBED `-s` and
   defaults to 3 (genetic algorithm repeated five times), matching what
   packmol-memgen itself uses; MEMEMBED's own default is a single GA run.
-  `orientation_method` selects the orientation backend: `memembed`,
+  `orientation_method` selects the orientation backend: `memembed`, `ppm`,
   `tm-segments`, or `auto` (the default — `tm-segments` when a topology is
-  supplied, otherwise `memembed`). `tm-segments` needs
+  supplied, otherwise `memembed`). Orientation runs once before any packing
+  backend is chosen, and both packing paths then receive an already-oriented
+  structure, so switching packing backend cannot move the protein. `ppm` runs
+  PPM3 (`immers`, bundled with packmol-memgen), the code behind the OPM
+  database: it minimises a per-atom transfer free energy and also fits the
+  bilayer thickness. On 5L7D from crystal-frame coordinates it recovers the OPM
+  normal to 1.0 degrees against MEMEMBED's 5.5. The container rebuilds `immers`
+  from patched source — the stock build crashes printing its own result (see
+  `container/Dockerfile`), which `ppm_orient.py` reports as `ppm3_format_bug`. `tm-segments` needs
   `membrane_topology_file` from `predict_membrane_topology` and derives the
   normal from the transmembrane helix axes instead of searching for the slab;
   see `mdclaw/solvation/tm_orient.py` for the accuracy measured against the

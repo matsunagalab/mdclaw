@@ -35,14 +35,16 @@ mdclaw --job-dir <job_dir> --node-id <solv_node_id> embed_in_membrane \
 With a topology file `embed_in_membrane` derives the membrane normal from the
 transmembrane helix axes (`--orientation-method` defaults to `auto`), and the
 post-build check verifies every non-membrane region sits on the predicted side.
-Without one it falls back to MEMEMBED, which infers the up/down direction from
-the structure and can insert a protein with a large soluble domain upside down;
-pass `--n-terminal-side in|out` when you know it.
+Without one it falls back to MEMEMBED; pass `--n-terminal-side in|out` when you
+know which side the first residue faces, since MEMEMBED otherwise infers it.
+`--orientation-method ppm` runs PPM3 instead, which is more accurate on the
+structures measured so far but is still a structure-based search rather than an
+independent check on the topology.
 
 Use `--preoriented` only for structures that are already in a membrane frame
-(for example OPM/PPM-derived coordinates). For beta-barrel membrane proteins,
-pass `--memembed-beta-barrel` unless the job/task path or study text already
-contains beta-barrel wording.
+(for example OPM/PPM-derived coordinates). Beta barrels are routed to MEMEMBED `-b`
+from the predicted topology; pass `--memembed-beta-barrel` only when no
+topology is available.
 
 By default the tool writes `membrane_embedding_geometry.json` and fails with
 `membrane_embedding_geometry_failed` when a PBC-aware post-build check shows

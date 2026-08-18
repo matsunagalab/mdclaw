@@ -586,3 +586,124 @@ def test_membrane_topology_digest_is_content_based(tmp_path):
     assert _membrane_topology_digest(str(first)) == _membrane_topology_digest(str(second))
     assert _membrane_topology_digest(None) is None
     assert _membrane_topology_digest(str(tmp_path / "missing.json")) is None
+
+
+def test_ppm_backend_is_selectable():
+    """PPM must be reachable as an orientation backend, not only MEMEMBED."""
+    from mdclaw.solvation.membrane import _make_orientation_fn
+
+    chosen = _make_orientation_fn(
+        method="ppm", membrane_topology=None, beta_barrel=False,
+        force_span=False, n_terminal_side="out", search_type=3,
+    )
+
+    assert chosen.__name__ == "_orient_ppm"
+
+
+def test_ppm_reports_the_known_format_bug_distinctly(monkeypatch, tmp_path):
+    """The shipped PPM3 crashes printing its own result; say so precisely.
+
+    It computes the orientation correctly and then dies on a FORMAT descriptor
+    missing a comma, leaving no output file. Reporting that as a generic
+    "no output" would send the reader looking for the wrong problem.
+    """
+    import subprocess as sp
+
+    from mdclaw.solvation import ppm_orient
+
+    monkeypatch.setattr(ppm_orient.shutil, "which", lambda name: "/usr/bin/immers")
+    monkeypatch.setattr(
+        ppm_orient, "_ppm3_resource_dir", lambda: tmp_path / "res"
+    )
+    (tmp_path / "res").mkdir()
+    (tmp_path / "res" / "res.lib").write_text("")
+    monkeypatch.setattr(
+        ppm_orient.subprocess, "run",
+        lambda *a, **k: sp.CompletedProcess(
+            a[0] if a else [], 2,
+            stdout="Fortran runtime error: Missing comma between descriptors\n",
+        ),
+    )
+    structure = tmp_path / "p.pdb"
+    structure.write_text(_atom(1, "CA", "ALA", "A", 1, 0.0, 0.0, 0.0) + "\nEND\n")
+
+    result = ppm_orient.orient_protein_with_ppm(
+        protein_pdb=structure, out_dir=tmp_path
+    )
+
+    assert not result["success"]
+    assert result["code"] == "ppm3_format_bug"
+    assert "rebuild" in result["errors"][0].lower()
+
+
+def test_ppm_requires_the_binary(monkeypatch, tmp_path):
+    from mdclaw.solvation import ppm_orient
+
+    monkeypatch.setattr(ppm_orient.shutil, "which", lambda name: None)
+    structure = tmp_path / "p.pdb"
+    structure.write_text(_atom(1, "CA", "ALA", "A", 1, 0.0, 0.0, 0.0) + "\nEND\n")
+
+    result = ppm_orient.orient_protein_with_ppm(
+        protein_pdb=structure, out_dir=tmp_path
+    )
+
+    assert result["code"] == "ppm3_unavailable"
+
+
+def test_ppm_receives_the_predicted_membrane_side(monkeypatch, tmp_path):
+    """TMbed's inside/outside call must reach PPM3.
+
+    PPM3 reads eight values from stdin and nothing else; the seventh is the
+    only place a predicted topology can influence it, so it is the one piece of
+    sequence-derived information the physics-based search can be given.
+    """
+    import subprocess as sp
+
+    from mdclaw.solvation import ppm_orient
+
+    captured = {}
+
+    def _capture(cmd, **kwargs):
+        captured["stdin"] = kwargs.get("input")
+        raise sp.TimeoutExpired(cmd, 1)
+
+    monkeypatch.setattr(ppm_orient.shutil, "which", lambda name: "/usr/bin/immers")
+    (tmp_path / "res").mkdir()
+    (tmp_path / "res" / "res.lib").write_text("")
+    monkeypatch.setattr(ppm_orient, "_ppm3_resource_dir", lambda: tmp_path / "res")
+    monkeypatch.setattr(ppm_orient.subprocess, "run", _capture)
+    structure = tmp_path / "p.pdb"
+    structure.write_text(_atom(1, "CA", "ALA", "A", 1, 0.0, 0.0, 0.0) + "\nEND\n")
+
+    ppm_orient.orient_protein_with_ppm(
+        protein_pdb=structure, out_dir=tmp_path, n_terminal_side="out"
+    )
+
+    lines = captured["stdin"].strip().split("\n")
+    assert len(lines) == 8, lines
+    assert lines[6] == "out"      # itopo
+    assert lines[7] == "A"        # chain list
+
+
+def test_ppm_defaults_the_side_when_the_topology_is_silent(monkeypatch, tmp_path):
+    import subprocess as sp
+
+    from mdclaw.solvation import ppm_orient
+
+    captured = {}
+
+    def _capture(cmd, **kwargs):
+        captured["stdin"] = kwargs.get("input")
+        raise sp.TimeoutExpired(cmd, 1)
+
+    monkeypatch.setattr(ppm_orient.shutil, "which", lambda name: "/usr/bin/immers")
+    (tmp_path / "res").mkdir()
+    (tmp_path / "res" / "res.lib").write_text("")
+    monkeypatch.setattr(ppm_orient, "_ppm3_resource_dir", lambda: tmp_path / "res")
+    monkeypatch.setattr(ppm_orient.subprocess, "run", _capture)
+    structure = tmp_path / "p.pdb"
+    structure.write_text(_atom(1, "CA", "ALA", "A", 1, 0.0, 0.0, 0.0) + "\nEND\n")
+
+    ppm_orient.orient_protein_with_ppm(protein_pdb=structure, out_dir=tmp_path)
+
+    assert captured["stdin"].strip().split("\n")[6] == "out"

@@ -121,6 +121,25 @@ RUN tar -xzf /tmp/mdclaw_env.tar.gz -C /opt/mdclaw && \
 # Add conda env to PATH so pip/python scripts resolve correctly
 ENV PATH="/opt/mdclaw/bin:$PATH"
 
+# Rebuild PPM3 (immers), the membrane orientation code bundled with
+# packmol-memgen. The shipped binary computes the orientation correctly and then
+# dies printing it: opm.f has a FORMAT descriptor missing a comma
+# (`f7.0''+-''`), which older gfortran tolerated and current gfortran rejects at
+# runtime, so no oriented PDB is ever written. One comma fixes it. Built here
+# rather than in the runtime stage because this stage already has a compiler,
+# and /opt/mdclaw is carried forward from it.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gfortran make && \
+    rm -rf /var/lib/apt/lists/*
+RUN PPM3_DIR=$(/opt/mdclaw/bin/python -c "import packmol_memgen, pathlib; print(pathlib.Path(packmol_memgen.__file__).parent / 'lib' / 'ppm3')") && \
+    sed -i "s/f7\.0''+-''/f7.0,''+-''/" "$PPM3_DIR/opm.f" && \
+    grep -q "f7.0,''+-''" "$PPM3_DIR/opm.f" && \
+    make -C "$PPM3_DIR" clean >/dev/null 2>&1 || true && \
+    make -C "$PPM3_DIR" && \
+    install -m 0755 "$PPM3_DIR/immers" /opt/mdclaw/bin/immers && \
+    /opt/mdclaw/bin/immers < /dev/null 2>&1 | grep -q "Fortran runtime error: Missing comma" \
+      && { echo "PPM3 format bug still present after patch"; exit 1; } || true
+
 # Cython is needed for OpenMM Python wrappers
 RUN /opt/mdclaw/bin/pip install --no-cache-dir cython
 
