@@ -7,6 +7,122 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-18 — 訂正: cap 破壊の犯人は `prepare_complex` ではなく `create_mutated_structure`
+
+**同日の前エントリ「SMO 5L7D D473Y / G497W membrane MD; `--cap-termini` produces
+unparameterizable structures」の原因帰属を全面的に訂正する。** バグは実在するが、
+`prepare_complex --cap-termini` ではなく **HPacker 経路 (`create_mutated_structure`)**
+にあった。前エントリは変異後の `mutated.pdb` だけを見て prep の出力と取り違えていた。
+
+中間ファイルを追った実測:
+
+| ファイル | cap の位置 | 変異残基の H2/H3 | OpenMM |
+|---|---|---|---|
+| `prep_001/artifacts/merge/merged.pdb` (prepare_complex) | 正順 (idx 0,158,159,238,239,348) | なし | **OK 5470 particles** |
+| `prep_002/artifacts/mutated.pdb` (create_mutated_structure) | 全て末尾 | SER190 に H2/H3 | **FAIL** |
+
+`prepare_complex --cap-termini` は正常。`clean_protein.py:474-501` が PDBFixer の
+`missingResidues` 経由で cap を入れており、配列位置も水素も正しい。
+
+真の原因は `mdclaw/sidechain_packer.py` の 3 点で、すべて「ACE/NME を遊離ヘテロ原子と
+みなす」ことに由来する:
+
+1. `_write_protein_input` が標準アミノ酸の ATOM 行だけを HPacker に渡す (これ自体は正しい)。
+2. `_rebuild_protein_hydrogens` がその **cap を欠いた** 構造に PDBFixer
+   `addMissingHydrogens` をかける。PDBFixer は鎖トポロジから protonation を決めるので、
+   cap の裏に隠れた残基が遊離荷電末端と判定され H2/H3 が付く。
+3. `_split_hpacker_and_nonprotein_lines` が元の HETATM 行 (= cap) を全タンパク原子の
+   **後ろに再追加** する。OpenMM は鎖内の残基「並び順」で結合を張るため cap が繋がらない。
+
+修正 (`mdclaw/sidechain_packer.py`):
+
+- `_is_terminal_cap_atom` / `_is_protein_or_cap_atom` / `_line_residue_key` /
+  `_protein_and_cap_residues_from_lines` を追加し、cap を「タンパク側」として扱えるようにした。
+- `_merge_caps_into_protein` を新設。HPacker 出力に cap を **元ファイルの並び順で**
+  差し戻してから水素再構築に渡す。これで (2) と (3) が同時に消える。
+- `_sort_protein_atoms_like_reference` と `_split_hpacker_and_nonprotein_lines` を cap 対応に。
+- 副次的に見つかった潜在バグも修正: CONECT 行が入力の通し番号のままコピーされ、
+  タンパク原子は水素再構築後の別番号で再出力されるため、`_normalize_pdb_lines` の
+  serial マップが衝突して **CONECT が無関係な原子を指していた**。`_remap_conect_lines` を
+  新設し、(chain, resseq, icode, atom name) の同一性で写像、解決できない行は捨てる。
+  これを直すまで LEU346 が NME の水素と結合し `1 H atom too many` で落ちていた。
+- guardrail code `hpacker_terminal_cap_merge_failed` を追加・golden 再生成。
+
+検証: 実際の `merged.pdb` に `run_hpacker_mutation(mutations=['D473Y'])` を適用して
+success、cap は idx 0,158,159,238,239,348 の正位置、SER190 の水素は H/HA/HB2/HB3/HG のみ、
+CONECT 48 本を復元、**OpenMM 5479 particles で成功**。手作業で直した参照と一致。
+
+回帰テスト 4 本を `tests/test_sidechain_packer.py` に追加 (cap の並び順、capped 末端の
+非プロトン化、CONECT の同一性写像、解決不能 CONECT の破棄)。**4 本とも修正前のコードで
+失敗することを `git stash` で確認済み**。`ruff` clean、主要スイート 222 passed。
+
+なお `membrane_neutralization_failed` の hint (「bulk water を増やして再構築せよ」) が
+実際の原因と無関係な点は前エントリの指摘どおりで、これは未修正のまま残っている。
+
+---
+
+## 2026-08-18 — SMO 5L7D D473Y / G497W membrane MD; `--cap-termini` produces unparameterizable structures
+
+Ran the two vismodegib-resistance mutants of human Smoothened (5L7D, X-ray 3.2 A,
+Byrne et al.) in a POPC bilayer, as a pipeline test at 100 ps production.
+Study: `studies/smo_5l7d_vismodegib_resistance`, jobs `d473y` and `g497w`.
+
+**Construct decisions.** Chain A, not B — chain B has a 492-506 gap that deletes
+G497 outright. TMD only (residues 190-553): the BRIL fusion (numbered 1011-1131)
+and the extracellular CRD are dropped, and with the CRD goes the only
+crystallographic cholesterol, which binds the CRD (contacts 108-164) and sits
+>40 A from the TM6/TM7 pocket — it is not a pocket ligand. Two unresolved gaps
+(347-350, and 429-445 = the ICL3 that BRIL replaced) were kept as chain breaks by
+splitting into three segments A 190-346 / B 351-428 / C 446-553 rather than
+building a de-novo 17-residue ICL3. All four in-range disulfides retained,
+including the inter-segment C314-C390.
+
+**The run exposed a real bug: `prepare_complex --cap-termini` is broken.** Two
+independent defects, both present at once. (1) ACE/NME are written as `HETATM`
+records appended after every `ATOM` record, so a cap lands out of sequence
+position in its chain — `ACE A 189` and `NME A 347` both end up after `LEU A 346`.
+OpenMM links residues by order within a chain, so the cap never bonds. (2) The
+residue following an ACE keeps its charged-N-terminus `H2`/`H3` on top of the new
+bond to the cap. Fixing only (1) moves the error from *"missing 1 C atom"* to
+*"matches NSER, but has 1 N atom too many"*; fixing both makes the same structure
+build cleanly (5479 particles, verified).
+
+This is invisible on the standard explicit-water path because `build_amber_system`
+runs tleap, which sorts by residue number and rebuilds hydrogens. It surfaces in
+`embed_in_membrane`, whose net-charge evaluation calls
+`SystemGenerator.create_system` directly on the assembled PDB. The reported code
+is `membrane_neutralization_failed` with the hint *"rebuild with enough bulk
+water"* — **misleading**: bulk water was never the problem, upstream capping was.
+Worth making that guardrail name the real cause.
+
+Worked around by re-running prep with `--no-cap-termini`; the six termini are all
+solvent-exposed at the membrane surfaces and ~25 A from the pocket, so charged
+termini are an acceptable artifact at test scale. Should be fixed properly before
+any production-quality run. Failed nodes (`prep_001/002`, `solv_001`) kept in the
+DAG.
+
+**Numbers.** 115,168 (D473Y) / 115,195 (G497W) atoms; 358/359 POPC; ~15.3k OPC
+waters; 116 x 116 x 77 A box. Minimization 8.6e8 -> **-1,420,019 kJ/mol** and
+5.8e13 -> **-1,425,417 kJ/mol**, max force 3.7e9 -> ~3.8e3 kJ/mol/nm — i.e. the
+P18 membrane-min stall did *not* recur; the `patch-tile` backend tiles a
+pre-equilibrated patch instead of packing the whole box, and that is what avoids
+the lipid-tail clash trap. Equilibration 0.2 ns NVT + 1.0 ns NPT reached
+301.0 +/- 0.9 K and 1.030-1.033 g/mL, compressing the under-dense tiled box from
+0.906 g/mL (1083 -> 953 nm^3). Production 100 ps, 4 fs + HMR,
+`MonteCarloMembraneBarostat` (XYIsotropic, ZFree, gamma=0): 300.9 +/- 0.8 K,
+1.0376 +/- 0.0012 g/mL, CA-RMSD 0.71 A (D473Y) and 0.66 A (G497W) vs frame 0,
+gross APL 66.7 A^2 before subtracting protein cross-section.
+
+Verified the two things that fail silently: all 4 S-S bonds are present in
+`system.xml` with original numbering (193-213, 217-295, 314-390, 490-507), and
+the mutations survive tleap renumbering — topology index 262 is TYR in `d473y`
+and ASP in `g497w`, index 286 is GLY and TRP respectively.
+
+100 ps is a pipeline test, not sampling. No WT control was requested, so nothing
+here supports a claim about either mutation's effect.
+
+---
+
 ## 2026-08-18 — `eq` could silently skip `min`; found by running the onboarding guide
 
 Wrote a RIKYU onboarding guide for the hackathon and ran it end to end as a new

@@ -340,3 +340,157 @@ def test_create_mutated_structure_uses_hpacker_metadata(monkeypatch, tmp_path):
     assert result["mutation_count"] == 1
     assert result["hpacker_version"] == "test-version"
     assert Path(result["output_path"]).read_text().count(" ALA A  99") >= 1
+
+
+def _capped_protein_pdb() -> str:
+    """ACE-LEU-ALA-NME plus an unrelated heterogen.
+
+    ``prepare_complex --cap-termini`` writes ACE/NME as HETATM records that sit
+    in sequence position inside the chain. HPacker cannot model them, so the
+    packer path has to strip and restore them without detaching them.
+    """
+    return "\n".join(
+        [
+            _atom_line(1, "C", "ACE", "A", 98, -1.5, 0.0, 0.0, "C", record="HETATM"),
+            _atom_line(2, "O", "ACE", "A", 98, -1.5, 1.2, 0.0, "O", record="HETATM"),
+            _atom_line(3, "CH3", "ACE", "A", 98, -2.9, -0.8, 0.0, "C", record="HETATM"),
+            _atom_line(4, "N", "LEU", "A", 99, 0.0, 0.0, 0.0, "N"),
+            _atom_line(5, "CA", "LEU", "A", 99, 1.4, 0.0, 0.0, "C"),
+            _atom_line(6, "C", "LEU", "A", 99, 2.0, 1.4, 0.0, "C"),
+            _atom_line(7, "O", "LEU", "A", 99, 1.3, 2.4, 0.0, "O"),
+            _atom_line(8, "CB", "LEU", "A", 99, 1.9, -0.8, 1.2, "C"),
+            _atom_line(9, "N", "ALA", "A", 100, 3.3, 1.5, 0.0, "N"),
+            _atom_line(10, "CA", "ALA", "A", 100, 4.1, 2.7, 0.0, "C"),
+            _atom_line(11, "C", "ALA", "A", 100, 5.6, 2.4, 0.0, "C"),
+            _atom_line(12, "O", "ALA", "A", 100, 6.4, 3.3, 0.0, "O"),
+            _atom_line(13, "CB", "ALA", "A", 100, 3.7, 3.5, 1.2, "C"),
+            _atom_line(14, "N", "NME", "A", 101, 6.0, 1.2, 0.0, "N", record="HETATM"),
+            _atom_line(15, "C", "NME", "A", 101, 7.4, 0.8, 0.0, "C", record="HETATM"),
+            _atom_line(16, "C1", "BEN", "B", 1, 20.0, 20.0, 20.0, "C", record="HETATM"),
+            "CONECT    1    2    3    4",
+            "CONECT   11   14",
+            "END",
+            "",
+        ]
+    )
+
+
+def _residue_sequence(pdb_text: str) -> list[tuple[str, int, str]]:
+    seen: list[tuple[str, int, str]] = []
+    for line in pdb_text.splitlines():
+        if not line.startswith(("ATOM", "HETATM")):
+            continue
+        key = (line[21], int(line[22:26]), line[17:20].strip())
+        if not seen or seen[-1] != key:
+            seen.append(key)
+    return seen
+
+
+def test_run_hpacker_keeps_terminal_caps_in_sequence_order(monkeypatch, tmp_path):
+    """Caps must stay adjacent to their residue, not be appended at the end.
+
+    Regression: caps were re-appended after every protein atom, so OpenMM (which
+    bonds residues by their order within a chain) could not connect ACE/NME to
+    the peptide and rejected the capped residues as untemplatable.
+    """
+    from mdclaw import sidechain_packer
+
+    monkeypatch.setattr(
+        sidechain_packer,
+        "_load_hpacker_class",
+        lambda: (FakeHPacker, "test-version"),
+    )
+
+    input_pdb = tmp_path / "input.pdb"
+    output_pdb = tmp_path / "mutant.pdb"
+    input_pdb.write_text(_capped_protein_pdb())
+
+    result = sidechain_packer.run_hpacker_mutation(
+        input_pdb,
+        output_pdb,
+        mutations=["A:L99A"],
+    )
+
+    assert result.success, result.errors
+    sequence = _residue_sequence(output_pdb.read_text())
+    assert sequence[0] == ("A", 98, "ACE")
+    assert [name for _, _, name in sequence].index("NME") == 3
+    assert sequence[3] == ("A", 101, "NME")
+    # the unrelated heterogen still trails the peptide
+    assert sequence[-1] == ("B", 1, "BEN")
+
+
+def test_run_hpacker_does_not_protonate_capped_terminus(monkeypatch, tmp_path):
+    """A residue behind an ACE cap must not gain free-N-terminus hydrogens.
+
+    Regression: caps were stripped before PDBFixer rebuilt hydrogens, so the
+    first real residue looked like a charged free terminus and gained H2/H3,
+    which no capped-residue force-field template matches.
+    """
+    from mdclaw import sidechain_packer
+
+    monkeypatch.setattr(
+        sidechain_packer,
+        "_load_hpacker_class",
+        lambda: (FakeHPacker, "test-version"),
+    )
+
+    input_pdb = tmp_path / "input.pdb"
+    output_pdb = tmp_path / "mutant.pdb"
+    input_pdb.write_text(_capped_protein_pdb())
+
+    result = sidechain_packer.run_hpacker_mutation(
+        input_pdb,
+        output_pdb,
+        mutations=["A:L99A"],
+    )
+
+    assert result.success, result.errors
+    capped_residue_h = {
+        line[12:16].strip()
+        for line in output_pdb.read_text().splitlines()
+        if line.startswith(("ATOM", "HETATM"))
+        and line[21] == "A"
+        and int(line[22:26]) == 99
+        and line[12:16].strip().startswith("H")
+    }
+    assert "H2" not in capped_residue_h
+    assert "H3" not in capped_residue_h
+
+
+def test_remap_conect_lines_follows_atom_identity_not_stale_serials():
+    """CONECT must be translated by atom identity, not by raw input serial.
+
+    The protein stream is re-emitted from the hydrogen-rebuilt structure with
+    its own numbering, so copying input CONECT records verbatim points them at
+    unrelated atoms.
+    """
+    from mdclaw import sidechain_packer
+
+    original = [
+        _atom_line(1, "C", "ACE", "A", 98, 0.0, 0.0, 0.0, "C", record="HETATM"),
+        _atom_line(2, "N", "LEU", "A", 99, 1.4, 0.0, 0.0, "N"),
+        "CONECT    1    2",
+    ]
+    # same atoms, renumbered (as after hydrogen rebuild + re-emission)
+    emitted = [
+        _atom_line(7, "N", "LEU", "A", 99, 1.4, 0.0, 0.0, "N"),
+        _atom_line(8, "C", "ACE", "A", 98, 0.0, 0.0, 0.0, "C", record="HETATM"),
+    ]
+
+    conect = sidechain_packer._remap_conect_lines(original, emitted)
+
+    assert conect == ["CONECT    8    7"]
+
+
+def test_remap_conect_lines_drops_records_for_absent_atoms():
+    from mdclaw import sidechain_packer
+
+    original = [
+        _atom_line(1, "C", "ACE", "A", 98, 0.0, 0.0, 0.0, "C", record="HETATM"),
+        _atom_line(2, "N", "LEU", "A", 99, 1.4, 0.0, 0.0, "N"),
+        "CONECT    1    2",
+    ]
+    emitted = [_atom_line(1, "C", "ACE", "A", 98, 0.0, 0.0, 0.0, "C", record="HETATM")]
+
+    assert sidechain_packer._remap_conect_lines(original, emitted) == []

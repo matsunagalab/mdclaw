@@ -58,6 +58,9 @@ PROTEIN_RESNAME_TO_ONE.update(
     {variant: AA_THREE_TO_ONE[standard] for variant, standard in PROTEIN_VARIANT_TO_STANDARD.items()}
 )
 STANDARD_AA = set(PROTEIN_RESNAME_TO_ONE)
+# ACE/NME are peptide terminal caps, not free heterogens. HPacker cannot model
+# them, but they must stay bonded to their chain through hydrogen rebuilding.
+TERMINAL_CAP_RESNAMES = frozenset({"ACE", "NME"})
 
 
 class HPackerUnavailableError(RuntimeError):
@@ -123,6 +126,22 @@ def _is_standard_protein_atom(line: str) -> bool:
     return line[17:20].strip().upper() in STANDARD_AA
 
 
+def _is_terminal_cap_atom(line: str) -> bool:
+    """True for ACE/NME cap atoms, written as ATOM or HETATM.
+
+    ``prepare_complex --cap-termini`` emits caps as HETATM records. They are
+    part of the peptide, so the HPacker path must keep them attached to their
+    chain instead of treating them as free heterogens.
+    """
+    if not _is_pdb_atom(line):
+        return False
+    return line[17:20].strip().upper() in TERMINAL_CAP_RESNAMES
+
+
+def _is_protein_or_cap_atom(line: str) -> bool:
+    return _is_standard_protein_atom(line) or _is_terminal_cap_atom(line)
+
+
 def _canonical_hpacker_resname(resname: str) -> str:
     return PROTEIN_VARIANT_TO_STANDARD.get(resname.upper(), resname.upper())
 
@@ -137,17 +156,28 @@ def _parse_resseq(line: str) -> int | None:
 def _line_hpacker_id(line: str) -> tuple[str, int, str] | None:
     if not _is_standard_protein_atom(line):
         return None
+    return _line_residue_key(line)
+
+
+def _line_residue_key(line: str) -> tuple[str, int, str] | None:
+    """Residue key for a standard protein *or* terminal-cap atom line."""
+    if not _is_protein_or_cap_atom(line):
+        return None
     resseq = _parse_resseq(line)
     if resseq is None:
         return None
     return (line[21].strip() or " ", resseq, line[26].strip() or " ")
 
 
-def _protein_residues_from_lines(lines: Iterable[str]) -> list[ProteinResidue]:
+def _residues_from_lines(
+    lines: Iterable[str],
+    *,
+    predicate,
+) -> list[ProteinResidue]:
     residues: list[ProteinResidue] = []
     seen: set[tuple[str, int, str, str]] = set()
     for line in lines:
-        if not _is_standard_protein_atom(line):
+        if not predicate(line):
             continue
         resseq = _parse_resseq(line)
         if resseq is None:
@@ -171,8 +201,20 @@ def _protein_residues_from_lines(lines: Iterable[str]) -> list[ProteinResidue]:
     return residues
 
 
+def _protein_residues_from_lines(lines: Iterable[str]) -> list[ProteinResidue]:
+    return _residues_from_lines(lines, predicate=_is_standard_protein_atom)
+
+
+def _protein_and_cap_residues_from_lines(lines: Iterable[str]) -> list[ProteinResidue]:
+    return _residues_from_lines(lines, predicate=_is_protein_or_cap_atom)
+
+
 def read_protein_residues(pdb_file: str | Path) -> list[ProteinResidue]:
     return _protein_residues_from_lines(Path(pdb_file).read_text().splitlines())
+
+
+def read_protein_and_cap_residues(pdb_file: str | Path) -> list[ProteinResidue]:
+    return _protein_and_cap_residues_from_lines(Path(pdb_file).read_text().splitlines())
 
 
 _MUTATION_RE = re.compile(r"^(?:(?P<chain>[^:]):)?(?P<from>[A-Z])(?P<resseq>-?\d+)(?P<icode>[A-Z]?)(?P<to>[A-Z])$")
@@ -296,21 +338,113 @@ def _restore_reference_resnames(
     pdb_file.write_text("\n".join(out) + "\n")
 
 
+def _atom_identity(line: str) -> tuple[str, int, str, str] | None:
+    """Serial-independent identity of an atom line: chain/resseq/icode/name."""
+    if not _is_pdb_atom(line):
+        return None
+    resseq = _parse_resseq(line)
+    if resseq is None:
+        return None
+    return (
+        line[21].strip() or " ",
+        resseq,
+        line[26].strip() or " ",
+        line[12:16].strip(),
+    )
+
+
+def _remap_conect_lines(
+    original_lines: list[str],
+    emitted_atom_lines: list[str],
+) -> list[str]:
+    """Rebuild CONECT records against the emitted atoms' serial numbers.
+
+    Input CONECT records reference the *input* file's serials, but the protein
+    atoms are re-emitted from the hydrogen-rebuilt structure with their own
+    numbering. Remapping by raw serial therefore points CONECT at unrelated
+    atoms. Translate through serial-independent atom identity instead and drop
+    any record whose atoms no longer exist.
+    """
+    identity_to_new: dict[tuple[str, int, str, str], int] = {}
+    for line in emitted_atom_lines:
+        if not _is_pdb_atom(line):
+            continue
+        try:
+            identity_to_new[_atom_identity(line)] = int(line[6:11])
+        except (TypeError, ValueError):
+            continue
+    old_to_identity: dict[int, tuple[str, int, str, str]] = {}
+    for line in original_lines:
+        if not _is_pdb_atom(line):
+            continue
+        identity = _atom_identity(line)
+        if identity is None:
+            continue
+        try:
+            old_to_identity[int(line[6:11])] = identity
+        except ValueError:
+            continue
+
+    def _translate(old_serial: int) -> int | None:
+        identity = old_to_identity.get(old_serial)
+        if identity is None:
+            return None
+        return identity_to_new.get(identity)
+
+    out: list[str] = []
+    for line in original_lines:
+        if not line.startswith("CONECT"):
+            continue
+        fields = line.split()[1:]
+        try:
+            serials = [int(field) for field in fields]
+        except ValueError:
+            continue
+        if not serials:
+            continue
+        source = _translate(serials[0])
+        if source is None:
+            continue
+        targets = [
+            new for new in (_translate(old) for old in serials[1:]) if new is not None
+        ]
+        if targets:
+            out.append(f"CONECT{source:5d}" + "".join(f"{t:5d}" for t in targets))
+    return out
+
+
 def _split_hpacker_and_nonprotein_lines(
     hpacker_output: Path,
     original_lines: list[str],
 ) -> list[str]:
-    lines: list[str] = []
+    atom_lines: list[str] = []
     for line in hpacker_output.read_text().splitlines():
-        if line.startswith(("ATOM  ", "TER")):
-            lines.append(line)
+        if line.startswith(("ATOM  ", "TER")) or _is_terminal_cap_atom(line):
+            atom_lines.append(line)
     for line in original_lines:
+        if _is_terminal_cap_atom(line):
+            # Terminal caps were merged back into the protein stream in
+            # sequence order; re-appending them here would detach them from
+            # their chain and break OpenMM residue bonding.
+            continue
         if line.startswith("HETATM") or (
             line.startswith("ATOM  ") and not _is_standard_protein_atom(line)
         ):
+            atom_lines.append(line)
+
+    # Give every emitted atom a unique serial before CONECT is rebuilt; the
+    # protein and heterogen streams come from different files and would
+    # otherwise collide in the serial map.
+    lines: list[str] = []
+    serial = 1
+    for line in atom_lines:
+        if not _is_pdb_atom(line):
             lines.append(line)
-    conect = [line for line in original_lines if line.startswith("CONECT")]
-    lines.extend(conect)
+            continue
+        lines.append(f"{line[:6]}{serial:5d}{line[11:]}")
+        serial += 1
+
+    lines.extend(_remap_conect_lines(original_lines, lines))
     lines.append("END")
     return lines
 
@@ -384,6 +518,59 @@ def _write_normalized_output(lines: list[str], output_path: Path) -> None:
     output_path.write_text("\n".join(_normalize_pdb_lines(lines)) + "\n")
 
 
+def _merge_caps_into_protein(
+    hpacker_output: Path,
+    original_lines: list[str],
+    output_path: Path,
+) -> None:
+    """Re-attach ACE/NME caps to the HPacker heavy-atom output, in sequence order.
+
+    HPacker only accepts standard amino acids, so caps are stripped from its
+    input. They must be put back *before* hydrogen rebuilding: PDBFixer decides
+    protonation from chain topology, so a capped residue whose cap is absent is
+    protonated as a free charged terminus (spurious H2/H3) and can never be
+    matched to a force-field template afterwards. Ordering follows the original
+    input, which is the only place the caps' sequence position is recorded.
+    """
+    groups: dict[tuple[str, int, str], list[str]] = {}
+    for line in hpacker_output.read_text().splitlines():
+        key = _line_residue_key(line)
+        if key is not None:
+            groups.setdefault(key, []).append(line)
+    cap_groups: dict[tuple[str, int, str], list[str]] = {}
+    for line in original_lines:
+        if not _is_terminal_cap_atom(line):
+            continue
+        key = _line_residue_key(line)
+        if key is not None:
+            cap_groups.setdefault(key, []).append(line)
+    groups.update(cap_groups)
+
+    ordered: list[str] = []
+    serial = 1
+    previous_chain: str | None = None
+    previous_residue: ProteinResidue | None = None
+    for residue in _protein_and_cap_residues_from_lines(original_lines):
+        residue_lines = groups.get(residue.hpacker_id)
+        if residue_lines is None:
+            raise HPackerExecutionError(
+                "Residue missing from HPacker output before cap merge: "
+                f"{residue.chain or '<blank>'}:{residue.resseq}{residue.icode} "
+                f"{residue.resname}"
+            )
+        if previous_chain is not None and residue.chain != previous_chain and previous_residue:
+            ordered.append(_ter_line(serial, previous_residue))
+            serial += 1
+        ordered.extend(residue_lines)
+        serial += len(residue_lines)
+        previous_chain = residue.chain
+        previous_residue = residue
+    if previous_residue:
+        ordered.append(_ter_line(serial, previous_residue))
+    ordered.append("END")
+    output_path.write_text("\n".join(ordered) + "\n")
+
+
 def _rebuild_protein_hydrogens(
     input_pdb: Path,
     output_pdb: Path,
@@ -420,12 +607,12 @@ def _sort_protein_atoms_like_reference(
     PDB order as chain order, so put each protein residue back in the HPacker
     reference order while preserving the rebuilt atoms within the residue.
     """
-    reference_residues = read_protein_residues(reference_pdb)
+    reference_residues = read_protein_and_cap_residues(reference_pdb)
     groups: dict[tuple[str, int, str], list[str]] = {}
     preamble: list[str] = []
     for line in rebuilt_pdb.read_text().splitlines():
-        if line.startswith("ATOM"):
-            key = _line_hpacker_id(line)
+        if _is_protein_or_cap_atom(line):
+            key = _line_residue_key(line)
             if key is None:
                 continue
             groups.setdefault(key, []).append(line)
@@ -463,11 +650,20 @@ def _resname_by_hpacker_id(pdb_file: Path) -> dict[tuple[str, int, str], str]:
     return {residue.hpacker_id: residue.resname for residue in read_protein_residues(pdb_file)}
 
 
+def _resname_by_residue_key(pdb_file: Path) -> dict[tuple[str, int, str], str]:
+    return {
+        residue.hpacker_id: residue.resname
+        for residue in read_protein_and_cap_residues(pdb_file)
+    }
+
+
 def _count_nonprotein_atoms(lines: Iterable[str]) -> int:
     return sum(
         1 for line in lines
-        if line.startswith("HETATM") or (
-            line.startswith("ATOM  ") and not _is_standard_protein_atom(line)
+        if not _is_terminal_cap_atom(line) and (
+            line.startswith("HETATM") or (
+                line.startswith("ATOM  ") and not _is_standard_protein_atom(line)
+            )
         )
     )
 
@@ -495,9 +691,10 @@ def _validate_output(
         atom_name = line[12:16].strip()
         if element == "D" and atom_name.startswith("H"):
             errors.append(f"Hydrogen atom {atom_name} was written with element D")
-    output_resnames = _resname_by_hpacker_id(output_path)
+    output_resnames = _resname_by_residue_key(output_path)
     input_residue_ids = {
-        residue.hpacker_id for residue in _protein_residues_from_lines(input_lines)
+        residue.hpacker_id
+        for residue in _protein_and_cap_residues_from_lines(input_lines)
     }
     output_residue_ids = set(output_resnames)
     missing_residue_ids = sorted(input_residue_ids - output_residue_ids)
@@ -580,6 +777,7 @@ def run_hpacker(
         protein_input = tmp_dir / "protein_input.pdb"
         hpacker_output = tmp_dir / "hpacker_output.pdb"
         hydrogenated_output = tmp_dir / "hpacker_hydrogenated.pdb"
+        capped_input = tmp_dir / "hpacker_with_caps.pdb"
         _write_protein_input(original_lines, protein_input)
         try:
             hpacker = hpacker_cls(str(protein_input))
@@ -603,11 +801,27 @@ def run_hpacker(
                 errors=["HPacker produced no PDB output"],
                 code="hpacker_no_output",
             )
+        hydrogen_input = hpacker_output
+        hydrogen_reference = protein_input
+        if any(_is_terminal_cap_atom(line) for line in original_lines):
+            try:
+                _merge_caps_into_protein(hpacker_output, original_lines, capped_input)
+            except Exception as exc:
+                return HPackerRunResult(
+                    success=False,
+                    errors=[
+                        "Re-attaching terminal caps after HPacker failed: "
+                        f"{type(exc).__name__}: {tail_for_agent(exc)}"
+                    ],
+                    code="hpacker_terminal_cap_merge_failed",
+                )
+            hydrogen_input = capped_input
+            hydrogen_reference = capped_input
         try:
             _rebuild_protein_hydrogens(
-                hpacker_output,
+                hydrogen_input,
                 hydrogenated_output,
-                reference_pdb=protein_input,
+                reference_pdb=hydrogen_reference,
             )
         except Exception as exc:
             return HPackerRunResult(

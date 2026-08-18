@@ -155,6 +155,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "hpacker_no_output": "HPacker produced no output; treat the step as failed.",
     "hpacker_no_protein_residues": "No protein residues for HPacker; check the selection.",
     "hpacker_hydrogen_rebuild_failed": "HPacker hydrogen rebuild failed; inspect residues.",
+    "hpacker_terminal_cap_merge_failed": "Re-attaching ACE/NME terminal caps after HPacker failed; inspect capped chain termini.",
     "nucleic_hydrogen_rebuild_failed": "Nucleic hydrogen rebuild failed; inspect residues.",
     "nucleic_hydrogen_rebuild_unavailable": "Nucleic hydrogen rebuild tool is unavailable in this runtime.",
 
