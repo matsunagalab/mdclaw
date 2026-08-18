@@ -123,6 +123,26 @@ assert cufft.cufftGetVersion(ctypes.byref(api_version)) == 0
 assert api_version.value >= 12010, api_version.value
 print(f'cuFFT {max(versions)}, API={api_version.value}')
 "
+check_declared MDCLAW_MODELLER_VERSION "MODELLER installed" python -c "
+import importlib.util
+import os
+import re
+from pathlib import Path
+
+spec = importlib.util.find_spec('modeller')
+assert spec is not None, 'modeller package not importable'
+locations = list(spec.submodule_search_locations or [])
+assert locations, spec
+config = Path(locations[0]) / 'config.py'
+assert config.is_file(), config
+match = re.search(r\"install_dir\s*=\s*r?['\\\"]([^'\\\"]+)['\\\"]\", config.read_text())
+assert match, config.read_text()
+install_dir = Path(match.group(1))
+assert install_dir.is_dir(), install_dir
+expected = os.environ['MDCLAW_MODELLER_VERSION']
+assert expected in install_dir.name, (install_dir, expected)
+print(f'MODELLER {expected} at {install_dir}')
+"
 check_declared MDCLAW_FUSEFIX_LIB "cuFFT FUSE preload shim contract" python -c "
 import os
 from pathlib import Path

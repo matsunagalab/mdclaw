@@ -4,6 +4,20 @@ The container is MDClaw's packaged scientific runtime. It contains the `mdclaw`
 CLI plus CUDA runtime, PyTorch, AmberTools, OpenMM, PyMOL
 (`pymol-open-source`, for headless structure previews), MDTraj, and MDAnalysis.
 
+MODELLER **is** baked in, unlike those backends, because it is a small conda
+package with no competing CUDA stack. It ships unlicensed: `config.py` keeps the
+`XXXX` placeholder, and `mdclaw/genesis/modeller.py` injects a synthetic
+`modeller.config` built from a `KEY_MODELLER*` environment variable before
+importing MODELLER, so each user supplies their own key per run and no key is
+ever in the image. Verified against MODELLER 10.8: installing without a key
+succeeds, and an injected key is what MODELLER actually validates.
+
+It is installed in `container/Dockerfile` rather than in `environment.yml`
+because the `salilab` channel publishes **linux-64 only** — there is no
+linux-aarch64 build, and `Dockerfile.rikyu-arm64` derives its environment from
+that same shared file. The arm64 image therefore has no MODELLER, does not set
+`MDCLAW_MODELLER_VERSION`, and skips the smoke check accordingly.
+
 Heavy AI model backends (BioEmu, Boltz-2) are intentionally **not** baked into
 the image. They ship their own Torch/CUDA stacks that conflict with the OpenMM
 `cu118` pin, so they install into isolated venvs at runtime via

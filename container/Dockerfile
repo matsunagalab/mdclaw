@@ -62,6 +62,18 @@ RUN sed -e '/- -e \./d' -e '/openmm-torch/d' environment.yml > environment-docke
     mamba env create -f environment-docker.yml -n mdclaw && \
     mamba clean -afy
 
+# MODELLER, for `modeller_from_alignment` and the modeller-predict skill.
+# Installed here rather than in environment.yml because the salilab channel
+# publishes linux-64 only, and Dockerfile.rikyu-arm64 derives its environment
+# from that same shared file — adding it there would break the arm64 build.
+# No license key is baked in: mdclaw injects a synthetic `modeller.config`
+# from a KEY_MODELLER* environment variable at call time
+# (mdclaw/genesis/modeller.py), so the image ships the unlicensed package and
+# each user supplies their own key at runtime.
+ARG MODELLER_VERSION=10.8
+RUN mamba install -n mdclaw -y -c salilab "modeller=${MODELLER_VERSION}" && \
+    mamba clean -afy
+
 # Install PyTorch with CUDA 11.8 support (matches the base image's CUDA
 # toolkit, so PyTorch's bundled CUDA runtime is consistent with the one
 # OpenMM is compiled against — no dual-runtime loader surprises).
@@ -208,6 +220,9 @@ ENV PATH="/opt/mdclaw/bin:$PATH"
 ENV AMBERHOME="/opt/mdclaw"
 ENV PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages"
 ENV OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins"
+# Declares that this image ships MODELLER, so the shared smoke test checks it.
+# The arm64 image does not set this: salilab publishes no linux-aarch64 build.
+ENV MDCLAW_MODELLER_VERSION="10.8"
 ENV LD_LIBRARY_PATH="/opt/mdclaw/lib:${LD_LIBRARY_PATH}"
 
 # Heavy AI model backends (BioEmu, Boltz-2) are NOT baked into the image.
