@@ -2657,3 +2657,80 @@ def test_an_unrecognised_residue_is_not_mistaken_for_bilayer(tmp_path):
     assert report["slab_period"] == pytest.approx(24.0)
     assert report["extended"] is True
     assert report["added_molecules"] > 0
+
+
+# --- the density gate itself -------------------------------------------------
+def _density_atoms(*, box, water_per_bin, z_range, bilayer=(-5.0, 5.0)):
+    """Water oxygens spread uniformly over z, at a chosen number per 4 A bin."""
+    atoms = []
+    z = z_range[0]
+    while z < z_range[1]:
+        for i in range(water_per_bin):
+            atoms.append({
+                "name": "O", "resname": "HOH",
+                "x": (i % 30) * 3.0, "y": (i // 30) * 3.0, "z": z + 2.0,
+            })
+        z += 4.0
+    for z in bilayer:
+        for i in range(40):
+            atoms.append({
+                "name": "P31", "resname": "PC",
+                "x": (i % 8) * 3.0, "y": (i // 8) * 3.0, "z": z,
+            })
+    return atoms
+
+
+def test_a_uniformly_dilute_cell_is_caught_by_the_absolute_criterion():
+    """The defect this gate exists for filled the whole cell to 41 % of bulk.
+    A cell judged against its own median scores 0.85 and passes."""
+    from mdclaw.solvation.membrane import _solvent_density_profile
+
+    box = 40.0
+    full = int(round(0.03344 * box * box * 4.0))
+    for fraction, expected in ((1.0, True), (0.41, False)):
+        atoms = _density_atoms(
+            box=box, water_per_bin=int(full * fraction), z_range=(-60.0, 60.0)
+        )
+        report = _solvent_density_profile(
+            atoms, box_a=box, box_b=box, box_c=120.0,
+            alpha=90.0, beta=90.0, gamma=90.0,
+            centre=0.0, exclude_low=-9.0, exclude_high=9.0,
+        )
+        assert report["assessed"] is True
+        passes = report["median_fraction_of_bulk"] >= 0.75
+        assert passes is expected, (fraction, report)
+        # relative to itself the dilute cell looks fine — that is the point
+        assert report["min_fraction_of_median"] > 0.9
+
+
+def test_the_density_gate_declines_to_judge_a_triclinic_cell():
+    """Bin volume is box_a * box_b * width, which is the cross section only for
+    a rectangular cell; a gamma=60 cell would measure a correctly hydrated
+    system well under bulk."""
+    from mdclaw.solvation.membrane import _solvent_density_profile
+
+    atoms = _density_atoms(box=40.0, water_per_bin=200, z_range=(-60.0, 60.0))
+    report = _solvent_density_profile(
+        atoms, box_a=40.0, box_b=40.0, box_c=120.0,
+        alpha=90.0, beta=90.0, gamma=60.0,
+        centre=0.0, exclude_low=-9.0, exclude_high=9.0,
+    )
+    assert report == {"assessed": False, "reason": "cell_is_not_orthorhombic"}
+
+
+def test_water_the_gate_cannot_recognise_is_reported_not_passed():
+    """Silently returning "fine" for a water model whose oxygen is named
+    something else would make the gate a decoration."""
+    from mdclaw.solvation.membrane import _solvent_density_profile
+
+    atoms = _density_atoms(box=40.0, water_per_bin=200, z_range=(-60.0, 60.0))
+    for atom in atoms:
+        if atom["resname"] == "HOH":
+            atom["name"] = "OW2"
+    report = _solvent_density_profile(
+        atoms, box_a=40.0, box_b=40.0, box_c=120.0,
+        alpha=90.0, beta=90.0, gamma=90.0,
+        centre=0.0, exclude_low=-9.0, exclude_high=9.0,
+    )
+    assert report["assessed"] is False
+    assert report["reason"] == "too_few_recognised_waters"

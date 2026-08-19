@@ -989,7 +989,15 @@ def extend_water_slabs(
         lipid21_template_contract().known_names
         | lipid21_template_contract().fragment_names
     )
-    membrane_zs = [item[4] for item in placed if item[0].resname in lipid_names]
+    # In the minimum image about the midplane, so a bilayer sitting on a cell
+    # face -- represented near both z=0 and z=box_c -- is measured as one slab
+    # instead of one almost a box thick. Getting that wrong now drives period
+    # to zero and fails the build outright.
+    membrane_zs = [
+        centre + _minimum_image_delta(item[4] - centre, box_c)
+        for item in placed
+        if item[0].resname in lipid_names
+    ]
     slab_hi = centre + float(leaflet)
     slab_lo = centre - float(leaflet)
     if membrane_zs:
@@ -2514,13 +2522,20 @@ def embed_with_membrane_patch_tiles(
             "copied from the patch's own water slabs to fill it "
             f"({water_extension['dropped_overlapping']} dropped for overlap)."
         )
-    elif interval.get("extended"):
+    elif interval.get("extended") and not solute_fits_box(
+        protein_atoms, box_c=box_c
+    )["fits"]:
         # Shipping the patch's own box here is the original 5L7D defect: the
         # solute reaches past the cell, the carve removes the lipids around its
         # wrapped image, and a holed membrane assembles without an error.
         # solute_fits_box only warns, and the geometry report only fails when
         # the solute is longer than the whole cell, so nothing downstream stops
         # it. Fail here instead.
+        #
+        # Only when the solute genuinely does not fit, though. "The requested
+        # water padding could not be filled exactly" is a different thing: a
+        # sub-angstrom shortfall leaves no whole molecule to place, and failing
+        # a build whose cell already contains its solute would be wrong.
         return {
             "success": False,
             "code": "membrane_patch_water_extension_failed",
@@ -2533,6 +2548,13 @@ def embed_with_membrane_patch_tiles(
             "warnings": warnings + patch.get("warnings", []),
             "water_extension": water_extension,
         }
+    elif interval.get("extended"):
+        warnings.append(
+            f"the solute needs a {interval['box_c']} A cell and the water "
+            "extension added nothing, but the patch's "
+            f"{interval['patch_box_c']} A cell already contains it, so the "
+            "shortfall is the requested water padding only."
+        )
 
     total_box = {
         "box_a": nx * box_a,

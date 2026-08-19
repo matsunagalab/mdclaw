@@ -352,19 +352,22 @@ def _solvent_density_profile(
     box_a: float,
     box_b: float,
     box_c: float,
+    alpha: float,
+    beta: float,
+    gamma: float,
     centre: float,
     exclude_low: float,
     exclude_high: float,
-) -> Optional[dict]:
+) -> dict:
     """Water number density per z bin, relative to the cell's own median.
 
     Every other geometry check here reads a flag, a span, or a parameter. None
     of them reads how much water is actually in the cell, which is how a
     membrane build shipped at 28-43% of bulk density in the extended region
     while passing headgroup span, solute containment, salt concentration and
-    charge neutrality. Density is measured against this cell's own median bin
-    rather than an absolute constant, so it holds for any water model and needs
-    no calibration.
+    charge neutrality. The criterion is absolute — liquid water's own number
+    density — because a cell filled uniformly to 41% has a median of 41% too
+    and scores 0.85 against itself.
 
     Bins overlapping ``[exclude_low, exclude_high]`` — the bilayer — are not
     assessed: water is legitimately absent there. Returns ``None`` when there is
@@ -377,11 +380,16 @@ def _solvent_density_profile(
     exclusion window cannot reach it.
     """
     if not (box_a > 0.0 and box_b > 0.0 and box_c > 0.0):
-        return None
+        return {"assessed": False, "reason": "missing_box_lengths"}
+    # The bin volume below is box_a * box_b * width, which is the cross section
+    # only for a rectangular cell. A gamma=30 cell has half that area and would
+    # measure a correctly hydrated system at 0.5 of bulk.
+    if max(abs(alpha - 90.0), abs(beta - 90.0), abs(gamma - 90.0)) > 0.5:
+        return {"assessed": False, "reason": "cell_is_not_orthorhombic"}
     width = SOLVENT_DENSITY_BIN_ANGSTROM
     n_bins = int(box_c // width)
     if n_bins < 6:
-        return None
+        return {"assessed": False, "reason": "cell_too_short_to_bin"}
     width = box_c / n_bins
     origin = centre - 0.5 * box_c
     waters = [0] * n_bins
@@ -398,7 +406,11 @@ def _solvent_density_profile(
             others[index] += 1
     total_water = sum(waters)
     if total_water < 200:
-        return None
+        return {
+            "assessed": False,
+            "reason": "too_few_recognised_waters",
+            "water_oxygen_count": total_water,
+        }
 
     bin_volume = box_a * box_b * width
     densities: list[tuple[int, float]] = []
@@ -412,14 +424,15 @@ def _solvent_density_profile(
             continue                      # too full of solute to judge
         densities.append((index, waters[index] / free))
     if len(densities) < 5:
-        return None
+        return {"assessed": False, "reason": "too_few_assessable_bins"}
     ordered = sorted(value for _index, value in densities)
     median = ordered[len(ordered) // 2]
     if median <= 0.0:
-        return None
+        return {"assessed": False, "reason": "no_water_outside_the_bilayer"}
     worst_index, worst = min(densities, key=lambda item: item[1])
     bulk = BULK_WATER_NUMBER_DENSITY_PER_ANGSTROM3
     return {
+        "assessed": True,
         "bin_width_angstrom": round(width, 3),
         "assessed_bins": len(densities),
         "median_density_per_angstrom3": round(median, 5),
@@ -534,11 +547,14 @@ def _membrane_embedding_geometry_report(
         box_a=float((box or {}).get("box_a") or 0.0),
         box_b=float((box or {}).get("box_b") or 0.0),
         box_c=box_c,
+        alpha=float((box or {}).get("alpha") or 90.0),
+        beta=float((box or {}).get("beta") or 90.0),
+        gamma=float((box or {}).get("gamma") or 90.0),
         centre=0.5 * (headgroup_z_min + headgroup_z_max),
         exclude_low=headgroup_z_min - overlap_pad,
         exclude_high=headgroup_z_max + overlap_pad,
     )
-    if density is not None:
+    if density.get("assessed"):
         if density["median_fraction_of_bulk"] < SOLVENT_DENSITY_MIN_MEDIAN_FRACTION:
             failure_reasons.append("solvent_density_below_bulk_outside_bilayer")
         elif density["min_fraction_of_bulk"] < SOLVENT_DENSITY_MIN_BIN_FRACTION:

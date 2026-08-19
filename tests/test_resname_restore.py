@@ -371,3 +371,69 @@ def test_run_stages_export_with_the_state_box():
         assert "render_simulation_pdb_preserving_resnames(" in text, name
         assert "box_vectors=" in text, f"{name} exports a PDB without a box"
         assert "image=" in text, f"{name} exports unimaged coordinates"
+
+
+def test_export_images_under_the_supplied_box_and_keeps_a_ligand_bound():
+    """The box and the imaging have to be the same box.
+
+    An export that stamps the state's CRYST1 but images with the topology's
+    stale box wraps molecules to the wrong places while looking right in the
+    header. And imaging must not carry a bound ligand away: folding every
+    non-anchor molecule into [0, L) moves one bound at the far end of a long
+    solute a full box from its site (reproduced at 0.2 nm -> 9.8 nm).
+    """
+    pytest.importorskip("openmm")
+    from openmm import Vec3, unit
+    from openmm.app import Element, Topology
+
+    from mdclaw.structure.pdb_utils import (
+        render_simulation_pdb_preserving_resnames,
+    )
+    top = Topology()
+    chain = top.addChain("A")
+    solute = top.addResidue("ALA", chain)
+    previous = None
+    for index in range(9):
+        atom = top.addAtom(f"C{index}", Element.getBySymbol("C"), solute)
+        if previous is not None:
+            top.addBond(previous, atom)
+        previous = atom
+    ligand = top.addResidue("LIG", top.addChain("B"))
+    top.addAtom("C1", Element.getBySymbol("C"), ligand)
+    water = top.addResidue("HOH", top.addChain("C"))
+    oxygen = top.addAtom("O", Element.getBySymbol("O"), water)
+    top.addBond(oxygen, top.addAtom("H1", Element.getBySymbol("H"), water))
+    # A topology box that is NOT the box the coordinates are in.
+    top.setPeriodicBoxVectors(unit.Quantity(
+        [Vec3(20.0, 0, 0), Vec3(0, 20.0, 0), Vec3(0, 0, 20.0)], unit.nanometer))
+
+    xs = [-1.0 + index for index in range(9)]      # solute spans -1.0 .. 7.0
+    positions = unit.Quantity(
+        [Vec3(x, 0.0, 0.0) for x in xs]
+        + [Vec3(-1.2, 0.0, 0.0)]                   # ligand, 0.2 nm off the end
+        + [Vec3(28.0, 0.0, 0.0), Vec3(28.1, 0.0, 0.0)],   # water, 3 boxes out
+        unit.nanometer,
+    )
+    run_box = unit.Quantity(
+        [Vec3(10.0, 0, 0), Vec3(0, 10.0, 0), Vec3(0, 0, 10.0)], unit.nanometer)
+
+    text = render_simulation_pdb_preserving_resnames(
+        top, positions, None, box_vectors=run_box, image=True
+    )
+
+    assert _cryst1(text) == pytest.approx((100.0, 100.0, 100.0), abs=1e-3)
+    rows = [
+        (line[17:20].strip(), float(line[30:38]))
+        for line in text.splitlines()
+        if line.startswith(("ATOM", "HETATM"))
+    ]
+    solute_xs = [x for name, x in rows if name == "ALA"]
+    ligand_x = [x for name, x in rows if name == "LIG"][0]
+    water_xs = [x for name, x in rows if name == "HOH"]
+    # still bound: within 2 A of the nearest solute atom, not a box away
+    assert min(abs(ligand_x - x) for x in solute_xs) == pytest.approx(2.0, abs=0.1)
+    # bulk water folded next to the solute, under the 100 A box it was given
+    assert all(-1.0 <= x <= 101.0 for x in water_xs)
+    # and the caller's topology keeps its own box
+    kept = top.getPeriodicBoxVectors().value_in_unit(unit.nanometer)
+    assert kept[0][0] == pytest.approx(20.0)

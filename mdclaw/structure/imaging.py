@@ -11,8 +11,9 @@ emitted ``topology.pdb`` / ``state.xml`` look broken in PyMOL/VMD.
 :func:`center_solute_and_wrap_solvent` reproduces cpptraj ``autoimage``
 semantics for orthorhombic boxes: rigidly translate the whole system so the
 largest molecule (the solute anchor) sits at the box center, then image every
-other molecule as a whole unit into the primary cell. The anchor molecule is
-only translated, never wrapped, so its internal geometry is untouched.
+other molecule as a whole unit to the periodic image nearest that anchor. The
+anchor molecule is only translated, never wrapped, so its internal geometry is
+untouched, and nothing bound to it is carried a box away.
 """
 
 from __future__ import annotations
@@ -20,6 +21,11 @@ from __future__ import annotations
 from typing import Any, List, Sequence
 
 __all__ = ["center_solute_and_wrap_solvent"]
+
+# A molecule whose centroid is this close to the solute's own extent is taken
+# to belong with it — a bound ligand, a coordinated ion, a lipid around a
+# membrane protein — and is imaged with the solute rather than into the cell.
+_CONTACT_NM = 0.5
 
 
 def _connected_molecules(topology: Any) -> List[List[int]]:
@@ -58,9 +64,10 @@ def center_solute_and_wrap_solvent(
         box_lengths_nm: Orthorhombic box edge lengths ``(Lx, Ly, Lz)`` in nm.
 
     Returns:
-        A ``(N, 3)`` ``numpy.ndarray`` of imaged positions in nanometers. The
-        input is returned unchanged (as an array) when the box is degenerate or
-        no molecules are found.
+        A ``(N, 3)`` ``numpy.ndarray`` of imaged positions in nanometers, in the
+        cell centred on the anchor rather than the corner-origin one. The input
+        is returned unchanged (as an array) when the box is degenerate or no
+        molecules are found.
     """
     import numpy as np
 
@@ -83,14 +90,72 @@ def center_solute_and_wrap_solvent(
     shift = (box / 2.0) - pos[anchor_idx].mean(axis=0)
     pos += shift
 
-    # Image every non-anchor molecule as a whole unit into [0, L). Molecules
-    # already near the (now centered) anchor keep floor()==0 and do not move,
-    # so bound ligands/ions stay put; only bulk solvent gets imaged.
-    for mol in molecules:
-        if mol is anchor:
-            continue
-        idx = np.asarray(mol, dtype=int)
-        centroid = pos[idx].mean(axis=0)
-        pos[idx] -= np.floor(centroid / box) * box
+    # Image every non-anchor molecule as a whole unit to the periodic image
+    # nearest the anchor — not into [0, L).
+    #
+    # Folding into the primary cell looks equivalent and is not: after the
+    # anchor is centred, a bound ligand or ion whose centroid lands a hair
+    # outside a face is moved one full box away from its site. Reproduced at
+    # 0.2 A -> 9.8 A from the binding site. The same applies to any chain that
+    # is a separate connected component (a noncovalent multimer), and to a
+    # bilayer under a protein whose centroid is not the membrane midplane —
+    # its two leaflets end up at opposite z faces.
+    #
+    # Nearest-image-to-anchor keeps everything associated with the solute
+    # around it, and puts bulk solvent in the cell centred on the anchor
+    # instead of the corner-origin one, which is the frame the picture wants
+    # anyway. Still a whole-molecule move, so no molecule is ever split.
+    #
+    # "Nearest the anchor" is measured against the anchor's extent, not its
+    # centroid. A long anchor puts its own ends more than half a box from its
+    # centre, so a centroid test moves a ligand bound at one end a full box
+    # away -- the same defect in a different disguise. The cell is
+    # orthorhombic here, so the choice separates per axis and stays O(1) per
+    # molecule.
+    anchor_lo = pos[anchor_idx].min(axis=0)
+    anchor_hi = pos[anchor_idx].max(axis=0)
+    anchor_centre = pos[anchor_idx].mean(axis=0)
+    others = [np.asarray(mol, dtype=int) for mol in molecules if mol is not anchor]
+    if not others:
+        return pos
+
+    centroids = np.array([pos[idx].mean(axis=0) for idx in others], dtype=float)
+
+    def gap(points):
+        # Per-axis distance from each point to the anchor's extent.
+        return (
+            np.maximum(anchor_lo - points, 0.0)
+            + np.maximum(points - anchor_hi, 0.0)
+        )
+
+    # Two candidate images per molecule. The centroid one puts it in the cell
+    # centred on the anchor, which is what bulk solvent should fill. The extent
+    # one puts it against the anchor's own surface, which is what anything
+    # touching the anchor should follow.
+    centred = -np.round((centroids - anchor_centre) / box)
+    against = centred.copy()
+    best_gap = gap(centroids + against * box)
+    for step in (-1.0, 1.0):
+        trial = centred + step
+        trial_gap = gap(centroids + trial * box)
+        closer = trial_gap < best_gap - 1e-9
+        tied = (np.abs(trial_gap - best_gap) <= 1e-9) & (
+            np.abs(trial) < np.abs(against)
+        )
+        take = closer | tied
+        against = np.where(take, trial, against)
+        best_gap = np.where(take, trial_gap, best_gap)
+
+    # Follow the anchor only where that means staying in contact with it.
+    # Applying it to bulk solvent as well would spread the solvent over the
+    # anchor's extent plus a box instead of filling one box, which is a worse
+    # picture than the one this function exists to produce.
+    touching = np.linalg.norm(best_gap, axis=1) <= _CONTACT_NM
+    shift = np.where(touching[:, None], against, centred)
+
+    for row, idx in enumerate(others):
+        moved = shift[row]
+        if moved.any():
+            pos[idx] += moved * box
 
     return pos
