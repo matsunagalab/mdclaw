@@ -7,6 +7,35 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-19 — 膜修正込みの arm64 SIF を焼き直した (5c7e89590560)
+
+`93ebfa5..5c7e895` の膜まわり4コミット (leaflet 両側からの midplane、蛋白フレーム上での
+bilayer 配置、既存塩のカウント、solute からの z セル寸法、preview の説明) を取り込んだ
+状態で再ビルド。
+
+```
+image   ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev-5c7e89590560
+sif     ~/Downloads/mdclaw-rikyu-arm64-cuda130-ppm3-5c7e89590560.sif
+        6,774,202,368 bytes
+        SHA-256 1c5e3fe5c32b94a6f03aed3ef79ccecb0a38e277f8675551593824d82ad8be9e
+smoke   Docker 23/23、SIF からも 23/23 (GPU は SKIP)
+```
+
+今回は GHCR に push していない。`docker save` した tar を Lima VM `singularity-ce` に
+読ませて `docker-archive:` から変換したので、外部公開なしで完結している。tar と VM 側の
+scratch は変換後に削除済み。
+
+なお**この4コミットは `mdclaw/` の Python だけで、コンテナの中身 (environment.yml /
+container/ / pyproject.toml) は変わっていない**。つまり SIF の作り直しは必須ではなく、
+Rikyu 上で既存 SIF に `PYTHONPATH="$PWD"` overlay を掛ければ同じ挙動が得られる。今回は
+明示の依頼で焼いた。逆に `mdclaw/` を 1 行でも変えて再ビルドすると stage 1 の
+`COPY mdclaw/` でキャッシュが切れ、conda 環境の作り直しから丸ごと走る (実測 ~50 分 +
+SIF 変換 ~10 分)。修正はまとめてから焼くのが得。
+
+Rikyu 実機での GPU smoke は引き続き未実施。
+
+---
+
 ## 2026-08-19 — MDDataBench D01 を作成: RMSIP による「無関係」帰無仮説の検定
 
 `benchmarks/mddatabench/` を新設し、最初のタスク D01 (1 ns MD + 本質サブスペース一致) を実装・検証した。
