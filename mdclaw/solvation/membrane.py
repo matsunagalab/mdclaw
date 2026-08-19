@@ -32,6 +32,7 @@ from mdclaw.solvation.constants import (
     MEMBRANE_CACHE_MODES,
     PATCH_EQUIL_FORCEFIELD,
     PATCH_SIDE_ANGSTROM,
+    PATCH_WATER_RESNAMES,
     _normalize_water_model_name,
     lipid21_template_contract,
     patch_equilibration_params,
@@ -324,6 +325,115 @@ def _shift_pdb_atom_lines_z(lines: list[str], dz: float) -> list[str]:
     return shifted
 
 
+# Water occupies a bin of the cell at roughly a fixed number density, so a bin
+# holding much less than its neighbours is a void — the one property no other
+# check in this file looks at.
+SOLVENT_DENSITY_BIN_ANGSTROM = 4.0
+# Liquid water at 1 g/cm3 is 0.03344 molecules/A^3, and every water model in use
+# is parameterised to reproduce that, so it is a fixed reference rather than a
+# calibration. It has to be absolute: the defect that motivated this check left
+# the whole extended region at 40% of bulk, uniformly, and a cell compared
+# against its own median cannot see that at all (measured: worst bin 0.85 of the
+# median, in a cell filled to 41%).
+BULK_WATER_NUMBER_DENSITY_PER_ANGSTROM3 = 0.03344
+SOLVENT_DENSITY_MIN_MEDIAN_FRACTION = 0.75
+SOLVENT_DENSITY_MIN_BIN_FRACTION = 0.35
+# Coarse excluded volume per non-water atom, so a bin the solute passes through
+# is not mistaken for a void. Protein at 0.73 cm3/g is about 7 A^3 per atom
+# counting hydrogens; 8 is deliberately generous, since over-correcting only
+# makes the test harder to trip.
+_EXCLUDED_VOLUME_PER_ATOM_ANGSTROM3 = 8.0
+_WATER_OXYGEN_NAMES = {"O", "OW", "OH2"}
+
+
+def _solvent_density_profile(
+    atoms: list[dict],
+    *,
+    box_a: float,
+    box_b: float,
+    box_c: float,
+    centre: float,
+    exclude_low: float,
+    exclude_high: float,
+) -> Optional[dict]:
+    """Water number density per z bin, relative to the cell's own median.
+
+    Every other geometry check here reads a flag, a span, or a parameter. None
+    of them reads how much water is actually in the cell, which is how a
+    membrane build shipped at 28-43% of bulk density in the extended region
+    while passing headgroup span, solute containment, salt concentration and
+    charge neutrality. Density is measured against this cell's own median bin
+    rather than an absolute constant, so it holds for any water model and needs
+    no calibration.
+
+    Bins overlapping ``[exclude_low, exclude_high]`` — the bilayer — are not
+    assessed: water is legitimately absent there. Returns ``None`` when there is
+    too little to judge.
+
+    Binning is in the minimum image about ``centre``, the bilayer midplane, not
+    in ``[0, box_c)``: the assembled cell is written with the membrane at the
+    origin, so half of it has negative z, and binning the wrapped coordinate
+    would put the bilayer's own lower half at the top of the histogram where the
+    exclusion window cannot reach it.
+    """
+    if not (box_a > 0.0 and box_b > 0.0 and box_c > 0.0):
+        return None
+    width = SOLVENT_DENSITY_BIN_ANGSTROM
+    n_bins = int(box_c // width)
+    if n_bins < 6:
+        return None
+    width = box_c / n_bins
+    origin = centre - 0.5 * box_c
+    waters = [0] * n_bins
+    others = [0] * n_bins
+    for atom in atoms:
+        imaged = centre + _minimum_image_delta(atom["z"] - centre, box_c)
+        index = min(n_bins - 1, max(0, int((imaged - origin) // width)))
+        if (
+            atom["resname"] in PATCH_WATER_RESNAMES
+            and atom["name"].upper() in _WATER_OXYGEN_NAMES
+        ):
+            waters[index] += 1
+        elif atom["resname"] not in PATCH_WATER_RESNAMES:
+            others[index] += 1
+    total_water = sum(waters)
+    if total_water < 200:
+        return None
+
+    bin_volume = box_a * box_b * width
+    densities: list[tuple[int, float]] = []
+    for index in range(n_bins):
+        low = origin + index * width
+        high = low + width
+        if high > exclude_low and low < exclude_high:
+            continue                      # the bilayer occupies this bin
+        free = bin_volume - others[index] * _EXCLUDED_VOLUME_PER_ATOM_ANGSTROM3
+        if free <= 0.2 * bin_volume:
+            continue                      # too full of solute to judge
+        densities.append((index, waters[index] / free))
+    if len(densities) < 5:
+        return None
+    ordered = sorted(value for _index, value in densities)
+    median = ordered[len(ordered) // 2]
+    if median <= 0.0:
+        return None
+    worst_index, worst = min(densities, key=lambda item: item[1])
+    bulk = BULK_WATER_NUMBER_DENSITY_PER_ANGSTROM3
+    return {
+        "bin_width_angstrom": round(width, 3),
+        "assessed_bins": len(densities),
+        "median_density_per_angstrom3": round(median, 5),
+        "median_fraction_of_bulk": round(median / bulk, 3),
+        "min_density_per_angstrom3": round(worst, 5),
+        "min_fraction_of_bulk": round(worst / bulk, 3),
+        "min_fraction_of_median": round(worst / median, 3),
+        "min_density_z": round(origin + worst_index * width, 1),
+        "median_fraction_threshold": SOLVENT_DENSITY_MIN_MEDIAN_FRACTION,
+        "bin_fraction_threshold": SOLVENT_DENSITY_MIN_BIN_FRACTION,
+        "water_oxygen_count": total_water,
+    }
+
+
 def _membrane_embedding_geometry_report(
     *,
     pdb_file: Path,
@@ -415,6 +525,25 @@ def _membrane_embedding_geometry_report(
     if protein_z_span >= box_c:
         failure_reasons.append("protein_exceeds_periodic_box_z")
 
+    # And how much water is actually in the cell. Everything above reads a
+    # span, a fraction, or a parameter; none of it would notice a cell filled to
+    # 40% of bulk density, which is what shipped when the water copier thinned
+    # every slab it added.
+    density = _solvent_density_profile(
+        atoms,
+        box_a=float((box or {}).get("box_a") or 0.0),
+        box_b=float((box or {}).get("box_b") or 0.0),
+        box_c=box_c,
+        centre=0.5 * (headgroup_z_min + headgroup_z_max),
+        exclude_low=headgroup_z_min - overlap_pad,
+        exclude_high=headgroup_z_max + overlap_pad,
+    )
+    if density is not None:
+        if density["median_fraction_of_bulk"] < SOLVENT_DENSITY_MIN_MEDIAN_FRACTION:
+            failure_reasons.append("solvent_density_below_bulk_outside_bilayer")
+        elif density["min_fraction_of_bulk"] < SOLVENT_DENSITY_MIN_BIN_FRACTION:
+            failure_reasons.append("solvent_density_void_outside_bilayer")
+
     report.update({
         "status": "failed" if failure_reasons else "passed",
         "passed": not failure_reasons,
@@ -431,6 +560,7 @@ def _membrane_embedding_geometry_report(
         "protein_z_span": protein_z_span,
         "protein_z_headroom": box_c - protein_z_span,
         "required_box_c": protein_z_span,
+        "solvent_density": density,
         "failure_reasons": failure_reasons,
     })
     return report

@@ -27,6 +27,7 @@ Low-level PDB parsing / geometry / carve helpers were moved here from the old
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import json
 import math
@@ -879,6 +880,59 @@ def solute_box_interval(
     }
 
 
+def _drop_counter_ions(
+    placed: list[tuple[PDBAtom, str, float, float, float]],
+    carve_keys: list[tuple],
+    *,
+    cations: int,
+    anions: int,
+    membrane_center_z: float,
+    leaflet: float,
+) -> tuple[list[tuple[PDBAtom, str, float, float, float]], list[tuple], int]:
+    """Remove this many bulk ions of each species, to cancel a charge change.
+
+    Taken from the bulk — outside the bilayer — and furthest from the membrane
+    first, so the removal does not thin the interfacial layer where ions
+    legitimately sit.
+    """
+    if cations <= 0 and anions <= 0:
+        return placed, carve_keys, 0
+    wanted = {"cation": int(cations), "anion": int(anions)}
+    groups: dict[tuple, list[int]] = {}
+    for index, key in enumerate(carve_keys):
+        groups.setdefault(key, []).append(index)
+
+    candidates: list[tuple[float, str, tuple]] = []
+    for key, indices in groups.items():
+        resname = placed[indices[0]][0].resname.upper()
+        if resname in {"NA", "K", "SOD", "POT"}:
+            species = "cation"
+        elif resname in {"CL", "CLA"}:
+            species = "anion"
+        else:
+            continue
+        depth = min(
+            abs(placed[i][4] - membrane_center_z) for i in indices
+        )
+        if depth <= leaflet:
+            continue                      # not bulk; those were handled already
+        candidates.append((depth, species, key))
+    candidates.sort(reverse=True)         # furthest from the membrane first
+
+    remove: set[tuple] = set()
+    for _depth, species, key in candidates:
+        if wanted.get(species, 0) <= 0:
+            continue
+        wanted[species] -= 1
+        remove.add(key)
+    if not remove:
+        return placed, carve_keys, 0
+    kept = [
+        (item, key) for item, key in zip(placed, carve_keys) if key not in remove
+    ]
+    return [i for i, _k in kept], [k for _i, k in kept], len(remove)
+
+
 def extend_water_slabs(
     placed: list[tuple[PDBAtom, str, float, float, float]],
     carve_keys: list[tuple],
@@ -908,20 +962,51 @@ def extend_water_slabs(
 
     Copies still meet at faces that were not periodic partners once the stack is
     more than one deep, so a whole molecule landing on one already placed is
-    dropped; minimisation closes what that leaves.
+    dropped; minimisation closes what that leaves. That test compares heavy
+    atoms against material that was already there -- never a copy against its
+    own molecules, which are one rigid translation of an equilibrated slab and
+    are therefore correct by construction.
     """
     centre = float(membrane_center_z or 0.0)
     below = float(interval.get("extend_below") or 0.0)
     above = float(interval.get("extend_above") or 0.0)
     box_c = float(patch_box_c)
-    period = box_c - 2.0 * float(leaflet)
+    # Where the bilayer actually ends. ``leaflet`` is the caller's nominal half
+    # thickness; the patch's own lipids are the truth, and the difference is not
+    # cosmetic. The lipids are identified by name against the Lipid21 contract,
+    # not as "whatever is not water or a known ion": classifying by exclusion
+    # makes any unrecognised residue — an Mg2+ or Ca2+ counter-ion distributed
+    # through bulk water on both faces, say — read as bilayer, which widens the
+    # span to the whole box and silently skips the extension.
+    # Water threading between the headgroups sits at whatever density
+    # the headgroups leave it, so copying that water and stepping by the nominal
+    # thickness reproduces the headgroups' share of the volume as vacuum — a
+    # density trough at every seam. Taking the whole lipid-occupied span out
+    # makes each copy bulk water and the period its true thickness. The wider of
+    # the two bounds wins, so a nominal leaflet larger than the real bilayer
+    # still errs toward copying less and stacking tighter, never toward voids.
+    lipid_names = (
+        lipid21_template_contract().known_names
+        | lipid21_template_contract().fragment_names
+    )
+    membrane_zs = [item[4] for item in placed if item[0].resname in lipid_names]
+    slab_hi = centre + float(leaflet)
+    slab_lo = centre - float(leaflet)
+    if membrane_zs:
+        slab_hi = max(slab_hi, max(membrane_zs))
+        slab_lo = min(slab_lo, min(membrane_zs))
+    period = box_c - (slab_hi - slab_lo)
     report: dict[str, Any] = {
         "extend_below": round(below, 3),
         "extend_above": round(above, 3),
         "slab_period": round(period, 3),
+        "slab_low": round(slab_lo, 3),
+        "slab_high": round(slab_hi, 3),
         "added_molecules": 0,
         "added_atoms": 0,
         "dropped_overlapping": 0,
+        "dropped_outside_interval": 0,
+        "copies": [],
         "extended": False,
     }
     if (below <= 0.0 and above <= 0.0) or period <= 1.0:
@@ -949,10 +1034,10 @@ def extend_water_slabs(
         if not is_solvent(indices):
             continue
         zs = [placed[i][4] for i in indices]
-        if min(zs) >= centre + float(leaflet):
+        if min(zs) >= slab_hi:
             upper.append((key, 0.0))
             lower.append((key, -box_c))
-        elif max(zs) <= centre - float(leaflet):
+        elif max(zs) <= slab_lo:
             upper.append((key, box_c))
             lower.append((key, 0.0))
     if not upper:
@@ -960,7 +1045,15 @@ def extend_water_slabs(
         return placed, carve_keys, report
 
     cutoff = max(float(min_separation), 0.5)
-    grid = _point_grid([(item[2], item[3], item[4]) for item in placed], cutoff)
+    # Heavy atoms only, on both sides of the test. A hydrogen bond puts an H
+    # 1.8 A from its partner's oxygen -- inside this cutoff -- so an all-atom
+    # test calls every correct water contact a clash. Heavy-atom separation is
+    # what actually separates an overlap (O-O below ~2.4 A) from a hydrogen
+    # bond (O-O ~2.8 A).
+    grid = _point_grid(
+        [(i[2], i[3], i[4]) for i in placed if _is_heavy_patch_atom(i[0])],
+        cutoff,
+    )
 
     added: list[tuple[PDBAtom, str, float, float, float]] = []
     added_keys: list[tuple] = []
@@ -979,24 +1072,59 @@ def extend_water_slabs(
             label = _TILE_CHAIN_LABELS[-1 - (label_index % len(_TILE_CHAIN_LABELS))]
             label_index += 1
             resseq = 0
+            tally = {
+                "sign": sign, "copy_index": copy_index, "label": label,
+                "attempted": 0, "added": 0, "outside": 0, "overlap": 0,
+                "z_min": None, "z_max": None,
+            }
+            report["copies"].append(tally)
+            pending: list[tuple[float, float, float]] = []
             for key, base_shift in slab:
                 if copy_index == 0 and base_shift == 0.0:
                     continue                      # already in the primary cell
                 dz = base_shift + step
                 indices = molecules[key]
                 zs = [placed[i][4] + dz for i in indices]
+                tally["attempted"] += 1
                 if max(zs) > float(interval["high"]) or min(zs) < float(interval["low"]):
+                    tally["outside"] += 1
+                    report["dropped_outside_interval"] += 1
                     continue
-                if any(
+                # copy_index 0 places only the molecules whose base_shift is
+                # +/- one patch box vector, so every contact it makes with the
+                # primary cell is a contact the patch already had with its own
+                # periodic image. Testing it rejects the patch's own
+                # lipid-water interface -- on the bundled POPC patch the water
+                # above the upper leaflet is barely 1 A thick, so that is
+                # exactly where copy 0 lands.
+                if copy_index > 0 and any(
                     _near_protein(
                         placed[i][2], placed[i][3], placed[i][4] + dz,
                         grid=grid, cutoff=cutoff,
                     )
                     for i in indices
+                    if _is_heavy_patch_atom(placed[i][0])
                 ):
+                    tally["overlap"] += 1
                     report["dropped_overlapping"] += 1
                     continue
+                tally["added"] += 1
+                lo, hi = min(zs), max(zs)
+                tally["z_min"] = lo if tally["z_min"] is None else min(tally["z_min"], lo)
+                tally["z_max"] = hi if tally["z_max"] is None else max(tally["z_max"], hi)
                 resseq += 1
+                if resseq > 9999:
+                    # The PDB resseq field is four columns, so molecule 10000
+                    # would reuse residue 0's key and merge with it. Downstream
+                    # grouping is by (chain, resseq, icode, resname), and a
+                    # merged key makes the neutralising swap delete two waters
+                    # while adding one ion. Roll to the next label instead. One
+                    # copy of a 3x3 tiling already holds ~9500 molecules.
+                    label_index += 1
+                    label = _TILE_CHAIN_LABELS[
+                        -1 - (label_index % len(_TILE_CHAIN_LABELS))
+                    ]
+                    resseq = 1
                 new_key = ("water_ext", sign, copy_index, key)
                 for i in indices:
                     source = placed[i][0]
@@ -1021,15 +1149,26 @@ def extend_water_slabs(
                     )
                     added.append((atom, line, x, y, z))
                     added_keys.append(new_key)
-                    grid.setdefault(
-                        (
-                            math.floor(x / cutoff),
-                            math.floor(y / cutoff),
-                            math.floor(z / cutoff),
-                        ),
-                        [],
-                    ).append((x, y, z))
+                    if _is_heavy_patch_atom(source):
+                        pending.append((x, y, z))
                 report["added_molecules"] += 1
+            # Only now does this copy become something the next one is tested
+            # against. A copy is one rigid translation of an already
+            # equilibrated slab, so its molecules are at the separations that
+            # slab had; testing them against each other rejects the slab's own
+            # structure and thins it to whatever subset happens to be more than
+            # `cutoff` apart. Measured: 41 % of every copy survived, so the
+            # added water arrived at 40 % of bulk density.
+            for x, y, z in pending:
+                grid.setdefault(
+                    (
+                        math.floor(x / cutoff),
+                        math.floor(y / cutoff),
+                        math.floor(z / cutoff),
+                    ),
+                    [],
+                ).append((x, y, z))
+            pending.clear()
 
     report["extended"] = bool(added)
     report["added_atoms"] = len(added)
@@ -2063,19 +2202,22 @@ def plan_neutralizing_ions(
     elif net < 0:
         n_cation += -net
     n_pairs = 0
+    pairs_present = min(int(existing_cations), int(existing_anions))
     if add_bulk_salt and saltcon > 0 and n_water_residues > 0:
         # ~55.5 mol/L water; ion pairs to reach the requested concentration.
         n_pairs = int(round(saltcon * n_water_residues / 55.5))
-        # Per species, not per pair. The patch's own salt does not arrive
-        # balanced — ions it had buried in its bilayer are dropped on the way
-        # in, and those are mostly one species — so pairing the counts first
-        # would read "no pairs present" and add a second full complement.
-        n_cation += max(0, n_pairs - int(existing_cations))
-        n_anion += max(0, n_pairs - int(existing_anions))
+        # In pairs. Counting the deficit per species adds unmatched ions and
+        # moves the system off neutrality — measured as a -87 e system when the
+        # patch arrived with 102 Na+ and no Cl-. Only the neutralisation term
+        # above is allowed to be unbalanced, and only by the solute's charge.
+        deficit = max(0, n_pairs - pairs_present)
+        n_cation += deficit
+        n_anion += deficit
     return {
         "cations": n_cation,
         "anions": n_anion,
         "target_pairs": n_pairs,
+        "pairs_present": pairs_present,
         "existing_cations": int(existing_cations),
         "existing_anions": int(existing_anions),
     }
@@ -2268,6 +2410,7 @@ def embed_with_membrane_patch_tiles(
     shifted: list[tuple[PDBAtom, str, float, float, float]] = []
     carve_keys: list[tuple] = []
     buried_ion_keys: set[tuple] = set()
+    buried_ion_species: list[tuple[tuple, str]] = []
     for atom, line, x, y, z, carve_key in tiled:
         nx_, ny_, nz_ = x + shift_x, y + shift_y, z + shift_z
         if (
@@ -2279,14 +2422,40 @@ def embed_with_membrane_patch_tiles(
             # end up in the hydrophobic core of every copy. Drop them here and
             # let neutralization put the charge back in bulk water.
             buried_ion_keys.add(carve_key)
+            buried_ion_species.append((carve_key, atom.resname.upper()))
             continue
         shifted.append((atom, _rewrite_line_coords(line, nx_, ny_, nz_), nx_, ny_, nz_))
         carve_keys.append(carve_key)
     if buried_ion_keys:
+        # Dropping them is species-skewed: the patch's buried ions are almost
+        # all one species, so removing them alone leaves the assembly carrying
+        # that much net charge — measured as +102 with every patch Cl- gone.
+        # Neutralisation then answers a charge that was an artefact of this
+        # step. Remove an equal number of the counter-species from bulk instead,
+        # so the drop moves no charge at all.
+        dropped = collections.Counter(
+            resname for _key, resname in buried_ion_species
+        )
+        cations_dropped = sum(
+            n for name, n in dropped.items()
+            if name in {"NA", "K", "SOD", "POT"}
+        )
+        anions_dropped = sum(
+            n for name, n in dropped.items() if name in {"CL", "CLA"}
+        )
+        rebalanced = _drop_counter_ions(
+            shifted, carve_keys,
+            cations=max(0, anions_dropped - cations_dropped),
+            anions=max(0, cations_dropped - anions_dropped),
+            membrane_center_z=float(membrane_center_z or 0.0),
+            leaflet=float(leaflet),
+        )
+        shifted, carve_keys, removed = rebalanced
         warnings.append(
             f"dropped {len(buried_ion_keys)} ion(s) that the cached patch had "
-            "inside its own bilayer; neutralization replaces the charge in bulk "
-            "water."
+            f"inside its own bilayer, and {removed} counter-ion(s) from bulk to "
+            "keep the removal charge neutral; neutralization then answers only "
+            "the solute's own charge."
         )
 
     # The tiles were shifted to put the bilayer on the membrane frame the
@@ -2346,11 +2515,24 @@ def embed_with_membrane_patch_tiles(
             f"({water_extension['dropped_overlapping']} dropped for overlap)."
         )
     elif interval.get("extended"):
-        warnings.append(
-            f"the solute needs a {interval['box_c']} A cell but the water "
-            "extension added nothing; the assembled box is still the patch's "
-            f"{interval['patch_box_c']} A."
-        )
+        # Shipping the patch's own box here is the original 5L7D defect: the
+        # solute reaches past the cell, the carve removes the lipids around its
+        # wrapped image, and a holed membrane assembles without an error.
+        # solute_fits_box only warns, and the geometry report only fails when
+        # the solute is longer than the whole cell, so nothing downstream stops
+        # it. Fail here instead.
+        return {
+            "success": False,
+            "code": "membrane_patch_water_extension_failed",
+            "errors": [
+                f"The solute needs a {interval['box_c']} A cell but the water "
+                "extension added nothing, so the assembled box would stay at "
+                f"the patch's {interval['patch_box_c']} A. "
+                f"Reported reason: {water_extension.get('skipped') or 'none'}."
+            ],
+            "warnings": warnings + patch.get("warnings", []),
+            "water_extension": water_extension,
+        }
 
     total_box = {
         "box_a": nx * box_a,

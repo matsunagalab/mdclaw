@@ -340,10 +340,70 @@ def test_salt_already_in_the_patch_is_not_added_again():
     )
 
     assert fresh["cations"] == fresh["anions"] == 45
-    # per species, not per pair: the patch's own salt arrives unbalanced because
-    # ions it had buried in its bilayer are dropped on the way in
-    assert already["cations"] == 10
-    assert already["anions"] == 45
+    # In pairs, and pairs are what the patch already has: 35 cations with no
+    # anions is not 35 pairs. Counting the deficit per species would add 45
+    # unmatched anions and take the system off neutrality — measured as -87 e.
+    assert already["pairs_present"] == 0
+    assert already["cations"] == already["anions"] == 45
+
+
+def test_bulk_salt_is_added_in_pairs_so_the_system_stays_neutral():
+    """Only neutralisation may be unbalanced, and only by the solute's charge."""
+    from mdclaw.solvation.patch_membrane import plan_neutralizing_ions
+
+    plan = plan_neutralizing_ions(
+        net_charge=3, n_water_residues=32131, saltcon=0.15, add_bulk_salt=True,
+        existing_cations=102, existing_anions=0,
+    )
+
+    # 102 cations and no anions is zero pairs, so a full complement of pairs is
+    # added; the only imbalance is the 3 anions that neutralise the solute.
+    assert plan["cations"] == plan["target_pairs"]
+    assert plan["anions"] == plan["target_pairs"] + 3
+    # net charge after: +3 solute, +102 patch cations, and the added ions
+    assert 3 + 102 + plan["cations"] - plan["anions"] == 102
+
+
+def test_dropping_buried_ions_does_not_move_the_net_charge(tmp_path):
+    """The patch's buried ions are nearly all one species.
+
+    Removing them alone leaves the assembly carrying that much net charge — the
+    real case had every patch Cl- inside the bilayer and 102 Na+ left over — and
+    neutralisation then answers a charge this step invented.
+    """
+    from mdclaw.solvation.patch_membrane import PDBAtom, _drop_counter_ions
+
+    def ion(resname, z, serial):
+        line = (
+            "ATOM  %5d %-4s%4s I%4d    %8.3f%8.3f%8.3f  1.00  0.00"
+            % (serial, resname, resname, serial, 0.0, 0.0, z)
+        )
+        return PDBAtom(
+            line=line, index=serial, record="ATOM", atom_name=resname,
+            resname=resname, chain_id="I", resseq=str(serial),
+            insertion_code="", x=0.0, y=0.0, z=z,
+        )
+
+    placed, keys = [], []
+    for i, z in enumerate((40.0, 45.0, 50.0, -40.0, -45.0)):
+        a = ion("NA", z, i + 1)
+        placed.append((a, a.line, a.x, a.y, a.z))
+        keys.append(("na", i))
+    for i, z in enumerate((41.0, 46.0)):
+        a = ion("CL", z, 100 + i)
+        placed.append((a, a.line, a.x, a.y, a.z))
+        keys.append(("cl", i))
+
+    # three anions were dropped from the bilayer, so three cations must go too
+    kept, kept_keys, removed = _drop_counter_ions(
+        placed, keys, cations=3, anions=0, membrane_center_z=0.0, leaflet=23.0
+    )
+
+    assert removed == 3
+    assert sum(1 for a, *_ in kept if a.resname == "NA") == 2
+    assert sum(1 for a, *_ in kept if a.resname == "CL") == 2
+    # furthest from the membrane went first
+    assert 50.0 not in [a.z for a, *_ in kept]
 
 
 def test_ion_species_are_not_assigned_in_z_order():
@@ -2398,3 +2458,202 @@ def test_embed_in_membrane_cancels_pending_parallel_race_lanes(tmp_path, monkeyp
     assert selected[0]["status"] == "accepted_imperfect_primary"
     assert len(cancelled) == 1
     assert cancelled[0]["lane"] == 4
+
+
+# --- the copied water must arrive at the density of the slab it came from ----
+def _hbonded_water_pdb(path, *, z_ranges, spacing=3.1):
+    """Water on a lattice, with hydrogens where hydrogen bonds put them.
+
+    Neighbouring molecules sit ``spacing`` apart O-O, and each H points at the
+    next oxygen 1.0 A away, so H...O is ``spacing - 1.0`` -- inside the 2.2 A
+    separation the copier uses. That is the geometry of real water, and it is
+    what an all-atom clash test mistakes for an overlap.
+    """
+    rows, serial, resseq = [], 1, 1
+    for lo, hi in z_ranges:
+        z = lo
+        while z < hi - 1e-9:
+            for iy in range(6):
+                for ix in range(6):
+                    x, y = spacing * ix, spacing * iy
+                    for name, dx, dy in (("O", 0.0, 0.0), ("H1", 1.0, 0.0),
+                                         ("H2", 0.0, 1.0)):
+                        rows.append(
+                            "ATOM  %5d  %-3s WAT W%4d    %8.3f%8.3f%8.3f"
+                            "  1.00  0.00" % (
+                                serial, name, resseq % 10000, x + dx, y + dy, z)
+                        )
+                        serial += 1
+                    resseq += 1
+            z += spacing
+    path.write_text("\n".join(rows) + "\nEND\n")
+    return path
+
+
+def _placed_from_pdb(path):
+    from mdclaw.solvation.patch_membrane import _parse_pdb_atoms
+
+    _lines, atoms = _parse_pdb_atoms(path)
+    placed = [(a, a.line, a.x, a.y, a.z) for a in atoms]
+    keys = [(a.chain_id, a.resseq) for a in atoms]
+    return placed, keys
+
+
+def test_copied_water_keeps_the_density_of_the_slab_it_came_from(tmp_path):
+    """A copy is one rigid translation of an equilibrated slab, so every
+    molecule in it must survive.
+
+    The copier used to add each accepted molecule to the same grid it tested
+    against, so a copy was screened against itself: accepting one water rejected
+    the neighbours it was hydrogen-bonded to. Measured on SMO 5L7D in POPC,
+    41 % of every copy survived and the added water arrived at 40 % of bulk
+    density -- 23,819 of 41,157 copies "dropped for overlap". NPT then collapsed
+    the cell by 23 % and still left an 18 A void.
+    """
+    from mdclaw.solvation.patch_membrane import extend_water_slabs
+
+    box_c, leaflet = 40.0, 8.0
+    pdb = _hbonded_water_pdb(
+        tmp_path / "slab.pdb", z_ranges=((-20.0, -8.0), (8.0, 20.0))
+    )
+    placed, keys = _placed_from_pdb(pdb)
+    source_molecules = len({k for k in keys})
+    interval = {
+        "low": -20.0, "high": 44.0, "extend_below": 0.0, "extend_above": 24.0,
+    }
+
+    out, out_keys, report = extend_water_slabs(
+        placed, keys, membrane_center_z=0.0, leaflet=leaflet,
+        patch_box_c=box_c, interval=interval,
+    )
+
+    assert report["extended"] is True
+    # Nothing is thinned: every molecule that lands inside the target interval
+    # is kept, copy by copy.
+    assert report["dropped_overlapping"] == 0
+    for copy in report["copies"]:
+        assert copy["added"] == copy["attempted"] - copy["outside"], copy
+    assert report["added_molecules"] >= source_molecules
+    assert len(out) == len(placed) + report["added_atoms"]
+    assert len(out_keys) == len(out)
+
+
+def test_a_copy_landing_on_something_already_there_is_still_dropped(tmp_path):
+    """The overlap test must still reject a real clash, not everything."""
+    from mdclaw.solvation.patch_membrane import _parse_pdb_atoms, extend_water_slabs
+
+    box_c, leaflet = 40.0, 8.0
+    pdb = _hbonded_water_pdb(
+        tmp_path / "slab.pdb", z_ranges=((-20.0, -8.0), (8.0, 20.0))
+    )
+    placed, keys = _placed_from_pdb(pdb)
+    # An obstacle where copy 1's oxygens land. Copy 0 is exempt -- it is one
+    # patch box vector from the primary cell, so its contacts are the patch's
+    # own periodic contacts -- so the obstacle has to sit in a later copy to
+    # exercise the test at all. Copy 1 lifts the 8..20 molecules by one period
+    # to 32..44.
+    blocker = tmp_path / "blocker.pdb"
+    blocker.write_text(
+        "ATOM      1  CA  ALA X   1       0.000   0.000  32.000  1.00  0.00\n"
+        "END\n"
+    )
+    _lines, obstacle = _parse_pdb_atoms(blocker)
+    placed = placed + [(a, a.line, a.x, a.y, a.z) for a in obstacle]
+    keys = keys + [("X", "1") for _ in obstacle]
+    interval = {
+        "low": -20.0, "high": 44.0, "extend_below": 0.0, "extend_above": 24.0,
+    }
+
+    _out, _out_keys, report = extend_water_slabs(
+        placed, keys, membrane_center_z=0.0, leaflet=leaflet,
+        patch_box_c=box_c, interval=interval,
+    )
+
+    assert report["dropped_overlapping"] == 1
+
+
+def test_the_stacking_period_comes_from_the_lipids_not_the_nominal_leaflet(tmp_path):
+    """`leaflet` is what the caller asked for; the patch's lipids are the truth.
+
+    When the bilayer is thicker than 2*leaflet, the water selected for copying
+    starts where the lipids end, but stepping by the nominal `box_c - 2*leaflet`
+    reproduces the headgroup-occupied space as vacuum. Measured on the bundled
+    POPC patch: lipids span 54.76 A against a nominal 46, and every seam showed
+    a density trough down to ~52 % of bulk until the period was measured.
+    """
+    from mdclaw.solvation.patch_membrane import _parse_pdb_atoms, extend_water_slabs
+
+    box_c, leaflet = 40.0, 8.0
+    pdb = _hbonded_water_pdb(
+        tmp_path / "slab.pdb", z_ranges=((-20.0, -12.0), (12.0, 20.0))
+    )
+    placed, keys = _placed_from_pdb(pdb)
+    # A bilayer 24 A thick — wider than 2*leaflet = 16.
+    rows = []
+    for serial, z in enumerate((-12.0, -6.0, 6.0, 12.0), start=1):
+        for i in range(8):
+            rows.append(
+                "ATOM  %5d  P31 PC  L%4d    %8.3f%8.3f%8.3f  1.00  0.00"
+                % (serial * 100 + i, serial, 3.0 * i, 0.0, z)
+            )
+    lipids = tmp_path / "lipids.pdb"
+    lipids.write_text("\n".join(rows) + "\nEND\n")
+    _lines, lipid_atoms = _parse_pdb_atoms(lipids)
+    placed = placed + [(a, a.line, a.x, a.y, a.z) for a in lipid_atoms]
+    keys = keys + [("L", str(a.resseq)) for a in lipid_atoms]
+    interval = {
+        "low": -20.0, "high": 44.0, "extend_below": 0.0, "extend_above": 24.0,
+    }
+
+    _out, _out_keys, report = extend_water_slabs(
+        placed, keys, membrane_center_z=0.0, leaflet=leaflet,
+        patch_box_c=box_c, interval=interval,
+    )
+
+    assert report["slab_high"] == pytest.approx(12.0)
+    assert report["slab_low"] == pytest.approx(-12.0)
+    # measured 40 - 24 = 16, not the nominal 40 - 2*8 = 24
+    assert report["slab_period"] == pytest.approx(16.0)
+    assert report["extended"] is True
+    assert report["added_molecules"] > 0
+    # The nominal period would have started the copies at 12 + 24 = 36, leaving
+    # the 26..36 band empty. With the measured one they start at 28.
+    starts = sorted(c["z_min"] for c in report["copies"] if c["z_min"] is not None)
+    assert starts[0] == pytest.approx(20.0)
+    assert min(value for value in starts if value > 20.0) < 36.0
+
+
+def test_an_unrecognised_residue_is_not_mistaken_for_bilayer(tmp_path):
+    """Classifying the membrane by exclusion turns any stray heteroatom into
+    bilayer, which widens the span to the whole box and silently skips the
+    extension. A divalent counter-ion in bulk water is the realistic case."""
+    from mdclaw.solvation.patch_membrane import _parse_pdb_atoms, extend_water_slabs
+
+    box_c, leaflet = 40.0, 8.0
+    pdb = _hbonded_water_pdb(
+        tmp_path / "slab.pdb", z_ranges=((-20.0, -8.0), (8.0, 20.0))
+    )
+    placed, keys = _placed_from_pdb(pdb)
+    stray = tmp_path / "stray.pdb"
+    stray.write_text(
+        "ATOM      1 MG    MG  M   1      50.000  50.000 -19.000  1.00  0.00\n"
+        "ATOM      2 MG    MG  M   2      50.000  50.000  19.000  1.00  0.00\n"
+        "END\n"
+    )
+    _lines, ions = _parse_pdb_atoms(stray)
+    placed = placed + [(a, a.line, a.x, a.y, a.z) for a in ions]
+    keys = keys + [("M", str(a.resseq)) for a in ions]
+    interval = {
+        "low": -20.0, "high": 44.0, "extend_below": 0.0, "extend_above": 24.0,
+    }
+
+    _out, _out_keys, report = extend_water_slabs(
+        placed, keys, membrane_center_z=0.0, leaflet=leaflet,
+        patch_box_c=box_c, interval=interval,
+    )
+
+    # The stray ions sit at +/-19, so classifying them as bilayer would give a
+    # 38 A span and a 2 A period. The nominal leaflet must survive instead.
+    assert report["slab_period"] == pytest.approx(24.0)
+    assert report["extended"] is True
+    assert report["added_molecules"] > 0
