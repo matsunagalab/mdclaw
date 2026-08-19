@@ -7,6 +7,72 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-20 — CLI が read-only CWD で起動しない件を修正。SIF 再作成。既存の 21 failure は locale 依存
+
+### 修正した本体
+
+`WORKING_DIR` を宣言する 28 モジュールが、その隣で **import 時に** `ensure_directory(WORKING_DIR)`
+を呼んでいた。`_cli._discover_tools()` は全モジュールを import するので、**何もしない
+`--version` / `--list` ですら CWD に `outputs/` を掘り、掘れなければ CLI 自体が起動しない**。
+書き込み側は全箇所すでに `ensure_directory` / `create_unique_subdir` / `mkdir(parents=True)`
+を呼んでいるので、import 時の呼び出しは最初から不要だった。28 件すべて削除し、不要になった
+import も除去。回帰テストを `TestSubprocessCLI` に 2 本追加した。
+
+### 自分のミスを 1 件記録しておく
+
+回帰テストに効き目があるか確かめるため `pdb_client.py` にバグを一時的に戻し、`git checkout`
+で戻した。**これはインデックスから復元するので、実験で足した行だけでなく修正ごと巻き戻した。**
+結果 27/28 だけ直った状態でコミットし、その状態で SIF を焼いて渡した。さらに、フルスイートで
+自分の回帰テスト 2 本が落ちているのを「テスト中に git を触ったせいの flaky」と誤診した。
+**テストは正しく、読み違えたのは私。** 教訓は 2 つ: 実験の巻き戻しは `git checkout <file>` では
+なく `git stash` / `git diff > patch` を使う。落ちたテストを flaky と判定するなら、根拠は
+「再実行して通った」ではなく原因の特定。
+
+### 既存の 21 failure は私の変更と無関係、原因は locale 依存の `read_text()`
+
+修正前のコミット `2daf6e4` のワークツリーで同じフルスイートを流し、**失敗集合が完全に一致**
+することを確認した (pre-fix 21 failed / 1452 passed、post-fix 21 failed / 1454 passed、
+差は追加した回帰テスト 2 本)。
+
+原因は、リポジトリ内のファイルを `read_text()` で **`encoding=` を渡さずに**読んでいること。
+
+```
+claude = (REPO_ROOT / "CLAUDE.md").read_text()
+  -> encodings.ascii.IncrementalDecoder ... UnicodeDecodeError
+```
+
+プロセスのその時点の locale に依存するので、単体実行では通り、フル実行では途中で locale が
+C に倒れて日本語を含むファイルで落ちる。**C locale が既定のコンテナ / HPC batch では常に
+落ちる**性質のもので、flaky ではない。未修正。
+
+### 別件: `bin/mdclaw` は bash 3.2 で動かない
+
+`tests/test_bin_wrapper.py::test_wrapper_is_quiet_outside_a_user_namespace`:
+
+```
+bin/mdclaw: line 146: NV[@]: unbound variable
+```
+
+`set -u` 下の空配列展開 `"${NV[@]}"` は bash 4.4+ では通るが bash 3.2 (macOS 既定) では
+エラー。`"${NV[@]+"${NV[@]}"}"` で直る。未修正。
+
+### 成果物
+
+```
+image   ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev-36f13d131a89
+sif     ~/Downloads/mdclaw-rikyu-arm64-cuda130-ppm3-36f13d131a89.sif
+        6,774,267,904 bytes
+        SHA-256 0324302a3943324f5bc73bda548bf92eef74cd247f1346b69d2a52546298fd9d
+smoke   Docker 23/23、SIF からも 23/23
+```
+
+read-only CWD からの起動を実地で確認した (SIF 内、0555 のディレクトリを `--pwd` にして
+`mdclaw --version` → `mdclaw 0.6.8`、ディレクトリには何も残らない)。**1 つ前の SIF
+`...-34230ff20567.sif` は修正が 1 ファイル欠けた版なので使わないこと** (同じ条件で
+`OSError: Read-only file system: 'outputs'` を再現する)。
+
+---
+
 ## 2026-08-20 — v0.6.8 の arm64 SIF (a6cad2701ac4)。CLI が read-only CWD で起動できない件を発見
 
 `3997c36..a6cad27` の 8 コミット (patch の塩を assembly へ持ち込まない、water copier が
