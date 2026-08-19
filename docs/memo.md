@@ -7,6 +7,367 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-19 — cursor 再レビューで 10 件。coplanar 棄却と sparse-perfect の順位が実バグ
+
+同じ `smo_reviewer` に修正後の差分を再レビューさせた。**今回はファイルを一切変更していない**
+(前回の違反を依頼文に明記し、テスト提案はレビュー文書内に書くよう指示した)。
+新規指摘 10 件 (P1×2, P2×6, P3×2)。**設計を変える 2 件は自分で再現してから直した。**
+
+### 実測で確認したこと
+
+```
+[coplanar]  rmsd=4.5e-15  det=1.000  max|R-Rtrue|=3.3e-16  fit_condition=0.0000  <- 正しい fit を棄却
+[collinear] s2/s1=0.0000  s3/s1=0.0000
+[1 helix]   s2/s1=0.0947  s3/s1=0.0929
+[rank]      sparse (1.0, 0.2, -2.9) > broad (0.99, 1.0, -0.1)   <- 40/40 が 198/200 に勝つ
+[validate]  max_candidates=1.5 -> None                          <- 小数が通る
+[short ATOM] RAISED IndexError: string index out of range
+```
+
+### 訂正1: 縮退判定は rank-2 で十分だった (私が厳しすぎた)
+
+`_fit_condition` を s3/s1 (最小/最大主成分) にしていたが、**これは Kabsch の可同定条件より
+厳しい**。非共線な 3 点以上あれば面内基底 2 本が決まり、**proper rotation 制約が法線を決める**。
+実際、完全に共面な 40 点で一般回転を **3.3e-16** の精度で復元できるのに、私のゲートは
+`fit_condition=0.0000` でこれを棄却していた。**s2/s1 に変更**: 共線 0.000 / 共面 1.000 /
+単一理想ヘリックス 0.095 / 実膜 CA 集合 0.86-0.87。しきい値 0.01 は据え置き。
+
+### 訂正2: identity の丸めでは sparse-perfect を止められない
+
+前エントリで「支持量を最良候補比の 1/10 に丸める」ことで 201 対 200 問題を解いたが、
+**identity を先頭キーに置いたままだと 40/40 (100%) が 198/200 (99%) に勝つ**。
+40 観測の 100% は 200 観測の 99% より*弱い*主張である。
+**Wilson 下限**に置き換えた: 40/40 → 0.91、198/200 → 0.96、200/200 と 201/201 → ともに 0.98。
+2 桁に丸めれば 201 対 200 も同値になり RMSD が決める。キーは
+`(round(wilson_lb(membrane_identity, membrane_ca), 2), -fit_rmsd)` の 2 本になり、
+支持量バケットは Wilson が吸収したので削除した。
+
+### その他の修正
+
+| # | 内容 |
+|---|---|
+| P1 | **全 query chain を採点してから 1 本のランキングで決める**。従来は「最初に受容可能な donor を持った鎖」が勝っていた。長い膜結合パートナーが辛うじて通る donor で複合体全体の配向を決め、本命の膜貫通サブユニットが使われない |
+| P1 | **予算切れで候補が残ったら「最良」と主張しない**。ゲートを全部通った donor は採用する (別手法に落ちるより良い) が、`evaluation_complete=false` と warning を出す |
+| P2 | **altLoc は残基単位で 1 つ選ぶ**。原子ごとに occupancy 最大を取ると CA が conformer A、CB が B という**実在しない混成側鎖**ができる |
+| P2 | **TER を保持**。落とすと 2 本のポリマーが 1 鎖に融合し、無い結合ができる |
+| P2 | **不完全評価に専用コード** `opm_homolog_evaluation_incomplete`。「1 件棄却 + 1 件 DL 失敗」を `rejected` と報告すると、エージェントは「調べた結果ダメだった」と解釈して再試行しない |
+| P2 | **54 桁未満の ATOM を構造化して弾く** (従来は IndexError が外に出ていた) |
+| P3 | **カウント系は整数必須**。`max_candidates=1.5` が RCSB に不正ページ要求として届き、依頼者のミスが「検索障害」として返ってきていた。`min_fit_condition=0` も禁止 |
+| P3 | **予算の 1 秒下限を撤去**。短い明示予算が拘束力を失う |
+
+### 予算切れ時の扱いはレビュー提案と変えた
+
+レビューは「切り詰められた候補集合からは選ぶな (= PPM3 に落とせ)」としたが、
+**全ゲートを通った donor を捨てて別手法に移るのは利用者の不利益**と判断した。採用したうえで
+`evaluation_complete=false`、warning、`report` への記録で「比較が不完全だった」ことを明示する。
+一方、**何も受容できなかった場合に `rejected`/`no_match` を返すのは誤報**という指摘は全面的に
+正しいので、そちらは `opm_homolog_evaluation_incomplete` にした。
+
+### ライブ再測定
+
+修正後も 5L7D で **5L7D 自身を採用、PDBTM 法線誤差 5.9 度** (変化なし)。
+mock 版 4JKV 経路も 11.8 度で不変。
+
+### テスト
+
+ruff clean。`test_membrane_orientation.py` 62 → **75** 本。contract 系込み 467 passed。
+
+---
+
+## 2026-08-19 — cursor レビューで 10 件。うち 5 件は再現、ランキングの欠陥も実測で露見
+
+`smo_reviewer` (cursor / GPT-5.6 Sol) に未コミット差分をレビューさせた。指摘 10 件
+(P1×2, P2×6, P3×2)。**再現できるものは全部走らせ、5 件すべて再現した。**
+
+```
+[min_ca=0]      RAISED LinAlgError: 0-dimensional array given
+[NaN rmsd]      accepted=True  fit_rmsd=39.146      <- 39 A の fit を通す
+[collinear]     rmsd=0  det=1.000                    <- 軸回りの回転が不定
+[multi-model]   残基は model 1、CA 座標は model 2 (z=99)
+[altLoc]        occupancy 0.70 が z=0 なのに z=50 を採用
+```
+
+### 手続き上の問題も 1 件
+
+レビュー依頼には「ファイルを一切変更しないこと」と明記したが、cursor は
+`tests/test_membrane_orientation.py` にテストを 1 本追加していた
+(`test_partial_outage_with_a_completed_no_match_is_not_total_unavailability`、
+07:05:36)。他ファイルへの混入はない (memo と tool-reference の変更は私のもの)。
+**ただし指摘内容は正しかった**: 1 鎖が HTTP 500、別の鎖が正常に 0 件だったとき、
+私の実装は `opm_homolog_search_unavailable` (「どの鎖も検索できなかった」) を返していた。
+実際には 1 鎖は検索できて「該当なし」と答えている。アサーションは実在しない文言を
+要求していたので書き直し、コード側を「検索できた鎖の結果と、検索できなかった鎖の数を
+両方述べる `opm_homolog_no_match`」に修正した。
+
+### 直したもの
+
+| # | 内容 |
+|---|---|
+| P1 | **膜サブセットの identity をゲート追加**。全鎖 identity だけだと、大きな可溶性ドメインを共有し膜ドメインが無関係な donor が通る。fit は膜サブセットで行うのだから、対応が実在すべきはそのサブセット |
+| P1 | **公開パラメータの検証** (`opm_homolog_gates_invalid`)。範囲外・非有限を拒否し、**fallback ではなく失敗**にする。ゲートを黙って緩めるのは依頼を断るより悪い |
+| P2 | **同一配列 query chain は検索だけ共有し、フィットは物理鎖ごと**に行う |
+| P2 | **全候補を評価してから選ぶ** (ユーザ判断)。RCSB の順位は検索関連度であって配向品質ではない |
+| P2 | **縮退フィットの棄却** (`opm_min_fit_condition`)。共線 CA は RMSD 0・det 1.0 で通るが軸回りの回転が任意 |
+| P2 | **DL 失敗をゲート不合格と分離** (`opm_homolog_fetch_unavailable`)。判定していない donor を「品質不足」と報告していた |
+| P2 | **model 1 と最高 occupancy altLoc だけ**を fit にも出力にも使う |
+| P2 | **総時間予算** (`opm_total_budget_seconds`、既定 600 s)。従来は 120 s × 鎖数 × 候補数 |
+| P3 | **キャッシュのアトミック書き込みと整合検査**、SHA-256 記録 |
+| P3 | **空ボディの 200 は unavailable**。204 だけが RCSB の no-hit |
+
+### 縮退しきい値は実測で決めた
+
+`s3/s1` (最小/最大主成分ひろがり): 実膜 CA 集合 **0.685-0.702**、単一の理想 α ヘリックス
+40 残基 **0.093**、共線・共面 **0.000**。**0.01** なら両側に一桁の余裕がある。
+なお**テスト fixture 自体が縮退していた** (`_membrane_path` の x と y が比例 = 平面曲線)。
+新ゲートがそれを正しく検出したので、fixture を真に 3 次元の螺旋に書き直した。
+
+### 全候補評価にしたら、ランキングの欠陥が実データで出た
+
+ライブ実行で 10 候補すべてを採点したところ:
+
+| pdb | 膜内identity | 膜内CA | fit RMSD |
+|---|---|---|---|
+| 5l7i | 1.000 | 201 | 0.325 A |
+| **5l7d** | 1.000 | **200** | **0.000 A** |
+| 7zi0 | 1.000 | 197 | 0.181 A |
+| 6ot0 | 0.994 | 176 | 1.927 A |
+
+当初の順序 (identity → 膜内 CA 数 → RMSD) は、**CA 数 201 対 200 の 1 残基差で
+5L7D 自身 (完全一致、RMSD 0.000) を 5L7I に負けさせた**。0.5% の支持量差が 3 倍の
+RMSD 差を上書きするのは誤り。支持量を**最良候補比の 1/10 刻み**に丸め、同程度なら
+RMSD で決めるよう修正した。
+
+修正後は **5L7D 自身が選ばれ、PDBTM 法線誤差 5.9 度**。これは
+**OPM と PDBTM という 2 つの参照 DB の不一致そのもの**であり、転写手法の理論的下限。
+query が OPM に登録済みという有利なケースではあるが、パイプラインが端から端まで
+正しく動いていることの証明にはなる。
+
+前エントリの 6.3 度 (6OT0) と 11.8 度 (4JKV) も同じ 5L7D に対する値で、
+**どの donor を選ぶかで 5.9-11.8 度動く**。donor 選択がこの手法の精度を支配しており、
+fit RMSD ではないことが改めて確認された。
+
+### 評価された点 (churn するなと明記された)
+
+CIGAR walk の I/D 方向は両向き確認して正しい、DUM スラブ限定は全体 fit や
+trimming より明確に安全、donor 鎖の gate 優先、部分障害で後続鎖を止めない、
+JSON の鎖別棄却理由。
+
+### テスト
+
+ruff clean。`test_membrane_orientation.py` は 26 → **62** 本。
+contract 系込みで 454 passed。
+
+---
+
+## 2026-08-19 — 訂正: 「OPM 相同体転写は明確に悪い (13.5 度)」は誤り。実検索の donor では 6.3 度
+
+ユーザに「全鎖 HTTP 500 はおかしい」と指摘されて RCSB を直接叩いたところ、**検索は正常に
+動いていた**。切り分けの過程で 2 件の実バグが出て、さらに**前 2 エントリの精度評価が
+覆った**。
+
+### バグ1 (重大): ヒット 0 件を「通信障害」と誤報告していた
+
+RCSB は結果 0 件を **204 No Content + 空ボディ**で返す。urllib は 2xx を成功として扱うので
+`HTTPError` は上がらず、`json.load` が JSONDecodeError で落ち、汎用ハンドラが
+`"RCSB search unavailable: JSONDecodeError"` を返していた。つまり
+**「この鎖には OPM 相同体が無い」が「検索サービスに到達できない」に化けていた**。
+多鎖集約と噛み合うと、OPM 相同体を持たない蛋白が全鎖 no_match のはずが
+`opm_homolog_search_unavailable` として報告される。`response.status == 204` と空ボディを
+明示的に「該当なし」として扱うよう修正。
+
+### バグ2: HTTPError の本文を捨てていた
+
+`f"RCSB search returned HTTP {exc.code}"` だけを返しており、500 が本当のサーバ障害なのか
+クエリ不正なのか区別できなかった (実際それで診断が止まった)。本文 300 字を添えるよう修正。
+
+なお **8/18 に観測した HTTP 500 は本物のサーバ側障害**で、8/19 時点では解消している
+(SMO 配列 + OPM フィルタで 3.2 秒 / 19 件)。albumin + OPM は 204 = 0 件が正解。
+
+### バグ3: 検索値のスケールが混在していた
+
+RCSB の `match_context.sequence_identity` は **0-100 のパーセント** (95.5)。これを
+`local_identity` (0-1、0.81 等) と同じ JSON に並べて記録していた。`query_coverage` は
+**そもそも返ってこない** (`query_beg/query_end/query_length` はある)。identity を分数に
+正規化し、coverage は範囲から導出、`search_alignment_length` も記録するようにした。
+いずれも provenance のみでゲートには使わない方針は不変。
+
+### 訂正: 転写の精度評価は「手で選んだ donor」の評価だった
+
+前 2 エントリは **転写 13.5 度 (後に膜スラブ限定で 11.8 度) > PPM3 6.8 度**、
+「転写は明確に悪い」「カスケードの主経路にはしない」と書いた。**これを取り消す。**
+
+その測定はすべて donor を **私が手で 4JKV に固定**して行ったもので、検索が実際に返す
+donor で測っていなかった。バグ1を直して**完全ライブ (mock 一切なし)** で通したところ:
+
+| donor | 選定 | 膜内 CA | fit RMSD | PDBTM 法線誤差 |
+|---|---|---|---|---|
+| 4JKV | 手で指定 | 193 | 0.81 A | 11.8 度 |
+| **6OT0** | **実検索の最上位** | 176 | 1.93 A | **6.3 度** |
+
+6OT0 (SMO の cryo-EM 構造) からの転写は **6.3 度**で、**PPM3 の 6.8 度より良く**、
+参照 DB 同士の不一致 5.9 度の内側にある。つまり「転写だけが 5.9 度の外側」という
+前エントリの主張は成立しない。
+
+**fit RMSD は法線誤差を予測しない。** 4JKV は 0.81 A で 11.8 度、6OT0 は 1.93 A で 6.3 度と
+逆順になる。重ね合わせの残差はドナー座標との一致度であって、ドナーの膜フレームが
+どれだけ正しいかとは別物である。ゲートは「どこまで悪い donor を許すか」の下限であって
+donor の順位付けではない、と読むべき。
+
+### donor 側 gate 優先選択の実戦での効き
+
+6OT0 は 6 鎖ある。全 gate 適用後に残ったのは受容体鎖 R のみ:
+
+| donor chain | identity | coverage | 膜内 CA | 判定 |
+|---|---|---|---|---|
+| R | 0.997 | 0.722 | 176 | **採用** (RMSD 1.93 A) |
+| A | 0.298 | 0.741 | 2 | identity 不合格 |
+| B | 0.324 | 0.707 | 1 | identity 不合格 |
+| G | 0.793 | 0.122 | 6 | coverage 不合格 |
+| L | 0.644 | 0.219 | 0 | coverage 不合格 |
+| H | 0.579 | 0.265 | 0 | coverage 不合格 |
+
+query 側も albumin 578 残基 (longest) が `no_match`、SMO 475 残基で採用。所要 4.1 秒。
+
+### 残る留保
+
+6.3 度は 5L7D 一例の値であり、6OT0 が同一蛋白のほぼ完全一致 (identity 0.997) である
+有利なケース。遠縁の donor で同じ精度が出る保証はない。**手法の順位を主張するには
+複数ターゲットでの測定が要る**。今回言えるのは「前エントリの『転写は明確に悪い』は
+donor 選定の人為で、実検索経路では成立しない」ことまで。
+
+---
+
+## 2026-08-19 — OPM 転写を「全 protein chain を検索」「gate 通過鎖の中から最良」に修正
+
+差分レビューで受入れ前の必須修正として 2 点指摘された。どちらも**主経路が使えるはずの
+構造で黙って使われなくなる**類の欠陥で、fallback が働くので失敗としては表面化しない。
+
+### 1. query 側: longest chain しか検索していなかった
+
+膜蛋白の複合体は「長い可溶性パートナー + 短い膜サブユニット」がごく普通の形で、
+その場合 OPM 相同体を持つのは短い方だけ。longest chain だけを検索すると、**主経路が
+存在するのに no_match で PPM3 に落ちる**。修正後は全 protein chain を長い順に検索し、
+最初に全 gate を通った donor で確定する。同一配列の鎖 (ホモ多量体) は 1 回だけ検索する。
+
+`opm_homolog_search.json` は per-query-chain 構造に変更した:
+`query_chains[*]` に chain / equivalent_chains / residues / outcome
+(`accepted` | `rejected` | `no_match` | `search_error` | `not_searched`) /
+search_error / candidates を鎖ごとに分けて記録する。
+
+**ある鎖の通信エラーで全体を打ち切らない。** 1 鎖の HTTP 500 は他鎖について何も語らないし、
+相同体を持つのは往々にして後の鎖である。全鎖が通信不能だったときだけ
+`opm_homolog_search_unavailable` を返し、reason に鎖ごとのエラーを列挙する。
+候補が 1 つでも評価されていれば `opm_homolog_rejected`、どの鎖もヒット無しなら
+`opm_homolog_no_match`。OPM 構造の取得・パースは PDB ID ごとに 1 回だけで、
+複数の query chain が同じ entry に当たってもキャッシュを再利用する。
+
+### 2. donor 側: 最低 RMSD を先に best にしてから gate を掛けていた
+
+旧実装は donor の全鎖のうち fit RMSD が最小の鎖を best とし、**その後で** identity /
+coverage を判定していた。短い無関係な区間にアラインした鎖は「短いからこそ」タイトに
+重なるので、本当の対応鎖を押し退けて candidate 全体を巻き添えで棄却させ得る。
+修正後は `_fit_donor_chain` が鎖ごとに全 gate を適用し、**全 gate を通った鎖の中から
+最低 RMSD** を選ぶ。全鎖不合格なら各鎖の数値 (identity / coverage / membrane CA / RMSD) と
+rejection reason を `homolog_chains` に残し、gate を最も先まで通った鎖の理由を
+candidate の rejected に採用する。
+
+合成 donor で実証: 鎖 P (identity 1.00, memCA 80, RMSD 0.45) と鎖 Q (identity 0.36,
+memCA 80, RMSD 0.00)。旧規則は Q を選んで identity で候補ごと棄却、新規則は P を採用する。
+
+### 実測 (5L7D)
+
+アルブミン 1AO6 chain A (578 残基, 可溶性) を chain A、5L7D chain A (475 残基) を
+chain B とした実構造 2 鎖複合体で検証。longest chain は可溶性側になる。
+
+| ケース | 結果 |
+|---|---|
+| 両鎖に 4JKV を提示 | chain A は identity 0.298 で棄却 → chain B で採用 |
+| chain A だけ HTTP 500 | chain B で採用 (打ち切られない) |
+| 全鎖 HTTP 500 | `opm_homolog_search_unavailable`、両鎖のエラーを列挙 |
+
+採用時の数値は donor chain B / aligned 432 CA / 膜内 193 CA / fit RMSD 0.808 A /
+厚さ 31.9 A、**PDBTM 法線誤差 11.8 度で変更前と完全に一致**。donor は 4jkv を 1 回だけ取得。
+donor 側は chain A (RMSD 0.813) と chain B (0.808) がともに全 gate を通り、低い方の B を選ぶ。
+
+なお **RCSB の sequence 検索は今日も HTTP 500 のまま**で、実通信では両鎖とも
+search_error になり PPM3 に落ちる。主経路がオンライン依存である点は前エントリのとおり。
+
+### 変更ファイル
+
+`mdclaw/solvation/opm_orient.py` (`_fit_donor_chain` / `_consider_candidate` を新設)、
+`mdclaw/guardrail_codes.py` (説明文のみ、code は不変)、`tests/test_membrane_orientation.py`
+(33 tests)、`docs/developer/tool-reference.md`、`skills/md-prepare/membrane.md`。
+tool-reference に残っていた "outlier-trimmed Kabsch fit" の古い記述も膜スラブ限定に直した。
+
+---
+
+## 2026-08-18 — 方針転換: TMbed を全廃し、OPM 相同体転写 → PPM3 のカスケードへ
+
+承認された計画 (`~/.cursor/plans/opm-ppm-orientation-f89b45ec.plan.md`) に沿って実装。
+配向は「OPM 相同体があれば転写、無ければ PPM3」になり、TMbed と ProtT5 はコード・CLI・
+依存・コンテナ資産から完全に削除した。**過去エントリの測定と結論は取り消していない。**
+
+### 実装したもの
+
+- `mdclaw/solvation/opm_orient.py` (新規)。入力鎖配列 → RCSB Search API の sequence 検索と
+  `rcsb_polymer_entity_annotation.type=OPM` の積集合 → OPM 公開 PDB 取得 → gemmi 配列
+  アラインメント → 外れ値除去つき Kabsch → 入力構造全体 (リガンド含む) へ適用 → DUM から
+  膜中心を読んで z=0 に揃える。品質ゲート (identity / coverage / 対応CA数 / fit RMSD) を
+  引数化し、**不合格候補も理由と数値を `opm_homolog_search.json` に残す**。
+- `membrane.py` の `auto` を OPM→PPM3 に変更。`_orient_for_membrane` が試行履歴
+  (backend / success / code / reason) を `result["orientation"]["attempts"]` に記録する。
+  MEMEMBED と PPM は明示指定として残す。`tm-segments`、`membrane_topology_file`、
+  `auto_predict_topology`、TMbed 由来の barrel 判定と topology consistency は削除。
+- `ppm_orient.py` の「n_terminal_side 未指定を黙って out にする」挙動を廃止。PPM3 は値を
+  必ず要求するので PPM 自身の慣習で走らせるが、**assumed であることを warning と
+  `n_terminal_side_assumed` に明記**する。
+
+### 実装中に判明したこと
+
+**RCSB の sequence 検索は現在サーバ側で継続的に失敗する** (HTTP 500、"did not complete
+ticketId within 30000 ms"、5 回連続)。OPM annotation フィルタ単体は動く (18,981 entity)。
+つまり主経路がオンライン依存で、現に落ちている。計画どおり通信失敗は失敗コードではなく
+fallback event として扱うので実害は出ないが、**本番でどれだけ転写が使われるかは RCSB の
+状態次第**であることは記録しておく。
+
+**全対応ペアで一括 Kabsch すると実用にならない。** 5L7D (CRD あり) に 4JKV (7TM のみ) を
+当てると 429 対応ペアで fit RMSD 14.84 A となり品質ゲートで棄却された。当初は外れ値の
+反復除去 (中央値ベース) で対処したが、**レビュー指摘を受けて廃止した**。trimming は
+「最もよく合う部分集合」を選ぶので、二つの蛋白が大きな可溶性ドメインを共有しつつ膜内の
+座り方が違う場合、**そのドメインだけで膜配向を決めてしまう**。膜転写がやってはいけない
+ことそのものだった。
+
+現在は **donor 自身の DUM z 範囲 (±2 A マージン) 内にある対応残基だけで Kabsch** する。
+品質ゲートは (a) 全配列のローカル identity/coverage、(b) 膜スラブ内の対応 CA 数、
+(c) そのフィットの RMSD の三本立て。`_kabsch_trimmed` は膜が絡まない比較用の補助関数として
+残すが主経路からは外した。
+
+**膜スラブ限定にすると法線誤差が 13.7 → 11.8 度に改善した** (独立参照 PDBTM 比)。
+5L7D→4JKV で膜内対応 193 CA / fit RMSD 0.81 A。過去に素朴な残基番号一致で測った
+162 CA / 0.60 A と整合する (±2 A マージンのぶん残基が多く RMSD も僅かに大きい)。
+ただし依然として PPM3 の 6.8 度より悪く、参照系どうしの不一致 5.9 度の外側にある。
+**これは重ね合わせの粗さではなく手法固有の値**で、PPM が構造ごとに独立に最適化するため
+同一蛋白の別構造でも OPM 注釈が約 5 度食い違うことに由来する。
+
+**RCSB 検索は POST + `results_verbosity=verbose` に変更した。** 膜蛋白の配列は URL
+クエリに収まらない。また RCSB の `match_context` は `sequence_identity`/`query_coverage`
+を欠くことがあり、None のままではゲートを素通りする。identity と coverage は gemmi
+アラインメントから**必ずローカルに算出**し、検索側の値は provenance にのみ残す。
+
+**OPM の URL は MoleculeKit 実装と同じ `https://storage.googleapis.com/opm-assets/pdb/{id}.pdb`
+に統一。** キャッシュ判定に掛けていた 5000 バイト下限も除去した (小さい構造が永久に
+再ダウンロードされる)。サイズ検査はダウンロード直後のみ。
+
+### 記録しておく懸念
+
+計画は転写を主経路に据えているが、私が独立参照 (PDBTM) で測った限りでは
+**転写 13.7 度 > PPM3 6.8 度 > TMbed 7.8 度 > MEMEMBED 8.8 度** で、転写が最も悪い。
+参照系どうしの不一致 5.9 度の中に他 3 手法は収まるが、転写だけ外側にある。
+「OPM 標準への準拠」を目的とするなら転写は定義上正しい選択であり、その前提なら妥当。
+物理的な正確さを目的とするなら、この順位は再検討の材料になる。
+
+---
+
 ## 2026-08-18 — 訂正: 配向手法の精度比較は循環していた。PPM3 は同梱バイナリが壊れている
 
 前エントリまでで「PPM3 が 1.0 度で最も正確」「MEMEMBED は大きな可溶性ドメインで裏返る」と

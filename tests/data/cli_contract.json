@@ -440,13 +440,6 @@
     "requires_node": true,
     "server": "structure"
   },
-  "predict_membrane_topology": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [],
-    "requires_node": false,
-    "server": "membrane_topology"
-  },
   "prepare_complex": {
     "job_dir_is_data": false,
     "node_type": "prep",

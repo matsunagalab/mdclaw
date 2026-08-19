@@ -139,19 +139,6 @@ signature, update the relevant section here and the matching skill examples.
   `source_bundle.json` with `source_type="surrogate"` and
   `origin.kind="bioemu"` for BioEmu candidates.
 
-## `membrane_topology/`
-
-- `predict_membrane_topology(...)`: TMbed (ProtT5 embeddings + CNN + Viterbi)
-  labels every residue as transmembrane helix/strand, signal peptide, or
-  non-membrane inside/outside, from sequence alone. Accepts a structure (author
-  residue numbering is carried into the result), a raw sequence, or FASTA.
-  Writes `membrane_topology.json` with `segments`, sided `regions`, and
-  `n_terminal_side`, all of which `embed_in_membrane` consumes. Because it works
-  from sequence it is unaffected by however much soluble mass hangs off the
-  membrane region, which is exactly what misleads structure-based orientation.
-  The ProtT5 encoder is baked into the container at
-  `MDCLAW_TMBED_MODEL_DIR`; `model_dir` overrides it.
-
 ## `solvation/`
 
 - `solvate_structure(...)`: explicit water box generation. In node mode the PDB
@@ -169,36 +156,93 @@ signature, update the relevant section here and the matching skill examples.
   the cached patch to MEMEMBED's dummy-membrane midplane, tile the patch to
   cover it, carve overlaps with periodic-boundary awareness, and neutralize by
   swapping bulk waters for ions. Beta-barrel proteins can request MEMEMBED
-  `-b` via `memembed_beta_barrel`, and the predicted topology sets it on its own
-  when the segments are strands. `memembed_force_span` passes MEMEMBED `-l` on
+  `-b` via `memembed_beta_barrel`, which applies only when MEMEMBED is the
+  orientation backend. `memembed_force_span` passes MEMEMBED `-l` on
   the patch-tile path. `n_terminal_side` (`in`/`out`) passes MEMEMBED `-n`, which
   fixes which leaflet the first residue faces; without it MEMEMBED infers the
   topology from its knowledge-based potential, and a large soluble domain can
   invert the whole protein. `memembed_search_type` maps to MEMEMBED `-s` and
   defaults to 3 (genetic algorithm repeated five times), matching what
   packmol-memgen itself uses; MEMEMBED's own default is a single GA run.
-  `orientation_method` selects the orientation backend: `memembed`, `ppm`,
-  `tm-segments`, or `auto` (the default — `tm-segments` when a topology is
-  supplied, otherwise `memembed`). Orientation runs once before any packing
+  `orientation_method` selects the orientation backend: `auto` (the default),
+  `opm-homolog`, `ppm`, or `memembed`. Orientation runs once before any packing
   backend is chosen, and both packing paths then receive an already-oriented
-  structure, so switching packing backend cannot move the protein. `ppm` runs
-  PPM3 (`immers`, bundled with packmol-memgen), the code behind the OPM
-  database: it minimises a per-atom transfer free energy and also fits the
-  bilayer thickness. On 5L7D from crystal-frame coordinates it recovers the OPM
-  normal to 1.0 degrees against MEMEMBED's 5.5. The container rebuilds `immers`
-  from patched source — the stock build crashes printing its own result (see
-  `container/Dockerfile`), which `ppm_orient.py` reports as `ppm3_format_bug`. `tm-segments` needs
-  `membrane_topology_file` from `predict_membrane_topology` and derives the
-  normal from the transmembrane helix axes instead of searching for the slab;
-  see `mdclaw/solvation/tm_orient.py` for the accuracy measured against the
-  PPM/OPM reference. A PBC-aware post-build geometry check writes
-  `membrane_embedding_geometry.json` and fails with
-  `membrane_embedding_geometry_failed` if the protein does not intersect the
-  bilayer headgroup span. When a `membrane_topology_file` is supplied the same
-  check also verifies that each non-membrane region sits on the side the
-  topology predicts (`topology_consistency`) and fails below 0.75 — the
-  intersection test alone passes an upside-down insertion, which inverts every
-  region at once. The cold build runs once per composition and is
+  structure, so switching packing backend cannot move the protein.
+  `auto` first tries to transfer a frame from an OPM homolog
+  (`mdclaw/solvation/opm_orient.py`): it asks RCSB for entities that both match
+  a query sequence and carry an OPM annotation, aligns with gemmi, superposes
+  corresponding CA atoms with a Kabsch fit, and applies the transform to the
+  whole input including ligands. **Every protein chain is searched**, longest
+  first, stopping at the first donor that clears the gates — a complex is often
+  a large soluble partner plus a small membrane subunit, and only the subunit
+  has a homolog. Chains with identical sequences are searched once. One chain
+  failing to reach the service does not end the attempt; only an outage on every
+  chain yields `opm_homolog_search_unavailable`. The superposition uses only
+  residues the donor places inside its own bilayer (its DUM markers, widened by
+  a small fixed 2 A margin), so a shared extramembrane domain cannot decide the
+  frame.
+  Candidates must clear identity **over the membrane subset as well as the whole
+  chain**, query coverage, membrane-CA-count, fit-conditioning and fit-RMSD
+  gates (`opm_min_*`/`opm_max_*`), all computed from the alignment made here —
+  RCSB's own match context is recorded as provenance only (normalised to the
+  same 0-1 scale; it reports identity out of 100, never reports coverage, and
+  omits the context entirely on some hits). Membrane-subset identity is gated
+  separately because the frame is fitted to that subset: two proteins sharing a
+  large soluble domain can clear a whole-chain gate while their membrane
+  domains are unrelated. `opm_min_fit_condition` rejects a fitted CA cloud
+  whose *second* principal spread is a negligible fraction of its largest —
+  collinear points superpose at RMSD 0 with a proper rotation matrix while the
+  spin about their axis is arbitrary, and that spin would be applied to every
+  soluble domain and partner in the input. It is the second and not the third
+  because rank 2 already determines a rotation: the proper-rotation constraint
+  fixes the plane normal, so a coplanar cloud is a valid fit. A search matching
+  nothing answers 204 with an empty body, read as no homolog for that chain; an
+  empty body with any other status is a truncated response and is reported as
+  unavailable. Among a donor's chains only those that clear **every** gate
+  compete, and the lowest-RMSD survivor wins; ranking on RMSD first would let a
+  chain matching a short unrelated stretch displace the real counterpart.
+  **Every** searchable chain and **every** candidate it returns are judged, and
+  one ranking over all acceptable (chain, donor) pairs picks the winner —
+  because RCSB orders by search relevance, not orientation quality, and chain
+  order is not evidence either. The key is the Wilson lower bound of
+  membrane-subset identity given its residue count, to 2 dp, then fit RMSD: 40
+  matches out of 40 is a weaker claim than 198 out of 200, and rounding lets a
+  one-residue difference fall through to the fit instead of deciding it. The
+  full ranking is recorded. Each query
+  chain's search result, error and candidates — including every donor chain's
+  numbers and rejection reason — are written separately to
+  `opm_homolog_search.json`, and one OPM entry is downloaded and parsed once per
+  build, renamed into place so a kill mid-write cannot leave a partial file for
+  later runs to trust, with its SHA-256 recorded. Candidates that could not be
+  downloaded are counted apart from those that failed a gate, so an outage at
+  OPM's asset host reports `opm_homolog_fetch_unavailable` instead of claiming
+  the donors were examined and found wanting. Only the input's first model is used, with one altLoc conformer chosen per
+  *residue* by summed occupancy — choosing atom by atom can assemble a side
+  chain that exists in no structure — for both the fit and the transformed
+  output. `TER` records are carried through, because dropping them fuses two
+  polymer segments into one chain. `opm_total_budget_seconds` bounds the whole backend
+  rather than each request, so a many-chain complex on an unreachable network
+  drops to PPM3 promptly instead of multiplying per-request timeouts. An
+  out-of-range, non-finite, or fractional-count gate is a caller error
+  (`opm_homolog_gates_invalid`) and fails rather than falling back: silently
+  loosening a gate is worse than refusing the request. When no donor is
+  accepted but candidates or chains went unjudged, the code is
+  `opm_homolog_evaluation_incomplete` rather than `rejected` or `no_match` —
+  those two are verdicts, and an agent branching on them will not retry an
+  outage. If the budget truncates the field *after* an acceptable donor was
+  found, that donor is still used (a gated frame beats switching method) but
+  `evaluation_complete` is false and a warning says what went unjudged.
+  Being offline, finding no hit, or rejecting every candidate is not a
+  failure — it is recorded as an explicit fallback and orientation continues
+  with `ppm` (PPM3 `immers`, rebuilt from patched source by the container).
+  `result["orientation"]` records the backend that actually ran, every attempt,
+  and why each earlier one was not used.
+  `n_terminal_side` is applied only when the caller states it; PPM3 needs a
+  value regardless, so an unstated side is run under PPM's own convention and
+  flagged as assumed rather than presented as a decision. A PBC-aware
+  post-build geometry check writes `membrane_embedding_geometry.json` and fails
+  with `membrane_embedding_geometry_failed` if the protein does not intersect the
+  bilayer headgroup span. The cold build runs once per composition and is
   surfaced via `warnings`, `patch_cold_build_notice`, and `patch_build`.
   Patch cold-build topology generation disables Pablo CCD auto-download
   (`pablo_auto_download=False`) because the patch contains known local

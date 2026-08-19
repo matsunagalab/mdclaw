@@ -3,16 +3,15 @@
 PPM integrates a per-atom transfer free energy through an anisotropic solvation
 profile and minimises it over the protein's rigid-body placement *and* the
 bilayer thickness. MEMEMBED, by contrast, sums a per-residue statistical score
-over fixed 1 A depth bins with the thickness pinned at +/-17.5 A. Measured
-against the OPM entry for 5L7D from the same crystal-frame coordinates, PPM3
-recovers the membrane normal to 1.0 degrees and the midplane to 0.19 A, versus
-5.5 degrees and 0.41 A for MEMEMBED, and estimates 30.4 A thickness where OPM
-records 32.0 A.
+over fixed 1 A depth bins with the thickness pinned at +/-17.5 A.
 
-PPM is still a structure-based search, so it is a third independent opinion
-rather than an oracle: it infers the membrane from the coordinates exactly like
-MEMEMBED does, and the two can be wrong in the same way. Use it alongside the
-sequence-derived topology, not as a substitute for it.
+Do not read published agreement with OPM as accuracy: OPM's entries are PPM
+output, so scoring PPM against OPM scores it against itself. Against PDBTM,
+which uses the independent TMDET algorithm, PPM3 lands 6.8 degrees from the
+reference on 5L7D and MEMEMBED 8.8 — but the two reference databases disagree
+with each other by 5.9 degrees, so that gap does not separate them. PPM is used
+here for what it does differently: it fits the bilayer thickness instead of
+assuming one, and it is deterministic where MEMEMBED runs a genetic algorithm.
 
 The binary is ``immers``, bundled with packmol-memgen. It is driven entirely
 through stdin — there are no command-line arguments — and it writes its output
@@ -38,6 +37,9 @@ PPM3_BINARY = "immers"
 PPM3_INPUT_PDB = "ppm3tmp.pdb"
 PPM3_OUTPUT_PDB = "ppm3tmpout.pdb"
 PPM3_RESOURCE = "res.lib"
+# PPM3 requires a topology value; this is its own convention, used only when the
+# caller did not state one, and always reported as assumed.
+PPM3_DEFAULT_SIDE = "out"
 DEFAULT_PPM3_TIMEOUT_SECONDS = 3600
 # The known-bad build prints the orientation it just computed through a FORMAT
 # descriptor missing a comma and dies there, leaving no output PDB behind.
@@ -100,8 +102,8 @@ def orient_protein_with_ppm(
     if not binary:
         result["code"] = "ppm3_unavailable"
         result["errors"].append(
-            f"{PPM3_BINARY} not found in PATH; orient with MEMEMBED or the "
-            "predicted transmembrane segments instead."
+            f"{PPM3_BINARY} not found in PATH; orient from an OPM homolog or "
+            "with MEMEMBED instead."
         )
         return result
 
@@ -129,9 +131,19 @@ def orient_protein_with_ppm(
     shutil.copy(protein_pdb, work_dir / PPM3_INPUT_PDB)
     shutil.copy(resource_dir / PPM3_RESOURCE, work_dir / PPM3_RESOURCE)
 
-    side = (n_terminal_side or "out").strip().lower()
-    if side not in {"in", "out"}:
-        side = "out"
+    # PPM3 always needs a value here, but an unstated side must not be dressed
+    # up as a decision: assuming "out" would silently pick a leaflet for the
+    # caller, and inserting a protein upside down is exactly the failure this
+    # code exists to avoid. Use PPM's own convention and say that we did.
+    requested_side = (n_terminal_side or "").strip().lower()
+    side_is_assumed = requested_side not in {"in", "out"}
+    side = PPM3_DEFAULT_SIDE if side_is_assumed else requested_side
+    if side_is_assumed:
+        result["warnings"].append(
+            "n_terminal_side was not given, so which leaflet the N-terminus "
+            f"faces is undetermined; PPM3 was run with its own '{side}' "
+            "convention and the resulting up/down assignment is unverified."
+        )
     stdin_script = "\n".join([
         "2",                                     # input mode: single PDB
         "yes" if keep_ligands else "no",         # keep heteroatoms
@@ -211,6 +223,8 @@ def orient_protein_with_ppm(
         "membrane_center_z": 0.0,
         "ppm": {
             "n_terminal_side": side,
+            "n_terminal_side_requested": n_terminal_side,
+            "n_terminal_side_assumed": side_is_assumed,
             "chains": chains,
             "dummy_membrane": dummy,
             "hydrophobic_thickness": dummy.get("thickness"),

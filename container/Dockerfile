@@ -264,19 +264,6 @@ RUN /opt/mdclaw/bin/python /opt/mdclaw/share/warmup_membrane_cache.py \
         --out "$MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR" \
     || echo "WARNING: membrane patch warm-up incomplete; runtime will cold-build on miss."
 
-# Bake the ProtT5 encoder that TMbed needs into the image. TMbed's own CNN
-# weights ship inside its package, but the 2.25 GB ProtT5 encoder is fetched
-# from HuggingFace on first use; downloading it at runtime would fail on the
-# read-only SIF and on compute nodes without outbound network.
-# MDCLAW_TMBED_MODEL_DIR tells predict_membrane_topology where it lives.
-ENV MDCLAW_TMBED_MODEL_DIR="/opt/mdclaw/share/tmbed_prott5"
-RUN /opt/mdclaw/bin/python -m tmbed download \
-        --model-dir "$MDCLAW_TMBED_MODEL_DIR" --no-use-gpu && \
-    /opt/mdclaw/bin/python -c "\
-from pathlib import Path; import sys; \
-p = Path('$MDCLAW_TMBED_MODEL_DIR') / 'config.json'; \
-sys.exit(0 if p.is_file() else 'TMbed ProtT5 encoder missing after download')"
-
 # Copy entrypoint
 COPY container/scripts/entrypoint.sh /opt/mdclaw/bin/entrypoint.sh
 RUN chmod +x /opt/mdclaw/bin/entrypoint.sh

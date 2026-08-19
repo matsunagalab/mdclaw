@@ -23,28 +23,31 @@ records `is_membrane=true`, so build topology with
 
 ## Orientation
 
-Predict the topology first; it decides which leaflet each end faces:
+`embed_in_membrane` orients the protein itself before packing; no separate
+command is needed:
 
 ```bash
-mdclaw predict_membrane_topology --structure-file <prep merged/mutated pdb> \
-  --output-dir <dir>
 mdclaw --job-dir <job_dir> --node-id <solv_node_id> embed_in_membrane \
-  --lipids POPC --ratio "1" --membrane-topology-file <dir>/membrane_topology.json
+  --lipids POPC --ratio "1" --dist 15.0 --dist-wat 17.5 --salt --saltcon 0.15
 ```
 
-With a topology file `embed_in_membrane` derives the membrane normal from the
-transmembrane helix axes (`--orientation-method` defaults to `auto`), and the
-post-build check verifies every non-membrane region sits on the predicted side.
-Without one it falls back to MEMEMBED; pass `--n-terminal-side in|out` when you
-know which side the first residue faces, since MEMEMBED otherwise infers it.
-`--orientation-method ppm` runs PPM3 instead, which is more accurate on the
-structures measured so far but is still a structure-based search rather than an
-independent check on the topology.
+`auto` transfers the membrane frame from an OPM homolog when one passes the
+quality gates, and otherwise runs PPM3. Every protein chain is searched, longest
+first, so a complex whose membrane subunit is not its longest chain still uses
+the homolog path, and every candidate a chain returns is judged so the
+best-supported donor wins rather than whichever RCSB ranked first. Read
+`result["orientation"]` to see which backend was used and why; each query
+chain's hits, errors, rejected candidates and the ranking behind the choice are
+in `opm_homolog_search.json`. Select a backend explicitly with
+`--orientation-method opm-homolog|ppm|memembed`, and disable the lookup with
+`--no-opm-homolog-search` when working offline.
 
-Use `--preoriented` only for structures that are already in a membrane frame
-(for example OPM/PPM-derived coordinates). Beta barrels are routed to MEMEMBED `-b`
-from the predicted topology; pass `--memembed-beta-barrel` only when no
-topology is available.
+Pass `--n-terminal-side in|out` when you know which side the first residue
+faces. Without it the up/down assignment is unverified and reported as assumed.
+
+Use `--preoriented` only for structures already in a membrane frame (for
+example OPM/PPM-derived coordinates). For beta-barrel membrane proteins with
+MEMEMBED, pass `--memembed-beta-barrel`.
 
 By default the tool writes `membrane_embedding_geometry.json` and fails with
 `membrane_embedding_geometry_failed` when a PBC-aware post-build check shows

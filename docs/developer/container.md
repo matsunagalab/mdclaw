@@ -237,15 +237,14 @@ inside one.
 
 ## Runtime Notes
 
-- Docker image size is roughly 11.4 GB; SIF size is roughly 4.6 GB, plus
-  about 2.3 GB for the ProtT5 encoder baked in for TMbed (see below).
+- Docker image size is roughly 11.4 GB; SIF size is roughly 4.6 GB.
 - Minimum actively verified NVIDIA driver is 520.
-- The ProtT5 encoder that `predict_membrane_topology` needs is downloaded at
-  build time into `MDCLAW_TMBED_MODEL_DIR` (`/opt/mdclaw/share/tmbed_prott5`)
-  rather than on first use: the SIF is read-only, and compute nodes often have
-  no outbound network. TMbed's own CNN weights ship inside its package. The
-  build fails loudly if the encoder is missing afterwards, because a silent
-  miss would only surface as a runtime download attempt on a cluster.
+- PPM3 (`immers`), the membrane orientation code bundled with packmol-memgen,
+  is rebuilt from patched source at build time. The stock binary computes the
+  orientation and then dies printing it, because `opm.f` has a FORMAT
+  descriptor missing a comma that current gfortran rejects at runtime; the
+  build fails loudly rather than shipping a binary that can never produce a
+  result.
 - The image ships CUDA 11.8 to cover mixed HPC clusters with older drivers.
 - OpenMM 8.5.1 is source-built against CUDA 11.8 so NVRTC-generated PTX matches
   the driver floor. 8.5.1 is the floor required by openmmforcefields >= 0.16
