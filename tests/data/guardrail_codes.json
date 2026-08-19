@@ -101,6 +101,7 @@
   "membrane_neutralization_failed",
   "membrane_orientation_failed",
   "membrane_orientation_method_invalid",
+  "membrane_patch_bilayer_misplaced",
   "membrane_patch_build_failed",
   "membrane_patch_build_invalid_output",
   "membrane_patch_build_no_output",

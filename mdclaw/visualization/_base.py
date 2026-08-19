@@ -69,8 +69,14 @@ _STYLE_CHOICES = {
     "ligand_site",
     "membrane",
     "solvent_ions",
+    "system_box",
     "topology_check",
 }
+
+# A molecular surface over every water in a solvated membrane box is minutes of
+# work for a picture whose point is the envelope. Past this many solvent atoms
+# the preview falls back to dots and says so.
+_SOLVENT_SURFACE_MAX_ATOMS = 400000
 
 _CAMERA_CHOICES = {"auto", "overview", "ligand_site", "membrane", "topology_check"}
 
@@ -262,6 +268,7 @@ def _pymol_selection_script(
     *,
     structure_file: Path,
     output_png: Path,
+    orthogonal_png: Optional[Path] = None,
     view_json: Path,
     width: int,
     height: int,
@@ -288,7 +295,11 @@ cmd.hide("everything", "all")
 cmd.bg_color({json.dumps(background)})
 cmd.set("ray_opaque_background", 1)
 cmd.set("antialias", 2)
-cmd.set("depth_cue", 1)
+cmd.set("depth_cue", 0)
+# Orthographic: a box drawn in perspective has no two edges the same length, so
+# the viewer cannot read distances or judge whether anything crosses a face.
+cmd.set("orthoscopic", 1)
+cmd.set("ray_trace_mode", 0)
 cmd.set("cartoon_fancy_helices", 1)
 cmd.set("cartoon_side_chain_helper", 1)
 cmd.set("stick_radius", 0.16)
@@ -325,9 +336,63 @@ if has("lipid_sel") and {str(show_lipids)}:
     cmd.color("gray70", "lipid_sel")
     cmd.set("stick_transparency", 0.25, "lipid_sel")
 if has("solvent_sel") and {str(show_solvent)}:
-    cmd.show("dots", "solvent_sel")
-    cmd.color("lightblue", "solvent_sel")
-    cmd.set("dot_width", 1.0, "solvent_sel")
+    cmd.color("skyblue", "solvent_sel")
+    if cmd.count_atoms("solvent_sel") <= {_SOLVENT_SURFACE_MAX_ATOMS}:
+        # PyMOL flags solvent as "ignore", which excludes it from surfaces.
+        cmd.flag("ignore", "solvent_sel", "clear")
+        cmd.set("surface_quality", 0)
+        cmd.set("transparency", 0.78, "solvent_sel")
+        cmd.show("surface", "solvent_sel")
+    else:
+        cmd.show("dots", "solvent_sel")
+        cmd.set("dot_width", 1.0, "solvent_sel")
+# The periodic cell, when the structure carries one. It is the only thing in the
+# picture that shows whether the system actually fits in its box.
+#
+# Drawn around the system's own centre rather than with cmd.show("cell"), which
+# puts it at the crystallographic origin: an MD box is written with its solute
+# centred, so a cell hanging off one corner tells the viewer nothing about
+# whether anything fits inside it.
+def draw_periodic_cell():
+    try:
+        symmetry = cmd.get_symmetry("structure")
+    except Exception:
+        return None
+    if not symmetry:
+        return None
+    a, b, c = (float(v) for v in symmetry[:3])
+    if not all(v > 0.0 for v in (a, b, c)):
+        return None
+    # Centre the cell on the material that fills it — the solvent and lipids —
+    # not on everything. Centring on the whole system lets a protein reaching
+    # out of the box drag the box after it, so the drawn cell no longer lines up
+    # with the slab that defines it and the picture stops meaning anything.
+    bulk = "solvent_sel or lipid_sel"
+    reference = bulk if cmd.count_atoms(bulk) > 0 else "structure"
+    extent = cmd.get_extent(reference)
+    cx = 0.5 * (extent[0][0] + extent[1][0])
+    cy = 0.5 * (extent[0][1] + extent[1][1])
+    cz = 0.5 * (extent[0][2] + extent[1][2])
+    xs = (cx - a / 2.0, cx + a / 2.0)
+    ys = (cy - b / 2.0, cy + b / 2.0)
+    zs = (cz - c / 2.0, cz + c / 2.0)
+    corners = [(x, y, z) for x in xs for y in ys for z in zs]
+    edges = [
+        (0, 1), (0, 2), (0, 4), (1, 3), (1, 5), (2, 3),
+        (2, 6), (3, 7), (4, 5), (4, 6), (5, 7), (6, 7),
+    ]
+    obj = []
+    for i, j in edges:
+        obj += [2.0, 1.0]                 # BEGIN, LINES
+        obj += [6.0, 0.10, 0.60, 0.10]    # COLOR
+        obj += [4.0, *corners[i]]         # VERTEX
+        obj += [4.0, *corners[j]]
+        obj += [3.0]                      # END
+    cmd.load_cgo(obj, "periodic_cell")
+    cmd.set("cgo_line_width", 2.0, "periodic_cell")
+    return (a, b, c)
+
+cell_lengths = draw_periodic_cell()
 if user_selection and has("user_focus_sel"):
     cmd.show("sticks", "user_focus_sel")
     cmd.color("hotpink", "user_focus_sel")
@@ -353,25 +418,70 @@ elif style == "solvent_ions":
         cmd.show("dots", "solvent_sel")
     if has("ion_sel"):
         cmd.show("spheres", "ion_sel")
+elif style == "system_box":
+    # The assembled system as built: protein by chain, bilayer as sticks, water
+    # as a transparent envelope, ions as spheres, and the periodic cell drawn
+    # around all of it.
+    if has("solvent_sel") and cmd.count_atoms("solvent_sel") <= {_SOLVENT_SURFACE_MAX_ATOMS}:
+        cmd.flag("ignore", "solvent_sel", "clear")
+        cmd.set("surface_quality", 0)
+        cmd.set("transparency", 0.78, "solvent_sel")
+        cmd.show("surface", "solvent_sel")
+        cmd.color("skyblue", "solvent_sel")
+    elif has("solvent_sel"):
+        cmd.show("dots", "solvent_sel")
+        cmd.color("skyblue", "solvent_sel")
+    if has("lipid_sel"):
+        cmd.show("sticks", "lipid_sel")
+        cmd.set("stick_transparency", 0.0, "lipid_sel")
+    if has("ion_sel"):
+        cmd.show("spheres", "ion_sel")
 elif style == "topology_check":
     cmd.show("lines", "all")
     cmd.show("sticks", "not solvent_sel")
     cmd.set("stick_radius", 0.10)
 
-cmd.orient("visible")
-if user_selection and has("user_focus_sel"):
-    cmd.center("user_focus_sel")
-    cmd.zoom("user_focus_sel", {zoom_buffer})
-elif (camera == "ligand_site" or style == "ligand_site") and has("ligand_sel"):
-    cmd.center("ligand_sel")
-    cmd.zoom("ligand_sel", {zoom_buffer})
-elif (camera == "membrane" or style == "membrane") and has("lipid_sel"):
-    cmd.orient("protein_sel or nucleic_sel or ligand_sel or lipid_sel")
-    cmd.turn("x", 90)
-    cmd.zoom("visible", {zoom_buffer})
+# Two axis-aligned views rather than one oriented one. A view down x shows the
+# bilayer edge-on — where a protein leaves the box, where the water layers are
+# thin — and a view down z shows the patch from above, where a lateral gap or a
+# protein too close to its own lateral image is visible instead.
+# Axis-aligned views set by the rotation matrix rather than by turns: the rows
+# are the camera's right, up and out-of-screen axes in world coordinates, so
+# asking for "down x with z up" is one literal instead of a sequence of turns
+# whose composition has to be rediscovered every time.
+VIEW_ALONG_X = [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+VIEW_ALONG_Z = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+def set_axis_view(rotation):
+    cmd.reset()
+    cmd.zoom("all", {zoom_buffer})
+    view = list(cmd.get_view())
+    view[:9] = rotation
+    cmd.set_view(view)
+    cmd.zoom("all", {zoom_buffer})
+
+axis_views = {bool(orthogonal_png)} and style == "system_box"
+if axis_views:
+    set_axis_view(VIEW_ALONG_X)           # membrane normal (z) vertical
 else:
-    cmd.center("visible")
-    cmd.zoom("visible", {zoom_buffer})
+    cmd.orient("visible")
+    if user_selection and has("user_focus_sel"):
+        cmd.center("user_focus_sel")
+        cmd.zoom("user_focus_sel", {zoom_buffer})
+    elif (camera == "ligand_site" or style == "ligand_site") and has("ligand_sel"):
+        cmd.center("ligand_sel")
+        cmd.zoom("ligand_sel", {zoom_buffer})
+    elif style == "system_box":
+        cmd.orient("protein_sel or nucleic_sel or lipid_sel")
+        cmd.turn("x", 90)
+        cmd.zoom("all", {zoom_buffer})
+    elif (camera == "membrane" or style == "membrane") and has("lipid_sel"):
+        cmd.orient("protein_sel or nucleic_sel or ligand_sel or lipid_sel")
+        cmd.turn("x", 90)
+        cmd.zoom("visible", {zoom_buffer})
+    else:
+        cmd.center("visible")
+        cmd.zoom("visible", {zoom_buffer})
 
 view = list(cmd.get_view())
 with open({json.dumps(str(view_json))}, "w") as fh:
@@ -384,6 +494,21 @@ cmd.png(
     dpi={dpi},
     ray={1 if ray else 0},
 )
+
+# A second view down an orthogonal axis. One projection hides whatever lines up
+# with it — a protein leaning out of the box, a gap on one face, lipids missing
+# from one edge — and a membrane picture is exactly where that happens, because
+# everything interesting is stacked along one axis.
+orthogonal_png = {json.dumps(str(orthogonal_png) if orthogonal_png else "")}
+if orthogonal_png and axis_views:
+    set_axis_view(VIEW_ALONG_Z)           # looking down the membrane normal
+    cmd.png(
+        orthogonal_png,
+        width={width},
+        height={height},
+        dpi={dpi},
+        ray={1 if ray else 0},
+    )
 cmd.quit()
 """
 

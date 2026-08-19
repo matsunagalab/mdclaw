@@ -4,6 +4,9 @@ The canonical structure-preview + visual-review procedure shared by every
 stage (prep, equilibration, production, analyze). Reference this page instead
 of duplicating the checklist per skill.
 
+Render one after every stage that changes the system, in both interaction
+modes: `autonomous` skips confirmations, not reporting.
+
 Visual QA is optional and best-effort. It catches only obvious visual
 accidents; it does not validate force fields, protonation states, parameters,
 chemistry, or small clashes. Never mark a DAG node failed from visual QA alone.
@@ -16,15 +19,26 @@ mdclaw --job-dir <job_dir> --node-id <node_id> \
 ```
 
 In node mode, `render_structure_preview` resolves `structure_file` from node
-artifacts; pass `--structure-file` only to override. Prefer `--style
-ligand_site` for ligand binding sites, `--style membrane` for membrane systems,
-and `--style solvent_ions --show-solvent` when water/ion placement is the
-inspection target.
+artifacts; pass `--structure-file` only to override.
 
-If `output_png` / `structure_preview_png` is produced, display it in
-image-capable agent UIs; otherwise provide the node ID, caption, PNG path, and
-source structure artifact. If PyMOL is unavailable (`code=pymol_not_available`),
-report that preview rendering was skipped rather than treating it as a failure.
+| When | Style |
+|---|---|
+| An assembled system: after `prep`, `solv`, membrane embedding, `min`, `eq`, `prod` | `system_box` |
+| A ligand binding site | `ligand_site` |
+| Water/ion placement specifically | `solvent_ions --show-solvent` |
+| Anything else | `overview` |
+
+`system_box` draws the system as built: protein as cartoon coloured per chain,
+lipids as sticks, water as a transparent surface, ions as spheres, everything
+else as sticks, and the periodic cell as a wire box around it. That box is the
+point — it is what shows whether the system fits in its own cell.
+
+**Surface the PNG to the user, do not just write it.** Rendering a preview the
+user never sees is the same as not rendering one. Send `structure_preview_png`
+as a file so it appears inline in the desktop app, with a one-line caption
+naming the node and stage. If the harness cannot deliver files, print the
+absolute path. If PyMOL is unavailable (`code=pymol_not_available`), say
+rendering was skipped; it is not a failure.
 
 ## Inspect (if the agent/UI can see images)
 
@@ -35,6 +49,7 @@ Open `structure_preview_png` and check only:
   obviously missing.
 - Ligands or cofactors are not obviously far away from the expected complex.
 - Membrane systems do not show an obviously broken protein/membrane placement.
+- Nothing crosses the periodic cell drawn around the system.
 - Water, ions, or lipids do not form impossible-looking clumps, isolation, or
   severe overlap.
 - Anything not visible from the image is explicitly marked as not assessable.

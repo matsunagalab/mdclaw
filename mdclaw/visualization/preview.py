@@ -47,6 +47,7 @@ def render_structure_preview(
     highlight_ligands: bool = True,
     camera_preset: str = "auto",
     zoom_buffer: float = 8.0,
+    orthogonal_view: bool = True,
     structure_artifact_key: Optional[str] = None,
     source_node_id: Optional[str] = None,
     job_dir: Optional[str] = None,
@@ -66,6 +67,8 @@ def render_structure_preview(
         "structure_file": None,
         "output_png": None,
         "structure_preview_png": None,
+        "structure_preview_png_top": None,
+        "structure_preview_pngs": [],
         "structure_preview_manifest": None,
         "manifest": None,
         "pymol_script": None,
@@ -94,6 +97,10 @@ def render_structure_preview(
             actual=camera_preset,
             code="preview_camera_preset_unsupported",
         )
+
+    # The point of this style is the assembled box, and water is most of it.
+    if style == "system_box":
+        show_solvent = True
 
     node_mode = bool(job_dir and node_id)
     if bool(job_dir) != bool(node_id):
@@ -157,6 +164,15 @@ def render_structure_preview(
 
     base = _sanitize_name(output_name or f"{structure_path.stem}.{style}")
     output_png = out_dir / f"{base}.preview.png"
+    # Two orthogonal views: one projection hides whatever lines up with it, and
+    # in a membrane box everything interesting is stacked along one axis.
+    # Only the assembled-system view is rendered from two axes; every other
+    # style keeps the camera it was designed around (a ligand-site preview that
+    # snapped to a full-box axis view would stop showing the binding site).
+    orthogonal_png = (
+        out_dir / f"{base}.preview_top.png"
+        if orthogonal_view and style == "system_box" else None
+    )
     pymol_py = out_dir / f"{base}.preview.py"
     pymol_pml = out_dir / f"{base}.preview.pml"
     view_json = out_dir / f"{base}.view.json"
@@ -165,6 +181,7 @@ def render_structure_preview(
     script = _pymol_selection_script(
         structure_file=structure_path,
         output_png=output_png,
+        orthogonal_png=orthogonal_png,
         view_json=view_json,
         width=width,
         height=height,
@@ -265,7 +282,10 @@ def render_structure_preview(
             "protein": "cartoon",
             "nucleic": "cartoon",
             "ligand": "sticks" if highlight_ligands else "hidden",
-            "water": "dots" if show_solvent else "hidden",
+            "water": (
+                ("transparent surface" if style == "system_box" else "dots")
+                if show_solvent else "hidden"
+            ),
             "ions": "spheres" if show_ions else "hidden",
             "lipids": "sticks" if show_lipids else "hidden",
         },
@@ -284,6 +304,14 @@ def render_structure_preview(
         "structure_file": str(structure_path),
         "output_png": str(output_png),
         "structure_preview_png": str(output_png),
+        "structure_preview_png_top": (
+            str(orthogonal_png)
+            if orthogonal_png and orthogonal_png.is_file() else None
+        ),
+        "structure_preview_pngs": [
+            str(path) for path in (output_png, orthogonal_png)
+            if path is not None and path.is_file()
+        ],
         "structure_preview_manifest": str(manifest_file),
         "manifest": str(manifest_file),
         "pymol_script": str(pymol_py),
@@ -300,6 +328,10 @@ def render_structure_preview(
 
         artifacts = {
             "structure_preview_png": rel(output_png),
+            **(
+                {"structure_preview_png_top": rel(orthogonal_png)}
+                if orthogonal_png and orthogonal_png.is_file() else {}
+            ),
             "structure_preview_manifest": rel(manifest_file),
             "structure_preview_pymol_script": rel(pymol_py),
             "structure_preview_pymol_pml": rel(pymol_pml),

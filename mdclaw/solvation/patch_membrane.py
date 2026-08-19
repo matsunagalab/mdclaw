@@ -34,7 +34,7 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -277,15 +277,56 @@ def _lipid_headgroup_z_values(atoms: list[PDBAtom]) -> list[float]:
     return zs
 
 
+def _lipid_tail_z_values(atoms: list[PDBAtom]) -> list[float]:
+    """Acyl-chain carbon z coordinates: the hydrophobic core, as one slab."""
+    contract = lipid21_template_contract()
+    tail_names = contract.tail_names
+    zs: list[float] = []
+    for atom in atoms:
+        if atom.resname not in tail_names:
+            continue
+        if atom.atom_name.upper().startswith("C"):
+            zs.append(atom.z)
+    return zs
+
+
 def _estimate_patch_membrane_center_z(
     atoms: list[PDBAtom],
     *,
     box_c: float,
 ) -> Optional[float]:
-    """Estimate the bilayer midplane from periodic lipid headgroup positions."""
+    """Estimate the bilayer midplane from the periodic lipid positions.
+
+    Measured on the acyl tails, not on the headgroups. Headgroups form *two*
+    planes, and a periodic mean has to unwrap them at a gap — but a bilayer
+    patch offers two gaps of similar size, the hydrophobic core and the water
+    layer, and picking the wrong one returns the midpoint of the water instead
+    of the midplane, exactly half a box away.
+
+    That is not hypothetical. On the bundled POPC patch the core spans ~34 A
+    and the water ~35 A, so the choice was effectively a coin flip: the
+    estimator returned 10.3 for a patch whose midplane is 48.8, the tiles were
+    shifted by that much too little, and the bilayer ended up wrapped around
+    the receptor's extracellular domain while its transmembrane helices sat in
+    water. Nothing downstream noticed, because the geometry check only asked
+    whether protein atoms fall inside the headgroup span — and a misplaced
+    bilayer still swallows plenty of them.
+
+    The tails are one contiguous slab, so unwrapping them is unambiguous.
+    Headgroups remain the fallback, disambiguated against the tail estimate.
+    """
+    tail_zs = _lipid_tail_z_values(atoms)
+    if len(tail_zs) >= 8:
+        return _periodic_mean(tail_zs, box_c)
+
     headgroup_zs = _lipid_headgroup_z_values(atoms)
     if len(headgroup_zs) >= 2:
-        return _periodic_mean(headgroup_zs, box_c)
+        centre = _periodic_mean(headgroup_zs, box_c)
+        if centre is None:
+            return None
+        # Without tails to anchor it, the headgroup mean is one of two answers
+        # half a box apart. Prefer whichever has less water around it.
+        return _least_solvated_midplane(atoms, centre, box_c)
 
     lipid_zs = [
         atom.z
@@ -295,6 +336,26 @@ def _estimate_patch_membrane_center_z(
     if lipid_zs:
         return _periodic_mean(lipid_zs, box_c)
     return None
+
+
+def _least_solvated_midplane(
+    atoms: list[PDBAtom], centre: float, box_c: float
+) -> float:
+    """Of the two candidates half a box apart, the one with less water on it."""
+    alternative = (centre + box_c / 2.0) % box_c
+    window = max(4.0, box_c * 0.05)
+
+    def solvent_near(z: float) -> int:
+        count = 0
+        for atom in atoms:
+            if atom.resname not in PATCH_WATER_RESNAMES:
+                continue
+            delta = abs(((atom.z - z + box_c / 2.0) % box_c) - box_c / 2.0)
+            if delta <= window:
+                count += 1
+        return count
+
+    return centre if solvent_near(centre) <= solvent_near(alternative) else alternative
 
 
 def _patch_geometry_report(
@@ -636,6 +697,10 @@ _EXTENDABLE_ION_RESNAMES = {"NA", "K", "CL", "SOD", "POT", "CLA"}
 # Whole molecules landing this close to something already placed are dropped —
 # the rule every solvation program applies when it replicates a water box.
 PATCH_WATER_TILE_MIN_SEPARATION_ANGSTROM = 2.2
+# How far the assembled bilayer may sit from the membrane frame the orientation
+# step established. A couple of angstroms is tiling and rounding; tens of them
+# means the shift was computed from a wrong midplane.
+MAX_MEMBRANE_PLACEMENT_OFFSET_ANGSTROM = 5.0
 
 
 def _point_grid(
@@ -647,6 +712,66 @@ def _point_grid(
         cell = (math.floor(x * inv), math.floor(y * inv), math.floor(z * inv))
         grid.setdefault(cell, []).append((x, y, z))
     return grid
+
+
+def _membrane_core_evidence(
+    placed: list[tuple[PDBAtom, str, float, float, float]],
+    *,
+    centre: float,
+    window: float = 8.0,
+) -> dict[str, Any]:
+    """Is there a hydrophobic core at ``centre``, judged without the estimator?
+
+    The obvious guard — estimate the midplane again after shifting and compare
+    it to the target — cannot work. The shift *is* target minus the estimate,
+    and the estimator is translation-equivariant, so re-running it on the
+    shifted atoms returns the target whether or not the estimate was the
+    bilayer. It would pass a patch left half a box away.
+
+    So look at what should be true of a bilayer core and is independent of any
+    midplane arithmetic: acyl tails there, water not there, and headgroups on
+    both sides of it.
+    """
+    contract = lipid21_template_contract()
+    tail_names = contract.tail_names
+    head_names = contract.head_names | (contract.full_names - {"CHL1"})
+    tails = waters = below = above = 0
+    for atom, _line, _x, _y, z in placed:
+        delta = z - centre
+        name = atom.atom_name.upper()
+        if atom.resname in tail_names and name.startswith("C"):
+            if abs(delta) <= window:
+                tails += 1
+        elif atom.resname in PATCH_WATER_RESNAMES:
+            if abs(delta) <= window and name in {"O", "OW", "OH2"}:
+                waters += 1
+        elif atom.resname in head_names and name.startswith(("P", "N")):
+            if delta < 0:
+                below += 1
+            elif delta > 0:
+                above += 1
+    balanced = (
+        below > 0 and above > 0
+        and min(below, above) >= 0.25 * max(below, above)
+    )
+    # Too little lipid to say anything — a stub patch, or a composition this
+    # check does not recognise. Report that rather than calling it a failure:
+    # refusing a build on absent evidence is its own kind of wrong answer.
+    assessable = (tails + waters) >= 8 and (below + above) >= 8
+    return {
+        "centre": centre,
+        "window": window,
+        "tail_carbons": tails,
+        "water_oxygens": waters,
+        "headgroups_below": below,
+        "headgroups_above": above,
+        "headgroups_balanced": balanced,
+        "assessable": assessable,
+        "is_membrane_core": (
+            True if not assessable
+            else bool(tails > 0 and tails > waters and balanced)
+        ),
+    }
 
 
 def solute_box_interval(
@@ -713,36 +838,47 @@ def extend_water_slabs(
     *,
     membrane_center_z: float,
     leaflet: float,
+    patch_box_c: float,
     interval: dict[str, Any],
     min_separation: float = PATCH_WATER_TILE_MIN_SEPARATION_ANGSTROM,
 ) -> tuple[
     list[tuple[PDBAtom, str, float, float, float]], list[tuple], dict[str, Any]
 ]:
-    """Fill the gap between the patch's faces and the target interval with water.
+    """Fill the space between the patch's faces and the target interval with water.
 
-    The solvent is copied from the patch's own water slabs — already
-    equilibrated, already at the right density, already carrying its ions — and
-    stacked in z the way a solvation program replicates a water box. Copies meet
-    at bulk-water faces that were not periodic partners, so a whole molecule
-    landing on top of one already placed is dropped; that is the overlap removal
-    any such tool does, and minimisation closes the small gap it leaves.
+    The solvent is copied from the patch's own water — already equilibrated,
+    already at the right density, already carrying its ions — and stacked in z
+    the way a solvation program replicates a water box.
+
+    What gets stacked is the *whole* water region, unwrapped. The patch's water
+    is one slab that happens to straddle the periodic boundary, and it is
+    usually lopsided: on the bundled POPC patch it is 27 A on one side of the
+    bilayer and 6.4 A on the other. Taking one side and stepping by the nominal
+    ``dist_wat`` therefore stacked 6 A of water every 17.5 A and left vacuum in
+    between. Reassembling both sides into one contiguous slab gives a period
+    that is measured rather than assumed, and copies meet where the patch's own
+    periodic images met.
+
+    Copies still meet at faces that were not periodic partners once the stack is
+    more than one deep, so a whole molecule landing on one already placed is
+    dropped; minimisation closes what that leaves.
     """
     centre = float(membrane_center_z or 0.0)
-    patch_half = float(interval["patch_box_c"]) / 2.0
     below = float(interval.get("extend_below") or 0.0)
     above = float(interval.get("extend_above") or 0.0)
-    thickness = patch_half - float(leaflet)
+    box_c = float(patch_box_c)
+    period = box_c - 2.0 * float(leaflet)
     report: dict[str, Any] = {
         "extend_below": round(below, 3),
         "extend_above": round(above, 3),
-        "slab_thickness": round(thickness, 3),
+        "slab_period": round(period, 3),
         "added_molecules": 0,
         "added_atoms": 0,
         "dropped_overlapping": 0,
         "extended": False,
     }
-    if (below <= 0.0 and above <= 0.0) or thickness <= 1.0:
-        if thickness <= 1.0 and (below > 0.0 or above > 0.0):
+    if (below <= 0.0 and above <= 0.0) or period <= 1.0:
+        if period <= 1.0 and (below > 0.0 or above > 0.0):
             report["skipped"] = "the patch has no water slab to copy"
         return placed, carve_keys, report
 
@@ -750,48 +886,56 @@ def extend_water_slabs(
     for index, key in enumerate(carve_keys):
         molecules.setdefault(key, []).append(index)
 
-    def _slab(sign: int) -> list[tuple]:
-        keys: list[tuple] = []
-        for key, indices in molecules.items():
-            if not all(
-                placed[i][0].resname in PATCH_WATER_RESNAMES
-                or placed[i][0].resname.upper() in _EXTENDABLE_ION_RESNAMES
-                for i in indices
-            ):
-                continue
-            zs = [placed[i][4] for i in indices]
-            if sign > 0 and min(zs) >= centre + float(leaflet):
-                keys.append(key)
-            elif sign < 0 and max(zs) <= centre - float(leaflet):
-                keys.append(key)
-        return keys
+    def is_solvent(indices: list[int]) -> bool:
+        return all(
+            placed[i][0].resname in PATCH_WATER_RESNAMES
+            or placed[i][0].resname.upper() in _EXTENDABLE_ION_RESNAMES
+            for i in indices
+        )
+
+    # The contiguous water slab, unwrapped. Molecules above the upper leaflet
+    # stay put; those below the lower leaflet are lifted by one box so the two
+    # halves join into the single slab they are under periodicity.
+    upper: list[tuple[tuple, float]] = []
+    lower: list[tuple[tuple, float]] = []
+    for key, indices in molecules.items():
+        if not is_solvent(indices):
+            continue
+        zs = [placed[i][4] for i in indices]
+        if min(zs) >= centre + float(leaflet):
+            upper.append((key, 0.0))
+            lower.append((key, -box_c))
+        elif max(zs) <= centre - float(leaflet):
+            upper.append((key, box_c))
+            lower.append((key, 0.0))
+    if not upper:
+        report["skipped"] = "no solvent lies outside the bilayer to copy"
+        return placed, carve_keys, report
 
     cutoff = max(float(min_separation), 0.5)
-    occupied = [(item[2], item[3], item[4]) for item in placed]
-    grid = _point_grid(occupied, cutoff)
+    grid = _point_grid([(item[2], item[3], item[4]) for item in placed], cutoff)
 
     added: list[tuple[PDBAtom, str, float, float, float]] = []
     added_keys: list[tuple] = []
     label_index = 0
-    for sign, extent in ((1, above), (-1, below)):
+    for sign, extent, slab in ((1, above, upper), (-1, below, lower)):
         if extent <= 0.0:
             continue
-        slab_keys = _slab(sign)
-        if not slab_keys:
-            report.setdefault("skipped_sides", []).append(
-                "above" if sign > 0 else "below"
-            )
-            continue
-        for copy_index in range(1, int(math.ceil(extent / thickness)) + 1):
-            dz = sign * copy_index * thickness
+        # Start at 0: the first copy on each side is the *other* half of the
+        # unwrapped slab, already displaced by one box, and it is what fills the
+        # gap immediately past the patch face. Only the molecules that are
+        # already sitting there (base_shift 0) are skipped at that index.
+        for copy_index in range(0, int(math.ceil(extent / period)) + 1):
+            step = sign * copy_index * period
             # Label from the end of the alphabet so the extension never collides
             # with the lateral tiles, which are labelled from the start.
-            label = _TILE_CHAIN_LABELS[
-                -1 - (label_index % len(_TILE_CHAIN_LABELS))
-            ]
+            label = _TILE_CHAIN_LABELS[-1 - (label_index % len(_TILE_CHAIN_LABELS))]
             label_index += 1
             resseq = 0
-            for key in slab_keys:
+            for key, base_shift in slab:
+                if copy_index == 0 and base_shift == 0.0:
+                    continue                      # already in the primary cell
+                dz = base_shift + step
                 indices = molecules[key]
                 zs = [placed[i][4] + dz for i in indices]
                 if max(zs) > float(interval["high"]) or min(zs) < float(interval["low"]):
@@ -808,14 +952,25 @@ def extend_water_slabs(
                 resseq += 1
                 new_key = ("water_ext", sign, copy_index, key)
                 for i in indices:
-                    atom = placed[i][0]
+                    source = placed[i][0]
                     x, y, z = placed[i][2], placed[i][3], placed[i][4] + dz
                     line = _rewrite_line_coords(
                         _rewrite_line(
-                            atom, dx=0.0, dy=0.0, dz=0.0,
+                            source, dx=0.0, dy=0.0, dz=0.0,
                             chain_id=label, resseq=resseq,
                         ),
                         x, y, z,
+                    )
+                    # The record must carry the new chain and residue number as
+                    # well as the new line. Downstream code groups molecules by
+                    # the atom's own fields, so copies that keep the source's
+                    # chain/resseq collapse into one molecule -- which silently
+                    # removed most of the extended water from the pool
+                    # neutralization draws its ion sites from, pushing every ion
+                    # to the one side that had not been extended.
+                    atom = replace(
+                        source, line=line, chain_id=label,
+                        resseq=str(resseq % 10000), x=x, y=y, z=z,
                     )
                     added.append((atom, line, x, y, z))
                     added_keys.append(new_key)
@@ -1782,9 +1937,20 @@ def build_tiled_membrane(
                     resseq=new_resseq,
                 )
                 carve_key = (tile_index, mol_id)
-                tiled.append(
-                    (atom, line, atom.x + dx, atom.y + dy, atom.z + dz, carve_key)
-                )
+                # The rewritten chain and residue number have to live on the
+                # record, not only on the line. Downstream code groups molecules
+                # by the atom's own fields, so every tile's copy of patch water
+                # #1 otherwise shares one key and the tiles collapse into a
+                # single molecule set — which made neutralization see 1/(nx*ny)
+                # of the water it actually had.
+                tiled.append((
+                    replace(
+                        atom, line=line, chain_id=chain_label,
+                        resseq=str(new_resseq % 10000),
+                        x=atom.x + dx, y=atom.y + dy, z=atom.z + dz,
+                    ),
+                    line, atom.x + dx, atom.y + dy, atom.z + dz, carve_key,
+                ))
             tile_index += 1
     return tiled
 
@@ -1830,8 +1996,18 @@ def plan_neutralizing_ions(
     n_water_residues: int,
     saltcon: float,
     add_bulk_salt: bool,
+    existing_cations: int = 0,
+    existing_anions: int = 0,
 ) -> dict[str, int]:
-    """Return counts of cations/anions to add for neutralization + bulk salt."""
+    """Return counts of cations/anions to add for neutralization + bulk salt.
+
+    The salt already in the system counts. The cached membrane patch is packed
+    at the requested concentration and is then tiled, so the assembly arrives
+    carrying most of the salt it needs; adding a full complement on top of that
+    delivers roughly twice the concentration the caller asked for. Only the
+    deficit is added, and never a negative number — ions that are already there
+    are not removed to hit a target from above.
+    """
     net = int(round(net_charge))
     n_cation = 0
     n_anion = 0
@@ -1839,12 +2015,23 @@ def plan_neutralizing_ions(
         n_anion += net
     elif net < 0:
         n_cation += -net
+    n_pairs = 0
     if add_bulk_salt and saltcon > 0 and n_water_residues > 0:
         # ~55.5 mol/L water; ion pairs to reach the requested concentration.
         n_pairs = int(round(saltcon * n_water_residues / 55.5))
-        n_cation += n_pairs
-        n_anion += n_pairs
-    return {"cations": n_cation, "anions": n_anion}
+        # Per species, not per pair. The patch's own salt does not arrive
+        # balanced — ions it had buried in its bilayer are dropped on the way
+        # in, and those are mostly one species — so pairing the counts first
+        # would read "no pairs present" and add a second full complement.
+        n_cation += max(0, n_pairs - int(existing_cations))
+        n_anion += max(0, n_pairs - int(existing_anions))
+    return {
+        "cations": n_cation,
+        "anions": n_anion,
+        "target_pairs": n_pairs,
+        "existing_cations": int(existing_cations),
+        "existing_anions": int(existing_anions),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2033,10 +2220,56 @@ def embed_with_membrane_patch_tiles(
 
     shifted: list[tuple[PDBAtom, str, float, float, float]] = []
     carve_keys: list[tuple] = []
+    buried_ion_keys: set[tuple] = set()
     for atom, line, x, y, z, carve_key in tiled:
         nx_, ny_, nz_ = x + shift_x, y + shift_y, z + shift_z
+        if (
+            atom.resname.upper() in _EXTENDABLE_ION_RESNAMES
+            and abs(nz_ - float(membrane_center_z or 0.0)) <= float(leaflet)
+        ):
+            # An ion sitting inside the cached patch's own bilayer. One is a
+            # defect in that patch; tiling turns it into one per tile, and they
+            # end up in the hydrophobic core of every copy. Drop them here and
+            # let neutralization put the charge back in bulk water.
+            buried_ion_keys.add(carve_key)
+            continue
         shifted.append((atom, _rewrite_line_coords(line, nx_, ny_, nz_), nx_, ny_, nz_))
         carve_keys.append(carve_key)
+    if buried_ion_keys:
+        warnings.append(
+            f"dropped {len(buried_ion_keys)} ion(s) that the cached patch had "
+            "inside its own bilayer; neutralization replaces the charge in bulk "
+            "water."
+        )
+
+    # The tiles were shifted to put the bilayer on the membrane frame the
+    # orientation step established. Check that they landed there. The shift is
+    # computed from an estimate of where the patch's own midplane is, and when
+    # that estimate was wrong the bilayer wrapped itself around the receptor's
+    # extracellular domain while the transmembrane helices sat in water — with
+    # every downstream check passing, because a misplaced bilayer still has
+    # plenty of protein atoms inside it.
+    placement = _membrane_core_evidence(
+        shifted, centre=float(membrane_center_z or 0.0),
+    )
+    if placement["assessable"] and not placement["is_membrane_core"]:
+        return {
+            "success": False,
+            "code": "membrane_patch_bilayer_misplaced",
+            "errors": [
+                "the protein's membrane frame at z="
+                f"{placement['centre']:.1f} A holds "
+                f"{placement['tail_carbons']} acyl-tail carbons against "
+                f"{placement['water_oxygens']} water oxygens, and "
+                f"{placement['headgroups_below']}/"
+                f"{placement['headgroups_above']} headgroups below/above it. "
+                "The bilayer did not land on that frame, so the lipids surround "
+                "the wrong part of the protein and the transmembrane region "
+                "would sit in water."
+            ],
+            "warnings": warnings,
+            "membrane_placement": placement,
+        }
 
     # The patch box is the caller's dist_wat and does not know about the solute.
     # Recompute the interval against the assembled frame, then stack copies of
@@ -2052,6 +2285,7 @@ def embed_with_membrane_patch_tiles(
         shifted, carve_keys,
         membrane_center_z=membrane_center_z,
         leaflet=leaflet,
+        patch_box_c=box_c,
         interval=interval,
     )
     if water_extension.get("extended"):
@@ -2322,11 +2556,21 @@ def _apply_neutralizing_swap(
     """Swap bulk waters for ions to neutralize + reach the salt concentration."""
     water_groups = _water_residues(membrane)
     n_water = len(water_groups)
+    existing_cations = sum(
+        1 for atom, *_rest in membrane
+        if atom.resname.upper() in {"NA", "K", "SOD", "POT"}
+    )
+    existing_anions = sum(
+        1 for atom, *_rest in membrane
+        if atom.resname.upper() in {"CL", "CLA"}
+    )
     plan = plan_neutralizing_ions(
         net_charge=net_charge,
         n_water_residues=n_water,
         saltcon=saltcon,
         add_bulk_salt=salt,
+        existing_cations=existing_cations,
+        existing_anions=existing_anions,
     )
     n_cation = plan["cations"]
     n_anion = plan["anions"]
@@ -2369,15 +2613,28 @@ def _apply_neutralizing_swap(
     ion_serial = 900000
     placed_cations = 0
     placed_anions = 0
-    for key, (x, y, z) in chosen:
-        if placed_cations < n_cation:
-            resname = cation_res
+    # Which site gets which species, interleaved rather than in order. The sites
+    # are sorted by z, so filling all the cations first and all the anions after
+    # puts one species at the bottom of the box and the other at the top: a
+    # charge separation across the periodic cell, i.e. a standing field through
+    # the membrane that nobody asked for. Measured before this change on a POPC
+    # system: every Na+ below the bilayer, 23 of 27 Cl- below it as well.
+    species: list[str] = []
+    remaining_cation, remaining_anion = n_cation, n_anion
+    while remaining_cation > 0 or remaining_anion > 0:
+        # Take from whichever species has more left, so the two are mixed
+        # evenly whatever the ratio.
+        if remaining_cation >= remaining_anion and remaining_cation > 0:
+            species.append(cation_res)
+            remaining_cation -= 1
+        elif remaining_anion > 0:
+            species.append(anion_res)
+            remaining_anion -= 1
+    for (key, (x, y, z)), resname in zip(chosen, species):
+        if resname == cation_res:
             placed_cations += 1
-        elif placed_anions < n_anion:
-            resname = anion_res
-            placed_anions += 1
         else:
-            break
+            placed_anions += 1
         remove_keys.add(key)
         ion_serial += 1
         atom_name = _ION_ATOM_NAME.get(resname, resname)
@@ -2408,6 +2665,8 @@ def _apply_neutralizing_swap(
         "anions_requested": n_anion,
         "cations_added": placed_cations,
         "anions_added": placed_anions,
+        "existing_cations": existing_cations,
+        "existing_anions": existing_anions,
         "cation_resname": cation_res,
         "anion_resname": anion_res,
     }

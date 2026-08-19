@@ -92,7 +92,24 @@ DAG handoff instead of claiming a scientific answer.
    auto-resolve ancestor artifacts (topology XML triple, restart state,
    trajectories); do not wire those paths by hand.
 
-5. **On failure, follow the structured result.**
+5. **Report what ran, before moving on.**
+
+   `autonomous` skips confirmations, not reporting. After each stage tool
+   returns, give the user one short block — do not wait for the end of the job:
+
+   - the node ID, the stage, and whether it completed;
+   - the conditions the tool actually used, read from its `parameters` (not from
+     what you asked for): for `min` the minimizer and step/force tolerance; for
+     `eq` and `prod` the ensemble, temperature, pressure, timestep, total time,
+     thermostat/barostat, constraints, cutoff, and restraints; for `solv` the
+     box dimensions, water model, ion species and concentration, and lipid
+     composition;
+   - the system size (atom count, box, net charge) once it exists;
+   - any `warnings` the result carries.
+
+   Then render and send a preview per `skills/common/visual-qa.md`.
+
+6. **On failure, follow the structured result.**
 
    Follow `code` and `next_action` as described in
    `skills/common/tool-output.md`. If a failed node has no clear recovery action,
