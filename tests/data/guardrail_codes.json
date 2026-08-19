@@ -109,6 +109,7 @@
   "membrane_patch_invalid_input",
   "membrane_patch_invalid_patch",
   "membrane_patch_lipid_missing_after_carve",
+  "membrane_patch_solute_exceeds_box_z",
   "membrane_patch_state_export_failed",
   "membrane_patch_state_missing_box",
   "membrane_patch_state_missing_positions",

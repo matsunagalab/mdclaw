@@ -7,6 +7,166 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-19 — バグ: patch-tile が z 方向の box サイズをタンパク質から決めていなかった
+
+hackathon メンバーから「GPCR 5L7D を膜に埋めて水和したら、細胞外ドメインが box の
+両側からはみ出た」との報告。**既定バックエンド `patch-tile` の実バグだった。**
+cursor にも独立検証させ、4 点すべて追認された (指摘 3 点は私の説明の補正)。
+
+### 根本原因
+
+`patch_membrane.py:636`
+
+```python
+box_c = 2.0 * (float(dist_wat) + float(leaflet))   # 溶質が一切入らない
+```
+
+`patch_membrane.py` の組み立て:
+
+```python
+total_box = {"box_a": nx * box_a, "box_b": ny * box_b, "box_c": box_c}
+```
+
+`nx`/`ny` は `_tile_counts` がタンパク質の XY 境界 + 2*dist から決める。
+**z には対応物が無い。** `_tile_counts` は `_bounds()` の `_minz, _maxz` を明示的に
+捨てている。箱の高さの取得元は 3 つ (キャッシュ / patch の CRYST1 / 導出式) あるが、
+**どれもパッチの高さであって溶質とは無関係**。
+
+### 5L7D 実測
+
+```
+5L7D chain A 膜フレーム          z = -30.3 .. +77.9 A   (span 108.2 A)
+既定 box_c = 2*(17.5+23.0)                             =  81.0 A
+build_amber_system の +2 A margin 後                   ~  83.0 A  <- MD の実箱
+箱外の原子              3754 中 1131 個 (30.1%)
+最小イメージで折り返す先                               z in [-40.5, -3.1]
+うち周期像の脂質コア (|z|<15) に入る原子                240 個
+```
+
+**細胞外ドメインが隣の周期像の膜を貫通している。**
+
+### なぜ静かに壊れるか
+
+1. **carve が PBC 対応** (`patch_membrane.py:1795`) なので、折り返した CRD の周りの脂質が
+   「正しく」除去され、**膜に穴が空いた系がエラー無しで完成する**。
+2. **geometry チェックが検出できない** (`membrane.py:327`)。見ているのは headgroup span と
+   「タンパク質原子の 15% 以上が膜と交差するか」だけ。5L7D は TM 部分で余裕で通る。
+   溶質の z 範囲も箱面までのクリアランスも計算していなかった。
+
+### MD まで伝播する
+
+`total_box` → CRYST1 + `box_dimensions.json` → `build_amber_system` →
+`openmm_build.py:1037-1060` の `setPeriodicBoxVectors` → `system.xml` / `state.xml` →
+min/eq/prod が state の箱ベクトルを優先採用。`center_solute_and_wrap_solvent` は
+最大分子を意図的に wrap しないので形は保たれるが、83 A の箱に 108.2 A の分子は入らない。
+
+### packmol-memgen 経路は無事
+
+上流ソース (`packmol_memgen/main.py`) は
+
+```python
+z_max = pdbz_max + distance_wat
+if z_max < (leaflet_z + distance_wat): z_max = leaflet_z + distance_wat
+```
+
+と溶質と膜の**大きい方**を採る。CLI ヘルプも "water layer over the membrane **or protein**"。
+`patch-tile` が名前だけ借りて「膜からの厚み」として実装したのが分岐点。
+なお `membrane_backend` の正しい値は `packmol-memgen` / `patch-tile` / `auto` で、
+`full` は存在しない (私が最初にそう書いたのは誤り)。
+
+### 修正 (恒久対応)
+
+**`dist_wat` を packmol-memgen と同じ「膜または溶質のうち遠い方からのパディング」に
+定義し直す。** (当初はパッチ自体を高くしたが、下記のとおりやり直した。)
+
+```python
+effective_dist_wat = max(dist_wat, max|z_solute - centre| + dist_wat - leaflet)
+```
+
+5L7D では 17.5 → **72.4**、box_c 81.0 → **190.8 A**。TM のみの蛋白では 17.5 のまま
+(回帰なし)。
+
+**箱だけ広げる案は採らなかった。** 水を足さずに CRYST1 を伸ばすと真空層ができて
+密度が壊れる。パッチを高くすれば、追加された体積は平衡化済みの水で正しい密度のまま埋まる。
+キャッシュは `dist_wat` を指紋に含むので、高いパッチは自動的に別エントリになり、
+**スキーマ変更は不要**。代償は「背の高い蛋白の初回 cold build が長い」ことで、
+cold-build notice にその旨を出すようにした。
+
+対称箱 (190.8 A) を採り、非対称最小箱 (143.2 A) は見送った。非対称にするには
+平衡化済みパッチを任意面で切る必要があり、切断面同士は真の周期対応ではないので
+継ぎ目が生じる。水量は約 33% 多いが、継ぎ目の無い正しい系を優先した。
+
+保険として 2 つ追加:
+- 組み立て後に `solute_fits_box` で封じ込めを検査し、入らなければ
+  `membrane_patch_solute_exceeds_box_z` で拒否 (古いキャッシュ由来の高さ対策)
+- geometry レポートに `protein_exceeds_periodic_box_z` を追加。膜との交差判定とは
+  **別の失敗理由**にしたので、「膜には正しく入っているが箱に入っていない」を検出できる
+
+### cursor レビューで自分の修正に P1 回帰が出た
+
+**封じ込め判定を「膜中心 ± box_c/2」に対する原子位置で書いたのが誤り**だった。これは箱が
+膜中心に対して対称であることを前提にしており、packmol-memgen が作る非対称箱では偽。
+cursor が再現したとおり、108.2 A の溶質が入る 143.2 A の箱を「6.3 A はみ出し」と誤判定して
+落とす。`auto` で fallback した後にこれが走るので、**正しく作った系を落とす回帰**だった。
+
+PBC では原点は任意で、面をまたいだ分子は反対側から入り直すだけ。平行移動で消せないのは
+**分子が周期長より長い**ことだけ。判定を `protein_z_span >= box_c` に変えた
+(`solute_fits_box` も同様。中心が不要になったので `membrane_center_z=None` の二重解釈と
+いう別の指摘も同時に解けた)。
+
+### さらに設計をやり直した: パッチを高くするのではなく、水を足す
+
+ユーザから 2 点の指摘を受けた。**どちらも正しく、最初の実装は誤りだった。**
+
+1. 「キャッシュが効くようにできないの？」
+2. 「23 A なんて多くの膜タンパク質が対象になると思うけど」
+
+拡大条件は `reach + dist_wat - leaflet > dist_wat`、すなわち **`reach > leaflet` (23 A)**。
+**|z| が 23 A を超える膜蛋白はほぼ全部が対象**になる。そして `dist_wat` はキャッシュ指紋に
+入っているので、**そのたびに cold build が走る**。実際、2LOP のパイプラインテストが
+通常 ~100 秒のところ **20 分以上** cold build を回していた。
+
+**膜パッチの高さを溶質に依存させたのが誤り**だった。二重層は蛋白と無関係なので
+キャッシュしたまま使い、**足りない水だけを z 方向に足す**のが正しい:
+
+```python
+low  = min(solute_z_min, centre - leaflet) - dist_wat
+high = max(solute_z_max, centre + leaflet) + dist_wat
+```
+
+パッチは常に呼び出し側の `dist_wat` で要求するのでキャッシュは必ずヒットする。
+足りない体積は**パッチ自身の水スラブのコピーを z 方向に積んで**埋める。溶媒和プログラムが
+平衡化済み水ボックスを複製するのと同じやり方で、密度もイオン濃度もそのまま乗る。
+コピー同士の境界は真の周期対応ではないので、既存原子と 2.2 A 以内に来た分子は
+**丸ごと落とす** (これも溶媒和プログラム標準の重なり除去)。
+
+**箱は非対称最小になった。** 5L7D で **143.2 A** (対称なら 190.8、バケット化ありなら 206)。
+細胞外ドメインぶんの水を膜の下側にミラーする必要が無くなったので、水量も減った。
+
+実データ検証 (5L7D 実座標 + 合成パッチ):
+
+```
+interval        low=-47.8  high=+95.4  box_c=143.2  (extend below 7.3 / above 54.9)
+extension       18252 分子追加、重なり棄却 0
+assembled z     -45.1 .. 94.5
+containment     fits=True  span=108.2  headroom=35.0
+水の数密度       元スラブ 0.0330 /A^3  →  拡張部 0.0329 /A^3
+```
+
+**パイプラインテストは 97.79 s / 4 passed に戻った** (cold build 20 分超 → キャッシュヒット)。
+
+なお高さバケット化と `membrane_patch_box_too_tall` の上限は、パッチを高くしなくなったので
+不要になり削除した。
+
+### テスト
+
+`tests/test_solvation_server.py` に 4 本追加 (5L7D の実数値で拡大を検証 / TM のみは
+拡大しない / 箱に入らない溶質を拒否 / 膜判定は通るが封じ込めで落ちる geometry ケース)。
+レビュー対応後に 3 本追加 (非対称箱を受理する / 上限超過を拒否する / 高さバケット)。
+ruff clean、solvation + guardrail + contract + orientation 系 321 passed。
+
+---
+
 ## 2026-08-19 — arm64 イメージに PPM3 を移植。amd64 の検証は無効、MODELLER の ldd は初実走で自壊
 
 Rikyu 用 SIF を作り直すため、`Dockerfile.rikyu-arm64` を Mac (Apple Silicon /

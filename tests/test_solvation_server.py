@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import mdclaw.solvation._base as solv_base  # noqa: F401
 import mdclaw.solvation.water as solv_water
 import mdclaw.solvation.membrane as solv_membrane
@@ -108,6 +110,104 @@ def test_memembed_orientation_uses_barrel_options_and_recenters_dummy_midplane(
     assert float(oriented.splitlines()[0][46:54]) == 10.0
 
 
+def _solute_pdb(tmp_path, z_values, name="solute.pdb"):
+    path = tmp_path / name
+    lines = [
+        f"ATOM  {i + 1:5d}  CA  ALA A{i + 1:4d}    "
+        f"{0.0:8.3f}{0.0:8.3f}{z:8.3f}  1.00  0.00           C"
+        for i, z in enumerate(z_values)
+    ]
+    path.write_text("\n".join(lines) + "\nEND\n")
+    return path
+
+
+def test_the_cell_follows_the_solute_and_is_asymmetric(tmp_path):
+    """dist_wat is water beyond the membrane *or* the solute, whichever is taller.
+
+    The cell height was 2*(dist_wat + leaflet) and nothing else, so a protein
+    taller than the patch was written into a cell shorter than itself while x
+    and y were tiled to cover it. Measured on 5L7D: the solute spans z -30.3 ..
+    +77.9 A against an 81 A box, so a third of its atoms fall outside and the
+    extracellular domain lands inside the bilayer of the periodic image.
+
+    The interval is asymmetric on purpose. Mirroring the extracellular domain's
+    water below the membrane would add tens of thousands of molecules that do
+    nothing: 143.2 A here against 190.8 A symmetric.
+    """
+    from mdclaw.solvation.patch_membrane import (
+        _parse_pdb_atoms, solute_box_interval,
+    )
+
+    pdb = _solute_pdb(tmp_path, (-30.324, 0.0, 77.894))
+    _lines, atoms = _parse_pdb_atoms(pdb)
+
+    interval = solute_box_interval(
+        atoms, leaflet=23.0, dist_wat=17.5, membrane_center_z=0.0
+    )
+
+    assert interval["extended"] is True
+    assert interval["patch_box_c"] == pytest.approx(81.0)
+    assert interval["low"] == pytest.approx(-47.824, abs=1e-3)
+    assert interval["high"] == pytest.approx(95.394, abs=1e-3)
+    assert interval["box_c"] == pytest.approx(143.218, abs=1e-3)
+    assert interval["extend_above"] == pytest.approx(54.894, abs=1e-3)
+    assert interval["extend_below"] == pytest.approx(7.324, abs=1e-3)
+    # exactly the requested water beyond the furthest atom, on both sides
+    assert interval["high"] - 77.894 == pytest.approx(17.5, abs=1e-3)
+    assert -30.324 - interval["low"] == pytest.approx(17.5, abs=1e-3)
+
+
+def test_the_bilayer_patch_is_requested_at_the_callers_dist_wat(tmp_path):
+    """The patch must stay a cache hit whatever the protein looks like.
+
+    Its height is part of the cache fingerprint, and *most* membrane proteins
+    reach past the leaflet, so sizing the patch from the solute would miss the
+    cache and pay for a fresh pack and equilibration nearly every time. Only the
+    water above and below is fitted to the solute.
+    """
+    from mdclaw.solvation.patch_membrane import (
+        _parse_pdb_atoms, solute_box_interval,
+    )
+
+    for top in (19.0, 40.0, 77.894):
+        pdb = _solute_pdb(tmp_path, (-19.0, 0.0, top), name=f"s{top}.pdb")
+        _lines, atoms = _parse_pdb_atoms(pdb)
+        interval = solute_box_interval(
+            atoms, leaflet=23.0, dist_wat=17.5, membrane_center_z=0.0
+        )
+        # the patch is always the same one; only the cell differs
+        assert interval["dist_wat"] == pytest.approx(17.5)
+        assert interval["patch_box_c"] == pytest.approx(81.0)
+
+    contained = solute_box_interval(
+        _parse_pdb_atoms(_solute_pdb(tmp_path, (-19.0, 0.0, 19.0), name="tm.pdb"))[1],
+        leaflet=23.0, dist_wat=17.5, membrane_center_z=0.0,
+    )
+    assert contained["extended"] is False
+    assert contained["box_c"] == pytest.approx(81.0)
+
+
+def test_a_solute_taller_than_the_assembled_box_is_refused(tmp_path):
+    """Last line of defence, for a box that came from a cache or an older build.
+
+    The patch is sized for the solute now, but the height can still arrive from
+    a cached patch or a CRYST1 written under the previous rules. Shipping that
+    system means its protein overlaps its own periodic image with nothing
+    downstream noticing.
+    """
+    from mdclaw.solvation.patch_membrane import _parse_pdb_atoms, solute_fits_box
+
+    pdb = _solute_pdb(tmp_path, (-30.324, 0.0, 77.894))
+    _lines, atoms = _parse_pdb_atoms(pdb)
+
+    verdict = solute_fits_box(atoms, box_c=81.0)
+
+    assert verdict["fits"] is False
+    assert verdict["solute_z_span"] == pytest.approx(108.218, abs=1e-3)
+    assert verdict["required_box_c"] == pytest.approx(108.218, abs=1e-3)
+    assert solute_fits_box(atoms, box_c=206.0)["fits"]
+
+
 def test_membrane_embedding_geometry_report_passes_transmembrane_layout(tmp_path):
     pdb = tmp_path / "good_membrane.pdb"
     lines = ["CRYST1   80.000   80.000   80.000  90.00  90.00  90.00 P 1           1"]
@@ -134,6 +234,91 @@ def test_membrane_embedding_geometry_report_passes_transmembrane_layout(tmp_path
 
     assert report["status"] == "passed"
     assert report["protein_headgroup_overlap_fraction"] == 1.0
+
+
+def test_membrane_embedding_geometry_report_fails_protein_taller_than_the_box(
+    tmp_path,
+):
+    """A GPCR can sit correctly in the bilayer and still not fit the cell.
+
+    Reported from a real 5L7D build: the extracellular domain reached past both
+    z faces. The headgroup-overlap test passes — the transmembrane helices give
+    it far more than the 15% it needs — so containment has to be checked on its
+    own, or a system whose protein overlaps its own periodic image ships with a
+    clean geometry report.
+    """
+    pdb = tmp_path / "tall_protein.pdb"
+    lines = ["CRYST1   80.000   80.000   80.000  90.00  90.00  90.00 P 1           1"]
+    serial = 1
+    for z in (-18.0, -12.0, -6.0, 0.0, 6.0, 12.0, 18.0):     # transmembrane
+        lines.append(
+            f"ATOM  {serial:5d}  CA  ALA A{serial:4d}    "
+            f"{0.0:8.3f}{0.0:8.3f}{z:8.3f}  1.00  0.00           C"
+        )
+        serial += 1
+    for z in (30.0, 45.0, 60.0, 75.0):                        # extracellular domain
+        lines.append(
+            f"ATOM  {serial:5d}  CA  ALA A{serial:4d}    "
+            f"{0.0:8.3f}{0.0:8.3f}{z:8.3f}  1.00  0.00           C"
+        )
+        serial += 1
+    for z in (-20.0, 20.0):
+        for _ in range(4):
+            lines.append(
+                f"HETATM{serial:5d} P31  PC  M{serial:4d}    "
+                f"{0.0:8.3f}{0.0:8.3f}{z:8.3f}  1.00  0.00           P"
+            )
+            serial += 1
+    pdb.write_text("\n".join(lines) + "\nEND\n")
+
+    report = solv_membrane._membrane_embedding_geometry_report(
+        pdb_file=pdb,
+        box_dimensions={"box_c": 80.0},
+    )
+
+    assert report["status"] == "failed"
+    assert report["failure_reasons"] == ["protein_exceeds_periodic_box_z"]
+    # the membrane checks are satisfied; only containment is not
+    assert report["protein_headgroup_overlap_fraction"] >= 0.15
+    assert report["protein_z_span"] == pytest.approx(93.0)   # -18.0 .. +75.0
+    assert report["protein_z_headroom"] == pytest.approx(-13.0)
+
+
+def test_membrane_embedding_geometry_report_accepts_an_asymmetric_box(tmp_path):
+    """packmol-memgen sizes an asymmetric cell around a lopsided protein.
+
+    Judging containment by faces placed at the membrane centre would assume the
+    cell is centred on the bilayer. That is true of the tiled patch and false
+    here, and it would reject a 143 A cell holding a 108 A solute — after the
+    `auto` fallback had already built a perfectly good system. Under PBC the
+    origin is a choice; only a molecule longer than the period cannot be placed.
+    """
+    pdb = tmp_path / "asymmetric.pdb"
+    lines = ["CRYST1   80.000   80.000  143.200  90.00  90.00  90.00 P 1           1"]
+    serial = 1
+    for z in (-30.3, -18.0, -6.0, 6.0, 18.0, 40.0, 60.0, 77.9):
+        lines.append(
+            f"ATOM  {serial:5d}  CA  ALA A{serial:4d}    "
+            f"{0.0:8.3f}{0.0:8.3f}{z:8.3f}  1.00  0.00           C"
+        )
+        serial += 1
+    for z in (-20.0, 20.0):
+        for _ in range(4):
+            lines.append(
+                f"HETATM{serial:5d} P31  PC  M{serial:4d}    "
+                f"{0.0:8.3f}{0.0:8.3f}{z:8.3f}  1.00  0.00           P"
+            )
+            serial += 1
+    pdb.write_text("\n".join(lines) + "\nEND\n")
+
+    report = solv_membrane._membrane_embedding_geometry_report(
+        pdb_file=pdb,
+        box_dimensions={"box_c": 143.2},
+    )
+
+    assert "protein_exceeds_periodic_box_z" not in report["failure_reasons"]
+    assert report["protein_z_span"] == pytest.approx(108.2, abs=1e-3)
+    assert report["protein_z_headroom"] > 0.0
 
 
 def test_membrane_embedding_geometry_report_fails_off_membrane_protein(tmp_path):

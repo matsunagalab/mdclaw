@@ -239,10 +239,39 @@ signature, update the relevant section here and the matching skill examples.
   and why each earlier one was not used.
   `n_terminal_side` is applied only when the caller states it; PPM3 needs a
   value regardless, so an unstated side is run under PPM's own convention and
-  flagged as assumed rather than presented as a decision. A PBC-aware
-  post-build geometry check writes `membrane_embedding_geometry.json` and fails
-  with `membrane_embedding_geometry_failed` if the protein does not intersect the
-  bilayer headgroup span. The cold build runs once per composition and is
+  flagged as assumed rather than presented as a decision. `dist_wat` is water beyond the
+  membrane **or the solute**, whichever reaches further — the meaning
+  packmol-memgen gives it. The cell the patch-tile backend builds is therefore
+  `[min(solute_z_min, -leaflet) - dist_wat, max(solute_z_max, +leaflet) + dist_wat]`,
+  asymmetric because proteins are: mirroring a large extracellular domain's
+  water below the bilayer would carry tens of thousands of molecules that do
+  nothing (143 A rather than 191 A on 5L7D).
+  The **bilayer patch is not resized**. Its height is part of the cache
+  fingerprint and most membrane proteins reach past the leaflet, so sizing the
+  patch from the solute would miss the cache and pay for a fresh pack and
+  equilibration nearly every time. The patch is always requested at the caller's
+  `dist_wat`; the extra volume is filled afterwards by stacking copies of the
+  patch's own water slabs — already equilibrated, already at the right density,
+  already carrying its ions — the way a solvation program replicates a water
+  box. Copies meet at bulk-water faces that were not periodic partners, so a
+  whole molecule landing on one already placed is dropped and minimisation
+  closes the gap. `result["solute_box_interval"]` and
+  `result["water_extension"]` record the interval, how far each side grew, and
+  how many molecules were added and dropped.
+  Containment is tested as the solute's z **span** against the cell length, not
+  as atom positions against faces: under PBC the origin is a choice, and a
+  molecule reaching past a face simply re-enters at the other one. What cannot
+  be translated away is a molecule longer than the period. Judging by faces
+  placed at the membrane centre would assume a cell centred on the bilayer —
+  false of both this interval and packmol-memgen's — and would reject a 143 A
+  box holding a 108 A solute. The assembly refuses a solute longer than its cell
+  (`membrane_patch_solute_exceeds_box_z`). A PBC-aware post-build geometry check
+  writes `membrane_embedding_geometry.json` and fails with
+  `membrane_embedding_geometry_failed` if the protein does not intersect the
+  bilayer headgroup span (`protein_does_not_intersect_bilayer_headgroup_span`)
+  **or is longer than the periodic cell in z**
+  (`protein_exceeds_periodic_box_z`) — a receptor can sit correctly in the
+  bilayer and still overlap its own image, so the two are checked separately. The cold build runs once per composition and is
   surfaced via `warnings`, `patch_cold_build_notice`, and `patch_build`.
   Patch cold-build topology generation disables Pablo CCD auto-download
   (`pablo_auto_download=False`) because the patch contains known local

@@ -49,10 +49,18 @@ Use `--preoriented` only for structures already in a membrane frame (for
 example OPM/PPM-derived coordinates). For beta-barrel membrane proteins with
 MEMEMBED, pass `--memembed-beta-barrel`.
 
+`--dist-wat` is water beyond the membrane **or the protein**, whichever reaches
+further. A receptor with a large extracellular domain therefore gets a taller
+cell rather than a box shorter than itself. The cached bilayer patch is reused
+unchanged; only the water above and below is fitted to the protein.
+
 By default the tool writes `membrane_embedding_geometry.json` and fails with
 `membrane_embedding_geometry_failed` when a PBC-aware post-build check shows
-that the protein does not intersect the lipid headgroup span. Treat that as a
-real membrane-placement failure, not a cosmetic rendering issue.
+that the protein does not intersect the lipid headgroup span, or that it is
+longer than the periodic box in z. Treat both as real membrane-placement
+failures, not cosmetic rendering issues: a protein taller than the box overlaps
+its own periodic image, and the same box becomes the periodic vectors that
+minimization and MD run under.
 
 ## Backend
 

@@ -395,6 +395,26 @@ def _membrane_embedding_geometry_report(
     if overlap_fraction < min_overlap_fraction:
         failure_reasons.append("protein_does_not_intersect_bilayer_headgroup_span")
 
+    # Intersecting the bilayer says the protein is in the membrane; it says
+    # nothing about whether it fits in the cell. A GPCR whose extracellular
+    # domain reaches past the box still puts >15% of its atoms in the headgroup
+    # span, so this test has to be separate: the part that does not fit overlaps
+    # the protein's own periodic image, and the same box becomes the periodic
+    # vectors that minimisation and MD run under.
+    #
+    # The test is the solute's own z span against the cell length, and nothing
+    # else. Comparing atom positions against faces placed at the membrane
+    # centre would assume the cell is centred on the bilayer, which is true of
+    # the patch-tile box and false of the asymmetric one packmol-memgen builds
+    # around a lopsided protein — and would reject a 143 A cell that holds a
+    # 108 A solute comfortably. Where the origin sits is a choice; whether the
+    # molecule is longer than the period is not.
+    protein_z_min = min(atom["z"] for atom in protein_atoms)
+    protein_z_max = max(atom["z"] for atom in protein_atoms)
+    protein_z_span = protein_z_max - protein_z_min
+    if protein_z_span >= box_c:
+        failure_reasons.append("protein_exceeds_periodic_box_z")
+
     report.update({
         "status": "failed" if failure_reasons else "passed",
         "passed": not failure_reasons,
@@ -406,6 +426,11 @@ def _membrane_embedding_geometry_report(
         "min_headgroup_span": min_headgroup_span,
         "protein_headgroup_overlap_fraction": overlap_fraction,
         "min_overlap_fraction": min_overlap_fraction,
+        "protein_z_min": protein_z_min,
+        "protein_z_max": protein_z_max,
+        "protein_z_span": protein_z_span,
+        "protein_z_headroom": box_c - protein_z_span,
+        "required_box_c": protein_z_span,
         "failure_reasons": failure_reasons,
     })
     return report
@@ -2193,6 +2218,22 @@ def embed_in_membrane(
 
         # Pre-run notice: if this composition is not cached, a one-time patch
         # equilibration (energy minimization + short MD) will run in this step.
+        # The bilayer patch is protein-independent, so it is requested at the
+        # caller's dist_wat and keeps hitting the cache whatever the solute
+        # looks like. The extra water a tall protein needs is added to the
+        # assembly afterwards, not baked into a taller patch.
+        from mdclaw.solvation.patch_membrane import (
+            _parse_pdb_atoms as _patch_parse_atoms,
+        )
+        from mdclaw.solvation.patch_membrane import solute_box_interval
+
+        _lines, _solute_atoms = _patch_parse_atoms(Path(oriented_input))
+        box_interval = solute_box_interval(
+            _solute_atoms, leaflet=leaflet, dist_wat=dist_wat,
+            membrane_center_z=0.0,
+        )
+        result["solute_box_interval"] = box_interval
+
         cache_probe = probe_patch_cache(
             lipids=lipids,
             ratio=ratio,
@@ -2218,6 +2259,13 @@ def embed_in_membrane(
                 "equilibration (energy minimization + a few hundred ps of MD) "
                 "that can take several minutes, and the result is cached for reuse."
             )
+            if box_interval.get("extended"):
+                notice += (
+                    f" The solute spans {box_interval['solute_z_span']} A in z, "
+                    f"so the assembled cell will be {box_interval['box_c']} A "
+                    f"rather than the patch's {box_interval['patch_box_c']} A; "
+                    "the patch itself is built at the usual height and reused."
+                )
             logger.warning(notice)
             print(f"[mdclaw] {notice}", file=sys.stderr, flush=True)
             result["warnings"].append(notice)

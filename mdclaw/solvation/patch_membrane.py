@@ -630,6 +630,249 @@ def _extract_cryst1_box(path: Path) -> Optional[dict[str, Any]]:
     return None
 
 
+# Solvent copied into the extension keeps the patch's own ions, so the added
+# volume arrives at the same salt concentration as the rest of the box.
+_EXTENDABLE_ION_RESNAMES = {"NA", "K", "CL", "SOD", "POT", "CLA"}
+# Whole molecules landing this close to something already placed are dropped —
+# the rule every solvation program applies when it replicates a water box.
+PATCH_WATER_TILE_MIN_SEPARATION_ANGSTROM = 2.2
+
+
+def _point_grid(
+    points: list[tuple[float, float, float]], cutoff: float
+) -> dict[tuple[int, int, int], list[tuple[float, float, float]]]:
+    grid: dict[tuple[int, int, int], list[tuple[float, float, float]]] = {}
+    inv = 1.0 / cutoff
+    for x, y, z in points:
+        cell = (math.floor(x * inv), math.floor(y * inv), math.floor(z * inv))
+        grid.setdefault(cell, []).append((x, y, z))
+    return grid
+
+
+def solute_box_interval(
+    protein_atoms: list[PDBAtom],
+    *,
+    leaflet: float,
+    dist_wat: float,
+    membrane_center_z: float = 0.0,
+) -> dict[str, Any]:
+    """The z interval the finished cell has to cover, given this solute.
+
+    ``dist_wat`` is water beyond the membrane *or* the solute, whichever reaches
+    further — packmol-memgen's meaning. The interval is asymmetric because
+    proteins are: a receptor with a large extracellular domain needs the water
+    above it, and mirroring that below would carry tens of thousands of
+    molecules that do nothing.
+
+    Note what this does *not* do: ask for a taller membrane patch. The patch's
+    height is in its cache fingerprint, so any protein reaching past the leaflet
+    — which is most of them — would miss the cache and pay for a fresh pack and
+    equilibration. The bilayer is protein-independent and stays cached; only the
+    water above and below is fitted to the solute.
+    """
+    centre = float(membrane_center_z or 0.0)
+    patch_half = float(dist_wat) + float(leaflet)
+    base = {
+        "membrane_center_z": centre,
+        "dist_wat": float(dist_wat),
+        "leaflet": float(leaflet),
+        "patch_box_c": round(2.0 * patch_half, 3),
+    }
+    if not protein_atoms:
+        return {
+            **base,
+            "solute_atom_count": 0,
+            "low": round(centre - patch_half, 3),
+            "high": round(centre + patch_half, 3),
+            "box_c": round(2.0 * patch_half, 3),
+            "extend_below": 0.0,
+            "extend_above": 0.0,
+            "extended": False,
+        }
+    *_xy, z_min, z_max = _bounds(protein_atoms)
+    low = min(z_min, centre - float(leaflet)) - float(dist_wat)
+    high = max(z_max, centre + float(leaflet)) + float(dist_wat)
+    return {
+        **base,
+        "solute_atom_count": len(protein_atoms),
+        "solute_z_min": round(z_min, 3),
+        "solute_z_max": round(z_max, 3),
+        "solute_z_span": round(z_max - z_min, 3),
+        "low": round(low, 3),
+        "high": round(high, 3),
+        "box_c": round(high - low, 3),
+        "extend_below": round(max(0.0, (centre - patch_half) - low), 3),
+        "extend_above": round(max(0.0, high - (centre + patch_half)), 3),
+        "extended": (high - low) > 2.0 * patch_half + 1e-6,
+    }
+
+
+def extend_water_slabs(
+    placed: list[tuple[PDBAtom, str, float, float, float]],
+    carve_keys: list[tuple],
+    *,
+    membrane_center_z: float,
+    leaflet: float,
+    interval: dict[str, Any],
+    min_separation: float = PATCH_WATER_TILE_MIN_SEPARATION_ANGSTROM,
+) -> tuple[
+    list[tuple[PDBAtom, str, float, float, float]], list[tuple], dict[str, Any]
+]:
+    """Fill the gap between the patch's faces and the target interval with water.
+
+    The solvent is copied from the patch's own water slabs — already
+    equilibrated, already at the right density, already carrying its ions — and
+    stacked in z the way a solvation program replicates a water box. Copies meet
+    at bulk-water faces that were not periodic partners, so a whole molecule
+    landing on top of one already placed is dropped; that is the overlap removal
+    any such tool does, and minimisation closes the small gap it leaves.
+    """
+    centre = float(membrane_center_z or 0.0)
+    patch_half = float(interval["patch_box_c"]) / 2.0
+    below = float(interval.get("extend_below") or 0.0)
+    above = float(interval.get("extend_above") or 0.0)
+    thickness = patch_half - float(leaflet)
+    report: dict[str, Any] = {
+        "extend_below": round(below, 3),
+        "extend_above": round(above, 3),
+        "slab_thickness": round(thickness, 3),
+        "added_molecules": 0,
+        "added_atoms": 0,
+        "dropped_overlapping": 0,
+        "extended": False,
+    }
+    if (below <= 0.0 and above <= 0.0) or thickness <= 1.0:
+        if thickness <= 1.0 and (below > 0.0 or above > 0.0):
+            report["skipped"] = "the patch has no water slab to copy"
+        return placed, carve_keys, report
+
+    molecules: dict[tuple, list[int]] = {}
+    for index, key in enumerate(carve_keys):
+        molecules.setdefault(key, []).append(index)
+
+    def _slab(sign: int) -> list[tuple]:
+        keys: list[tuple] = []
+        for key, indices in molecules.items():
+            if not all(
+                placed[i][0].resname in PATCH_WATER_RESNAMES
+                or placed[i][0].resname.upper() in _EXTENDABLE_ION_RESNAMES
+                for i in indices
+            ):
+                continue
+            zs = [placed[i][4] for i in indices]
+            if sign > 0 and min(zs) >= centre + float(leaflet):
+                keys.append(key)
+            elif sign < 0 and max(zs) <= centre - float(leaflet):
+                keys.append(key)
+        return keys
+
+    cutoff = max(float(min_separation), 0.5)
+    occupied = [(item[2], item[3], item[4]) for item in placed]
+    grid = _point_grid(occupied, cutoff)
+
+    added: list[tuple[PDBAtom, str, float, float, float]] = []
+    added_keys: list[tuple] = []
+    label_index = 0
+    for sign, extent in ((1, above), (-1, below)):
+        if extent <= 0.0:
+            continue
+        slab_keys = _slab(sign)
+        if not slab_keys:
+            report.setdefault("skipped_sides", []).append(
+                "above" if sign > 0 else "below"
+            )
+            continue
+        for copy_index in range(1, int(math.ceil(extent / thickness)) + 1):
+            dz = sign * copy_index * thickness
+            # Label from the end of the alphabet so the extension never collides
+            # with the lateral tiles, which are labelled from the start.
+            label = _TILE_CHAIN_LABELS[
+                -1 - (label_index % len(_TILE_CHAIN_LABELS))
+            ]
+            label_index += 1
+            resseq = 0
+            for key in slab_keys:
+                indices = molecules[key]
+                zs = [placed[i][4] + dz for i in indices]
+                if max(zs) > float(interval["high"]) or min(zs) < float(interval["low"]):
+                    continue
+                if any(
+                    _near_protein(
+                        placed[i][2], placed[i][3], placed[i][4] + dz,
+                        grid=grid, cutoff=cutoff,
+                    )
+                    for i in indices
+                ):
+                    report["dropped_overlapping"] += 1
+                    continue
+                resseq += 1
+                new_key = ("water_ext", sign, copy_index, key)
+                for i in indices:
+                    atom = placed[i][0]
+                    x, y, z = placed[i][2], placed[i][3], placed[i][4] + dz
+                    line = _rewrite_line_coords(
+                        _rewrite_line(
+                            atom, dx=0.0, dy=0.0, dz=0.0,
+                            chain_id=label, resseq=resseq,
+                        ),
+                        x, y, z,
+                    )
+                    added.append((atom, line, x, y, z))
+                    added_keys.append(new_key)
+                    grid.setdefault(
+                        (
+                            math.floor(x / cutoff),
+                            math.floor(y / cutoff),
+                            math.floor(z / cutoff),
+                        ),
+                        [],
+                    ).append((x, y, z))
+                report["added_molecules"] += 1
+
+    report["extended"] = bool(added)
+    report["added_atoms"] = len(added)
+    return placed + added, carve_keys + added_keys, report
+
+
+def solute_fits_box(
+    protein_atoms: list[PDBAtom],
+    *,
+    box_c: float,
+    clearance: float = 0.0,
+) -> dict[str, Any]:
+    """Whether the solute is shorter than the periodic cell, with clearance.
+
+    The test is the solute's own z span against the cell length, and nothing
+    else. Under PBC the origin is a choice — a molecule reaching past a face
+    simply re-enters at the other one — so comparing atom positions to faces
+    placed at the membrane centre would assume a cell centred on the bilayer.
+    That holds for the tiled patch and fails for the asymmetric cell
+    packmol-memgen builds around a lopsided protein, where it would reject a
+    143 A box that holds a 108 A solute comfortably. What cannot be translated
+    away is a molecule longer than the period: then it overlaps its own image
+    wherever it sits.
+
+    ``clearance`` asks for that much solvent between the two ends as well, so a
+    protein is not merely non-overlapping but separated from its image.
+    """
+    if not protein_atoms or float(box_c) <= 0.0:
+        return {"checked": False, "fits": True}
+    *_xy, z_min, z_max = _bounds(protein_atoms)
+    span = z_max - z_min
+    needed = span + 2.0 * float(clearance)
+    return {
+        "checked": True,
+        "fits": needed <= float(box_c),
+        "solute_z_min": round(z_min, 3),
+        "solute_z_max": round(z_max, 3),
+        "solute_z_span": round(span, 3),
+        "box_c": round(float(box_c), 3),
+        "clearance": float(clearance),
+        "headroom": round(float(box_c) - span, 3),
+        "required_box_c": round(needed, 3),
+    }
+
+
 def _derived_box_dimensions(*, xy_side: float, dist_wat: float, leaflet: float) -> dict[str, Any]:
     box_a = float(xy_side)
     box_b = float(xy_side)
@@ -1688,7 +1931,29 @@ def embed_with_membrane_patch_tiles(
             "warnings": warnings,
         }
 
-    # 2) Ensure an (equilibrated) patch is available (cache or cold build).
+    # 2) Size the patch from the solute, then ensure one is available.
+    #    A patch tall enough is what makes the assembled box tall enough: the
+    #    height is carried straight through to CRYST1, and from there to the
+    #    periodic vectors MD runs under.
+    # One explicit membrane centre, resolved before it is used for anything.
+    # Sizing, the shift that places the tiles, and the containment check must
+    # not each fall back to a different convention for a missing value.
+    if membrane_center_z is None:
+        membrane_center_z = 0.0
+        if not preoriented:
+            warnings.append(
+                "no membrane centre was reported by the orientation step; "
+                "treating the oriented structure as already centred on z=0."
+            )
+    # What the finished cell has to cover. The patch itself is requested at the
+    # caller's dist_wat and so keeps hitting the cache; the difference is made
+    # up with water later.
+    interval = solute_box_interval(
+        protein_atoms,
+        leaflet=leaflet,
+        dist_wat=dist_wat,
+        membrane_center_z=membrane_center_z,
+    )
     patch = ensure_membrane_patch(
         lipids=lipids,
         ratio=ratio,
@@ -1773,15 +2038,89 @@ def embed_with_membrane_patch_tiles(
         shifted.append((atom, _rewrite_line_coords(line, nx_, ny_, nz_), nx_, ny_, nz_))
         carve_keys.append(carve_key)
 
+    # The patch box is the caller's dist_wat and does not know about the solute.
+    # Recompute the interval against the assembled frame, then stack copies of
+    # the patch's own water slabs until the cell covers it. The bilayer patch
+    # itself is untouched, so it stays a cache hit for every protein.
+    interval = solute_box_interval(
+        protein_atoms,
+        leaflet=leaflet,
+        dist_wat=dist_wat,
+        membrane_center_z=membrane_center_z,
+    )
+    shifted, carve_keys, water_extension = extend_water_slabs(
+        shifted, carve_keys,
+        membrane_center_z=membrane_center_z,
+        leaflet=leaflet,
+        interval=interval,
+    )
+    if water_extension.get("extended"):
+        warnings.append(
+            f"the solute spans z {interval['solute_z_min']} .. "
+            f"{interval['solute_z_max']} A, past the "
+            f"{interval['patch_box_c']} A patch, so the cell was extended to "
+            f"{interval['box_c']} A and "
+            f"{water_extension['added_molecules']} solvent molecules were "
+            "copied from the patch's own water slabs to fill it "
+            f"({water_extension['dropped_overlapping']} dropped for overlap)."
+        )
+    elif interval.get("extended"):
+        warnings.append(
+            f"the solute needs a {interval['box_c']} A cell but the water "
+            "extension added nothing; the assembled box is still the patch's "
+            f"{interval['patch_box_c']} A."
+        )
+
     total_box = {
         "box_a": nx * box_a,
         "box_b": ny * box_b,
-        "box_c": box_c,
+        "box_c": (
+            float(interval["box_c"]) if water_extension.get("extended") else box_c
+        ),
         "alpha": 90.0,
         "beta": 90.0,
         "gamma": 90.0,
         "is_cubic": False,
     }
+
+    # Last check on the finished cell rather than on the parameters that chose
+    # it: a solute longer than the period overlaps its own image wherever it
+    # sits, and nothing downstream would notice.
+    containment = solute_fits_box(
+        protein_atoms, box_c=total_box["box_c"],
+    )
+    if containment.get("checked") and not containment.get("fits"):
+        return {
+            "success": False,
+            "code": "membrane_patch_solute_exceeds_box_z",
+            "errors": [
+                f"the solute spans {containment['solute_z_span']} A in z but "
+                f"the periodic cell is only {containment['box_c']} A tall, so "
+                "it overlaps its own periodic image wherever it is placed. "
+                f"Rebuild with a patch of at least box_c="
+                f"{containment['required_box_c']} A, or use "
+                "membrane_backend=packmol-memgen."
+            ],
+            "warnings": warnings,
+            "solute_containment": containment,
+        }
+    # Fitting is the hard requirement; keeping the requested water between the
+    # periodic images is the contract dist_wat advertises. NPT equilibration of
+    # the patch can shrink the cell after it was packed, so report what the
+    # finished system actually has rather than what was asked for.
+    clearance = solute_fits_box(
+        protein_atoms, box_c=total_box["box_c"],
+        clearance=float(dist_wat),
+    )
+    containment["requested_clearance"] = clearance["clearance"]
+    containment["clearance_satisfied"] = bool(clearance["fits"])
+    if not clearance["fits"]:
+        warnings.append(
+            f"the assembled cell is {containment['box_c']} A tall, which holds "
+            f"the {containment['solute_z_span']} A solute but leaves "
+            f"{containment['headroom'] / 2:.1f} A of water between periodic "
+            f"images instead of the requested {clearance['clearance']} A."
+        )
 
     # 5) Carve tiled molecules that overlap the protein. Removal is by whole
     # molecule (carve_key), so a Lipid21 lipid whose tail brushes the protein is
@@ -1910,6 +2249,9 @@ def embed_with_membrane_patch_tiles(
         "code": "membrane_patch_tiles_used",
         "output_file": str(output_file),
         "box_dimensions": total_box,
+        "solute_box_interval": interval,
+        "water_extension": water_extension,
+        "solute_containment": containment,
         "box_dimensions_file": str(output_dir / "box_dimensions.json"),
         "cache_hit": bool(patch.get("cache_hit")),
         "cache_source": patch.get("cache_source"),

@@ -176,6 +176,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "explicit_ions_in_implicit_solvent": "Remove explicit ions before an implicit build, or use explicit/vacuum.",
     "neutralization_charge_mismatch": "Fix retained ion or ligand charges, then rebuild solvation and topology on new nodes.",
     "membrane_neutralization_failed": "Membrane charge evaluation or counter-ion placement failed; rebuild with enough bulk water.",
+    "membrane_patch_solute_exceeds_box_z": "The solute is taller than the periodic cell; it would overlap its own image. Rebuild with a taller patch or membrane_backend=packmol-memgen.",
     "membrane_orientation_failed": "Membrane orientation failed; inspect result['orientation'] for which backends were tried.",
     "opm_homolog_no_protein": "No standard protein residues to search OPM with.",
     "opm_homolog_search_unavailable": "The OPM homolog search could not be reached for any query chain; orientation fell back.",
