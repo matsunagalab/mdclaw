@@ -387,8 +387,7 @@ signature, update the relevant section here and the matching skill examples.
   the System in a dedicated force group before the Simulation is built, and
   bias energy + optional CV values are logged to
   `collective_variables.csv` (+ `.meta.json`). See
-  `mdclaw/simulation/custom_forces.py`. (The legacy `restraint_file` argument
-  is deprecated and ignored.)
+  `mdclaw/simulation/custom_forces.py`.
 
 ## `visualization/`
 

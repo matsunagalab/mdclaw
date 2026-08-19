@@ -67,7 +67,6 @@ def run_production(
     timestep_fs: Optional[float] = None,
     output_frequency_ps: float = 10.0,
     trajectory_format: str = "dcd",
-    restraint_file: Optional[str] = None,
     custom_force_script: Optional[str] = None,
     custom_force_parameters: Optional[dict] = None,
     name: Optional[str] = None,
@@ -110,8 +109,6 @@ def run_production(
                      4 fs for HMR topologies and 2 fs otherwise.
         output_frequency_ps: Output frequency in picoseconds (default: 10.0)
         trajectory_format: Trajectory format - "dcd" or "pdb" (default: "dcd")
-        restraint_file: DEPRECATED and ignored. Use ``custom_force_script``
-                     for production biases.
         custom_force_script: Path to a Python script defining a single
                      ``energy(positions, ctx) -> torch.Tensor`` function (a
                      scalar potential energy in kJ/mol). MDClaw computes the
@@ -849,15 +846,6 @@ def run_production(
             if is_periodic and not implicit_solvent:
                 if xml_inputs.box_vectors is not None:
                     simulation.context.setPeriodicBoxVectors(*xml_inputs.box_vectors)
-
-        # ``restraint_file`` is deprecated and ignored; production biases now
-        # go through custom_force_script (added to the System before the
-        # Simulation was built, above).
-        if restraint_file:
-            result["warnings"].append(
-                "restraint_file is deprecated and ignored; use "
-                "custom_force_script instead."
-            )
 
         # Setup output file paths
         trajectory_file = out_dir / f"{pref}trajectory.{trajectory_format}"
