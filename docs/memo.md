@@ -68,8 +68,21 @@ smoke   23 passed, 0 failed   (PPM3 と MODELLER を含む。GPU は SKIP)
 ```
 
 GHCR に push 済み。パッケージは public で、匿名トークンで manifest を引けることを確認
-したので、Rikyu 側は資格情報なしで `apptainer pull` できる。GPU smoke
-(`test-rikyu-gpu.sh`) は SIF からでないと意味が無いので Rikyu 側で走らせる。
+したので、Rikyu 側は資格情報なしで `apptainer pull` できる。
+
+SIF は手元の Lima VM `singularity-ce` (singularity-ce 4.5.0) で digest 指定 pull から
+変換した。
+
+```
+~/Downloads/mdclaw-rikyu-arm64-cuda130-ppm3-f9e628126877.sif
+6,774,157,312 bytes
+SHA-256 367af38cb733207176703d69b5d115f629707565db40ebf8ad93befb2947d8e4
+```
+
+**SIF からも container test 23/23。** PPM3 チェックが SIF 内で通ったことには意味があり、
+再ビルドした `immers` が (apt の gfortran ではなく) conda の libgfortran.so.5 を
+ランタイムの LD_LIBRARY_PATH 経由で解決できていることの確認になっている。残るは Rikyu
+実機での GPU smoke (`test-rikyu-gpu.sh`) で、これは SIF からでないと FUSE 経路を踏まない。
 
 ### Mac でビルドできる
 
