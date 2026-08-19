@@ -294,3 +294,62 @@ def test_sealed_node_render_then_review_flow(monkeypatch, tmp_path):
         assert event["node_id"] == "prod_001"
         assert event["success"] is True
         assert isinstance(event["details"]["artifacts"], dict)
+
+
+# --- the generated PyMOL script has to be Python ------------------------------
+def test_the_generated_preview_script_is_valid_python(tmp_path):
+    """The script is built by interpolating into an f-string, and a Python bool
+    interpolated as JSON becomes ``true`` — which parses as a name, not a
+    keyword, and kills the script at import. It has happened twice: once for the
+    two-axis view flag, once for the distance-bonding flag, and the second time
+    it silently disabled the fix it was guarding. A parse is cheap; run it over
+    the flag combinations that pick different branches.
+    """
+    import ast
+    import itertools
+
+    from mdclaw.visualization._base import _pymol_selection_script
+
+    structure = tmp_path / "s.pdb"
+    # 3 atoms is under every size threshold; a second file exercises the
+    # hybrid-36 branch without writing 100,000 records.
+    structure.write_text(
+        "CRYST1   30.000   30.000   30.000  90.00  90.00  90.00 P 1           1\n"
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00\n"
+        "END\n"
+    )
+    hybrid = tmp_path / "h.pdb"
+    hybrid.write_text(
+        "CRYST1   30.000   30.000   30.000  90.00  90.00  90.00 P 1           1\n"
+        "ATOM  A0009  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00\n"
+        "END\n"
+    )
+
+    for source, style, ray, solvent, ortho in itertools.product(
+        (structure, hybrid),
+        ("overview", "system_box", "membrane"),
+        (True, False),
+        (True, False),
+        (True, False),
+    ):
+        script = _pymol_selection_script(
+            structure_file=source,
+            output_png=tmp_path / "out.png",
+            orthogonal_png=(tmp_path / "top.png") if ortho else None,
+            view_json=tmp_path / "view.json",
+            width=400, height=300, dpi=72, ray=ray,
+            style=style, selection=None, background="white",
+            show_solvent=solvent, show_ions=True, show_lipids=True,
+            highlight_ligands=True, camera_preset="auto", zoom_buffer=3.0,
+        )
+        try:
+            ast.parse(script)
+        except SyntaxError as exc:  # pragma: no cover - the failure is the point
+            raise AssertionError(
+                f"generated script is not valid Python for style={style} "
+                f"ray={ray} solvent={solvent} ortho={ortho} "
+                f"file={source.name}: {exc}"
+            ) from exc
+        assert " true" not in script and " false" not in script, (
+            "a JSON boolean reached the generated Python"
+        )

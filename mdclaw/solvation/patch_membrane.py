@@ -27,7 +27,6 @@ Low-level PDB parsing / geometry / carve helpers were moved here from the old
 
 from __future__ import annotations
 
-import collections
 import hashlib
 import json
 import math
@@ -43,6 +42,7 @@ from mdclaw._common import ensure_directory, sha256_file
 from mdclaw._lock import file_lock
 from mdclaw.solvation.constants import (
     PATCH_CACHE_SCHEMA_VERSION,
+    PATCH_ION_RESNAMES,
     PATCH_WATER_RESNAMES,
     lipid21_template_contract,
     patch_lipid_alias_resnames,
@@ -746,6 +746,12 @@ def _extract_cryst1_box(path: Path) -> Optional[dict[str, Any]]:
 # Solvent copied into the extension keeps the patch's own ions, so the added
 # volume arrives at the same salt concentration as the rest of the box.
 _EXTENDABLE_ION_RESNAMES = {"NA", "K", "CL", "SOD", "POT", "CLA"}
+# Every ion name the assembly may meet in a cached patch, upper-cased. The
+# module's own defaults are "Na+"/"Cl-", so the "+"/"-" forms have to be here
+# too or a patch built with them would keep its salt.
+PATCH_ION_RESNAMES_UPPER = frozenset(
+    {name.upper() for name in PATCH_ION_RESNAMES} | _EXTENDABLE_ION_RESNAMES
+)
 # Whole molecules landing this close to something already placed are dropped —
 # the rule every solvation program applies when it replicates a water box.
 PATCH_WATER_TILE_MIN_SEPARATION_ANGSTROM = 2.2
@@ -878,59 +884,6 @@ def solute_box_interval(
         "extend_above": round(max(0.0, high - (centre + patch_half)), 3),
         "extended": (high - low) > 2.0 * patch_half + 1e-6,
     }
-
-
-def _drop_counter_ions(
-    placed: list[tuple[PDBAtom, str, float, float, float]],
-    carve_keys: list[tuple],
-    *,
-    cations: int,
-    anions: int,
-    membrane_center_z: float,
-    leaflet: float,
-) -> tuple[list[tuple[PDBAtom, str, float, float, float]], list[tuple], int]:
-    """Remove this many bulk ions of each species, to cancel a charge change.
-
-    Taken from the bulk — outside the bilayer — and furthest from the membrane
-    first, so the removal does not thin the interfacial layer where ions
-    legitimately sit.
-    """
-    if cations <= 0 and anions <= 0:
-        return placed, carve_keys, 0
-    wanted = {"cation": int(cations), "anion": int(anions)}
-    groups: dict[tuple, list[int]] = {}
-    for index, key in enumerate(carve_keys):
-        groups.setdefault(key, []).append(index)
-
-    candidates: list[tuple[float, str, tuple]] = []
-    for key, indices in groups.items():
-        resname = placed[indices[0]][0].resname.upper()
-        if resname in {"NA", "K", "SOD", "POT"}:
-            species = "cation"
-        elif resname in {"CL", "CLA"}:
-            species = "anion"
-        else:
-            continue
-        depth = min(
-            abs(placed[i][4] - membrane_center_z) for i in indices
-        )
-        if depth <= leaflet:
-            continue                      # not bulk; those were handled already
-        candidates.append((depth, species, key))
-    candidates.sort(reverse=True)         # furthest from the membrane first
-
-    remove: set[tuple] = set()
-    for _depth, species, key in candidates:
-        if wanted.get(species, 0) <= 0:
-            continue
-        wanted[species] -= 1
-        remove.add(key)
-    if not remove:
-        return placed, carve_keys, 0
-    kept = [
-        (item, key) for item, key in zip(placed, carve_keys) if key not in remove
-    ]
-    return [i for i, _k in kept], [k for _i, k in kept], len(remove)
 
 
 def extend_water_slabs(
@@ -2366,6 +2319,39 @@ def embed_with_membrane_patch_tiles(
 
     patch_pdb = Path(str(patch["patch_pdb"]))
     _plines, patch_atoms = _parse_pdb_atoms(patch_pdb)
+    # Strip the patch's own ions before anything is tiled. The patch is packed
+    # and equilibrated with salt on purpose — a charged lipid needs its
+    # counter-ions to equilibrate neutral, and the water structure should form
+    # around real ions — but the salt has no business being carried into the
+    # assembly. It sits where the patch's own equilibration put it, which for
+    # the bundled POPC patch is the headgroup interface, and tiling reproduces
+    # that placement nx*ny times along with whatever species imbalance it has.
+    # Everything downstream then has to compensate: drop what lands in the
+    # bilayer, drop counter-ions to keep that neutral, and count what survived
+    # so the salt is not added twice. Measured on SMO in POPC, those steps
+    # removed all 72 tiled ions by arithmetic coincidence and neutralisation
+    # replaced every one of them — the same result this reaches on purpose.
+    #
+    # VMD and CHARMM-GUI both build the bilayer ion-free and place ions last,
+    # into the water phase. `_apply_neutralizing_swap` already does exactly
+    # that, choosing bulk waters outside the leaflet, so the ions end up where
+    # they belong and at the concentration that was asked for. It also makes
+    # `existing_cations == existing_anions == 0` an invariant, which removes the
+    # branch that could ship a cell above the requested concentration with no
+    # way to come back down.
+    stripped_ions = sum(
+        1 for atom in patch_atoms
+        if atom.resname.upper() in PATCH_ION_RESNAMES_UPPER
+    )
+    if stripped_ions:
+        patch_atoms = [
+            atom for atom in patch_atoms
+            if atom.resname.upper() not in PATCH_ION_RESNAMES_UPPER
+        ]
+        warnings.append(
+            f"removed {stripped_ions} ion(s) the cached patch was equilibrated "
+            "with; all ions are placed after assembly, in bulk water."
+        )
     if not patch_atoms:
         return {
             "success": False,
@@ -2417,54 +2403,10 @@ def embed_with_membrane_patch_tiles(
 
     shifted: list[tuple[PDBAtom, str, float, float, float]] = []
     carve_keys: list[tuple] = []
-    buried_ion_keys: set[tuple] = set()
-    buried_ion_species: list[tuple[tuple, str]] = []
     for atom, line, x, y, z, carve_key in tiled:
         nx_, ny_, nz_ = x + shift_x, y + shift_y, z + shift_z
-        if (
-            atom.resname.upper() in _EXTENDABLE_ION_RESNAMES
-            and abs(nz_ - float(membrane_center_z or 0.0)) <= float(leaflet)
-        ):
-            # An ion sitting inside the cached patch's own bilayer. One is a
-            # defect in that patch; tiling turns it into one per tile, and they
-            # end up in the hydrophobic core of every copy. Drop them here and
-            # let neutralization put the charge back in bulk water.
-            buried_ion_keys.add(carve_key)
-            buried_ion_species.append((carve_key, atom.resname.upper()))
-            continue
         shifted.append((atom, _rewrite_line_coords(line, nx_, ny_, nz_), nx_, ny_, nz_))
         carve_keys.append(carve_key)
-    if buried_ion_keys:
-        # Dropping them is species-skewed: the patch's buried ions are almost
-        # all one species, so removing them alone leaves the assembly carrying
-        # that much net charge — measured as +102 with every patch Cl- gone.
-        # Neutralisation then answers a charge that was an artefact of this
-        # step. Remove an equal number of the counter-species from bulk instead,
-        # so the drop moves no charge at all.
-        dropped = collections.Counter(
-            resname for _key, resname in buried_ion_species
-        )
-        cations_dropped = sum(
-            n for name, n in dropped.items()
-            if name in {"NA", "K", "SOD", "POT"}
-        )
-        anions_dropped = sum(
-            n for name, n in dropped.items() if name in {"CL", "CLA"}
-        )
-        rebalanced = _drop_counter_ions(
-            shifted, carve_keys,
-            cations=max(0, anions_dropped - cations_dropped),
-            anions=max(0, cations_dropped - anions_dropped),
-            membrane_center_z=float(membrane_center_z or 0.0),
-            leaflet=float(leaflet),
-        )
-        shifted, carve_keys, removed = rebalanced
-        warnings.append(
-            f"dropped {len(buried_ion_keys)} ion(s) that the cached patch had "
-            f"inside its own bilayer, and {removed} counter-ion(s) from bulk to "
-            "keep the removal charge neutral; neutralization then answers only "
-            "the solute's own charge."
-        )
 
     # The tiles were shifted to put the bilayer on the membrane frame the
     # orientation step established. Check that they landed there. The shift is

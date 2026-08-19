@@ -338,6 +338,19 @@ SOLVENT_DENSITY_BIN_ANGSTROM = 4.0
 BULK_WATER_NUMBER_DENSITY_PER_ANGSTROM3 = 0.03344
 SOLVENT_DENSITY_MIN_MEDIAN_FRACTION = 0.75
 SOLVENT_DENSITY_MIN_BIN_FRACTION = 0.35
+# Within an assessed slab, how much of the cross section may be near-empty
+# before the cell is judged to have a channel through it. A z profile cannot
+# see one: water filling 76% of every slab's area with the rest vacuum reports
+# 0.76 of bulk everywhere and passes both tests above.
+SOLVENT_DENSITY_COLUMN_ANGSTROM = 10.0
+SOLVENT_DENSITY_VOID_COLUMN_FRACTION = 0.35
+SOLVENT_DENSITY_MAX_VOID_FRACTION = 0.08
+# And a column only counts if it is empty through most of the water region. A
+# construction void runs the height of the cell; a dewetted hydrophobic pore,
+# an internal dry cavity, a bound micelle or the sparse surface of a big
+# extramembrane domain are all bounded in z. Without this, a bare area fraction
+# rejects those too.
+SOLVENT_DENSITY_VOID_Z_FRACTION = 0.8
 # Coarse excluded volume per non-water atom, so a bin the solute passes through
 # is not mistaken for a void. Protein at 0.73 cm3/g is about 7 A^3 per atom
 # counting hydrogens; 8 is deliberately generous, since over-correcting only
@@ -431,6 +444,62 @@ def _solvent_density_profile(
         return {"assessed": False, "reason": "no_water_outside_the_bilayer"}
     worst_index, worst = min(densities, key=lambda item: item[1])
     bulk = BULK_WATER_NUMBER_DENSITY_PER_ANGSTROM3
+
+    # The same measurement per (x, y) column of each assessed slab. A column
+    # that is mostly solute is skipped by the same free-volume rule; what is
+    # left is space that should hold water.
+    assessed_z = {index for index, _value in densities}
+    step = SOLVENT_DENSITY_COLUMN_ANGSTROM
+    ncol_x = max(1, int(box_a // step))
+    ncol_y = max(1, int(box_b // step))
+    col_water: dict[tuple[int, int], int] = {}
+    col_other: dict[tuple[int, int], int] = {}
+    for atom in atoms:
+        imaged = centre + _minimum_image_delta(atom["z"] - centre, box_c)
+        zi = min(n_bins - 1, max(0, int((imaged - origin) // width)))
+        if zi not in assessed_z:
+            continue
+        key = (
+            zi,
+            int((atom["x"] % box_a) // (box_a / ncol_x)) % ncol_x,
+            int((atom["y"] % box_b) // (box_b / ncol_y)) % ncol_y,
+        )
+        if (
+            atom["resname"] in PATCH_WATER_RESNAMES
+            and atom["name"].upper() in _WATER_OXYGEN_NAMES
+        ):
+            col_water[key] = col_water.get(key, 0) + 1
+        elif atom["resname"] not in PATCH_WATER_RESNAMES:
+            col_other[key] = col_other.get(key, 0) + 1
+    col_volume = (box_a / ncol_x) * (box_b / ncol_y) * width
+    judged_by_xy: dict[tuple[int, int], int] = {}
+    void_by_xy: dict[tuple[int, int], int] = {}
+    for zi in assessed_z:
+        for ix in range(ncol_x):
+            for iy in range(ncol_y):
+                key = (zi, ix, iy)
+                free = (
+                    col_volume
+                    - col_other.get(key, 0) * _EXCLUDED_VOLUME_PER_ATOM_ANGSTROM3
+                )
+                if free <= 0.2 * col_volume:
+                    continue
+                xy = (ix, iy)
+                judged_by_xy[xy] = judged_by_xy.get(xy, 0) + 1
+                if col_water.get(key, 0) / free < (
+                    SOLVENT_DENSITY_VOID_COLUMN_FRACTION * bulk
+                ):
+                    void_by_xy[xy] = void_by_xy.get(xy, 0) + 1
+    # A void column is one empty through most of the water region, not one
+    # empty in a single slab.
+    judged = len(judged_by_xy)
+    void = sum(
+        1
+        for xy, count in judged_by_xy.items()
+        if count > 0
+        and void_by_xy.get(xy, 0) / count >= SOLVENT_DENSITY_VOID_Z_FRACTION
+    )
+    void_fraction = (void / judged) if judged else 0.0
     return {
         "assessed": True,
         "bin_width_angstrom": round(width, 3),
@@ -443,6 +512,11 @@ def _solvent_density_profile(
         "min_density_z": round(origin + worst_index * width, 1),
         "median_fraction_threshold": SOLVENT_DENSITY_MIN_MEDIAN_FRACTION,
         "bin_fraction_threshold": SOLVENT_DENSITY_MIN_BIN_FRACTION,
+        "void_column_fraction": round(void_fraction, 4),
+        "void_columns": void,
+        "judged_columns": judged,
+        "void_fraction_threshold": SOLVENT_DENSITY_MAX_VOID_FRACTION,
+        "void_z_fraction_threshold": SOLVENT_DENSITY_VOID_Z_FRACTION,
         "water_oxygen_count": total_water,
     }
 
@@ -554,11 +628,24 @@ def _membrane_embedding_geometry_report(
         exclude_low=headgroup_z_min - overlap_pad,
         exclude_high=headgroup_z_max + overlap_pad,
     )
+    if not density.get("assessed"):
+        # "Could not be judged" is not "judged fine". Say so where a caller
+        # reading the top-level verdict will see it.
+        report["solvent_density_warning"] = (
+            "solvent density was not assessed: "
+            f"{density.get('reason', 'unknown')}"
+        )
     if density.get("assessed"):
         if density["median_fraction_of_bulk"] < SOLVENT_DENSITY_MIN_MEDIAN_FRACTION:
             failure_reasons.append("solvent_density_below_bulk_outside_bilayer")
         elif density["min_fraction_of_bulk"] < SOLVENT_DENSITY_MIN_BIN_FRACTION:
             failure_reasons.append("solvent_density_void_outside_bilayer")
+        elif density["void_column_fraction"] > SOLVENT_DENSITY_MAX_VOID_FRACTION:
+            # A z profile averages over the whole cross section, so a channel
+            # running the height of the cell through a quarter of the area
+            # still reports 0.76 of bulk in every bin and passes. Columns catch
+            # what slabs cannot.
+            failure_reasons.append("solvent_density_void_columns_outside_bilayer")
 
     report.update({
         "status": "failed" if failure_reasons else "passed",

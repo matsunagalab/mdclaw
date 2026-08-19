@@ -364,46 +364,22 @@ def test_bulk_salt_is_added_in_pairs_so_the_system_stays_neutral():
     assert 3 + 102 + plan["cations"] - plan["anions"] == 102
 
 
-def test_dropping_buried_ions_does_not_move_the_net_charge(tmp_path):
-    """The patch's buried ions are nearly all one species.
+def test_the_patch_arrives_without_the_salt_it_was_equilibrated_with():
+    """Ions are placed after assembly, not carried in from the patch.
 
-    Removing them alone leaves the assembly carrying that much net charge — the
-    real case had every patch Cl- inside the bilayer and 102 Na+ left over — and
-    neutralisation then answers a charge this step invented.
+    The patch is packed and equilibrated with salt on purpose, but that salt
+    sits where the patch's own equilibration put it — on the bundled POPC patch,
+    at the headgroup interface — and tiling reproduces it nx*ny times with
+    whatever species imbalance it has. VMD and CHARMM-GUI both build the bilayer
+    ion-free and place ions last, into the water phase, which is what
+    `_apply_neutralizing_swap` already does.
     """
-    from mdclaw.solvation.patch_membrane import PDBAtom, _drop_counter_ions
+    from mdclaw.solvation.patch_membrane import PATCH_ION_RESNAMES_UPPER
 
-    def ion(resname, z, serial):
-        line = (
-            "ATOM  %5d %-4s%4s I%4d    %8.3f%8.3f%8.3f  1.00  0.00"
-            % (serial, resname, resname, serial, 0.0, 0.0, z)
-        )
-        return PDBAtom(
-            line=line, index=serial, record="ATOM", atom_name=resname,
-            resname=resname, chain_id="I", resseq=str(serial),
-            insertion_code="", x=0.0, y=0.0, z=z,
-        )
-
-    placed, keys = [], []
-    for i, z in enumerate((40.0, 45.0, 50.0, -40.0, -45.0)):
-        a = ion("NA", z, i + 1)
-        placed.append((a, a.line, a.x, a.y, a.z))
-        keys.append(("na", i))
-    for i, z in enumerate((41.0, 46.0)):
-        a = ion("CL", z, 100 + i)
-        placed.append((a, a.line, a.x, a.y, a.z))
-        keys.append(("cl", i))
-
-    # three anions were dropped from the bilayer, so three cations must go too
-    kept, kept_keys, removed = _drop_counter_ions(
-        placed, keys, cations=3, anions=0, membrane_center_z=0.0, leaflet=23.0
-    )
-
-    assert removed == 3
-    assert sum(1 for a, *_ in kept if a.resname == "NA") == 2
-    assert sum(1 for a, *_ in kept if a.resname == "CL") == 2
-    # furthest from the membrane went first
-    assert 50.0 not in [a.z for a, *_ in kept]
+    # The module's own defaults are "Na+"/"Cl-", so those forms have to be
+    # recognised or a patch built with them would keep its salt.
+    for name in ("NA", "CL", "K", "SOD", "POT", "CLA", "NA+", "CL-", "K+"):
+        assert name in PATCH_ION_RESNAMES_UPPER, name
 
 
 def test_ion_species_are_not_assigned_in_z_order():
@@ -2734,3 +2710,63 @@ def test_water_the_gate_cannot_recognise_is_reported_not_passed():
     )
     assert report["assessed"] is False
     assert report["reason"] == "too_few_recognised_waters"
+
+
+def test_a_channel_through_the_cell_is_caught_though_the_z_profile_passes():
+    """A z profile averages over the whole cross section.
+
+    A channel through 12.5 % of the area leaves every slab at ~0.87 of bulk,
+    comfortably past the 0.75 median and the 0.35 per-bin floor, so slabs alone
+    cannot see it. The columns can, because it is empty from one face to the
+    other.
+
+    The band where this matters is bounded on both sides. Much wider and the
+    slab median falls below 0.75 on its own — a quarter-area channel measures
+    0.729 and the slab test already fails it. Much narrower and the column
+    fraction drops under the 8 % threshold: on a 112 A cell that floor is a
+    channel roughly 35 A across, and anything smaller is left to the slab
+    tests, which see it only if it moves a whole slab's density.
+    """
+    from mdclaw.solvation.membrane import _solvent_density_profile
+
+    box = 40.0
+    step = 10.0
+    ncol = int(box // step)                    # 4 x 4 columns of 10 A
+    per_column = int(round(0.03344 * step * step * 4.0))   # ~13 waters, bulk
+    # Twelve of sixteen columns filled at bulk density, four empty from top to
+    # bottom: a channel through a quarter of the cross section. Filling the
+    # columns rather than a stripe is the point — water crammed into a narrow
+    # band is far easier to detect than the real thing.
+    atoms = []
+    z = -60.0
+    while z < 60.0:
+        for ix in range(ncol):
+            for iy in range(ncol):
+                if ix == 3 and iy >= 2:
+                    continue                   # the channel: 2 of 16 columns
+                for k in range(per_column):
+                    atoms.append({
+                        "name": "O", "resname": "HOH",
+                        "x": ix * step + (k % 4) * 2.0 + 1.0,
+                        "y": iy * step + (k // 4) * 2.5 + 1.0,
+                        "z": z + 2.0,
+                    })
+        z += 4.0
+    for z in (-5.0, 5.0):
+        for i in range(40):
+            atoms.append({"name": "P31", "resname": "PC",
+                          "x": (i % 8) * 3.0, "y": (i // 8) * 3.0, "z": z})
+
+    report = _solvent_density_profile(
+        atoms, box_a=box, box_b=box, box_c=120.0,
+        alpha=90.0, beta=90.0, gamma=90.0,
+        centre=0.0, exclude_low=-9.0, exclude_high=9.0,
+    )
+
+    assert report["assessed"] is True
+    # the slab tests are satisfied ...
+    assert report["median_fraction_of_bulk"] >= 0.75
+    assert report["min_fraction_of_bulk"] >= 0.35
+    # ... and the columns are not: one of sixteen is empty through the whole
+    # water region, and the gate only counts a column that is.
+    assert report["void_column_fraction"] > 0.08

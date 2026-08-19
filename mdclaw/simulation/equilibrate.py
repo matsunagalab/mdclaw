@@ -43,6 +43,7 @@ def run_equilibration(
     nvt_time_ns: Optional[float] = None,
     npt_time_ns: Optional[float] = None,
     restraint_atoms: str = "solute_heavy",
+    lipid_restraint_force_constant: Optional[float] = None,
     restraint_force_constant: float = 100.0,
     name: Optional[str] = None,
     output_dir: Optional[str] = None,
@@ -609,6 +610,38 @@ def run_equilibration(
             ])
 
         system_nvt.addForce(restraint)
+
+        # Hold the bilayer flat through thermalisation, in z only, on the
+        # NVT stage alone. See select_lipid_headgroup_anchors. It is not added
+        # to NPT: an absolute z reference fights a membrane barostat that
+        # rescales z, so the restraint and the barostat would pull against each
+        # other for the whole run.
+        lipid_k = (
+            restraint_force_constant
+            if lipid_restraint_force_constant is None
+            else float(lipid_restraint_force_constant)
+        )
+        if is_membrane and lipid_k > 0.0:
+            from mdclaw.simulation.restraints import (
+                select_lipid_headgroup_anchors,
+            )
+            anchors = select_lipid_headgroup_anchors(xml_inputs.topology)
+            if anchors["atom_indices"]:
+                flat = CustomExternalForce("kz*(z - z0)^2")
+                flat.addPerParticleParameter("kz")
+                flat.addPerParticleParameter("z0")
+                kz_value = (
+                    lipid_k * kilojoules_per_mole / (nanometer * nanometer)
+                )
+                for atom_index in anchors["atom_indices"]:
+                    flat.addParticle(
+                        atom_index, [kz_value, positions[atom_index][2]]
+                    )
+                system_nvt.addForce(flat)
+            result["lipid_headgroup_restraint_count"] = anchors["count"]
+            result["lipid_headgroup_restraint_force_constant"] = lipid_k
+            result["lipid_headgroup_restraint_stages"] = ["NVT"]
+
         logger.info(
             "Applied restraints to %d atoms (%s)",
             result["restraint_count"],
@@ -1151,6 +1184,9 @@ def run_equilibration(
                     "timestep_fs": timestep_fs,
                     "restraint_atoms": restraint_atoms,
                     "restraint_count": result.get("restraint_count"),
+                    "lipid_headgroup_restraint_count": result.get(
+                        "lipid_headgroup_restraint_count"
+                    ),
                     "restraint_counts_by_component": result.get(
                         "restraint_counts_by_component"
                     ),

@@ -437,3 +437,55 @@ def test_export_images_under_the_supplied_box_and_keeps_a_ligand_bound():
     # and the caller's topology keeps its own box
     kept = top.getPeriodicBoxVectors().value_in_unit(unit.nanometer)
     assert kept[0][0] == pytest.approx(20.0)
+
+
+def test_a_long_bound_chain_is_not_carried_a_box_away():
+    """Contact is the molecule's nearest atom, not its centroid.
+
+    An eight-atom chain touching the solute at one end and extending away has
+    its centroid well clear of the solute, so a centroid test does not see the
+    contact and images the chain into the cell — measured nearest approach
+    0.2 nm -> 2.2 nm. The screen may use the centroid; the decision may not.
+    """
+    pytest.importorskip("numpy")
+    import numpy as np
+
+    from mdclaw.structure.imaging import center_solute_and_wrap_solvent
+
+    class _Atom:
+        def __init__(self, index):
+            self.index = index
+
+    class _Topology:
+        def __init__(self, count, bonds):
+            self._count, self._bonds = count, bonds
+
+        def getNumAtoms(self):
+            return self._count
+
+        def bonds(self):
+            for i, j in self._bonds:
+                yield _Atom(i), _Atom(j)
+
+    box = (10.0, 10.0, 10.0)
+    anchor_n = 9
+    positions = np.zeros((anchor_n + 9, 3))
+    positions[:anchor_n, 0] = np.linspace(-1.0, 8.0, anchor_n)
+    for k in range(8):                       # chain: -1.2 .. -3.3, centroid -2.25
+        positions[anchor_n + k, 0] = -1.2 - 0.3 * k
+    positions[-1, 0] = 28.0                  # bulk solvent, three boxes out
+    bonds = (
+        [(i, i + 1) for i in range(anchor_n - 1)]
+        + [(anchor_n + k, anchor_n + k + 1) for k in range(7)]
+    )
+
+    out = center_solute_and_wrap_solvent(
+        _Topology(anchor_n + 9, bonds), positions, box
+    )
+
+    anchor = out[:anchor_n]
+    chain = out[anchor_n:anchor_n + 8]
+    nearest = min(abs(c[0] - a[0]) for c in chain for a in anchor)
+    assert nearest < 0.5, "the bound chain was carried away from the solute"
+    # bulk solvent still fills the cell centred on the solute
+    assert 0.0 <= out[-1][0] <= 10.0

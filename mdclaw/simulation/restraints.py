@@ -146,3 +146,42 @@ def select_restraint_atoms(
         "warnings": [],
         "errors": [],
     }
+
+
+def select_lipid_headgroup_anchors(topology) -> dict[str, Any]:
+    """Phosphorus atoms of the lipid headgroups, for a flat-bilayer restraint.
+
+    Minimisation and the first thermalisation exist to close what assembly left
+    open: the gap where lipids were carved away from the solute, the seams
+    between stacked water slabs, the thin few angstroms at each end of the
+    cell. A bilayer with nothing holding it can answer that by bending or
+    thinning into those spaces instead, and the picture that would show it is
+    the one whose defects took a day to find.
+
+    Restraining the headgroup phosphorus in z alone is what CHARMM-GUI's
+    membrane protocol does, and it is the restraint that matches the intent:
+    the bilayer keeps its thickness and stays flat, while lipids remain free to
+    move in the membrane plane and pack back around the solute — which is the
+    relaxation being asked for. A full positional restraint on lipid heavy
+    atoms would stop that too.
+
+    Sterols carry no phosphorus and are not anchors; they follow the
+    phospholipids they sit between.
+    """
+    from mdclaw.solvation.constants import lipid21_template_contract
+
+    contract = lipid21_template_contract()
+    head_names = {name.upper() for name in contract.head_names}
+    whole_names = {name.upper() for name in contract.full_names}
+    indices: list[int] = []
+    for atom in topology.atoms():
+        if atom.element is None or atom.element.symbol != "P":
+            continue
+        resname = atom.residue.name.strip().upper()
+        if resname in head_names or resname in whole_names:
+            indices.append(atom.index)
+    return {
+        "atom_indices": indices,
+        "count": len(indices),
+        "selection": "lipid_headgroup_phosphorus",
+    }

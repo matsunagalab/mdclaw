@@ -38,6 +38,7 @@ def run_minimization(
     state_xml_file: Optional[str] = None,
     max_iterations: int = 5000,
     restraint_atoms: str = "solute_heavy",
+    lipid_restraint_force_constant: Optional[float] = None,
     restraint_force_constant: float = 100.0,
     name: Optional[str] = None,
     output_dir: Optional[str] = None,
@@ -317,6 +318,38 @@ def run_minimization(
             ])
         system_min.addForce(restraint)
 
+        # And hold the bilayer flat while that happens. See
+        # select_lipid_headgroup_anchors: z only, so lipids stay free to pack
+        # back around the solute in the membrane plane.
+        # Defaults to the solute's own constant: one knob unless a caller
+        # deliberately splits them. Zero disables it.
+        lipid_k = (
+            restraint_force_constant
+            if lipid_restraint_force_constant is None
+            else float(lipid_restraint_force_constant)
+        )
+        if is_membrane and lipid_k > 0.0:
+            from mdclaw.simulation.restraints import (
+                select_lipid_headgroup_anchors,
+            )
+            anchors = select_lipid_headgroup_anchors(xml_inputs.topology)
+            if anchors["atom_indices"]:
+                flat = CustomExternalForce("kz*(z - z0)^2")
+                flat.addPerParticleParameter("kz")
+                flat.addPerParticleParameter("z0")
+                kz_value = (
+                    lipid_k
+                    * kilojoules_per_mole
+                    / (nanometer * nanometer)
+                )
+                for atom_index in anchors["atom_indices"]:
+                    flat.addParticle(
+                        atom_index, [kz_value, positions[atom_index][2]]
+                    )
+                system_min.addForce(flat)
+            result["lipid_headgroup_restraint_count"] = anchors["count"]
+            result["lipid_headgroup_restraint_force_constant"] = lipid_k
+
         integrator = VerletIntegrator(0.001)
         PLATFORM_MAP = {
             "cuda": "CUDA", "opencl": "OpenCL",
@@ -420,6 +453,9 @@ def run_minimization(
                 "restraint_atoms": restraint_atoms,
                 "restraint_force_constant": restraint_force_constant,
                 "restraint_count": result["restraint_count"],
+                "lipid_headgroup_restraint_count": result.get(
+                    "lipid_headgroup_restraint_count"
+                ),
                 "restraint_counts_by_component": result[
                     "restraint_counts_by_component"
                 ],
@@ -503,6 +539,9 @@ def run_minimization(
                     "restraint_atoms": restraint_atoms,
                     "restraint_force_constant": restraint_force_constant,
                     "restraint_count": result.get("restraint_count"),
+                    "lipid_headgroup_restraint_count": result.get(
+                        "lipid_headgroup_restraint_count"
+                    ),
                     "restraint_counts_by_component": result.get(
                         "restraint_counts_by_component"
                     ),

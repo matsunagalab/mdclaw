@@ -22,10 +22,18 @@ from typing import Any, List, Sequence
 
 __all__ = ["center_solute_and_wrap_solvent"]
 
-# A molecule whose centroid is this close to the solute's own extent is taken
-# to belong with it — a bound ligand, a coordinated ion, a lipid around a
-# membrane protein — and is imaged with the solute rather than into the cell.
+# A molecule with an atom this close to the solute's own extent is taken to
+# belong with it — a bound ligand, a coordinated ion, a lipid around a membrane
+# protein — and is imaged with the solute rather than into the cell.
 _CONTACT_NM = 0.5
+# A molecule no bigger than this is small enough that its centroid stands in
+# for its atoms, so the cheap screen below applies to it. Water is 3-4 atoms and
+# an ion is 1; everything larger is measured atom by atom.
+_SMALL_MOLECULE_ATOMS = 6
+# How far a small molecule's centroid may be from the anchor before it cannot
+# possibly be touching it. This keeps the per-atom test off the bulk solvent,
+# which is nearly all of the system.
+_SCREEN_NM = 5.0
 
 
 def _connected_molecules(topology: Any) -> List[List[int]]:
@@ -128,6 +136,17 @@ def center_solute_and_wrap_solvent(
             + np.maximum(points - anchor_hi, 0.0)
         )
 
+    def closest_gap(idx, shift_row):
+        # The molecule's own closest approach to the anchor's extent, not its
+        # centroid's. A centroid test asks the wrong question for anything
+        # long: an eight-atom chain touching the anchor at one end and
+        # extending away from it has its centroid well clear of the anchor, so
+        # the contact is not seen and the chain is carried a box away
+        # (measured: nearest approach 0.2 -> 2.2 nm). What decides whether a
+        # molecule belongs with the solute is its nearest atom, not its middle.
+        moved = pos[idx] + shift_row * box
+        return float(np.min(np.linalg.norm(gap(moved), axis=1)))
+
     # Two candidate images per molecule. The centroid one puts it in the cell
     # centred on the anchor, which is what bulk solvent should fill. The extent
     # one puts it against the anchor's own surface, which is what anything
@@ -150,8 +169,22 @@ def center_solute_and_wrap_solvent(
     # Applying it to bulk solvent as well would spread the solvent over the
     # anchor's extent plus a box instead of filling one box, which is a worse
     # picture than the one this function exists to produce.
-    touching = np.linalg.norm(best_gap, axis=1) <= _CONTACT_NM
-    shift = np.where(touching[:, None], against, centred)
+    #
+    # The centroid screen is only safe for molecules small enough that their
+    # centroid stands in for their atoms. A chain touching the anchor at one
+    # end and reaching 12 nm the other way has its centroid 6 nm out, so any
+    # centroid screen drops it and the atom test never runs (measured: nearest
+    # approach 0.2 -> 3.0 nm). Screen by size instead: everything with more
+    # atoms than a water or a monatomic ion gets the atom test, and the bulk
+    # solvent -- which is nearly all of the system -- is what the fast path is
+    # for.
+    shift = centred.copy()
+    for row, idx in enumerate(others):
+        small = len(idx) <= _SMALL_MOLECULE_ATOMS
+        if small and float(np.linalg.norm(best_gap[row])) > _SCREEN_NM:
+            continue                      # a small molecule genuinely far away
+        if closest_gap(idx, against[row]) <= _CONTACT_NM:
+            shift[row] = against[row]
 
     for row, idx in enumerate(others):
         moved = shift[row]

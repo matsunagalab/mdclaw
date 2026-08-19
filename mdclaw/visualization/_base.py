@@ -77,6 +77,17 @@ _STYLE_CHOICES = {
 # work for a picture whose point is the envelope. Past this many solvent atoms
 # the preview falls back to dots and says so.
 _SOLVENT_SURFACE_MAX_ATOMS = 400000
+# Above this, system_box ray-traces without shadows or antialiasing. Measured:
+# two ray-traced views of a 277,768-atom membrane system take 264 s against a
+# 300 s timeout, and it has already timed out twice under load. Raising the
+# timeout only moves the wall — a 4x3 tiling goes further — and dropping the
+# water surface or subsampling the solvent would cost the one thing the picture
+# is for. Turning ray tracing off is not available: headless PyMOL has no GL
+# context and writes no file at all (measured: 3 s and no PNG). Shadows through
+# a transparent surface are the expensive part; dropping them and antialiasing
+# costs shading quality, which no geometry question depends on, and saved 33%
+# on a like-for-like scene.
+_FAST_RAY_MIN_ATOMS = 150000
 
 _CAMERA_CHOICES = {"auto", "overview", "ligand_site", "membrane", "topology_check"}
 
@@ -264,6 +275,51 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 
+def _structure_atom_count(structure_file: Path) -> int:
+    """Atoms in a PDB/mmCIF, counted without loading a molecular library."""
+    path = Path(structure_file)
+    try:
+        if path.suffix.lower() in {".pdb", ".ent"}:
+            with path.open("r", errors="ignore") as handle:
+                return sum(
+                    1 for line in handle if line.startswith(("ATOM", "HETATM"))
+                )
+        if path.suffix.lower() in {".cif", ".mmcif"}:
+            with path.open("r", errors="ignore") as handle:
+                return sum(
+                    1 for line in handle
+                    if line.startswith(("ATOM ", "HETATM"))
+                )
+    except OSError:
+        return 0
+    return 0
+
+
+def _needs_distance_bonding(structure_file: Path) -> bool:
+    """Does this file carry atom serials a PDB reader cannot follow?
+
+    A PDB serial is five columns. OpenMM switches to hybrid-36 past 99,999
+    atoms and writes its CONECT records the same way; PyMOL drops those bonds
+    silently. Detect it from the file rather than assuming, so ordinary
+    structures keep the reader's own bonding and do not gain bonds the file
+    never declared.
+    """
+    path = Path(structure_file)
+    if path.suffix.lower() not in {".pdb", ".ent"}:
+        return False
+    try:
+        with path.open("r", errors="ignore") as handle:
+            for line in handle:
+                if not line.startswith(("ATOM", "HETATM")):
+                    continue
+                serial = line[6:11].strip()
+                if serial and not serial.isdigit():
+                    return True                 # hybrid-36 has begun
+    except OSError:
+        return False
+    return False
+
+
 def _pymol_selection_script(
     *,
     structure_file: Path,
@@ -286,23 +342,43 @@ def _pymol_selection_script(
 ) -> str:
     lipid_resn = "+".join(_LIPID_RESNAMES)
     ion_resn = "+".join(_ION_RESNAMES)
+    needs_distance_bonding = _needs_distance_bonding(structure_file)
+    atom_count = _structure_atom_count(structure_file)
+    # Shadows and antialiasing are dropped for a large assembled system; see
+    # _FAST_RAY_MIN_ATOMS. Other styles are small enough to keep them.
+    fast_ray = bool(ray) and (
+        style == "system_box" and atom_count >= _FAST_RAY_MIN_ATOMS
+    )
     return f"""from pymol import cmd
 import json
 
 cmd.reinitialize()
-# Bond by distance as well as by CONECT. A PDB's atom serial is five
-# columns, so past 99,999 atoms OpenMM writes hybrid-36 ("A0009") and its
-# CONECT records follow suit; PyMOL does not read that, and every atom beyond
-# the wrap loses its bonds. Sticks then draw nothing for them. Measured on a
-# 276,417-atom membrane system: 5,762 of 47,972 lipid atoms fell past the wrap,
-# and the region they occupy (x 60-117, y 67-118) rendered as a hole in the
-# bilayer -- a picture that says "the membrane is torn" about a membrane that
-# is intact. Systems this size are now routine.
-cmd.set("connect_mode", 3)
+# Bond by distance as well as by CONECT, but only for a file that needs it.
+#
+# A PDB's atom serial is five columns, so past 99,999 atoms OpenMM writes
+# hybrid-36 ("A0009") and its CONECT records follow suit; PyMOL does not read
+# that, and every atom beyond the wrap loses its bonds. Sticks then draw
+# nothing for them. Measured on a 276,417-atom membrane system: 5,762 of 47,972
+# lipid atoms fell past the wrap, and the region they occupy rendered as a hole
+# in the bilayer -- a picture that says "the membrane is torn" about a membrane
+# that is intact. Systems this size are now routine.
+#
+# It is not a free setting, so it is not applied blanket. connect_mode 3 adds
+# bonds the file did not declare: a CONECT naming atoms 1-2, with an unrelated
+# carbon 1.4 A from atom 1, gives one bond under the default and two under
+# mode 3. On an unminimised or clashing structure that draws a clash as a bond
+# and hides the very thing the picture is for.
+if {bool(needs_distance_bonding)}:
+    cmd.set("connect_mode", 3)
 cmd.load({json.dumps(str(structure_file))}, "structure")
 cmd.hide("everything", "all")
 cmd.bg_color({json.dumps(background)})
 cmd.set("ray_opaque_background", 1)
+if {bool(fast_ray)}:
+    # See _FAST_RAY_MIN_ATOMS.
+    cmd.set("antialias", 0)
+    cmd.set("ray_shadows", 0)
+    cmd.set("ray_transparency_shadows", 0)
 cmd.set("antialias", 2)
 cmd.set("depth_cue", 0)
 # Orthographic: a box drawn in perspective has no two edges the same length, so
@@ -513,6 +589,9 @@ effective = {{
     ),
     "ions": "spheres" if has("ion_sel") and {str(show_ions)} else "hidden",
     "periodic_cell": cell_state,
+    "ray_traced": {bool(ray)},
+    "ray_shadows": {not fast_ray},
+    "atom_count": {atom_count},
 }}
 with open({json.dumps(str(view_json))}, "w") as fh:
     json.dump({{"view": view, "effective_representations": effective}}, fh, indent=2)
