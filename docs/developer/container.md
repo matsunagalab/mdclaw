@@ -136,6 +136,7 @@ and reports `SKIP` rather than `FAIL`:
 | `MDCLAW_CUDA_TOOLKIT_VERSION` | arm64 image (`13.0`) | exact NVRTC version; the check still runs everywhere and only asserts a version when the variable is set |
 | `MDCLAW_CUFFT_MIN_VERSION` | arm64 image (`12.1.0.78`) | cuFFT floor and API level |
 | `MDCLAW_FUSEFIX_LIB` | arm64 image | the FUSE preload shim being present and mapped |
+| `MDCLAW_PPM3_PATCHED` | both images | `immers` being the rebuilt binary, not the one the conda package ships |
 
 The amd64 / CUDA 11.8 image declares none of the last two, ships cuFFT from the
 CUDA 11.8 family, and has no shim, so both checks skip there. Adding a contract
@@ -240,11 +241,16 @@ inside one.
 - Docker image size is roughly 11.4 GB; SIF size is roughly 4.6 GB.
 - Minimum actively verified NVIDIA driver is 520.
 - PPM3 (`immers`), the membrane orientation code bundled with packmol-memgen,
-  is rebuilt from patched source at build time. The stock binary computes the
-  orientation and then dies printing it, because `opm.f` has a FORMAT
-  descriptor missing a comma that current gfortran rejects at runtime; the
-  build fails loudly rather than shipping a binary that can never produce a
-  result.
+  is rebuilt from patched source at build time, in both images. The stock
+  binary computes the orientation and then dies printing it, because `opm.f`
+  has a FORMAT descriptor missing a comma that current gfortran rejects at
+  runtime; the build fails loudly rather than shipping a binary that can never
+  produce a result. The aarch64 conda package carries the same bug, so the
+  arm64 image installs `gfortran` in its builder stage for this and overwrites
+  `/opt/mdclaw/bin/immers`. The rebuilt binary is identified by its compiled
+  FORMAT string: running `immers` with no input dies at the first read, long
+  before the bad descriptor is reached, so the two builds cannot be told apart
+  by exit status.
 - The image ships CUDA 11.8 to cover mixed HPC clusters with older drivers.
 - OpenMM 8.5.1 is source-built against CUDA 11.8 so NVRTC-generated PTX matches
   the driver floor. 8.5.1 is the floor required by openmmforcefields >= 0.16
