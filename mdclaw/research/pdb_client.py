@@ -17,9 +17,8 @@ from mdclaw._common import (  # noqa: E402
 )
 logger = setup_logger(__name__)
 
-# Initialize working directory
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path("outputs")
-ensure_directory(WORKING_DIR)
 
 from mdclaw.research.cache import _atomic_write_bytes, _atomic_write_text, _cache_lock, _get_cache_dir, _sha256_bytes, _validate_structure_bytes, _verify_cache  # noqa: E402
 from mdclaw.research.source_core import _complete_source_node, _resolve_source_artifacts_dir, _source_bundle_inputs_with_assemblies, _validate_source_node  # noqa: E402
