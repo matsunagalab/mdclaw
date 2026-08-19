@@ -7,6 +7,80 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-19 — arm64 イメージに PPM3 を移植。amd64 の検証は無効、MODELLER の ldd は初実走で自壊
+
+Rikyu 用 SIF を作り直すため、`Dockerfile.rikyu-arm64` を Mac (Apple Silicon /
+Docker Desktop) で再ビルドした。amd64 に入っている PPM3 パッチが arm64 側に未移植
+だったので、それを移す作業。移すだけのつもりが、両方の**検証**が壊れていた。
+
+### aarch64 の conda 版 immers も同じバグを持っている
+
+移植前のイメージ (`54798ff`) を調べたところ、`/opt/mdclaw/bin/immers` は**既に存在
+する**。ppm3 のソースディレクトリには binary が無く、ambertools の conda パッケージが
+aarch64 ビルドを bin に置いている。中身:
+
+```
+' tilt=',f7.0'+-',        <- カンマ欠落。amd64 の同梱バイナリと同じ
+```
+
+なので arm64 でも「パッチして make し直し、conda 版を上書きする」が必要だった。
+`install -m 0755 ... /opt/mdclaw/bin/immers` はその上書きになる。
+
+### amd64 の post-check は一度も発火していない
+
+```
+/opt/mdclaw/bin/immers < /dev/null 2>&1 | grep -q "Fortran runtime error: Missing comma"
+```
+
+空 stdin だと `opm.f:84` の最初の read で "End of file" で死ぬ。**問題の FORMAT 行に
+到達しないので、このパターンは絶対に一致しない。** さらに `sed && grep || true` の連鎖
+なので、sed が当たらなくても `|| true` に飲まれてビルドは続く。つまり amd64 側は
+「パッチが当たらなくても素通りする」状態。
+
+arm64 版はコンパイル済みバイナリ内の FORMAT 文字列で判定するようにした。パッチ後は
+`f7.0,'+-'`、未パッチは `f7.0'+-'` が入っているので、これは実際に区別できる。空 stdin
+で走らせる方は残したが、意味は「バイナリが共有ライブラリを解決して Fortran ランタイム
+まで到達する」ことの確認に変えた。同じ判定を `test-container.sh` にも入れ、
+`MDCLAW_PPM3_PATCHED` を宣言したイメージにだけ効かせる (古い SIF は SKIP)。効き目は
+古いイメージに変数を立てて確認済み: 20 passed / **1 failed**。
+
+### MODELLER の ldd 検証 (8afd86e) はイメージではなく自分が壊れていた
+
+初回ビルドは stage 2 の 19/20 で落ちた。
+
+```
+libglib-2.0.so.0 => not found
+libmodeller.so.14 => not found
+```
+
+どちらもイメージ内に実在する (glib は conda の `/opt/mdclaw/lib`、libmodeller は拡張の
+隣)。`ldd` をランタイムの `LD_LIBRARY_PATH` 無しで走らせていたのが原因で、**検査の欠陥
+であってイメージの欠陥ではない**。2026-08-18 のエントリで「rikyu の end-to-end ビルドは
+未検証」と書いた通り、この検査は今回が初の実走だった。ランタイムが宣言しているのと同じ
+検索パスを与えて解決。
+
+### 結果
+
+```
+image   ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev-f9e628126877  21 GB
+digest  sha256:32fde85be54f4582a13129808092881af4ff5fcb225b7564aa23bb3797475ddf
+smoke   23 passed, 0 failed   (PPM3 と MODELLER を含む。GPU は SKIP)
+```
+
+GHCR に push 済み。パッケージは public で、匿名トークンで manifest を引けることを確認
+したので、Rikyu 側は資格情報なしで `apptainer pull` できる。GPU smoke
+(`test-rikyu-gpu.sh`) は SIF からでないと意味が無いので Rikyu 側で走らせる。
+
+### Mac でビルドできる
+
+`build-rikyu-arm64.sh` は arm64 host なら通るが、`nproc` と `df -BG --output` が GNU
+限定で macOS では動かなかった (前者は `set -e` でその場で死ぬ)。`sysctl -n hw.ncpu` /
+`df -k` へのフォールバックを入れた。Docker Desktop の VM は 14 CPU / 8.3 GB なので
+`BUILD_JOBS=6` に絞った (並列 nvcc はメモリを食う)。SIF 化だけは Mac では出来ない
+(apptainer が無い) ので、GHCR に push して Rikyu 側で `apptainer pull` する。
+
+---
+
 ## 2026-08-19 — cursor 再レビューで 10 件。coplanar 棄却と sparse-perfect の順位が実バグ
 
 同じ `smo_reviewer` に修正後の差分を再レビューさせた。**今回はファイルを一切変更していない**

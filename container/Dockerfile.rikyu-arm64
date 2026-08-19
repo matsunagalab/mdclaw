@@ -87,6 +87,7 @@ RUN test "$(dpkg --print-architecture)" = "arm64" && \
       cmake \
       curl \
       doxygen \
+      gfortran \
       git \
       ninja-build \
       swig && \
@@ -104,6 +105,33 @@ ENV PATH="/opt/mdclaw/bin:$PATH" \
 # The packed conda environment includes CUDA 13.1 user-space tools. Always use
 # the base image compiler explicitly so OpenMM/NVRTC stay on the 13.0 contract.
 RUN /usr/local/cuda/bin/nvcc --version | grep -q "release 13.0"
+
+# Rebuild PPM3 (immers), the membrane orientation code bundled with
+# packmol-memgen, as the amd64 image does. The binary shipped in the conda
+# package computes the orientation correctly and then dies printing it: opm.f
+# has a FORMAT descriptor missing a comma (`f7.0''+-''`), which older gfortran
+# tolerated and current gfortran rejects at runtime, so no oriented PDB is ever
+# written. One comma fixes it. Built in this stage because it already has a
+# compiler and /opt/mdclaw is carried forward from it; the runtime stage has no
+# gfortran, only the conda libgfortran the binary links against.
+RUN set -eu; \
+    PPM3_DIR=$(/opt/mdclaw/bin/python -c "import packmol_memgen, pathlib; print(pathlib.Path(packmol_memgen.__file__).parent / 'lib' / 'ppm3')"); \
+    sed -i "s/f7\.0''+-''/f7.0,''+-''/" "$PPM3_DIR/opm.f"; \
+    grep -q "f7.0,''+-''" "$PPM3_DIR/opm.f"; \
+    make -C "$PPM3_DIR" clean >/dev/null 2>&1 || true; \
+    make -C "$PPM3_DIR"; \
+    install -m 0755 "$PPM3_DIR/immers" /opt/mdclaw/bin/immers
+
+# Fail the build if the installed binary is not the patched one. Running immers
+# with empty stdin dies at the first read, long before the bad FORMAT is
+# reached, so the stock binary cannot be told apart by its exit status; the
+# compiled FORMAT string can. The run is still worth doing: it proves the
+# freshly linked binary resolves its libraries and reaches Fortran runtime.
+RUN grep -a -q "f7.0,'+-'" /opt/mdclaw/bin/immers && \
+    ! grep -a -q "f7.0'+-'" /opt/mdclaw/bin/immers && \
+    /opt/mdclaw/bin/immers < /dev/null 2>&1 \
+      | grep -q "Fortran runtime error: End of file" && \
+    echo "PPM3 immers rebuilt from patched opm.f"
 
 RUN /opt/mdclaw/bin/pip install --no-cache-dir cython
 
@@ -206,8 +234,13 @@ RUN curl -fsSL \
 # Fail the build if the hand-assembled layout leaves the extension unresolvable.
 # `armv8-gnu` bundles gfortran and hdf5 but not glib, which MODELLER also needs;
 # it comes from the conda environment already unpacked at /opt/mdclaw/lib, so a
-# dependency change there would otherwise only surface at first use.
-RUN ldd /opt/mdclaw/lib/modeller-${MODELLER_VERSION}/lib/armv8-gnu/python3.3/_modeller.so \
+# dependency change there would otherwise only surface at first use. Resolve
+# against the search path the runtime stage declares: neither /opt/mdclaw/lib
+# (glib) nor the MODELLER lib directory (its own libmodeller.so.14) is on the
+# default loader path in this stage, and without them ldd reports "not found"
+# for libraries the image does ship.
+RUN LD_LIBRARY_PATH="/opt/mdclaw/lib:/opt/mdclaw/lib/modeller-${MODELLER_VERSION}/lib/armv8-gnu:${LD_LIBRARY_PATH:-}" \
+      ldd /opt/mdclaw/lib/modeller-${MODELLER_VERSION}/lib/armv8-gnu/python3.3/_modeller.so \
       | tee /tmp/modeller-ldd.txt && \
     ! grep -q "not found" /tmp/modeller-ldd.txt && \
     rm -f /tmp/modeller-ldd.txt
@@ -268,6 +301,7 @@ ENV PATH="/opt/mdclaw/bin:$PATH" \
     MDCLAW_CUFFT_MIN_VERSION="12.1.0.78" \
     MDCLAW_FUSEFIX_LIB="/opt/mdclaw/lib/libmdclaw_fusefix.so" \
     MDCLAW_MODELLER_VERSION="10.8" \
+    MDCLAW_PPM3_PATCHED="1" \
     PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages" \
     OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins" \
     LD_PRELOAD="/opt/mdclaw/lib/libmdclaw_fusefix.so" \

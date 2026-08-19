@@ -241,8 +241,12 @@ ENV AMBERHOME="/opt/mdclaw"
 ENV PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages"
 ENV OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins"
 # Declares that this image ships MODELLER, so the shared smoke test checks it.
-# The arm64 image does not set this: salilab publishes no linux-aarch64 build.
+# The arm64 image declares it too, installed from the generic tarball rather
+# than the salilab conda channel, which is linux-64 only.
 ENV MDCLAW_MODELLER_VERSION="10.8"
+# Likewise for the rebuilt PPM3 binary. Images built before that rebuild existed
+# do not set this, so the smoke test skips them instead of failing them.
+ENV MDCLAW_PPM3_PATCHED="1"
 ENV LD_LIBRARY_PATH="/opt/mdclaw/lib:${LD_LIBRARY_PATH}"
 
 # Heavy AI model backends (BioEmu, Boltz-2) are NOT baked into the image.

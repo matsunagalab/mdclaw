@@ -164,6 +164,22 @@ echo "[AmberTools]"
 check "tleap" bash -c "echo 'quit' | tleap -f -"
 check "antechamber" antechamber -h
 check "parmchk2" bash -c "command -v parmchk2"
+check_declared MDCLAW_PPM3_PATCHED "PPM3 (immers) rebuilt from patched source" python -c "
+import shutil
+import subprocess
+
+binary = shutil.which('immers')
+assert binary, 'immers not in PATH'
+blob = open(binary, 'rb').read()
+assert b\"f7.0,'+-'\" in blob, 'immers still carries the unpatched FORMAT descriptor'
+assert b\"f7.0'+-'\" not in blob, 'immers still carries the unpatched FORMAT descriptor'
+# No stdin: it dies at its first read, well before the FORMAT is reached, which
+# is enough to show the binary loads its libraries and reaches Fortran runtime.
+result = subprocess.run([binary], stdin=subprocess.DEVNULL, capture_output=True, text=True)
+output = result.stdout + result.stderr
+assert 'Fortran runtime error: End of file' in output, output
+print(f'PPM3 {binary} patched and runnable')
+"
 
 # --- GPU detection ---
 echo ""

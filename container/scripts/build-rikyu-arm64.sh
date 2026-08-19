@@ -1,8 +1,9 @@
 #!/bin/bash
 # Build, publish, and install the MDClaw arm64 / CUDA 13 development image.
 #
-# Run on any arm64 Linux host with Docker or Podman — rikyu's login node is the
-# usual one, and nothing here is specific to it. The build needs no GPU:
+# Run on any arm64 host with Docker or Podman — rikyu's login node is the usual
+# one, and Apple Silicon with Docker Desktop works too; nothing here is specific
+# to either. The build needs no GPU:
 # CONDA_OVERRIDE_CUDA covers the CUDA solve and OpenMM compiles its kernels at
 # Context creation. A GPU is needed only by test-rikyu-gpu.sh, which must run
 # from the SIF because the FUSE cuFFT failure it covers does not reproduce from
@@ -16,7 +17,9 @@
 #                as PATH.bak. The new SIF is verified before anything is moved.
 #
 # Environment:
-#   BUILD_JOBS       compile parallelism (default: nproc)
+#   BUILD_JOBS       compile parallelism (default: the host CPU count). Lower it
+#                    when the engine's VM is memory-constrained; Docker Desktop
+#                    defaults to a few GB, and parallel nvcc jobs are hungry
 #   TMPDIR           scratch for the image build and SIF conversion; point this
 #                    at a filesystem with ~60 GB free if / is small or quota'd
 #   KEY_MODELLER10v8 if set, the SIF check also exercises a licensed MODELLER
@@ -60,7 +63,11 @@ else
 fi
 echo "==> Container engine: $ENGINE"
 
-avail_gb=$(df -BG --output=avail "${TMPDIR:-/tmp}" 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)
+BUILD_JOBS="${BUILD_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
+echo "==> Compile parallelism: $BUILD_JOBS"
+
+# df -k is the portable spelling; GNU's --output and -BG are not on macOS.
+avail_gb=$(df -k "${TMPDIR:-/tmp}" 2>/dev/null | awk 'NR==2 {print int($4 / 1048576)}')
 if [ "${avail_gb:-0}" -lt 60 ]; then
     echo "Warning: only ${avail_gb}G free on ${TMPDIR:-/tmp}." >&2
     echo "The image is ~15 GB and the SIF conversion unpacks it again; point" >&2
@@ -74,7 +81,7 @@ image="ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev-${revision}"
 echo "==> Building $image"
 "$ENGINE" build --platform linux/arm64 \
     --build-arg GIT_REVISION="$(git rev-parse HEAD)" \
-    --build-arg BUILD_JOBS="${BUILD_JOBS:-$(nproc)}" \
+    --build-arg BUILD_JOBS="$BUILD_JOBS" \
     -f container/Dockerfile.rikyu-arm64 \
     -t "$image" .
 
