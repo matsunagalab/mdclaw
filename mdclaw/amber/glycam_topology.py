@@ -39,14 +39,13 @@ from pathlib import Path  # noqa: E402
 from typing import List, Optional, Dict, Any  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
-    ensure_directory, BaseToolWrapper,
+    BaseToolWrapper,
 )
 from mdclaw._common import get_timeout  # noqa: E402
 from mdclaw import forcefield_catalog as _ff_catalog  # noqa: E402
 
-# Initialize working directory (use absolute path for conda run compatibility)
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path("outputs").resolve()
-ensure_directory(WORKING_DIR)
 
 # Initialize tool wrappers.
 # ``tleap`` is no longer used: the curated build path runs through

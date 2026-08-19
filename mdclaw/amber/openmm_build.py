@@ -46,7 +46,7 @@ from typing import Callable, Optional, Dict, Any, Tuple  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
     atomic_write_text_group,
-    ensure_directory, BaseToolWrapper,
+    BaseToolWrapper,
     tail_for_agent,
 )
 from mdclaw._lock import file_lock  # noqa: E402
@@ -57,9 +57,8 @@ from mdclaw.forcefield_templates import (  # noqa: E402
 )
 from mdclaw import _topology_pablo  # noqa: E402
 
-# Initialize working directory (use absolute path for conda run compatibility)
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path("outputs").resolve()
-ensure_directory(WORKING_DIR)
 
 # --- Ligand charge-fitting timeout ------------------------------------------
 # ``SystemGenerator.create_system`` lazily triggers GAFF parameterization for

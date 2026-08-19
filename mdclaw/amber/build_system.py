@@ -39,7 +39,7 @@ from pathlib import Path  # noqa: E402
 from typing import List, Optional, Dict, Any  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
-    ensure_directory, create_unique_subdir, generate_job_id,
+    create_unique_subdir, generate_job_id,
     BaseToolWrapper, create_file_not_found_error, create_tool_not_available_error,
     create_validation_error,
     create_validation_error_from_guardrails, guardrail_messages,
@@ -51,9 +51,8 @@ from mdclaw.chemistry_constants import (  # noqa: E402
 )
 from mdclaw import forcefield_catalog as _ff_catalog  # noqa: E402
 
-# Initialize working directory (use absolute path for conda run compatibility)
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path("outputs").resolve()
-ensure_directory(WORKING_DIR)
 
 # Initialize tool wrappers.
 # ``tleap`` is no longer used: the curated build path runs through

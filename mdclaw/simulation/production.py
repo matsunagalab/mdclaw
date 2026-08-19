@@ -16,13 +16,11 @@ from typing import Optional  # noqa: E402
 from mdclaw._common import (  # noqa: E402
     create_unique_subdir,
     create_validation_error,
-    ensure_directory,
     generate_job_id,
 )
 
-# Initialize working directory (use absolute path for conda run compatibility)
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path("outputs").resolve()
-ensure_directory(WORKING_DIR)
 
 from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fail_node_if_running, _resolve_implicit_solvent_model, _resolve_topology_run_settings  # noqa: E402
 from mdclaw.simulation.custom_forces import CUSTOM_FORCE_GROUP, CustomForceError, CustomForceReporter, custom_force_signature, load_custom_forces, write_cv_metadata  # noqa: E402

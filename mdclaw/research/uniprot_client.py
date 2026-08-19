@@ -10,14 +10,12 @@ import httpx
 # Configure logging
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import (  # noqa: E402
-    ensure_directory,
     setup_logger,
 )
 logger = setup_logger(__name__)
 
-# Initialize working directory
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path("outputs")
-ensure_directory(WORKING_DIR)
 
 
 async def search_proteins(

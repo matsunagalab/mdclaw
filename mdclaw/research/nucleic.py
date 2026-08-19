@@ -8,7 +8,6 @@ from pathlib import Path
 # Configure logging
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import (  # noqa: E402
-    ensure_directory,
     setup_logger,
 )
 
@@ -17,9 +16,8 @@ from mdclaw.forcefield_templates import nucleic_residue_name_map  # noqa: E402
 
 logger = setup_logger(__name__)
 
-# Initialize working directory
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path("outputs")
-ensure_directory(WORKING_DIR)
 
 
 def _polymer_type_suggests_nucleic(polymer_type: str | None) -> bool:

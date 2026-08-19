@@ -12,13 +12,9 @@ logger = setup_logger(__name__)
 from pathlib import Path  # noqa: E402
 from typing import Optional  # noqa: E402
 
-from mdclaw._common import (  # noqa: E402
-    ensure_directory,
-)
 
-# Initialize working directory (use absolute path for conda run compatibility)
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path("outputs").resolve()
-ensure_directory(WORKING_DIR)
 
 from mdclaw.simulation._base import _node_artifact_path  # noqa: E402
 

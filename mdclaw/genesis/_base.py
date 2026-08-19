@@ -24,11 +24,9 @@ from pathlib import Path  # noqa: E402
 from typing import Dict, Any  # noqa: E402
 
 
-from mdclaw._common import ensure_directory  # noqa: E402
 
-# Initialize working directory (use absolute path for conda run compatibility)
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path("outputs").resolve()
-ensure_directory(WORKING_DIR)
 
 
 def _resolve_boltz_backend(prefix: str | None = None):

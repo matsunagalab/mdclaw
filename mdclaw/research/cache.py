@@ -21,9 +21,8 @@ from mdclaw._common import (  # noqa: E402
 )
 logger = setup_logger(__name__)
 
-# Initialize working directory
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path("outputs")
-ensure_directory(WORKING_DIR)
 
 
 def _get_cache_dir() -> Path:

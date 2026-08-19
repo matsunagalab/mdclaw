@@ -29,14 +29,13 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,  # noqa: F401  (kept for parity / future extension)
-    ensure_directory,
     setup_logger,
 )
 
 logger = setup_logger(__name__)
 
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path("outputs").resolve()
-ensure_directory(WORKING_DIR)
 
 
 # ---------------------------------------------------------------------------

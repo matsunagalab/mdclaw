@@ -12,7 +12,6 @@ from typing import Optional
 from mdclaw._common import (
     BaseToolWrapper,
     count_atoms_in_pdb,
-    ensure_directory,
     tail_for_agent,
 )
 from mdclaw._common import setup_logger
@@ -44,8 +43,8 @@ def _setup_amber_environment():
 
 _setup_amber_environment()
 
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path("outputs").resolve()
-ensure_directory(WORKING_DIR)
 
 packmol_memgen_wrapper = BaseToolWrapper("packmol-memgen")
 DEFAULT_MEMBRANE_PATCH_BUILDER_TIMEOUT = 1800

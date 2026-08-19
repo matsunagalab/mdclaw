@@ -23,12 +23,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from mdclaw._common import ensure_directory, setup_logger
+from mdclaw._common import setup_logger
 
 logger = setup_logger(__name__)
 
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path(os.getenv("MDCLAW_OUTPUT_DIR", "outputs")).resolve()
-ensure_directory(WORKING_DIR)
 
 _AA_ALPHABET = set("ACDEFGHIKLMNPQRSTVWY")
 

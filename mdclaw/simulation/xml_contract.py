@@ -13,13 +13,11 @@ from pathlib import Path  # noqa: E402
 from typing import Optional  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
-    ensure_directory,
     sha256_file,
 )
 
-# Initialize working directory (use absolute path for conda run compatibility)
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path("outputs").resolve()
-ensure_directory(WORKING_DIR)
 
 
 

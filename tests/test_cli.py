@@ -6,12 +6,15 @@ and CLI subcommand output.
 """
 
 import json
+import os
 import subprocess
 import sys
 from importlib.util import find_spec
 from pathlib import Path
 
 import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _pick_existing_tool(tools, *preferred_names):
@@ -1034,6 +1037,42 @@ class TestSubprocessCLI:
         )
         assert result.returncode == 0
         assert "--pdb-file" in result.stdout
+
+    def test_startup_writes_nothing_to_the_working_directory(self, tmp_path):
+        """Discovery imports every tool module; none may touch the filesystem.
+
+        `--list` and `--version` do no work, so anything that appears in the
+        working directory came from an import-time side effect.
+        """
+        result = subprocess.run(
+            [sys.executable, "-m", "mdclaw._cli", "--list"],
+            capture_output=True, text=True, cwd=tmp_path,
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        )
+        assert result.returncode == 0, result.stderr
+        assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+    def test_starts_from_a_read_only_working_directory(self, tmp_path):
+        """HPC binds and read-only SIF mounts must not stop the CLI starting."""
+        workdir = tmp_path / "read-only"
+        workdir.mkdir()
+        workdir.chmod(0o555)
+        try:
+            try:
+                (workdir / "probe").touch()
+            except OSError:
+                pass
+            else:
+                pytest.skip("this user can write to a 0555 directory (root?)")
+            result = subprocess.run(
+                [sys.executable, "-m", "mdclaw._cli", "--version"],
+                capture_output=True, text=True, cwd=workdir,
+                env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+            )
+        finally:
+            workdir.chmod(0o755)
+        assert result.returncode == 0, result.stderr
+        assert "mdclaw" in result.stdout
 
     def test_no_args_shows_help(self):
         result = subprocess.run(

@@ -38,7 +38,7 @@ from pathlib import Path  # noqa: E402
 from typing import Optional, Dict, Any  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
-    ensure_directory, BaseToolWrapper, guess_pdb_element,
+    BaseToolWrapper, guess_pdb_element,
 )
 from mdclaw.chemistry_constants import (  # noqa: E402
     is_glycan_residue_name,
@@ -48,9 +48,8 @@ from mdclaw.chemistry_constants import (  # noqa: E402
 from mdclaw.forcefield_catalog import DNA_XML, RNA_XML  # noqa: E402
 from mdclaw.forcefield_templates import nucleic_residue_name_map  # noqa: E402
 
-# Initialize working directory (use absolute path for conda run compatibility)
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path("outputs").resolve()
-ensure_directory(WORKING_DIR)
 
 # Initialize tool wrappers.
 # ``tleap`` is no longer used: the curated build path runs through

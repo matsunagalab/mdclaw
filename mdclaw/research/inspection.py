@@ -11,7 +11,6 @@ from typing import Optional
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import (  # noqa: E402
     create_validation_error,
-    ensure_directory,
     setup_logger,
 )
 
@@ -32,9 +31,8 @@ from mdclaw.selection_utils import (  # noqa: E402
 
 logger = setup_logger(__name__)
 
-# Initialize working directory
+# Default output location, created when a tool writes there, not at import.
 WORKING_DIR = Path("outputs")
-ensure_directory(WORKING_DIR)
 
 from mdclaw.research.nucleic import MODIFIED_NUCLEIC_UNSUPPORTED_MESSAGE, classify_nucleic_residues, modified_nucleic_support_report  # noqa: E402
 
