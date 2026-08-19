@@ -290,6 +290,15 @@ def _pymol_selection_script(
 import json
 
 cmd.reinitialize()
+# Bond by distance as well as by CONECT. A PDB's atom serial is five
+# columns, so past 99,999 atoms OpenMM writes hybrid-36 ("A0009") and its
+# CONECT records follow suit; PyMOL does not read that, and every atom beyond
+# the wrap loses its bonds. Sticks then draw nothing for them. Measured on a
+# 276,417-atom membrane system: 5,762 of 47,972 lipid atoms fell past the wrap,
+# and the region they occupy (x 60-117, y 67-118) rendered as a hole in the
+# bilayer -- a picture that says "the membrane is torn" about a membrane that
+# is intact. Systems this size are now routine.
+cmd.set("connect_mode", 3)
 cmd.load({json.dumps(str(structure_file))}, "structure")
 cmd.hide("everything", "all")
 cmd.bg_color({json.dumps(background)})

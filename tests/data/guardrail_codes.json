@@ -115,6 +115,7 @@
   "membrane_patch_state_missing_box",
   "membrane_patch_state_missing_positions",
   "membrane_patch_tiles_used",
+  "membrane_patch_water_extension_failed",
   "memembed_empty_output",
   "memembed_failed",
   "memembed_no_output",
