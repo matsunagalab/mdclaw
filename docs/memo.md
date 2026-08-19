@@ -136,13 +136,33 @@ skill 側は `visual-qa.md` に「系を変える各ステージで描画し、*
 
 D473Y / G497W の既存系はすべて (1)(3)(4)(5) の影響下にある。D473Y は solv まで作り直した。
 
-### 未対応 (cursor 指摘)
+### cursor の P2 指摘を反映
 
-- `_lipid_tail_z_values` がコレステロール単独パッチを扱えない (`CHL1` は `tail_names` に無い)
-- 鎖長・リーフレット組成の偏りで tail 平均がずれ得る。頭部基を 2 クラスタに分けて
-  **重み無し**中点を取り、tail/water 密度で膜側を選ぶのが cursor の提案
-- `solvent_ions` スタイルが surface を消さずに dots を重ねる
-- タイリング由来の人工的周期性 (イオン 68 個が 28 箇所の xy に重なる)
+| 指摘 | 対応 |
+|---|---|
+| tail 平均が鎖長・リーフレット組成で偏る | `_leaflet_midpoint` を実装。両リーフレットを個別に求めて**重み無し**中点。実パッチで 48.7 (真値 48.8、tail 平均は 48.5) |
+| コレステロール単独パッチを扱えない | 頭部基 → tail → 全脂質原子の順にフォールバックし、いずれも判別器を通す |
+| 5 A 許容値が不適切 | ガードを密度判定に置換したので定数ごと削除 |
+| `solvent_ions` が surface の上に dots を重ねる | 汎用ブロックは dots に戻し、surface は `system_box` 専用に |
+| `system_box` が `show_lipids`/`show_ions` を無視、manifest と PNG が食い違う | フラグを尊重し、**実際に描かれた表現を PyMOL から読み戻して** manifest に記録 |
+| 周期セルが三斜箱を直方体として誤描画 | α/β/γ を検査し、直方体でなければ描かずに理由を記録 |
+| manifest / node metadata に 2 枚目の画像が無い | `views` (軸と画像パス)、`periodic_cell`、`output_png_top` を記録 |
+| skill の記述が矛盾、prep に `system_box` を指定 | 「描画の**試行**は毎ステージ、成功は best-effort」。prep は `overview`、solv 以降が `system_box`。2 枚とも見るよう明記 |
+
+判別器も改良した。頭部基だけでは「膜の中点」と「水の中点」が等価なので、
+**アシル鎖の存在と水の不在の両方**で決める (水だけだと合成パッチで判別できなかった)。
+
+CLI 側も埋めた。`render_structure_preview` の docstring にスタイル一覧・`system_box` の
+描画内容・2 視点・「ユーザに送ること」を書き、`docs/developer/tool-reference.md` も更新。
+
+最終確認 (solv_016): 二重層 midplane 0.1、膜内イオン 0、塩 **0.150 M** (要求 0.150)、
+イオン 下59/上68 (水は 1:1)、geometry passed。
+
+### 未対応
+
+- タイリング由来の人工的周期性 (イオン 68 個が 28 箇所の xy に重なる、同一脂質配置の複製)
+- **同梱パッチ自体の作り直し** (二重層内にイオンが埋まっている)
+- G497W の再構築、D473Y も solv 止まり
 
 ---
 

@@ -61,6 +61,31 @@ def render_structure_preview(
     the preview as node artifacts. Use an ``analyze`` node for standalone
     preview generation; completed non-analyze nodes can receive a preview as a
     post-hoc attachment.
+
+    Styles: ``overview`` (default), ``publication``, ``ligand_site``,
+    ``membrane``, ``solvent_ions``, ``topology_check``, and ``system_box``.
+
+    ``system_box`` is the assembled-system view — use it from ``solv`` onward,
+    and ``overview`` after ``prep``, where there is no solvent or cell yet. It
+    draws the protein as cartoon coloured per chain, lipids as sticks, water as
+    a transparent surface, ions as spheres, everything else as sticks, and the
+    periodic cell as a wire box around the solvent and lipids. The box is the
+    point: it is what shows whether the system fits in its own cell. Only
+    orthorhombic cells are drawn; a triclinic one is omitted and said so in the
+    manifest rather than drawn with the wrong faces.
+
+    ``system_box`` renders two axis-aligned orthographic views —
+    ``structure_preview_png`` looking down x with z vertical, and
+    ``structure_preview_png_top`` looking down z. One projection hides whatever
+    lines up with it. Other styles keep their own camera and render one image.
+
+    The manifest records the representations that were actually drawn, read back
+    from the render rather than inferred from the flags, so a fallback (a
+    solvent surface too large to compute becomes dots) cannot make the manifest
+    disagree with the PNG.
+
+    Rendering a preview nobody sees is the same as not rendering one: send the
+    PNGs to the user, do not only write them. See ``skills/common/visual-qa.md``.
     """
     result: dict[str, Any] = {
         "success": False,
@@ -240,6 +265,15 @@ def render_structure_preview(
             context_extra={"stderr": stderr, "stdout": (exc.stdout or "").strip()},
         )
 
+    _effective: dict[str, Any] = {}
+    if view_json.is_file():
+        try:
+            _effective = json.loads(view_json.read_text()).get(
+                "effective_representations"
+            ) or {}
+        except (ValueError, OSError):
+            _effective = {}
+
     if not output_png.is_file():
         msg = "PyMOL completed but did not produce the expected PNG."
         if node_mode:
@@ -278,17 +312,32 @@ def render_structure_preview(
             "background": background,
             "zoom_buffer": zoom_buffer,
         },
+        # Read back from the render rather than re-derived from the flags: the
+        # style can fall back (a solvent surface too large to compute becomes
+        # dots) and a manifest that disagrees with its own PNG is worse than no
+        # manifest.
         "representations": {
             "protein": "cartoon",
             "nucleic": "cartoon",
             "ligand": "sticks" if highlight_ligands else "hidden",
-            "water": (
-                ("transparent surface" if style == "system_box" else "dots")
-                if show_solvent else "hidden"
+            "water": _effective.get(
+                "solvent", "dots" if show_solvent else "hidden"
             ),
-            "ions": "spheres" if show_ions else "hidden",
-            "lipids": "sticks" if show_lipids else "hidden",
+            "ions": _effective.get(
+                "ions", "spheres" if show_ions else "hidden"
+            ),
+            "lipids": _effective.get(
+                "lipids", "sticks" if show_lipids else "hidden"
+            ),
         },
+        "periodic_cell": _effective.get("periodic_cell"),
+        "views": [
+            {"axis": "x", "png": str(output_png)},
+            *(
+                [{"axis": "z", "png": str(orthogonal_png)}]
+                if orthogonal_png and orthogonal_png.is_file() else []
+            ),
+        ],
         "pymol": {
             "returncode": completed.returncode,
             "stdout": completed.stdout,
@@ -345,6 +394,11 @@ def render_structure_preview(
                 "style": style,
                 "camera_preset": camera_preset,
                 "output_png": rel(output_png),
+                "output_png_top": (
+                    rel(orthogonal_png)
+                    if orthogonal_png and orthogonal_png.is_file() else None
+                ),
+                "representations": _effective or None,
             },
         }
         try:

@@ -312,6 +312,7 @@ cmd.select("lipid_sel", "resn {lipid_resn}")
 cmd.select("ion_sel", "(inorganic and not solvent) or resn {ion_resn}")
 cmd.select("ligand_sel", "organic and not polymer and not solvent and not lipid_sel")
 user_selection = {selection!r}
+solvent_representation = "dots"
 if user_selection:
     cmd.select("user_focus_sel", user_selection)
 
@@ -336,16 +337,9 @@ if has("lipid_sel") and {str(show_lipids)}:
     cmd.color("gray70", "lipid_sel")
     cmd.set("stick_transparency", 0.25, "lipid_sel")
 if has("solvent_sel") and {str(show_solvent)}:
-    cmd.color("skyblue", "solvent_sel")
-    if cmd.count_atoms("solvent_sel") <= {_SOLVENT_SURFACE_MAX_ATOMS}:
-        # PyMOL flags solvent as "ignore", which excludes it from surfaces.
-        cmd.flag("ignore", "solvent_sel", "clear")
-        cmd.set("surface_quality", 0)
-        cmd.set("transparency", 0.78, "solvent_sel")
-        cmd.show("surface", "solvent_sel")
-    else:
-        cmd.show("dots", "solvent_sel")
-        cmd.set("dot_width", 1.0, "solvent_sel")
+    cmd.show("dots", "solvent_sel")
+    cmd.color("lightblue", "solvent_sel")
+    cmd.set("dot_width", 1.0, "solvent_sel")
 # The periodic cell, when the structure carries one. It is the only thing in the
 # picture that shows whether the system actually fits in its box.
 #
@@ -357,12 +351,23 @@ def draw_periodic_cell():
     try:
         symmetry = cmd.get_symmetry("structure")
     except Exception:
-        return None
+        return "no symmetry recorded"
     if not symmetry:
-        return None
+        return "no symmetry recorded"
     a, b, c = (float(v) for v in symmetry[:3])
+    alpha, beta, gamma = (float(v) for v in symmetry[3:6])
     if not all(v > 0.0 for v in (a, b, c)):
-        return None
+        return "cell lengths are not positive"
+    # Only orthorhombic cells are drawn. Reading a, b, c and ignoring the
+    # angles would render a triclinic box as a rectangular one whose faces are
+    # in the wrong places — a picture that answers "does this fit" incorrectly
+    # is worse than no picture.
+    if max(abs(alpha - 90.0), abs(beta - 90.0), abs(gamma - 90.0)) > 0.5:
+        print(
+            "periodic cell not drawn: angles "
+            f"{{alpha:.1f}}/{{beta:.1f}}/{{gamma:.1f}} are not orthorhombic"
+        )
+        return f"omitted (triclinic {{alpha:.1f}}/{{beta:.1f}}/{{gamma:.1f}})"
     # Centre the cell on the material that fills it — the solvent and lipids —
     # not on everything. Centring on the whole system lets a protein reaching
     # out of the box drag the box after it, so the drawn cell no longer lines up
@@ -390,9 +395,9 @@ def draw_periodic_cell():
         obj += [3.0]                      # END
     cmd.load_cgo(obj, "periodic_cell")
     cmd.set("cgo_line_width", 2.0, "periodic_cell")
-    return (a, b, c)
+    return f"drawn ({{a:.1f}} x {{b:.1f}} x {{c:.1f}} A)"
 
-cell_lengths = draw_periodic_cell()
+cell_state = draw_periodic_cell()
 if user_selection and has("user_focus_sel"):
     cmd.show("sticks", "user_focus_sel")
     cmd.color("hotpink", "user_focus_sel")
@@ -421,20 +426,25 @@ elif style == "solvent_ions":
 elif style == "system_box":
     # The assembled system as built: protein by chain, bilayer as sticks, water
     # as a transparent envelope, ions as spheres, and the periodic cell drawn
-    # around all of it.
-    if has("solvent_sel") and cmd.count_atoms("solvent_sel") <= {_SOLVENT_SURFACE_MAX_ATOMS}:
-        cmd.flag("ignore", "solvent_sel", "clear")
-        cmd.set("surface_quality", 0)
-        cmd.set("transparency", 0.78, "solvent_sel")
-        cmd.show("surface", "solvent_sel")
+    # around all of it. The envelope is this style's alone — leaving it in the
+    # generic block put a surface under every other style's dots.
+    if has("solvent_sel") and {str(show_solvent)}:
+        cmd.hide("dots", "solvent_sel")
+        if cmd.count_atoms("solvent_sel") <= {_SOLVENT_SURFACE_MAX_ATOMS}:
+            # PyMOL flags solvent "ignore", which excludes it from surfaces.
+            cmd.flag("ignore", "solvent_sel", "clear")
+            cmd.set("surface_quality", 0)
+            cmd.set("transparency", 0.78, "solvent_sel")
+            cmd.show("surface", "solvent_sel")
+            solvent_representation = "transparent surface"
+        else:
+            cmd.show("dots", "solvent_sel")
+            solvent_representation = "dots (too many atoms to surface)"
         cmd.color("skyblue", "solvent_sel")
-    elif has("solvent_sel"):
-        cmd.show("dots", "solvent_sel")
-        cmd.color("skyblue", "solvent_sel")
-    if has("lipid_sel"):
+    if has("lipid_sel") and {str(show_lipids)}:
         cmd.show("sticks", "lipid_sel")
         cmd.set("stick_transparency", 0.0, "lipid_sel")
-    if has("ion_sel"):
+    if has("ion_sel") and {str(show_ions)}:
         cmd.show("spheres", "ion_sel")
 elif style == "topology_check":
     cmd.show("lines", "all")
@@ -484,8 +494,19 @@ else:
         cmd.zoom("visible", {zoom_buffer})
 
 view = list(cmd.get_view())
+effective = {{
+    "solvent": (
+        solvent_representation if has("solvent_sel") and {str(show_solvent)}
+        else "hidden"
+    ),
+    "lipids": (
+        "sticks" if has("lipid_sel") and {str(show_lipids)} else "hidden"
+    ),
+    "ions": "spheres" if has("ion_sel") and {str(show_ions)} else "hidden",
+    "periodic_cell": cell_state,
+}}
 with open({json.dumps(str(view_json))}, "w") as fh:
-    json.dump({{"view": view}}, fh, indent=2)
+    json.dump({{"view": view, "effective_representations": effective}}, fh, indent=2)
 
 cmd.png(
     {json.dumps(str(output_png))},
@@ -521,6 +542,12 @@ def _pymol_pml_preview(
     camera_preset: str,
     zoom_buffer: float,
 ) -> str:
+    """A hand-editable starting point, not a reproduction of the render.
+
+    It carries the generic representations and one oriented view; the rendered
+    PNGs come from the generated Python next to it, which is what to read to
+    reproduce a picture exactly.
+    """
     return "\n".join([
         f"load {structure_file}, structure",
         "hide everything, all",

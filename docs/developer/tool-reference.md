@@ -392,7 +392,19 @@ signature, update the relevant section here and the matching skill examples.
 
 ## `visualization/`
 
-- `render_structure_preview(...)`: PyMOL headless PNG rendering for PDB/mmCIF
+- `render_structure_preview(...)`: PyMOL headless PNG rendering for PDB/mmCIF.
+  `style="system_box"` is the assembled-system view used from `solv` onward
+  (`overview` after `prep`, which has no solvent or cell): protein cartoon
+  coloured per chain, lipids sticks, water a transparent surface, ions spheres,
+  everything else sticks, and the periodic cell as a wire box drawn around the
+  solvent and lipids — centring it on the whole system would let a protein
+  leaving the box drag the box after it. It renders two axis-aligned
+  orthographic views, `structure_preview_png` down x with z vertical and
+  `structure_preview_png_top` down z, because one projection hides whatever
+  lines up with it; other styles keep their own camera and one image. Only
+  orthorhombic cells are drawn. The manifest reports the representations
+  actually rendered, read back from PyMOL, so a fallback cannot make it
+  disagree with the image
   structure artifacts. In node mode it resolves a representative structure
   artifact from the current node, parent, or ancestors, writes a ray-rendered
   preview PNG plus PyMOL script and manifest under `artifacts/previews/`, and

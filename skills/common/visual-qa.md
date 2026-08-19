@@ -4,12 +4,13 @@ The canonical structure-preview + visual-review procedure shared by every
 stage (prep, equilibration, production, analyze). Reference this page instead
 of duplicating the checklist per skill.
 
-Render one after every stage that changes the system, in both interaction
-modes: `autonomous` skips confirmations, not reporting.
+Attempt a render after every stage that changes the system, in both
+interaction modes: `autonomous` skips confirmations, not reporting. Rendering
+itself is best-effort — a failure to render is not a stage failure.
 
-Visual QA is optional and best-effort. It catches only obvious visual
-accidents; it does not validate force fields, protonation states, parameters,
-chemistry, or small clashes. Never mark a DAG node failed from visual QA alone.
+What the picture can tell you is limited. It catches obvious visual accidents;
+it does not validate force fields, protonation states, parameters, chemistry,
+or small clashes. Never mark a DAG node failed from visual QA alone.
 
 ## Render a preview
 
@@ -23,7 +24,8 @@ artifacts; pass `--structure-file` only to override.
 
 | When | Style |
 |---|---|
-| An assembled system: after `prep`, `solv`, membrane embedding, `min`, `eq`, `prod` | `system_box` |
+| An assembled system: after `solv`, membrane embedding, `min`, `eq`, `prod` | `system_box` |
+| After `prep` — there is no solvent or box yet | `overview` |
 | A ligand binding site | `ligand_site` |
 | Water/ion placement specifically | `solvent_ions --show-solvent` |
 | Anything else | `overview` |
@@ -33,16 +35,21 @@ lipids as sticks, water as a transparent surface, ions as spheres, everything
 else as sticks, and the periodic cell as a wire box around it. That box is the
 point — it is what shows whether the system fits in its own cell.
 
-**Surface the PNG to the user, do not just write it.** Rendering a preview the
-user never sees is the same as not rendering one. Send `structure_preview_png`
-as a file so it appears inline in the desktop app, with a one-line caption
-naming the node and stage. If the harness cannot deliver files, print the
-absolute path. If PyMOL is unavailable (`code=pymol_not_available`), say
-rendering was skipped; it is not a failure.
+`system_box` writes two axis-aligned orthographic views:
+`structure_preview_png` down x, with z vertical, and `structure_preview_png_top`
+down z. Send both — one projection hides whatever lines up with it.
+
+**Surface the PNGs to the user, do not just write them.** Rendering a preview
+the user never sees is the same as not rendering one. Send them as files so they
+appear inline in the desktop app, with a one-line caption naming the node and
+stage. If the harness cannot deliver files, print the absolute paths. If PyMOL
+is unavailable (`code=pymol_not_available`), say rendering was skipped; it is
+not a failure.
 
 ## Inspect (if the agent/UI can see images)
 
-Open `structure_preview_png` and check only:
+Open both `structure_preview_png` and `structure_preview_png_top` and check
+only:
 
 - The main structure is visible and not cut off.
 - Expected components (protein/nucleic/ligand/lipid/water/ion) are not

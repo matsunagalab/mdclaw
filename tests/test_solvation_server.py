@@ -208,6 +208,156 @@ def test_a_solute_taller_than_the_assembled_box_is_refused(tmp_path):
     assert solute_fits_box(atoms, box_c=206.0)["fits"]
 
 
+def _patch_atoms(tmp_path, *, plane_lo, plane_hi, box_c, lower_n=40, upper_n=10,
+                 waters_at=(), name="patch.pdb"):
+    """A minimal bilayer patch: two headgroup planes, tails between, water outside."""
+    from mdclaw.solvation.patch_membrane import _parse_pdb_atoms
+
+    rows, serial = [], 1
+    for z, count in ((plane_lo, lower_n), (plane_hi, upper_n)):
+        for i in range(count):
+            rows.append(
+                "ATOM  %5d  P31 PC  A%4d    %8.3f%8.3f%8.3f  1.00  0.00"
+                % (serial, serial % 10000, 3.0 * (i % 8), 3.0 * (i // 8), z)
+            )
+            serial += 1
+    mid = 0.5 * (plane_lo + plane_hi)
+    for i in range(60):
+        rows.append(
+            "ATOM  %5d  C21 OL  B%4d    %8.3f%8.3f%8.3f  1.00  0.00"
+            % (serial, serial % 10000, 2.0 * (i % 10), 2.0 * (i // 10),
+               mid + 6.0 * ((i % 5) - 2) / 5.0)
+        )
+        serial += 1
+    for z in waters_at:
+        for i in range(20):
+            rows.append(
+                "ATOM  %5d  O   WAT C%4d    %8.3f%8.3f%8.3f  1.00  0.00"
+                % (serial, serial % 10000, 2.0 * i, 0.0, z)
+            )
+            serial += 1
+    path = tmp_path / name
+    path.write_text("\n".join(rows) + "\nEND\n")
+    _lines, atoms = _parse_pdb_atoms(path)
+    return atoms
+
+
+def test_the_midplane_is_the_lipid_core_not_the_water(tmp_path):
+    """A periodic mean unwraps at the widest gap, and a bilayer has two.
+
+    The hydrophobic core and the water layer are comparable in thickness, so
+    unwrapping across the core returns the middle of the water — half a box from
+    the midplane. Measured on the bundled POPC patch: true midplane 48.8, the
+    old estimator returned 10.3, and the assembled bilayer wrapped the
+    receptor's extracellular domain while its helices sat in water.
+    """
+    from mdclaw.solvation.patch_membrane import _estimate_patch_membrane_center_z
+
+    box_c = 76.8
+    atoms = _patch_atoms(
+        tmp_path, plane_lo=26.4, plane_hi=71.2, box_c=box_c,
+        waters_at=(5.0, 15.0, 75.0),
+    )
+
+    centre = _estimate_patch_membrane_center_z(atoms, box_c=box_c)
+
+    assert centre == pytest.approx(48.8, abs=1.5)
+    # not the water midpoint half a box away
+    assert abs(centre - (48.8 - box_c / 2)) > 10.0
+
+
+def test_the_midplane_is_not_pulled_by_the_larger_leaflet(tmp_path):
+    """Leaflets can differ in composition, so a plain mean leans to the bigger one."""
+    from mdclaw.solvation.patch_membrane import _estimate_patch_membrane_center_z
+
+    box_c = 76.8
+    atoms = _patch_atoms(
+        tmp_path, plane_lo=26.4, plane_hi=71.2, box_c=box_c,
+        lower_n=80, upper_n=8, waters_at=(5.0, 15.0, 75.0),
+    )
+
+    centre = _estimate_patch_membrane_center_z(atoms, box_c=box_c)
+
+    assert centre == pytest.approx(48.8, abs=1.5)
+
+
+def test_a_misplaced_bilayer_is_caught_without_re_estimating_it(tmp_path):
+    """The guard cannot be the estimator run again.
+
+    The shift is `target - E(atoms)` and E is translation-equivariant, so
+    `E(atoms + shift)` returns the target whether or not E found the bilayer —
+    it would pass a patch left half a box away. Judge the frame by what should
+    be there instead: tails, no water, headgroups on both sides.
+    """
+    from mdclaw.solvation.patch_membrane import _membrane_core_evidence
+
+    atoms = _patch_atoms(
+        tmp_path, plane_lo=-22.0, plane_hi=22.0, box_c=90.0,
+        waters_at=(-40.0, 40.0),
+    )
+    placed = [(a, a.line, a.x, a.y, a.z) for a in atoms]
+
+    on_frame = _membrane_core_evidence(placed, centre=0.0)
+    off_frame = _membrane_core_evidence(placed, centre=45.0)
+
+    assert on_frame["is_membrane_core"] is True
+    assert on_frame["tail_carbons"] > on_frame["water_oxygens"]
+    assert off_frame["is_membrane_core"] is False
+
+
+def test_too_little_lipid_is_reported_not_refused(tmp_path):
+    """Refusing a build on absent evidence is its own wrong answer."""
+    from mdclaw.solvation.patch_membrane import _membrane_core_evidence, _parse_pdb_atoms
+
+    stub = tmp_path / "stub.pdb"
+    stub.write_text(
+        "ATOM      1  P31 PC  A   1       0.000   0.000  20.000  1.00  0.00\nEND\n"
+    )
+    _lines, atoms = _parse_pdb_atoms(stub)
+
+    verdict = _membrane_core_evidence(
+        [(a, a.line, a.x, a.y, a.z) for a in atoms], centre=0.0
+    )
+
+    assert verdict["assessable"] is False
+    assert verdict["is_membrane_core"] is True      # not judged, so not refused
+
+
+def test_salt_already_in_the_patch_is_not_added_again():
+    """The cached patch is packed at the requested concentration, then tiled.
+
+    Adding a full complement on top of it delivers roughly twice the
+    concentration asked for. Measured on 5L7D: 0.268 M against 0.150 requested.
+    """
+    from mdclaw.solvation.patch_membrane import plan_neutralizing_ions
+
+    fresh = plan_neutralizing_ions(
+        net_charge=0, n_water_residues=16554, saltcon=0.15, add_bulk_salt=True
+    )
+    already = plan_neutralizing_ions(
+        net_charge=0, n_water_residues=16554, saltcon=0.15, add_bulk_salt=True,
+        existing_cations=35, existing_anions=0,
+    )
+
+    assert fresh["cations"] == fresh["anions"] == 45
+    # per species, not per pair: the patch's own salt arrives unbalanced because
+    # ions it had buried in its bilayer are dropped on the way in
+    assert already["cations"] == 10
+    assert already["anions"] == 45
+
+
+def test_ion_species_are_not_assigned_in_z_order():
+    """Sites are sorted by z; filling one species then the other separates charge."""
+    from mdclaw.solvation.patch_membrane import plan_neutralizing_ions
+
+    plan = plan_neutralizing_ions(
+        net_charge=-37, n_water_residues=16554, saltcon=0.15, add_bulk_salt=True
+    )
+
+    assert plan["cations"] == 45 + 37
+    assert plan["anions"] == 45
+
+
 def test_membrane_embedding_geometry_report_passes_transmembrane_layout(tmp_path):
     pdb = tmp_path / "good_membrane.pdb"
     lines = ["CRYST1   80.000   80.000   80.000  90.00  90.00  90.00 P 1           1"]

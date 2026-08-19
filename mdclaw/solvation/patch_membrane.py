@@ -290,6 +290,44 @@ def _lipid_tail_z_values(atoms: list[PDBAtom]) -> list[float]:
     return zs
 
 
+def _leaflet_midpoint(zs: list[float], box_c: float) -> Optional[float]:
+    """Midpoint of the two headgroup planes, weighted by neither population.
+
+    A mean over all headgroups is pulled toward whichever leaflet has more
+    atoms, and asymmetric compositions are supported, so the two planes are
+    located separately and their midpoint taken. The planes are found by
+    splitting at the widest gap in the unwrapped coordinates, which is the
+    hydrophobic core or the water — either way the two sides of that gap are
+    the two leaflets.
+    """
+    if len(zs) < 4 or box_c <= 0.0:
+        return None
+    coords = sorted(value % box_c for value in zs)
+    widest, index = 0.0, 0
+    for i, value in enumerate(coords):
+        nxt = coords[(i + 1) % len(coords)]
+        gap = (nxt - value) if i < len(coords) - 1 else (nxt + box_c - value)
+        if gap > widest:
+            widest, index = gap, i
+    unwrapped = [
+        value if value > coords[index] else value + box_c for value in coords
+    ]
+    unwrapped.sort()
+    # Split again at the widest interior gap: that separates the two planes.
+    gaps = [
+        (unwrapped[i + 1] - unwrapped[i], i) for i in range(len(unwrapped) - 1)
+    ]
+    if not gaps:
+        return None
+    _, split = max(gaps)
+    lower = unwrapped[: split + 1]
+    upper = unwrapped[split + 1:]
+    if not lower or not upper:
+        return None
+    centre = 0.5 * (sum(lower) / len(lower) + sum(upper) / len(upper))
+    return centre % box_c
+
+
 def _estimate_patch_membrane_center_z(
     atoms: list[PDBAtom],
     *,
@@ -297,36 +335,33 @@ def _estimate_patch_membrane_center_z(
 ) -> Optional[float]:
     """Estimate the bilayer midplane from the periodic lipid positions.
 
-    Measured on the acyl tails, not on the headgroups. Headgroups form *two*
-    planes, and a periodic mean has to unwrap them at a gap — but a bilayer
-    patch offers two gaps of similar size, the hydrophobic core and the water
-    layer, and picking the wrong one returns the midpoint of the water instead
-    of the midplane, exactly half a box away.
+    Headgroups form *two* planes, and a periodic mean has to unwrap them at a
+    gap — but a bilayer patch offers two gaps of similar size, the hydrophobic
+    core and the water layer, and picking the wrong one returns the midpoint of
+    the water instead of the midplane, exactly half a box away.
 
     That is not hypothetical. On the bundled POPC patch the core spans ~34 A
     and the water ~35 A, so the choice was effectively a coin flip: the
     estimator returned 10.3 for a patch whose midplane is 48.8, the tiles were
     shifted by that much too little, and the bilayer ended up wrapped around
     the receptor's extracellular domain while its transmembrane helices sat in
-    water. Nothing downstream noticed, because the geometry check only asked
-    whether protein atoms fall inside the headgroup span — and a misplaced
-    bilayer still swallows plenty of them.
+    water.
 
-    The tails are one contiguous slab, so unwrapping them is unambiguous.
-    Headgroups remain the fallback, disambiguated against the tail estimate.
+    So locate the two leaflets separately and take their midpoint unweighted —
+    a plain mean leans toward whichever leaflet has more atoms, and asymmetric
+    leaflets are supported — then use the tails and the water to decide which of
+    the two candidates half a box apart is the membrane rather than the water.
+    Sterol-only patches have neither phospholipid tails nor P/N headgroups, so
+    they fall back to all lipid atoms and are reported as unverified.
     """
+    headgroup_zs = _lipid_headgroup_z_values(atoms)
+    midpoint = _leaflet_midpoint(headgroup_zs, box_c)
+    if midpoint is not None:
+        return _least_solvated_midplane(atoms, midpoint, box_c)
+
     tail_zs = _lipid_tail_z_values(atoms)
     if len(tail_zs) >= 8:
         return _periodic_mean(tail_zs, box_c)
-
-    headgroup_zs = _lipid_headgroup_z_values(atoms)
-    if len(headgroup_zs) >= 2:
-        centre = _periodic_mean(headgroup_zs, box_c)
-        if centre is None:
-            return None
-        # Without tails to anchor it, the headgroup mean is one of two answers
-        # half a box apart. Prefer whichever has less water around it.
-        return _least_solvated_midplane(atoms, centre, box_c)
 
     lipid_zs = [
         atom.z
@@ -334,28 +369,44 @@ def _estimate_patch_membrane_center_z(
         if atom.resname in lipid21_template_contract().known_names
     ]
     if lipid_zs:
-        return _periodic_mean(lipid_zs, box_c)
+        return _least_solvated_midplane(
+            atoms, _periodic_mean(lipid_zs, box_c) or 0.0, box_c
+        )
     return None
 
 
 def _least_solvated_midplane(
     atoms: list[PDBAtom], centre: float, box_c: float
 ) -> float:
-    """Of the two candidates half a box apart, the one with less water on it."""
+    """Of the two candidates half a box apart, the one that is the membrane.
+
+    Locating the two leaflets gives a midpoint, but which midpoint depends on
+    where the coordinates were unwrapped: unwrap across the hydrophobic core and
+    you get the middle of the water instead, exactly half a box away. Both
+    candidates are equally consistent with the headgroup positions, so the
+    lipids and the water have to break the tie — the membrane midplane has acyl
+    chains on it and no water, and the water midpoint the reverse.
+    """
     alternative = (centre + box_c / 2.0) % box_c
-    window = max(4.0, box_c * 0.05)
+    window = max(6.0, box_c * 0.08)
+    tail_names = lipid21_template_contract().tail_names
 
-    def solvent_near(z: float) -> int:
-        count = 0
+    def score(z: float) -> int:
+        tails = waters = 0
         for atom in atoms:
-            if atom.resname not in PATCH_WATER_RESNAMES:
-                continue
             delta = abs(((atom.z - z + box_c / 2.0) % box_c) - box_c / 2.0)
-            if delta <= window:
-                count += 1
-        return count
+            if delta > window:
+                continue
+            name = atom.atom_name.upper()
+            if atom.resname in tail_names and name.startswith("C"):
+                tails += 1
+            elif atom.resname in PATCH_WATER_RESNAMES and name in {
+                "O", "OW", "OH2"
+            }:
+                waters += 1
+        return tails - waters
 
-    return centre if solvent_near(centre) <= solvent_near(alternative) else alternative
+    return centre if score(centre) >= score(alternative) else alternative
 
 
 def _patch_geometry_report(
@@ -697,10 +748,6 @@ _EXTENDABLE_ION_RESNAMES = {"NA", "K", "CL", "SOD", "POT", "CLA"}
 # Whole molecules landing this close to something already placed are dropped —
 # the rule every solvation program applies when it replicates a water box.
 PATCH_WATER_TILE_MIN_SEPARATION_ANGSTROM = 2.2
-# How far the assembled bilayer may sit from the membrane frame the orientation
-# step established. A couple of angstroms is tiling and rounding; tens of them
-# means the shift was computed from a wrong midplane.
-MAX_MEMBRANE_PLACEMENT_OFFSET_ANGSTROM = 5.0
 
 
 def _point_grid(
