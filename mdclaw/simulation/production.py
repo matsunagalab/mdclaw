@@ -1049,9 +1049,18 @@ def run_production(
         from mdclaw.structure.pdb_utils import (
             render_simulation_pdb_preserving_resnames,
         )
+        # Same as min/eq: CRYST1 follows the topology, which still holds the
+        # build-time box, so pass the final state's box and image around the
+        # solute. state.xml / .chk / the DCD keep the integrated coordinates.
         final_pdb.write_text(
             render_simulation_pdb_preserving_resnames(
-                simulation.topology, positions, topology_pdb_file
+                simulation.topology,
+                positions,
+                topology_pdb_file,
+                box_vectors=(
+                    state.getPeriodicBoxVectors() if is_periodic else None
+                ),
+                image=is_periodic,
             )
         )
 

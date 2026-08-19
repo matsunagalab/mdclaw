@@ -394,11 +394,20 @@ def run_minimization(
         from mdclaw.structure.pdb_utils import (
             render_simulation_pdb_preserving_resnames,
         )
+        # The box and the imaging come from the state that was just written,
+        # not from the topology loaded at the start: PDBFile takes CRYST1 from
+        # the topology, which still holds the build-time box.
+        minimized_periodic = bool(getattr(xml_inputs, "is_periodic", False))
         minimized_structure.write_text(
             render_simulation_pdb_preserving_resnames(
                 xml_inputs.topology,
                 minimized_state.getPositions(),
                 topology_pdb_file,
+                box_vectors=(
+                    minimized_state.getPeriodicBoxVectors()
+                    if minimized_periodic else None
+                ),
+                image=minimized_periodic,
             )
         )
         result["minimized_structure"] = str(minimized_structure)

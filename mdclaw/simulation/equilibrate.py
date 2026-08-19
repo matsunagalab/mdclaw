@@ -947,10 +947,14 @@ def run_equilibration(
             # Save final state from NPT
             final_state = sim_npt.context.getState(getPositions=True)
             final_positions = final_state.getPositions()
+            final_box_vectors = (
+                final_state.getPeriodicBoxVectors() if is_periodic else None
+            )
             _save_state_atomic(sim_npt, out_dir / "equilibration.xml")
         else:
             # Implicit solvent: save from NVT
             final_positions = nvt_positions
+            final_box_vectors = nvt_box_vectors
             _save_state_atomic(sim_nvt, out_dir / "equilibration.xml")
 
         result["state_file"] = str(out_dir / "equilibration.xml")
@@ -965,9 +969,16 @@ def run_equilibration(
         from mdclaw.structure.pdb_utils import (
             render_simulation_pdb_preserving_resnames,
         )
+        # NPT changes the box, and xml_inputs.topology still carries the
+        # build-time one, so hand the exporter the box these coordinates
+        # actually belong to and let it image them around the solute.
         final_pdb.write_text(
             render_simulation_pdb_preserving_resnames(
-                xml_inputs.topology, final_positions, topology_pdb_file
+                xml_inputs.topology,
+                final_positions,
+                topology_pdb_file,
+                box_vectors=final_box_vectors,
+                image=final_box_vectors is not None,
             )
         )
         result["final_structure"] = str(final_pdb)

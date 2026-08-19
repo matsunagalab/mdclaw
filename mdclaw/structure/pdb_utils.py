@@ -268,8 +268,53 @@ def restore_resnames_by_residue_key(
     return "\n".join(out_lines) + trailing
 
 
+def _image_positions_for_export(topology: Any, positions: Any) -> Any:
+    """Whole-molecule image the coordinates that go into an exported PDB.
+
+    Run stages hand the exporter OpenMM's integrated positions, which drift out
+    of the cell as the run proceeds — after 2 ns of a membrane system the water
+    spanned more than twice the box edge, so the written PDB no longer showed a
+    system that fits its own box. The build side already images ``topology.pdb``
+    (:func:`mdclaw.structure.imaging.center_solute_and_wrap_solvent`); doing the
+    same on the way out keeps every PDB in the DAG in one frame. Export only:
+    ``state.xml`` / ``.chk`` / trajectory keep the integrated coordinates, so
+    restart and MD results are untouched.
+    """
+    import numpy as np
+    from openmm import unit
+
+    from mdclaw.structure.imaging import center_solute_and_wrap_solvent
+
+    box = topology.getPeriodicBoxVectors()
+    if box is None:
+        return positions
+    vectors = np.asarray(box.value_in_unit(unit.nanometer), dtype=float)
+    lengths = (float(vectors[0][0]), float(vectors[1][1]), float(vectors[2][2]))
+    if not all(v > 0.0 for v in lengths):
+        return positions
+    # Triclinic cells are left as they are: the imaging helper is orthorhombic,
+    # and folding a triclinic cell with its diagonal lengths would place
+    # molecules outside the real cell — a worse picture than an unimaged one.
+    off_diagonal = max(
+        abs(vectors[i][j]) for i in range(3) for j in range(3) if i != j
+    )
+    if off_diagonal > 1e-6 * max(lengths):
+        return positions
+    if unit.is_quantity(positions):
+        raw = np.asarray(positions.value_in_unit(unit.nanometer), dtype=float)
+    else:
+        raw = np.asarray(positions, dtype=float)
+    imaged = center_solute_and_wrap_solvent(topology, raw, lengths)
+    return unit.Quantity(imaged, unit.nanometer)
+
+
 def render_simulation_pdb_preserving_resnames(
-    topology: Any, positions: Any, source_topology_pdb: Optional[str | Path]
+    topology: Any,
+    positions: Any,
+    source_topology_pdb: Optional[str | Path],
+    *,
+    box_vectors: Any = None,
+    image: bool = False,
 ) -> str:
     """Serialize an OpenMM topology+positions to PDB text, preserving the
     Amber/PTM/water residue names that OpenMM's ``PDBFile`` loader normalized
@@ -279,15 +324,38 @@ def render_simulation_pdb_preserving_resnames(
     overlay the canonical names from the topo node's ``topology.pdb`` (the
     authoritative, name-correct topology contract), and fall back to the
     long-resname patch when that source is missing or its atom count does not
-    match. Pure text relabel — never touches coordinates, ``system.xml``, or
-    ``state.xml``, so the MD result is unaffected.
+    match. The relabel itself is pure text — it never touches coordinates,
+    ``system.xml``, or ``state.xml``, so the MD result is unaffected.
+
+    ``box_vectors`` is the box the coordinates actually belong to, normally the
+    final state's. Pass it: ``PDBFile`` takes CRYST1 from the *topology*, and a
+    run stage's topology was loaded from ``topology.pdb``, so it still carries
+    the build-time box. Under NPT that box is not the current one — a measured
+    membrane run wrote CRYST1 118.088 x 118.088 x 175.733 for a system whose
+    equilibrated box was 104.894 x 104.894 x 164.713, a 40% volume error that
+    every downstream PBC-aware reader would have believed.
+
+    ``image`` whole-molecule images the exported coordinates around the solute;
+    see :func:`_image_positions_for_export`.
     """
     import io
 
     from openmm.app import PDBFile
 
-    buffer = io.StringIO()
-    PDBFile.writeFile(topology, positions, buffer)
+    restore_box = box_vectors is not None
+    original_box = topology.getPeriodicBoxVectors() if restore_box else None
+    if restore_box:
+        topology.setPeriodicBoxVectors(box_vectors)
+    try:
+        if image:
+            positions = _image_positions_for_export(topology, positions)
+        buffer = io.StringIO()
+        PDBFile.writeFile(topology, positions, buffer)
+    finally:
+        # The caller's topology is reused after this call (eq builds the
+        # production handoff System from it), so borrow the box, do not keep it.
+        if restore_box:
+            topology.setPeriodicBoxVectors(original_box)
     text = None
     if source_topology_pdb:
         text = restore_resnames_from_source_pdb(

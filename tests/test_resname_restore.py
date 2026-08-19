@@ -10,6 +10,8 @@ relabel must change only the residue-name column, never the coordinates.
 Run with: conda run -n mdclaw pytest tests/test_resname_restore.py -v
 """
 
+from pathlib import Path
+
 import pytest
 
 from mdclaw.structure.pdb_utils import (
@@ -255,3 +257,117 @@ def test_render_simulation_pdb_falls_back_without_source(tmp_path):
         for line in text.splitlines()
         if line.startswith("ATOM  ")
     )
+
+
+# --- exported PDBs carry the box the coordinates belong to, imaged ----------
+# The run stages load topology.pdb once and keep that Topology for the whole
+# run, so PDBFile.writeFile stamped CRYST1 with the *build-time* box. Under NPT
+# that is the wrong box (measured: 118.088^2 x 175.733 written for a system
+# whose equilibrated box was 104.894^2 x 164.713), and the raw integrated
+# positions had drifted more than two box edges out of the cell.
+def _box_test_topology():
+    from openmm import Vec3, unit
+    from openmm.app import Element, Topology
+
+    top = Topology()
+    solute = top.addResidue("ALA", top.addChain("A"))
+    a1 = top.addAtom("N", Element.getBySymbol("N"), solute)
+    a2 = top.addAtom("CA", Element.getBySymbol("C"), solute)
+    a3 = top.addAtom("C", Element.getBySymbol("C"), solute)
+    top.addBond(a1, a2)
+    top.addBond(a2, a3)
+    water = top.addResidue("HOH", top.addChain("B"))
+    o = top.addAtom("O", Element.getBySymbol("O"), water)
+    h = top.addAtom("H1", Element.getBySymbol("H"), water)
+    top.addBond(o, h)
+    top.setPeriodicBoxVectors(
+        unit.Quantity(
+            [Vec3(9.0, 0, 0), Vec3(0, 9.0, 0), Vec3(0, 0, 9.0)], unit.nanometer
+        )
+    )
+    positions = unit.Quantity(
+        [
+            Vec3(1.0, 1.0, 1.0), Vec3(1.1, 1.0, 1.0), Vec3(1.2, 1.0, 1.0),
+            Vec3(7.5, 1.5, 1.5), Vec3(7.51, 1.5, 1.5),   # 2.5 boxes out in x
+        ],
+        unit.nanometer,
+    )
+    return top, positions
+
+
+def _cryst1(text):
+    for line in text.splitlines():
+        if line.startswith("CRYST1"):
+            return (float(line[6:15]), float(line[15:24]), float(line[24:33]))
+    return None
+
+
+def test_render_simulation_pdb_writes_the_box_it_was_given():
+    pytest.importorskip("openmm")
+    from openmm import Vec3, unit
+
+    from mdclaw.structure.pdb_utils import (
+        render_simulation_pdb_preserving_resnames,
+    )
+    top, positions = _box_test_topology()
+    run_box = unit.Quantity(
+        [Vec3(3.0, 0, 0), Vec3(0, 3.0, 0), Vec3(0, 0, 4.0)], unit.nanometer
+    )
+    text = render_simulation_pdb_preserving_resnames(
+        top, positions, None, box_vectors=run_box
+    )
+    assert _cryst1(text) == pytest.approx((30.0, 30.0, 40.0), abs=1e-3)
+    # Borrowed, not kept: eq builds the production handoff System from this
+    # same Topology after exporting.
+    kept = top.getPeriodicBoxVectors().value_in_unit(unit.nanometer)
+    assert kept[0][0] == pytest.approx(9.0)
+
+
+def test_render_simulation_pdb_without_a_box_keeps_the_topology_box():
+    pytest.importorskip("openmm")
+    from mdclaw.structure.pdb_utils import (
+        render_simulation_pdb_preserving_resnames,
+    )
+    top, positions = _box_test_topology()
+    text = render_simulation_pdb_preserving_resnames(top, positions, None)
+    assert _cryst1(text) == pytest.approx((90.0, 90.0, 90.0), abs=1e-3)
+
+
+def test_render_simulation_pdb_images_solvent_and_leaves_the_solute_whole():
+    pytest.importorskip("openmm")
+    from mdclaw.structure.pdb_utils import (
+        render_simulation_pdb_preserving_resnames,
+    )
+    top, positions = _box_test_topology()
+    text = render_simulation_pdb_preserving_resnames(
+        top, positions, None, image=True
+    )
+    atoms = [
+        (line[17:20].strip(),
+         (float(line[30:38]), float(line[38:46]), float(line[46:54])))
+        for line in text.splitlines()
+        if line.startswith(("ATOM", "HETATM"))
+    ]
+    assert len(atoms) == 5
+    water = [xyz for name, xyz in atoms if name == "HOH"]
+    assert water, "water not written"
+    for xyz in water:                      # folded back into the primary cell
+        assert all(-1.0 <= c <= 91.0 for c in xyz)
+    solute = [xyz for name, xyz in atoms if name == "ALA"]
+    # Translated as a rigid unit, never wrapped: the bond lengths survive and
+    # the residue is not split across the boundary.
+    spans = [max(c[i] for c in solute) - min(c[i] for c in solute) for i in range(3)]
+    assert spans[0] == pytest.approx(2.0, abs=1e-2)
+    assert spans[1] == pytest.approx(0.0, abs=1e-2)
+
+
+def test_run_stages_export_with_the_state_box():
+    """min / eq / prod must hand the exporter the state's box, not the
+    topology's. Without ``box_vectors=`` the CRYST1 silently reverts to the
+    build-time box, which NPT has already changed."""
+    root = Path(__file__).resolve().parent.parent / "mdclaw" / "simulation"
+    for name in ("minimize.py", "equilibrate.py", "production.py"):
+        text = (root / name).read_text()
+        assert "render_simulation_pdb_preserving_resnames(" in text, name
+        assert "box_vectors=" in text, f"{name} exports a PDB without a box"
+        assert "image=" in text, f"{name} exports unimaged coordinates"
