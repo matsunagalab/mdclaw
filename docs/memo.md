@@ -7,6 +7,47 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-20 — v0.6.8 の arm64 SIF (a6cad2701ac4)。CLI が read-only CWD で起動できない件を発見
+
+`3997c36..a6cad27` の 8 コミット (patch の塩を assembly へ持ち込まない、water copier が
+slab を薄くする問題、solute と接する分子を一緒に image する、99,999 原子超の preview、
+box の書き出し、v0.6.7 リリース) を取り込んで焼き直した。
+
+```
+image   ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev-a6cad2701ac4  (mdclaw 0.6.8)
+sif     ~/Downloads/mdclaw-rikyu-arm64-cuda130-ppm3-a6cad2701ac4.sif
+        6,774,267,904 bytes
+        SHA-256 098df878a4593ecbd1a0c68e89d662402b566ac567e1182632fd0779adff8d72
+smoke   Docker 23/23、SIF からも 23/23 (GPU は SKIP)
+```
+
+前回同様 GHCR には push せず、`docker save` した tar を Lima VM に読ませて変換した。
+
+### `mdclaw --version` が読み取り専用の CWD で落ちる
+
+SIF 検証のついでに read-only なディレクトリから `mdclaw --version` を叩いたら死んだ。
+
+```
+File "mdclaw/research/pdb_client.py", line 22, in <module>
+    ensure_directory(WORKING_DIR)
+OSError: [Errno 30] Read-only file system: 'outputs'
+```
+
+`WORKING_DIR = Path("outputs")` が 20 以上のモジュールにハードコードされていて、どれも
+**import 時に** `ensure_directory(WORKING_DIR)` を呼ぶ。`_cli._discover_tools()` は全
+モジュールを import するので、**`--version` や `--list` ですら CWD に `outputs/` を掘る**。
+掘れなければ CLI 自体が起動しない。
+
+`test-container.sh` が緑なのは、冒頭で `cd "${TMPDIR:-/tmp}"` して書ける場所へ移るから。
+つまり既存のスモークではこの経路を踏まない。HPC で read-only bind や書き込み権限の無い
+ディレクトリから叩くと、ツールを1つも実行しないうちに落ちる。副作用として、無関係な
+ディレクトリで CLI を触るだけで空の `outputs/` が生える。
+
+未修正。import 時の副作用を消し、必要になった時点で作るのが筋 (WORKING_DIR の既定を
+`.` にする件とも絡む)。
+
+---
+
 ## 2026-08-20 — パッチの塩を持ち込むのをやめた。イオン中和の分岐は全部これが原因だった
 
 前日の膜構築修正のレビューで `_drop_counter_ions` の欠陥を指摘され、直す前に
