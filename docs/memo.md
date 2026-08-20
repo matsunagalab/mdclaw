@@ -7,6 +7,71 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-20 — 9UWI chain A through MODELLER into POPC; three traps on the way
+
+Second member target, and the first real exercise of the MODELLER path baked
+into the SIF: 9UWI (human V1a receptor, cryo-EM 2.8 A), chain A only, Atosiban
+and the cholesterols dropped, the three internal gaps rebuilt, POPC bilayer,
+1 ns production. It works, and the run found three things worth fixing.
+
+**The gaps.** Chain A is observed 43-351 (269 residues) against a 386-residue
+SEQRES, with internal gaps 80-84 (3), 157-162 (4) and 247-281 (**33**, ICL3).
+Author numbering is offset -32 from SEQRES, so the target sequence has to be
+built by aligning observed residues rather than slicing SEQRES by author number
+(269/269 match at that offset). The 33-residue gap is above the default
+`--loop-max-length 30`, so it needs raising or ICL3 stays unrefined — the skill
+does warn about this. Target span 43-351 only: modelling the unobserved 1-42 and
+352-386 would invent 77 residues of terminus flapping in solvent.
+
+Result: 4 loop models, best by DOPE (-3226, molpdf 213), 309 residues, **no gaps
+left**. `--template-frame` reported `ca_rmsd_in_place: 13.552` / `after_fit:
+0.823`, but measuring it directly over the 269 common CA gives mean deviation
+0.28 A and a centroid shift of 3.5 A — the model *is* in the template frame.
+Whatever the reported 13.55 is measuring, it is not the in-place deviation an
+agent would read it as. Worth a look.
+
+**Trap 1: the skill never says when to run MODELLER relative to
+`fetch_structure`.** Node mode writes into the source bundle, so the source node
+must still be open — but `fetch_structure` completes it, and loop refinement
+needs a template structure, which is exactly what you would use `fetch_structure`
+to get. Running MODELLER after it gives `NodeSealedError`.
+`skills/modeller-predict/` does not mention `fetch_structure` anywhere. Worked
+around by fetching in one job and running MODELLER on a fresh source node in a
+second job registered with `add_study_job`.
+
+**Trap 2: `--template-pdb` accepts an mmCIF and does not convert it.** The file
+is copied to `<code>.pdb` and handed to MODELLER as-is, which then fails with
+`read_pd_702E> ... file is probably corrupt` at the first CIF line it cannot
+parse as PDB. Converting to a real PDB first fixed it. Restricting the template
+to chain A also dropped Atosiban's `A1EQM`, whose 5-character residue name has
+no PDB representation.
+
+**Trap 3: `prepare_complex` assigns ASH silently, and the membrane path cannot
+build it.** Two aspartates (97, 112) came back protonated, but
+`confirmation_needed.protonation_states` was `{"source": "auto_detected",
+"states": []}` — empty. `embed_in_membrane` then failed at the net-charge step:
+
+    No template found for residue 399 (ASH). The set of atoms matches PA, but
+    the residue has no bonds between its atoms.
+
+Two problems in one. The force-field bundle has no ASH template, and the
+protonation change that introduced it was never surfaced for confirmation.
+`--protonation-states '{"A:97": "ASP", "A:112": "ASP"}'` gets past it. 5L7D never
+hit this, so it is structure-dependent — any member whose receptor has a buried
+Asp will.
+
+**The run.** Orientation came from OPM homolog **7QVM** (identity 0.60, fit_rmsd
+2.29 A, hydrophobic thickness 31.8 A), not from 9UWI itself — so unlike 5L7D
+this exercised the homolog transfer rather than an exact self-match. Box
+116 x 77 x 104 A, rectangular in the membrane plane rather than square, but the
+receptor keeps ~18 A of lipid to its periodic image against the 15 A requested.
+`min` 21 s, `eq` (1.5 ns) 3 m 48 s, `prod` (1 ns) 2 m 51 s. Production held
+300.99 +/- 1.03 K and 1.032 +/- 0.002 g/mL over 100 frames.
+
+Final DAG: 8 completed, 1 failed (`solv_001`, the ASH failure, kept as evidence).
+
+---
+
 ## 2026-08-20 — 5L7D in POPC end to end on Rikyu; the membrane fixes hold, and one analyze trap
 
 Ran the v0.6.8 SIF through a real membrane system to check the fixes before
