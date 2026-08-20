@@ -1,5 +1,9 @@
 import importlib
+import os
+import subprocess
 from pathlib import Path
+
+import pytest
 
 clean_protein_module = importlib.import_module("mdclaw.structure.clean_protein")
 
@@ -49,7 +53,10 @@ def test_clean_protein_routes_large_missing_gaps_to_new_prep_node(
     )
     monkeypatch.setattr(clean_protein_module, "PDBFixer", _LargeGapPDBFixer)
 
-    result = clean_protein_module.clean_protein(str(pdb_file))
+    result = clean_protein_module.clean_protein(
+        str(pdb_file),
+        missing_residue_method="pdbfixer",
+    )
 
     assert result["success"] is False
     assert result["code"] == "pdbfixer_missing_residues_out_of_scope"
@@ -73,3 +80,63 @@ def test_clean_protein_routes_large_missing_gaps_to_new_prep_node(
     assert "repair_gaps_in_new_prep_node" in options
     assert "use_modeller_template_modeling" in options
     assert "use_boltz2_structure_prediction" in options
+
+
+def test_auto_large_gap_requires_modeller_license(tmp_path, monkeypatch):
+    pdb_file = Path(tmp_path) / "input.pdb"
+    pdb_file.write_text(
+        "ATOM      1  N   ALA A   1       0.0   0.0   0.0  "
+        "1.00  0.00           N\nEND\n"
+    )
+    monkeypatch.setattr(clean_protein_module, "PDBFixer", _LargeGapPDBFixer)
+    for name in list(os.environ):
+        if name.startswith("KEY_MODELLER"):
+            monkeypatch.delenv(name)
+
+    result = clean_protein_module.clean_protein(str(pdb_file))
+
+    assert result["success"] is False
+    assert result["code"] == "missing_residues_require_modeller_license"
+    assert "export KEY_MODELLER10v8=<your license key>" in result["errors"][0]
+    assert result["missing_residue_method_requested"] == "auto"
+    assert result["missing_residue_method_used"] == "pdbfixer"
+    recommendation = result["workflow_recommendation"]
+    assert recommendation["next_commands"][0] == (
+        "export KEY_MODELLER10v8=<your license key>"
+    )
+    assert recommendation["options"][0]["option"] == (
+        "provide_modeller_license_and_create_new_prep_node"
+    )
+
+
+def test_auto_does_not_escalate_when_modeller_cannot_import(tmp_path, monkeypatch):
+    pdb_file = Path(tmp_path) / "input.pdb"
+    pdb_file.write_text(
+        "ATOM      1  N   ALA A   1       0.0   0.0   0.0  "
+        "1.00  0.00           N\nEND\n"
+    )
+    monkeypatch.setattr(clean_protein_module, "PDBFixer", _LargeGapPDBFixer)
+    monkeypatch.setenv("KEY_MODELLER10v8", "present")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="ModuleNotFoundError: No module named 'modeller'",
+        ),
+    )
+    monkeypatch.setattr(
+        clean_protein_module,
+        "_repair_missing_residues_with_modeller",
+        lambda *_args, **_kwargs: pytest.fail("unusable MODELLER was invoked"),
+    )
+
+    result = clean_protein_module.clean_protein(str(pdb_file))
+
+    assert result["code"] == "missing_residues_require_modeller_license"
+    usability = result["workflow_recommendation"]["modeller_usability"]
+    assert usability["license_env_present"] is True
+    assert usability["modeller_importable"] is False
+    assert "ModuleNotFoundError" in usability["import_error"]

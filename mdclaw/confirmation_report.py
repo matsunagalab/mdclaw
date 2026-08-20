@@ -87,8 +87,14 @@ def report_confirmation_items(confirmation_items: dict) -> None:
             lines.append(f"    {_format_protonation_state(entry)}")
     if repairs:
         total = sum(int(entry.get("total_residues") or 0) for entry in repairs)
+        escalation = (
+            f"; requested {missing.get('method_requested')}, escalated automatically"
+            if missing.get("escalated")
+            else ""
+        )
         lines.append(
-            f"  missing residues rebuilt ({missing.get('method', 'pdbfixer')}): "
+            f"  missing residues rebuilt ({missing.get('method', 'pdbfixer')}"
+            f"{escalation}): "
             f"{total} residue(s) in {len(repairs)} chain(s) — predicted, not measured"
         )
         for entry in repairs:

@@ -131,6 +131,7 @@
   "missing_pdb_file",
   "missing_pdb_id",
   "missing_required_arguments",
+  "missing_residues_require_modeller_license",
   "missing_structure_file",
   "missing_uniprot_id",
   "missing_xml_topology_inputs",

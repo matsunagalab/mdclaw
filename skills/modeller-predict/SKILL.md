@@ -15,10 +15,9 @@ Use this skill when the user has a template PDB and a target protein sequence or
 MODELLER PIR/ALI alignment. Prefer `skills/boltz-predict/SKILL.md` when there is
 no suitable template or when the user asks for AI structure prediction.
 
-Do **not** use this skill to fill gaps in a structure you are already
-preparing. For `pdbfixer_missing_residues_out_of_scope`, create a **new** prep
-node with the failed node's same completed parent; failed nodes are sealed.
-Follow the exact commands in `skills/md-prepare/defaults-and-guardrails.md`.
+Do **not** use this skill for prep-time gaps; `prepare_complex` handles them.
+For missing-residue license/scope guardrails, follow the exact sibling-node
+commands in `skills/md-prepare/defaults-and-guardrails.md`.
 
 Use this skill when the target is a **different sequence** from the template:
 homology modeling, constructs without experimental structures, or chimeras.

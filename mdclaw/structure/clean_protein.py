@@ -255,7 +255,7 @@ def _missing_residue_summary(records: list[dict]) -> dict:
     }
 
 
-MISSING_RESIDUE_METHODS = ("pdbfixer", "modeller")
+MISSING_RESIDUE_METHODS = ("auto", "pdbfixer", "modeller")
 
 
 # MODELLER loop generation is stochastic. A fixed seed keeps a re-run of the
@@ -263,6 +263,130 @@ MISSING_RESIDUE_METHODS = ("pdbfixer", "modeller")
 # changes the structure the whole study rests on. MODELLER wants a negative
 # seed in [-50000, -2].
 MODELLER_REPAIR_RANDOM_SEED = -8123
+
+
+def _probe_internal_missing_residue_summary(input_path: Path) -> dict:
+    """Measure internal gaps without changing the structure."""
+    probe = PDBFixer(filename=str(input_path))
+    probe.findMissingResidues()
+    chains = list(probe.topology.chains())
+    internal = {}
+    for (chain_idx, res_idx), residues in probe.missingResidues.items():
+        if not 0 <= chain_idx < len(chains):
+            continue
+        chain_length = len(list(chains[chain_idx].residues()))
+        if res_idx in (0, chain_length):
+            continue
+        internal[(chain_idx, res_idx)] = residues
+    return _missing_residue_summary(
+        _internal_missing_residue_records(internal, chains)
+    )
+
+
+def _modeller_repair_usability() -> dict:
+    """Require both a MODELLER key and an importable package."""
+    import subprocess
+    import sys
+
+    from mdclaw.genesis.modeller import _has_modeller_license_env
+
+    license_env_present = _has_modeller_license_env()
+    import_error = None
+    modeller_importable = False
+    if license_env_present:
+        # MODELLER's installed config may contain a placeholder key. Probe in
+        # an isolated interpreter, injecting the environment key the same way
+        # the real runner does, so this checks an actual import without
+        # contaminating this process's module cache.
+        try:
+            probe = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import importlib.util, os, re, sys, types\n"
+                        "from pathlib import Path\n"
+                        "key = next(v for k, v in os.environ.items() "
+                        "if k.startswith('KEY_MODELLER') and v)\n"
+                        "spec = importlib.util.find_spec('modeller')\n"
+                        "if spec is None: raise ModuleNotFoundError('modeller')\n"
+                        "locations = list(spec.submodule_search_locations or [])\n"
+                        "install_dir = None\n"
+                        "if locations:\n"
+                        " p = Path(locations[0]) / 'config.py'\n"
+                        " if p.exists():\n"
+                        "  m = re.search(r\"install_dir\\s*=\\s*r?['\\\"]"
+                        "([^'\\\"]+)['\\\"]\", p.read_text())\n"
+                        "  install_dir = m.group(1) if m else None\n"
+                        "cfg = types.ModuleType('modeller.config')\n"
+                        "cfg.license = key\n"
+                        "if install_dir: cfg.install_dir = install_dir\n"
+                        "sys.modules['modeller.config'] = cfg\n"
+                        "import modeller\n"
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if probe.returncode == 0:
+                modeller_importable = True
+            else:
+                import_error = (probe.stderr or probe.stdout).strip()[-1000:]
+        except Exception as exc:  # noqa: BLE001 - returned as structured context
+            import_error = f"{type(exc).__name__}: {exc}"
+    return {
+        "usable": license_env_present and modeller_importable,
+        "license_env_present": license_env_present,
+        "modeller_importable": modeller_importable,
+        "import_error": import_error,
+    }
+
+
+def _missing_residue_auto_recommendation(
+    summary: dict,
+    usability: dict,
+) -> dict:
+    export_command = "export KEY_MODELLER10v8=<your license key>"
+    return {
+        "reason": "auto_missing_residue_repair_requires_usable_modeller",
+        "recommended_next_action": "export_modeller_license_and_create_new_prep_node",
+        "restart_stage": "prep",
+        "next_commands": [
+            export_command,
+            (
+                "mdclaw create_node --job-dir <job_dir> --node-type prep "
+                "--parent-node-ids <completed_parent_node_id>"
+            ),
+            (
+                "mdclaw --job-dir <job_dir> --node-id <new_prep_node_id> "
+                "prepare_complex"
+            ),
+        ],
+        "options": [
+            {
+                "option": "provide_modeller_license_and_create_new_prep_node",
+                "next_skill": "skills/md-prepare/SKILL.md",
+                "command": export_command,
+                "when": (
+                    "Allow the default auto method to rebuild the out-of-scope "
+                    "gaps with MODELLER."
+                ),
+            },
+            {
+                "option": "pin_pdbfixer_strictly",
+                "next_skill": "skills/md-prepare/SKILL.md",
+                "flag": "--missing-residue-method pdbfixer",
+                "when": (
+                    "Predicted loop coordinates are deliberately prohibited; "
+                    "prep will retain the strict out-of-scope failure."
+                ),
+            },
+        ],
+        "modeller_usability": usability,
+        "missing_residue_summary": summary,
+    }
 
 
 def _validate_modeller_repair_model(
@@ -621,7 +745,7 @@ def clean_protein(
     disulfide_pairs: list[dict] | None = None,
     histidine_states: dict[str, str] | None = None,
     protonation_states: Optional[Dict[str, Any]] = None,
-    missing_residue_method: str = "pdbfixer",
+    missing_residue_method: str = "auto",
 ) -> dict:
     """Clean a monomer protein PDB/mmCIF file for MD simulation using PDBFixer.
 
@@ -644,13 +768,10 @@ def clean_protein(
                                  to ff19SB; pass the planned topology protein
                                  force field when it differs.
         missing_residue_method: How to rebuild internal missing residues.
-                                ``"pdbfixer"`` (default) builds them
-                                geometrically and refuses gaps beyond its
-                                scope; ``"modeller"`` rebuilds every internal
-                                gap with MODELLER loop modeling instead, using
-                                this structure as the template and its own
-                                reference sequence as the target. MODELLER is
-                                licensed -- export a ``KEY_MODELLER*`` variable.
+                                ``"auto"`` (default) uses PDBFixer in scope and
+                                escalates larger gaps to MODELLER when licensed;
+                                ``"pdbfixer"`` never escalates; ``"modeller"``
+                                always uses MODELLER.
         replace_nonstandard_residues: Replace non-standard residues with standard ones (default: True)
         remove_heterogens: Remove heteroatoms (ligands, ions, etc.) (default: True)
         keep_water: Keep water molecules when removing heterogens (default: False)
@@ -750,7 +871,7 @@ def clean_protein(
     result["output_file"] = str(output_file)
     result["final_output_file"] = str(final_output_file)
     
-    method = str(missing_residue_method or "pdbfixer").strip().lower()
+    method = str(missing_residue_method or "auto").strip().lower()
     if method not in MISSING_RESIDUE_METHODS:
         result["errors"].append(
             f"missing_residue_method must be one of {list(MISSING_RESIDUE_METHODS)}, "
@@ -759,8 +880,59 @@ def clean_protein(
         result["code"] = "invalid_missing_residue_method"
         return result
     result["missing_residue_method"] = method
+    result["missing_residue_method_requested"] = method
 
     try:
+        effective_method = "pdbfixer" if method == "auto" else method
+        escalated_to_modeller = False
+        if method == "auto":
+            auto_summary = _probe_internal_missing_residue_summary(input_path)
+            auto_out_of_scope = (
+                auto_summary["total_residues"]
+                > PDBFIXER_MAX_INTERNAL_MISSING_RESIDUES
+                or auto_summary["max_segment_length"]
+                > PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH
+            )
+            if auto_out_of_scope:
+                usability = _modeller_repair_usability()
+                if not usability["usable"]:
+                    recommendation = _missing_residue_auto_recommendation(
+                        auto_summary,
+                        usability,
+                    )
+                    result["missing_residue_method_used"] = "pdbfixer"
+                    result["missing_residue_method_escalated"] = False
+                    result["missing_residue_repair"] = {
+                        "method": "pdbfixer",
+                        "method_requested": "auto",
+                        "method_used": "pdbfixer",
+                        "escalated": False,
+                        "status": "out_of_scope",
+                        **auto_summary,
+                    }
+                    result["workflow_recommendation"] = recommendation
+                    result["recommended_next_action"] = recommendation[
+                        "recommended_next_action"
+                    ]
+                    result["recommended_next_skills"] = [
+                        "skills/md-prepare/SKILL.md",
+                    ]
+                    result["code"] = "missing_residues_require_modeller_license"
+                    result["errors"].append(
+                        "Internal missing residues exceed the PDBFixer repair "
+                        f"scope ({auto_summary['total_residues']} residue(s), "
+                        f"max segment {auto_summary['max_segment_length']}). "
+                        "Automatic MODELLER escalation is unavailable; run "
+                        "'export KEY_MODELLER10v8=<your license key>' in an "
+                        "MDClaw runtime with the modeller package installed, "
+                        "then create a new prep node with the same completed parent."
+                    )
+                    return result
+                effective_method = "modeller"
+                escalated_to_modeller = True
+        result["missing_residue_method_used"] = effective_method
+        result["missing_residue_method_escalated"] = escalated_to_modeller
+
         input_protonation_states = _extract_input_protonation_state_overrides(
             original_input_path
         )
@@ -778,7 +950,7 @@ def clean_protein(
         # the cleaning runs on a chain that no longer has any. Doing it here
         # rather than mid-flow keeps the terminal-cap bookkeeping below working
         # on a single, final PDBFixer instance.
-        if method == "modeller":
+        if effective_method == "modeller":
             repair = _repair_missing_residues_with_modeller(input_path)
             result["warnings"].extend(repair["warnings"])
             if not repair["success"]:
@@ -786,10 +958,26 @@ def clean_protein(
                 result["code"] = repair["code"]
                 return result
             if repair["applied"]:
+                if escalated_to_modeller:
+                    escalation_warning = (
+                        "Automatic missing-residue repair escalated from PDBFixer "
+                        "to MODELLER because the internal gaps exceeded the "
+                        "PDBFixer scope; the rebuilt coordinates are predicted."
+                    )
+                    result["warnings"].append(escalation_warning)
+                    repair["operation"]["warning"] = escalation_warning
+                repair["operation"].update({
+                    "method_requested": method,
+                    "method_used": "modeller",
+                    "escalated": escalated_to_modeller,
+                })
                 result["operations"].append(repair["operation"])
                 result["missing_residue_detection"] = repair["detection"]
                 result["missing_residue_repair"] = {
                     "method": "modeller",
+                    "method_requested": method,
+                    "method_used": "modeller",
+                    "escalated": escalated_to_modeller,
                     "status": "modeled",
                     "model_file": repair["model_file"],
                     "random_seed": repair["random_seed"],
@@ -968,6 +1156,9 @@ def clean_protein(
             })
             result.setdefault("missing_residue_repair", {}).update({
                 "method": "pdbfixer",
+                "method_requested": method,
+                "method_used": "pdbfixer",
+                "escalated": False,
                 "status": "within_scope",
                 "max_internal_missing_residues": PDBFIXER_MAX_INTERNAL_MISSING_RESIDUES,
                 "max_missing_residue_segment_length": PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH,

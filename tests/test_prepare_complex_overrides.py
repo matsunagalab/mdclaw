@@ -76,7 +76,7 @@ def test_prepare_node_context_includes_protonation_overrides(monkeypatch):
         process_ligands=True,
         histidine_states={"A:10": "HIE"},
         protonation_states={"A:11": "GLH"},
-        missing_residue_method=" MODELLER ",
+        missing_residue_method=" AUTO ",
         include_types=["protein"],
         include_ligand_ids=None,
         include_ligand_resnames=None,
@@ -88,7 +88,7 @@ def test_prepare_node_context_includes_protonation_overrides(monkeypatch):
     assert result["success"] is True
     assert captured["histidine_states"] == {"A:10": "HIE"}
     assert captured["protonation_states"] == {"A:11": "GLH"}
-    assert captured["missing_residue_method"] == "modeller"
+    assert captured["missing_residue_method"] == "auto"
 
 
 def test_confirmation_source_reports_mixed_entry_provenance():
@@ -125,6 +125,24 @@ def test_missing_residue_confirmation_never_calls_predicted_coordinates_override
     assert block["source"] == "predicted"
     assert block["method_requested"] == "modeller"
     assert block["source"] != "user_override"
+
+
+def test_escalated_missing_residue_confirmation_records_actual_method():
+    repair = {
+        "chain_id": "A",
+        "method": "modeller",
+        "method_requested": "auto",
+        "method_used": "modeller",
+        "escalated": True,
+        "total_residues": 33,
+    }
+
+    block = _missing_residue_confirmation_block([repair], [], "auto")
+
+    assert block["source"] == "predicted"
+    assert block["method_requested"] == "auto"
+    assert block["method"] == "modeller"
+    assert block["escalated"] is True
 
 
 def test_terminal_only_omissions_create_a_confirmation_block():
@@ -963,6 +981,25 @@ def test_summary_footer_only_names_relevant_missing_residue_flag(caplog):
     assert "--histidine-states" not in text
     assert "--protonation-states" not in text
     assert "from_input_structure" not in text
+
+
+def test_summary_calls_out_automatic_modeller_escalation(caplog):
+    items = {
+        "missing_residues": {
+            "source": "predicted",
+            "method": "modeller",
+            "method_requested": "auto",
+            "escalated": True,
+            "repairs": [{"chain_id": "A", "total_residues": 6}],
+            "detection": [],
+        },
+    }
+
+    with caplog.at_level("INFO"):
+        report_confirmation_items(items)
+
+    assert "requested auto, escalated automatically" in caplog.text
+    assert "predicted, not measured" in caplog.text
 
 
 def test_summary_footer_says_input_states_are_fixed_across_ph(caplog):

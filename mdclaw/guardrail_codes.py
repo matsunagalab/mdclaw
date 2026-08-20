@@ -77,13 +77,14 @@ GUARDRAIL_CODES: dict[str, str] = {
     "missing_uniprot_id": "Provide a valid UniProt accession.",
     "source_candidate_selection_required": "Choose one listed source candidate and pass --source-structure-id to the prep tool.",
     "pdbfixer_missing_residues_out_of_scope": "Create a new prep node with the failed node's same completed parent, then run prepare_complex with --missing-residue-method modeller.",
+    "missing_residues_require_modeller_license": "Run 'export KEY_MODELLER10v8=<your license key>', then create a new prep node with the failed node's same completed parent and run prepare_complex again.",
 
     # --- prep / cleaning / selection ---
     "invalid_prep_solvent_type": "Use a supported solvent type for prep.",
     "invalid_atom_count": "Structure atom count is invalid; inspect the input structure.",
     "invalid_coordinate_frame": "Provide valid coordinates/frame for this operation.",
     "invalid_protonation_state": "Use a valid protonation state specification.",
-    "invalid_missing_residue_method": "Use --missing-residue-method pdbfixer or modeller.",
+    "invalid_missing_residue_method": "Use --missing-residue-method auto, pdbfixer, or modeller.",
     "modeller_missing_residue_repair_failed": "MODELLER gap repair failed; read its errors, or fall back to --missing-residue-method pdbfixer.",
     "modeller_missing_residue_repair_validation_failed": "Do not use the rejected model; inspect frame, residue-identity, count, and sequence errors, then regenerate a complete model preserving author numbering.",
     "modeller_repair_reference_sequence_unavailable": "The chain carries no single reference sequence to rebuild against; supply a structure with SEQRES or model it with modeller_from_alignment.",

@@ -26,14 +26,17 @@ Preparation-specific defaults:
 Guardrail handling:
 
 - Branch on structured `code` values.
-- If `pdbfixer_missing_residues_out_of_scope` appears, the failed prep node is
-  sealed. Create a sibling with the same completed parent and repair there:
+- Missing-residue repair defaults to `auto`: PDBFixer handles short gaps and MODELLER handles larger gaps when its package and license key are present.
+- For `missing_residues_require_modeller_license`, export the key, then create a
+  sibling prep node with the failed node's same completed parent:
   ```bash
+  export KEY_MODELLER10v8=<your license key>
   mdclaw create_node --job-dir <job_dir> --node-type prep --parent-node-ids <completed_parent_node_id>
-  mdclaw --job-dir <job_dir> --node-id <new_prep_node_id> prepare_complex --missing-residue-method modeller
+  mdclaw --job-dir <job_dir> --node-id <new_prep_node_id> prepare_complex
   ```
-  Export `KEY_MODELLER*`. Restart from `source` only when the source itself is
-  wrong; then use `modeller-predict` or `boltz-predict`.
+- `pdbfixer_missing_residues_out_of_scope` now means the caller deliberately
+  pinned `pdbfixer`; use the same sibling-node recovery with
+  `--missing-residue-method modeller`, or keep the strict failure.
 - If `forcefield_water_blocked` appears, change the incompatible pairing rather
   than retrying.
 - If ligand preparation returns `workflow_recommendation.options`, present only

@@ -46,11 +46,9 @@ mdclaw --job-dir <job_dir> --node-id <source_node_id> modeller_from_alignment \
 
 ## Loop refinement (fill cryo-EM / X-ray gaps)
 
-Reach for this variant only when the gapped structure is not already going
-through preparation. For a prep-time gap, create a **new** prep node with the
-failed node's same completed parent and run `prepare_complex
---missing-residue-method modeller`; failed nodes are sealed. Use the exact
-commands in `skills/md-prepare/defaults-and-guardrails.md`.
+Use this only outside preparation. Prep-time gaps use `prepare_complex`; follow
+the auto/license and sibling-node recovery in
+`skills/md-prepare/defaults-and-guardrails.md`.
 
 Pass the structure as the template and its full sequence (e.g. from SEQRES) as
 the target, and add `--loop-refinement`. The base model builds the missing

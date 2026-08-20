@@ -159,7 +159,7 @@ def test_missing_gap_is_silent_without_a_reference_sequence(tmp_path):
     assert any("means 'not checked'" in w for w in result["warnings"])
 
 
-def test_reference_sequence_is_reported_when_present(tmp_path):
+def test_auto_uses_pdbfixer_for_an_in_scope_gap(tmp_path, monkeypatch):
     source = _build_two_chain_structure(tmp_path / "two_chains.pdb")
     result = split_molecules(
         structure_file=str(source),
@@ -169,9 +169,20 @@ def test_reference_sequence_is_reported_when_present(tmp_path):
     chain_a = next(
         path for path in result["protein_files"] if _seqres_of(path) == CHAIN_A_SEQ
     )
+    import importlib
+
+    clean_module = importlib.import_module("mdclaw.structure.clean_protein")
+    monkeypatch.setattr(
+        clean_module,
+        "_repair_missing_residues_with_modeller",
+        lambda *_args, **_kwargs: pytest.fail("auto invoked MODELLER in scope"),
+    )
 
     cleaned = clean_protein(pdb_file=chain_a)
 
+    assert cleaned["missing_residue_method_requested"] == "auto"
+    assert cleaned["missing_residue_method_used"] == "pdbfixer"
+    assert cleaned["missing_residue_method_escalated"] is False
     detection = cleaned["missing_residue_detection"]
     assert detection["reference_sequence_available"] is True
     assert detection["reference_sequence_length"] == len(CHAIN_A_SEQ)
@@ -495,7 +506,12 @@ def test_repair_declines_when_there_is_nothing_internal_to_fill(tmp_path, monkey
     assert outcome["errors"] == []
 
 
-def test_detection_describes_the_structure_before_repair(tmp_path, monkeypatch):
+@pytest.mark.parametrize("method", ["modeller", "auto"])
+def test_detection_describes_the_structure_before_repair(
+    tmp_path,
+    monkeypatch,
+    method,
+):
     """A repaired chain must not report its gaps as 'never checked'.
 
     MODELLER writes a model without SEQRES, so detection run on the repaired
@@ -558,8 +574,14 @@ def test_detection_describes_the_structure_before_repair(tmp_path, monkeypatch):
         "_extract_input_protonation_state_overrides",
         record_raw_input,
     )
+    if method == "auto":
+        monkeypatch.setattr(
+            clean_module,
+            "PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH",
+            2,
+        )
 
-    result = clean_protein(pdb_file=chain_a, missing_residue_method="modeller")
+    result = clean_protein(pdb_file=chain_a, missing_residue_method=method)
 
     detection = result["missing_residue_detection"]
     assert detection["status"] == "detected"
@@ -570,3 +592,8 @@ def test_detection_describes_the_structure_before_repair(tmp_path, monkeypatch):
     assert not any("means 'not checked'" in w for w in result["warnings"])
     assert scanned_inputs == [str(chain_a)]
     assert scanned_inputs[0] != str(model_file)
+    assert result["missing_residue_method_requested"] == method
+    assert result["missing_residue_method_used"] == "modeller"
+    assert result["missing_residue_repair"]["escalated"] is (method == "auto")
+    if method == "auto":
+        assert any("escalated from PDBFixer to MODELLER" in w for w in result["warnings"])

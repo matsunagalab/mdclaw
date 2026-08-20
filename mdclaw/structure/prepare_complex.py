@@ -108,10 +108,22 @@ def _missing_residue_confirmation_block(
     ]
     if not (repairs or undetectable or terminal_unmodeled):
         return None
+    methods_used = {
+        str(repair.get("method_used") or repair.get("method"))
+        for repair in repairs
+        if repair.get("method_used") or repair.get("method")
+    }
+    method_used = (
+        next(iter(methods_used))
+        if len(methods_used) == 1
+        else ("mixed" if methods_used else method)
+    )
+    escalated = any(bool(repair.get("escalated")) for repair in repairs)
     return {
         "source": "predicted" if repairs else "auto_detected",
-        "method": method,
+        "method": method_used,
         "method_requested": method,
+        "escalated": escalated,
         "repairs": repairs,
         "detection": detections,
         "terminal_unmodeled": terminal_unmodeled,
@@ -599,7 +611,7 @@ def _validate_prepare_node_context(
             "histidine_states": histidine_states,
             "protonation_states": protonation_states,
             "missing_residue_method": str(
-                missing_residue_method or "pdbfixer"
+                missing_residue_method or "auto"
             ).strip().lower(),
             "include_types": include_types,
             "include_ligand_ids": include_ligand_ids,
@@ -688,7 +700,7 @@ def prepare_complex(
     source_candidate_id: Optional[str] = None,
     source_model_index: Optional[int] = None,
     source_model_id: Optional[str] = None,
-    missing_residue_method: str = "pdbfixer",
+    missing_residue_method: str = "auto",
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
@@ -724,10 +736,9 @@ def prepare_complex(
                        subchain label like ``Axp`` / ``Ax1`` / ``Axw`` and
                        is not user-facing. None = all chains.
         missing_residue_method: How internal missing residues are rebuilt.
-            ``"pdbfixer"`` (default) builds short gaps geometrically and stops
-            with ``pdbfixer_missing_residues_out_of_scope`` beyond its limits;
-            ``"modeller"`` rebuilds every internal gap with MODELLER loop
-            modeling in this same node, using each chain as its own template.
+            ``"auto"`` (default) uses PDBFixer for short gaps and MODELLER for
+            out-of-scope gaps when licensed; ``"pdbfixer"`` never escalates;
+            ``"modeller"`` always uses MODELLER loop modeling.
             MODELLER is licensed — export a ``KEY_MODELLER*`` variable.
         ph: pH for protonation state (default: 7.4)
         cap_termini: Backward-compatible shortcut to add ACE at the
@@ -887,7 +898,7 @@ def prepare_complex(
     result["source_structure_id"] = _resolved_structure.get("source_structure_id")
     solvent_type = _normalize_prepare_solvent_type(solvent_type)
     missing_residue_method = str(
-        missing_residue_method or "pdbfixer"
+        missing_residue_method or "auto"
     ).strip().lower()
     result["solvent_type"] = solvent_type
     if solvent_type is not None and solvent_type not in SUPPORTED_PREP_SOLVENT_TYPES:
@@ -1433,6 +1444,17 @@ def prepare_complex(
                         protonation_states=sa_protonation_states,
                         missing_residue_method=missing_residue_method,
                     )
+                    escalation_warnings = [
+                        warning
+                        for warning in clean_result.get("warnings", [])
+                        if "escalated from PDBFixer to MODELLER" in warning
+                    ]
+                    if escalation_warnings:
+                        protein_result["warnings"] = escalation_warnings
+                        result["warnings"].extend(
+                            f"Protein {chain_id}: {warning}"
+                            for warning in escalation_warnings
+                        )
 
                     if clean_result["success"]:
                         protein_result["output_file"] = clean_result["output_file"]
