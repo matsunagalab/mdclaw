@@ -183,6 +183,39 @@ Not in the shared SIF. Members run the container's own mdclaw.
 
 ---
 
+## 2026-08-20 — MDDataBench を別リポジトリに切り出した
+
+MDPrepBench / MDStudyBench と同じ形で `/home/yasu/tmp/MDDataBench` に独立させた。
+mdclaw 側の `benchmarks/mddatabench/` と `docs/research/db_derived_benchmark_validation.md` は削除済み
+(どちらも git 未追跡だったので履歴操作は不要)。**本エントリより前の 8/18-8/19 の各エントリが参照している
+`docs/research/db_derived_benchmark_validation.md` は、いまは `MDDataBench/docs/validation-design.md` にある。**
+過去エントリは規約どおり書き換えていないので、参照を辿るときはここを見ること。
+
+**構成は MDPrepBench に合わせた。** hatchling + `mddatabench` コンソールスクリプト、
+`mddatabench.TOOLS` を signature 由来のフラグでディスパッチする `__main__.py`、
+`benchmarks/mddatabench/tasks/`、`tests/`、`.github/workflows/ci.yml`、MIT LICENSE、
+CLAUDE.md と AGENTS.md の同一二枚。スクリプト群はパッケージモジュールに移した
+(`subspace_test.py` -> `subspace.py`、`execution_check.py` -> `execution.py`、
+`fetch_reference.py` -> `reference.py`、`score_submission.py` -> `scoring.py`、
+`negative_controls.py` -> `controls.py`)。argparse の `main()` は全部ライブラリ関数に直して
+`cli.py` の TOOLS から呼ぶ形にした。
+
+**CLI は 4 つ**: `list_benchmark_tasks` / `fetch_benchmark_reference` /
+`score_benchmark_submission` / `run_benchmark_negative_controls`。
+
+**動作確認**: ruff clean、fast テスト 14 本 passed (0.62 s)、
+`mddatabench score_benchmark_submission` で D01 が **prep 7/7 md 5/5 = 12/12 を 6.2 秒**。
+
+**テストに入れた不変条件**: ライセンスが CC 系であること、bundle の SHA-256 が 3 ファイル分揃っていること、
+全チェックが `prep`/`md` のどちらかに分類され `check_type` が `@1` 付きであること、md 側が
+構造のみ帰無検定と時計の両方を持つこと、そして **prompt が accession / MDDB / MoDEL / DOI を漏らさず、
+かつ PDB ID と採点対象の条件 (水モデル・温度・アンサンブル) は述べていること、`rmsip` を含まないこと**。
+最後のはプロンプト最小化とリーク防止を機械的に守らせるためのもの。
+
+初期コミット 29 ファイル / 328 KB、データは 0 バイト。GitHub remote は未作成 (ユーザ判断待ち)。
+
+---
+
 ## 2026-08-20 — MODELLER now converts an mmCIF template instead of renaming it
 
 Fixes trap 2 from the 9UWI entry below. `modeller_from_alignment` staged the
