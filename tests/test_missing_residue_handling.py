@@ -535,8 +535,28 @@ def test_detection_describes_the_structure_before_repair(tmp_path, monkeypatch):
         "mdclaw.genesis.modeller.modeller_from_alignment",
         lambda **kwargs: {
             "success": True, "warnings": [], "errors": [],
-            "selected_model": {"path": str(model_file)},
+            "selected_model": {
+                "path": str(model_file),
+                "template_frame": {
+                    "applied": True,
+                    "residues_renumbered": len(CHAIN_A_SEQ),
+                },
+            },
         },
+    )
+    scanned_inputs = []
+
+    def record_raw_input(path):
+        scanned_inputs.append(str(path))
+        return []
+
+    import importlib
+
+    clean_module = importlib.import_module("mdclaw.structure.clean_protein")
+    monkeypatch.setattr(
+        clean_module,
+        "_extract_input_protonation_state_overrides",
+        record_raw_input,
     )
 
     result = clean_protein(pdb_file=chain_a, missing_residue_method="modeller")
@@ -548,3 +568,5 @@ def test_detection_describes_the_structure_before_repair(tmp_path, monkeypatch):
     # The count is the pre-repair one: what was measured, not what was built.
     assert detection["modeled_residues"] == len(CHAIN_A_OBSERVED)
     assert not any("means 'not checked'" in w for w in result["warnings"])
+    assert scanned_inputs == [str(chain_a)]
+    assert scanned_inputs[0] != str(model_file)

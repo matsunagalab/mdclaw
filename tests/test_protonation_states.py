@@ -1,10 +1,16 @@
 """Tests for site-specific residue protonation overrides."""
 
+import importlib
 import textwrap
+from pathlib import Path
+
+import pytest
 
 from mdclaw.structure.protonation import (
     _apply_protonation_states_with_modeller,
     _extract_non_default_protonation_states,
+    _extract_input_protonation_state_overrides,
+    _merge_input_protonation_state_overrides,
     _merge_protonation_states,
     _normalize_protonation_state_overrides,
 )
@@ -97,6 +103,79 @@ def test_extract_reports_non_default_states_but_not_histidine(tmp_path):
     assert states[2]["icode"] == "A"
 
 
+def test_input_pdb_promotes_states_but_leaves_cyx_to_disulfide_contract(tmp_path):
+    pdb = tmp_path / "input.pdb"
+    pdb.write_text(
+        MIXED_STATES_PDB.replace(
+            "TER\n",
+            "ATOM      8  SG  CYX C 300       0.000   0.000   0.000  1.00  0.00           S\n"
+            "TER\n",
+        )
+    )
+
+    states = _extract_input_protonation_state_overrides(pdb)
+
+    assert [(s["state"], s["chain"], s["resnum"], s["icode"]) for s in states] == [
+        ("ASH", "A", "97", ""),
+        ("GLH", "B", "210", ""),
+        ("LYN", "B", "211", "A"),
+        ("CYM", "B", "212", ""),
+    ]
+    assert all(s["source"] == "user_override" for s in states)
+    assert all(s["input_state_preserved"] is True for s in states)
+    assert "CYX" not in {s["state"] for s in states}
+    assert not {"HID", "HIE", "HIP"} & {s["state"] for s in states}
+
+
+def test_input_mmcif_promotes_nondefault_states(tmp_path):
+    gemmi = pytest.importorskip("gemmi")
+    structure = gemmi.Structure()
+    model = gemmi.Model("1")
+    chain = gemmi.Chain("Q")
+    for num, icode, name in ((12, " ", "ASH"), (13, "B", "LYN"), (14, " ", "CYX")):
+        residue = gemmi.Residue()
+        residue.name = name
+        residue.seqid = gemmi.SeqId(num, icode)
+        atom = gemmi.Atom()
+        atom.name = "CA"
+        atom.element = gemmi.Element("C")
+        residue.add_atom(atom)
+        chain.add_residue(residue)
+    model.add_chain(chain)
+    structure.add_model(model)
+    cif = tmp_path / "input.cif"
+    structure.make_mmcif_document().write_file(str(cif))
+
+    states = _extract_input_protonation_state_overrides(cif)
+
+    assert [(s["state"], s["chain"], s["resnum"], s["icode"]) for s in states] == [
+        ("ASH", "Q", "12", ""),
+        ("LYN", "Q", "13", "B"),
+    ]
+
+
+def test_explicit_override_wins_over_input_derived_state():
+    promoted = [{
+        "chain": "A",
+        "resnum": "25",
+        "icode": "",
+        "state": "ASH",
+        "input_state_preserved": True,
+    }]
+    explicit = _normalize_protonation_state_overrides(
+        protonation_states={"A:25": "ASP"}
+    )
+
+    merged = _merge_input_protonation_state_overrides(promoted, explicit)
+
+    assert merged == [{
+        "chain": "A",
+        "resnum": "25",
+        "icode": "",
+        "state": "ASP",
+    }]
+
+
 def test_extract_reports_each_residue_once(tmp_path):
     pdb = tmp_path / "repeat.pdb"
     pdb.write_text(
@@ -149,23 +228,184 @@ def test_extract_reports_assigned_states_as_auto_detected(tmp_path):
         "END\n"
     )
 
-    states = _extract_non_default_protonation_states(
-        pdb, preexisting={("A", "97", "")}
-    )
+    states = _extract_non_default_protonation_states(pdb)
 
     assert [(s["resnum"], s["source"]) for s in states] == [
-        ("97", "from_input_structure"),
+        ("97", "auto_detected"),
         ("210", "auto_detected"),
     ]
 
 
-def test_no_preexisting_set_means_everything_is_newly_assigned(tmp_path):
-    pdb = tmp_path / "out.pdb"
-    pdb.write_text(
-        "ATOM      1  N   ASH A  97       0.000   0.000   0.000  1.00  0.00           N\nEND\n"
+@pytest.mark.parametrize(
+    ("pathway", "input_format"),
+    [
+        ("pdb2pqr", "pdb"),
+        ("pdb4amber", "pdb"),
+        ("pdb2pqr", "mmcif"),
+    ],
+)
+def test_input_state_is_reapplied_in_both_protonation_paths(
+    tmp_path,
+    monkeypatch,
+    pathway,
+    input_format,
+):
+    clean_module = importlib.import_module("mdclaw.structure.clean_protein")
+    source = tmp_path / "input_ash.pdb"
+    source.write_text(ASP_HEAVY_PDB.replace(" ASP ", " ASH "))
+    if input_format == "mmcif":
+        gemmi = pytest.importorskip("gemmi")
+        structure = gemmi.read_structure(str(source))
+        source = tmp_path / "input_ash.cif"
+        structure.make_mmcif_document().write_file(str(source))
+
+    def fake_pdb2pqr(args):
+        output = Path(args[args.index("--pdb-output") + 1])
+        output.write_text(Path(args[0]).read_text())
+
+    def fake_pdb4amber(args):
+        output = Path(args[args.index("-o") + 1])
+        output.write_text(Path(args[args.index("-i") + 1]).read_text())
+
+    monkeypatch.setattr(
+        clean_module.pdb2pqr_wrapper,
+        "is_available",
+        lambda: pathway == "pdb2pqr",
+    )
+    monkeypatch.setattr(clean_module.pdb2pqr_wrapper, "run", fake_pdb2pqr)
+    monkeypatch.setattr(clean_module.pdb4amber_wrapper, "is_available", lambda: True)
+    monkeypatch.setattr(clean_module.pdb4amber_wrapper, "run", fake_pdb4amber)
+
+    result = clean_module.clean_protein(
+        str(source),
+        add_missing_atoms=False,
     )
 
-    assert _extract_non_default_protonation_states(pdb)[0]["source"] == "auto_detected"
-    assert _extract_non_default_protonation_states(
-        pdb, preexisting=set()
-    )[0]["source"] == "auto_detected"
+    assert result["success"], result["errors"]
+    preserved = [
+        state
+        for state in result["protonation_states"]
+        if state.get("input_state_preserved")
+    ]
+    assert len(preserved) == 1
+    assert preserved[0]["state"] == "ASH"
+    assert preserved[0]["source"] == "user_override"
+    assert preserved[0]["override_origin"] == "input_structure"
+    assert result["input_protonation_states_promoted"][0]["state"] == "ASH"
+    assert "openmm_modeller_user_states" in result["protonation_method"]
+
+
+def test_pdb4amber_fallback_reports_detected_nondefault_states(tmp_path, monkeypatch):
+    clean_module = importlib.import_module("mdclaw.structure.clean_protein")
+    source = tmp_path / "protein.pdb"
+    source.write_text(
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  CA  ALA A   1       1.450   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  C   ALA A   1       2.000   1.400   0.000  1.00  0.00           C\n"
+        "ATOM      4  O   ALA A   1       1.300   2.400   0.000  1.00  0.00           O\n"
+        "END\n"
+    )
+
+    monkeypatch.setattr(clean_module.pdb2pqr_wrapper, "is_available", lambda: False)
+    monkeypatch.setattr(clean_module.pdb4amber_wrapper, "is_available", lambda: True)
+
+    def fake_pdb4amber(args):
+        output = args[args.index("-o") + 1]
+        with open(output, "w") as handle:
+            handle.write(
+                "ATOM      1  N   ASH A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+                "END\n"
+            )
+
+    monkeypatch.setattr(clean_module.pdb4amber_wrapper, "run", fake_pdb4amber)
+
+    result = clean_module.clean_protein(
+        str(source),
+        add_missing_atoms=False,
+        add_hydrogens=False,
+    )
+
+    assert result["success"] is True
+    assert result["protonation_states"] == [{
+        "chain": "A",
+        "resnum": "1",
+        "icode": "",
+        "state": "ASH",
+        "default_state": "ASP",
+        "source": "auto_detected",
+    }]
+    op = next(
+        item
+        for item in result["operations"]
+        if item.get("method") == "pdb4amber+reduce"
+    )
+    assert op["protonation_states"] == result["protonation_states"]
+
+
+def test_pdb4amber_fallback_scans_after_user_state_rewrite(tmp_path, monkeypatch):
+    clean_module = importlib.import_module("mdclaw.structure.clean_protein")
+    source = tmp_path / "protein.pdb"
+    source.write_text(
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  CA  ALA A   1       1.450   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  C   ALA A   1       2.000   1.400   0.000  1.00  0.00           C\n"
+        "ATOM      4  O   ALA A   1       1.300   2.400   0.000  1.00  0.00           O\n"
+        "END\n"
+    )
+    monkeypatch.setattr(clean_module.pdb2pqr_wrapper, "is_available", lambda: False)
+    monkeypatch.setattr(clean_module.pdb4amber_wrapper, "is_available", lambda: True)
+
+    def fake_pdb4amber(args):
+        output = args[args.index("-o") + 1]
+        with open(output, "w") as handle:
+            handle.write(
+                "ATOM      1  N   ASP A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+                "END\n"
+            )
+
+    def fake_apply(pdb_file, protonation_states, *, ph):
+        del protonation_states, ph
+        pdb_file.write_text(
+            "ATOM      1  N   ASH A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+            "END\n"
+        )
+        return {
+            "success": True,
+            "errors": [],
+            "warnings": [],
+            "applied_states": [{
+                "chain": "A",
+                "resnum": "1",
+                "icode": "",
+                "state": "ASH",
+            }],
+        }
+
+    scanned_text = []
+
+    def recording_extract(pdb_file):
+        scanned_text.append(pdb_file.read_text())
+        return _extract_non_default_protonation_states(pdb_file)
+
+    monkeypatch.setattr(clean_module.pdb4amber_wrapper, "run", fake_pdb4amber)
+    monkeypatch.setattr(
+        clean_module,
+        "_apply_protonation_states_with_modeller",
+        fake_apply,
+    )
+    monkeypatch.setattr(
+        clean_module,
+        "_extract_non_default_protonation_states",
+        recording_extract,
+    )
+
+    result = clean_module.clean_protein(
+        str(source),
+        add_missing_atoms=False,
+        add_hydrogens=False,
+        protonation_states={"A:1": "ASH"},
+    )
+
+    assert result["success"] is True
+    assert len(scanned_text) == 1
+    assert " ASH A   1" in scanned_text[0]

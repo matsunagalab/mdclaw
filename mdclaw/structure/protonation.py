@@ -86,18 +86,64 @@ def _extract_histidine_states(pdb_file: Path) -> dict:
 # carries one of HID/HIE/HIP, so reporting it says which tautomer was chosen.
 # These names instead appear only when a residue was moved off its default
 # charge state, which is the thing worth confirming before solvation.
-# Kept in step with ``_PABLO_AMBER_VARIANT_BASES`` in
-# ``mdclaw/amber/openmm_build.py``: these are the variants the topology path
-# round-trips through CCD names for Pablo and restores afterwards, and the ones
-# ff19SB actually defines templates for. TYM and ARN are deliberately absent —
-# ff19SB has no template for either, so reporting them would promise a system
-# that cannot be built.
-_NON_DEFAULT_PROTONATION_RESNAMES = {
-    "ASH": "ASP",   # protonated (neutral) aspartate
-    "GLH": "GLU",   # protonated (neutral) glutamate
-    "LYN": "LYS",   # deprotonated (neutral) lysine
-    "CYM": "CYS",   # deprotonated (anionic) cysteine
-}
+# These are also the variants the topology path round-trips through CCD names
+# for Pablo. TYM and ARN are deliberately absent because ff19SB has no template
+# for either.
+
+
+def _extract_input_protonation_state_overrides(structure_file: Path) -> list[dict]:
+    """Read preservable non-default states from the original PDB or mmCIF."""
+    import gemmi
+
+    structure = gemmi.read_structure(str(structure_file))
+    if len(structure) == 0:
+        return []
+
+    states: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for chain in structure[0]:
+        chain_id = str(chain.name).strip() or "A"
+        for residue in chain:
+            state = str(residue.name).strip().upper()
+            default = AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES.get(state)
+            if default is None:
+                continue
+            resnum = str(residue.seqid.num)
+            icode = str(residue.seqid.icode or "").strip()
+            key = (chain_id, resnum, icode)
+            if key in seen:
+                continue
+            seen.add(key)
+            states.append({
+                "chain": chain_id,
+                "resnum": resnum,
+                "icode": icode,
+                "state": state,
+                "default_state": default,
+                "source": "user_override",
+                "override_origin": "input_structure",
+                "input_state_preserved": True,
+            })
+    return states
+
+
+def _merge_input_protonation_state_overrides(
+    input_states: list[dict],
+    explicit_states: list[dict],
+) -> list[dict]:
+    """Promote input states while letting explicit caller choices win by site."""
+    def _key(entry: dict) -> tuple[str, str, str]:
+        return (
+            str(entry.get("chain") or ""),
+            str(entry.get("resnum") or ""),
+            str(entry.get("icode") or ""),
+        )
+
+    explicit_keys = {_key(entry) for entry in explicit_states}
+    return [
+        entry for entry in input_states
+        if _key(entry) not in explicit_keys
+    ] + list(explicit_states)
 
 
 def _merge_protonation_states(detected: list, requested: list) -> list:
@@ -492,6 +538,14 @@ def _apply_protonation_states_with_modeller(
                 "state": state,
                 "modeller_variant": str(actual_variants[residue_index] or ""),
             }
+            for key in (
+                "default_state",
+                "source",
+                "override_origin",
+                "input_state_preserved",
+            ):
+                if key in record:
+                    applied[key] = record[key]
             result["applied_states"].append(applied)
             if state in {"HID", "HIE", "HIP"}:
                 key = f"{record['chain']}:{record['resnum']}"

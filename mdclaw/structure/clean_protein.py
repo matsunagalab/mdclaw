@@ -83,7 +83,7 @@ _NUCLEIC_5P_TERMINAL_PHOSPHATE_OXYGENS = {
 }
 
 from mdclaw.structure.pdb_utils import _pdb_atom_count, _pdb_hydrogen_count, _pdb_residue_names, _read_pdb_unique_residues, restore_residue_numbering_from_reference  # noqa: E402
-from mdclaw.structure.protonation import _apply_protonation_states_with_modeller, _extract_histidine_states, _extract_non_default_protonation_states, _merge_protonation_states, _normalize_protonation_state_overrides  # noqa: E402
+from mdclaw.structure.protonation import _apply_protonation_states_with_modeller, _extract_histidine_states, _extract_input_protonation_state_overrides, _extract_non_default_protonation_states, _merge_input_protonation_state_overrides, _merge_protonation_states, _normalize_protonation_state_overrides  # noqa: E402
 from mdclaw.structure.terminal_caps import _complete_terminal_cap_hydrogens_with_modeller, _resolve_terminal_cap_settings  # noqa: E402
 
 
@@ -709,7 +709,7 @@ def clean_protein(
     }
 
     try:
-        requested_protonation_states = _normalize_protonation_state_overrides(
+        explicit_protonation_states = _normalize_protonation_state_overrides(
             protonation_states=protonation_states,
             histidine_states=histidine_states,
         )
@@ -739,6 +739,7 @@ def clean_protein(
         result["errors"].append(f"Input file not found: {pdb_file}")
         logger.error(f"Input file not found: {pdb_file}")
         return result
+    original_input_path = input_path
     
     # Generate output filenames:
     # - *.pdbfixer.pdb: intermediate heavy-atom PDBFixer output.
@@ -760,6 +761,19 @@ def clean_protein(
     result["missing_residue_method"] = method
 
     try:
+        input_protonation_states = _extract_input_protonation_state_overrides(
+            original_input_path
+        )
+        requested_protonation_states = _merge_input_protonation_state_overrides(
+            input_protonation_states,
+            explicit_protonation_states,
+        )
+        result["input_protonation_states_promoted"] = [
+            state
+            for state in requested_protonation_states
+            if state.get("input_state_preserved")
+        ]
+
         # Rebuild internal gaps with MODELLER first when asked, so the rest of
         # the cleaning runs on a chain that no longer has any. Doing it here
         # rather than mid-flow keeps the terminal-cap bookkeeping below working
