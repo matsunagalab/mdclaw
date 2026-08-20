@@ -51,6 +51,7 @@ from mdclaw._common import (  # noqa: E402
 )
 from mdclaw._lock import file_lock  # noqa: E402
 from mdclaw import forcefield_catalog as _ff_catalog  # noqa: E402
+from mdclaw.chemistry_constants import AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES  # noqa: E402
 from mdclaw.forcefield_templates import (  # noqa: E402
     load_lipid_template_contract,
     load_residue_templates,
@@ -930,13 +931,6 @@ def _run_openmmforcefields_build(
     # often re-aligns these fields, so match on stripped value rather than
     # exact bytes and re-emit with PDB-format padding.
     _HIS_AMBER_VARIANTS = ("HID", "HIE", "HIP", "HSD", "HSE", "HSP")
-    _PABLO_AMBER_VARIANT_BASES = {
-        "ASH": "ASP",
-        "GLH": "GLU",
-        "LYN": "LYS",
-        "CYM": "CYS",
-    }
-
     his_amber_resids: set[tuple[str, str]] = set()
     amber_variant_resids: dict[tuple[str, str], dict[str, str]] = {}
     sanitized_input = pablo_input
@@ -948,7 +942,7 @@ def _run_openmmforcefields_build(
                     rn = line[17:20].strip()
                     if (_canonical_pablo_ion_resname(rn) is not None
                             or rn in _HIS_AMBER_VARIANTS
-                            or rn in _PABLO_AMBER_VARIANT_BASES):
+                            or rn in AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES):
                         needs_sanitize = True
                         break
     except OSError:
@@ -969,10 +963,10 @@ def _run_openmmforcefields_build(
                         resseq = line[22:26]
                         his_amber_resids.add((chain_id, resseq.strip()))
                         line = line[:17] + "HIS" + line[20:]
-                    elif rn_strip in _PABLO_AMBER_VARIANT_BASES:
+                    elif rn_strip in AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES:
                         chain_id = _normalize_pdb_chain_id(line[21:22])
                         resseq = line[22:26]
-                        base_name = _PABLO_AMBER_VARIANT_BASES[rn_strip]
+                        base_name = AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES[rn_strip]
                         amber_variant_resids[(chain_id, resseq.strip())] = {
                             "variant": rn_strip,
                             "base_name": base_name,

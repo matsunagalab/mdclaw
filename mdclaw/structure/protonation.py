@@ -28,6 +28,9 @@ from openmm.app import PDBFile  # noqa: E402
 from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,
 )
+from mdclaw.chemistry_constants import (  # noqa: E402
+    AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES,
+)
 
 # Default working directory for prepare_complex when output_dir is not specified
 WORKING_DIR = Path(".")
@@ -152,7 +155,7 @@ def _extract_non_default_protonation_states(pdb_file: Path) -> list:
                 if not line.startswith(("ATOM", "HETATM")):
                     continue
                 resname = line[17:20].strip()
-                default = _NON_DEFAULT_PROTONATION_RESNAMES.get(resname)
+                default = AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES.get(resname)
                 if default is None:
                     continue
                 chain = line[21].strip() or "A"

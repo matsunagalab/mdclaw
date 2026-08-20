@@ -29,6 +29,15 @@ AMBER_PROTEIN_RESIDUES = {
     "ACE", "NME",
 }
 
+# Amber residue variants whose non-default charge state must survive the
+# preparation -> Pablo -> force-field round trip.
+AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES = {
+    "ASH": "ASP",   # protonated (neutral) aspartate
+    "GLH": "GLU",   # protonated (neutral) glutamate
+    "LYN": "LYS",   # deprotonated (neutral) lysine
+    "CYM": "CYS",   # deprotonated (anionic) cysteine
+}
+
 # Terminal residue renaming used by pdb2pqr/propka for internal chain breaks.
 PROTEIN_RESNAMES = set(AMINO_ACIDS) | set(AMBER_PROTEIN_RESIDUES)
 PROTEIN_RESNAMES |= {f"N{aa}" for aa in AMINO_ACIDS} | {f"C{aa}" for aa in AMINO_ACIDS}
