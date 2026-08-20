@@ -126,7 +126,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "glycam_bond_plan_unit_index_invalid_but_identity_resolved": "GLYCAM unit index invalid but identity resolved; verify the plan.",
     "glycam_bond_plan_unit_index_out_of_range_but_identity_resolved": "GLYCAM unit index out of range but identity resolved; verify the plan.",
     "glycam_hydrogen_completion_failed": "GLYCAM hydrogen completion failed; inspect glycan hydrogens.",
-    "glycam_normalization_changed_protein_hydrogens": "GLYCAM normalization changed protein hydrogens; review before continuing.",
+    "glycam_normalization_changed_protein_hydrogens": "GLYCAM normalization changed protected hydrogens outside the exact bond-plan sugars; review before continuing.",
 
     # --- mutation / phosphorylation ---
     "mutation_input_invalid": "Provide a valid mutation input specification.",

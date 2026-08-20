@@ -418,10 +418,48 @@ cpptraj_wrapper = BaseToolWrapper("cpptraj")
 # =============================================================================
 
 from mdclaw.amber.content_detection import _canonical_pablo_ion_resname, _normalize_pdb_chain_id, _rewrite_pablo_ion_pdb_line  # noqa: E402
-from mdclaw.amber.forcefield_constants import _GLYCAM_LINKED_ASN_RESNAME  # noqa: E402
-from mdclaw.amber.glycam_topology import _is_glycam_topology_residue, _normalize_glycam_topology  # noqa: E402
+from mdclaw.amber.forcefield_constants import (  # noqa: E402
+    GLYCAM_LINKED_PROTEIN_RESNAMES,
+    _GLYCAM_LINKED_ASN_RESNAME,
+    is_glycam_template_residue,
+)
+from mdclaw.amber.glycam_topology import _normalize_glycam_topology  # noqa: E402
 from mdclaw.amber.topology_bonds import _patch_ligand_molecule_internal_bonds, _patch_template_internal_bonds  # noqa: E402
 from mdclaw.amber.topology_validation import _build_topology_validation_report, _unique_messages  # noqa: E402
+
+
+def _residue_matches_template_heavy_atoms(residue: Any, template: Any) -> bool:
+    """Require exact heavy-atom composition before destructive glycan cleanup."""
+
+    def _heavy_signature(atoms: Any) -> set[tuple[str, str]]:
+        signature = set()
+        for atom in atoms:
+            element = getattr(atom, "element", None)
+            if element is None or getattr(element, "atomic_number", None) == 1:
+                continue
+            signature.add((str(atom.name), str(getattr(element, "symbol", ""))))
+        return signature
+
+    observed = _heavy_signature(residue.atoms())
+    expected = _heavy_signature(template.atoms)
+    return bool(observed) and observed == expected
+
+
+def _is_safe_orphan_glycam_candidate(
+    residue: Any,
+    template: Any,
+    *,
+    glycan_forcefield_active: bool,
+) -> bool:
+    """Gate destructive orphan cleanup on authority, composition, and role."""
+    return bool(
+        glycan_forcefield_active
+        and is_glycam_template_residue(residue.name)
+        and residue.name not in GLYCAM_LINKED_PROTEIN_RESNAMES
+        and template is not None
+        and template.externalBonds
+        and _residue_matches_template_heavy_atoms(residue, template)
+    )
 
 
 def _lipid21_contract():
@@ -1263,7 +1301,7 @@ def _run_openmmforcefields_build(
         for residue in omm_topology.residues():
             if has_explicit_glycam_plan and (
                 residue.name == _GLYCAM_LINKED_ASN_RESNAME
-                or _is_glycam_topology_residue(residue.name)
+                or is_glycam_template_residue(residue.name)
             ):
                 continue
             template = sg.forcefield._templates.get(residue.name)
@@ -1451,17 +1489,19 @@ def _run_openmmforcefields_build(
         # has no template that matches it; ``Modeller.delete`` removes
         # the dangling residue (and any waters / ions caught by chain
         # continuity).
-        _GLYCAN_RESNAMES = {
-            "0YB", "4YA", "4YB", "0LB", "VMB", "0MB", "0fA", "2MA", "0LA",
-            "BMA", "MAN", "NAG", "0YA", "4YS", "0LS",
-        }
         # Iterate: dropping one orphan glycan can leave its neighbour
         # glycans with their own unpaired external bonds. Recompute the
         # actual cross-residue bond count from the topology each pass and
         # delete any GLYCAM residue whose realised external-bond count is
         # less than its template demands. Cap at a few iterations so a
         # bug here cannot loop indefinitely on a healthy glycan tree.
-        if not has_explicit_glycam_plan:
+        #
+        # Name membership alone is not deletion provenance: GLYCAM has CCD
+        # collisions and also ships protein-anchor templates such as HYP.
+        # With no bond plan available, require an active GLYCAM library plus
+        # an exact heavy-atom match to the authoritative force-field template,
+        # and never delete a linked-protein anchor.
+        if glycan_name and not has_explicit_glycam_plan:
             from openmm.app import Modeller as _ModellerForOrphans
             all_dropped: list[str] = []
             for _orphan_pass in range(8):
@@ -1476,10 +1516,12 @@ def _run_openmmforcefields_build(
                         )
                 this_round: list[Any] = []
                 for residue in omm_topology.residues():
-                    if residue.name not in _GLYCAN_RESNAMES:
-                        continue
                     template = sg.forcefield._templates.get(residue.name)
-                    if template is None or not template.externalBonds:
+                    if not _is_safe_orphan_glycam_candidate(
+                        residue,
+                        template,
+                        glycan_forcefield_active=bool(glycan_name),
+                    ):
                         continue
                     atom_by_name = {a.name: a for a in residue.atoms()}
                     template_external_count: dict[str, int] = {}

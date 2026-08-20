@@ -62,13 +62,13 @@ cpptraj_wrapper = BaseToolWrapper("cpptraj")
 # =============================================================================
 
 from mdclaw.amber.content_detection import _normalize_pdb_chain_id  # noqa: E402
-from mdclaw.amber.forcefield_constants import _GLYCAM_LINKED_ASN_RESNAME, _GLYCAM_TOPOLOGY_RESNAMES  # noqa: E402
+from mdclaw.amber.forcefield_constants import (  # noqa: E402
+    GLYCAM_LINKED_PROTEIN_RESNAMES,
+    _GLYCAM_LINKED_ASN_RESNAME,
+    is_glycam_template_residue,
+)
 from mdclaw.amber.ligand_validation import _is_hydrogen_like_atom  # noqa: E402
 from mdclaw.amber.topology_bonds import _topology_has_bond, _write_pdb_with_glycan_link_records  # noqa: E402
-
-
-def _is_glycam_topology_residue(residue_name: str) -> bool:
-    return str(residue_name or "").upper() in _GLYCAM_TOPOLOGY_RESNAMES
 
 
 def _collect_pdb_residue_units(pdb_path: Path) -> list[dict[str, Any]]:
@@ -180,23 +180,36 @@ def _parse_glycam_leap_bond_plan(
     return plan
 
 
-def _protein_hydrogen_signature_for_glycam(omm_topology: Any) -> dict[tuple[Any, ...], tuple[str, ...]]:
+def _glycam_residue_identity_key(residue: Any) -> tuple[Any, ...]:
+    return (
+        residue.index,
+        _normalize_pdb_chain_id(getattr(residue.chain, "id", "")),
+        str(residue.id),
+        str(residue.name or ""),
+    )
+
+
+def _protein_hydrogen_signature_for_glycam(
+    omm_topology: Any,
+    allowed_residue_keys: set[tuple[Any, ...]] | None = None,
+) -> dict[tuple[Any, ...], tuple[str, ...]]:
+    """Capture every residue except exact bond-plan sugars allowed to change.
+
+    NLN and the other GLYCAM protein-anchor templates stay protected.  The
+    intentional NLN HD22 deletion happens before the first snapshot, so any
+    subsequent anchor change by ``addHydrogens`` is a regression, not part of
+    glycan hydrogen completion.
+    """
+    allowed = allowed_residue_keys or set()
     signature: dict[tuple[Any, ...], tuple[str, ...]] = {}
     for residue in omm_topology.residues():
-        residue_name = str(residue.name or "")
-        if residue_name == _GLYCAM_LINKED_ASN_RESNAME or _is_glycam_topology_residue(residue_name):
+        identity = _glycam_residue_identity_key(residue)
+        if identity in allowed:
             continue
         hydrogens = tuple(
             sorted(atom.name for atom in residue.atoms() if _is_hydrogen_like_atom(atom))
         )
-        signature[
-            (
-                residue.index,
-                _normalize_pdb_chain_id(getattr(residue.chain, "id", "")),
-                str(residue.id),
-                residue_name,
-            )
-        ] = hydrogens
+        signature[identity] = hydrogens
     return signature
 
 
@@ -418,7 +431,7 @@ def _normalize_glycam_topology(
             and str(endpoint.get("atom") or "") == "ND2"
             for endpoint in endpoints
         ) and any(
-            _is_glycam_topology_residue(str(endpoint.get("resname") or ""))
+            is_glycam_template_residue(str(endpoint.get("resname") or ""))
             and str(endpoint.get("atom") or "") == "C1"
             for endpoint in endpoints
         ):
@@ -456,6 +469,8 @@ def _normalize_glycam_topology(
             report["removed_substituted_h_count"] = len(hd22_atoms)
 
     residues = list(omm_topology.residues())
+    allowed_sugar_keys: set[tuple[Any, ...]] = set()
+    allowed_sugars: dict[tuple[Any, ...], dict[str, str]] = {}
     for bond in glycam_bond_plan.get("bonds", []) or []:
         endpoint_atoms = []
         for side in ("left", "right"):
@@ -468,6 +483,14 @@ def _normalize_glycam_topology(
             if error:
                 report["errors"].append(error)
                 continue
+            residue_name = str(residue.name or "")
+            if (
+                is_glycam_template_residue(residue_name)
+                and residue_name not in GLYCAM_LINKED_PROTEIN_RESNAMES
+            ):
+                identity = _glycam_residue_identity_key(residue)
+                allowed_sugar_keys.add(identity)
+                allowed_sugars[identity] = _glycam_residue_identity_payload(residue)
             unit_index = endpoint.get("unit_index")
             atom_name = str(endpoint.get("atom") or "")
             atom = next((candidate for candidate in residue.atoms() if candidate.name == atom_name), None)
@@ -499,7 +522,16 @@ def _normalize_glycam_topology(
         unit_module,
     )
 
-    before_signature = _protein_hydrogen_signature_for_glycam(omm_topology)
+    report["hydrogen_completion"]["allowed_sugar_residue_count"] = len(
+        allowed_sugar_keys
+    )
+    report["hydrogen_completion"]["allowed_sugar_residues"] = [
+        allowed_sugars[key] for key in sorted(allowed_sugars)
+    ]
+    before_signature = _protein_hydrogen_signature_for_glycam(
+        omm_topology,
+        allowed_sugar_keys,
+    )
     before_atom_count = omm_topology.getNumAtoms()
     report["hydrogen_completion"]["attempted"] = True
     try:
@@ -529,12 +561,16 @@ def _normalize_glycam_topology(
         report["code"] = "glycam_hydrogen_completion_failed"
         return omm_topology, omm_positions, report
 
-    after_signature = _protein_hydrogen_signature_for_glycam(omm_topology)
+    after_signature = _protein_hydrogen_signature_for_glycam(
+        omm_topology,
+        allowed_sugar_keys,
+    )
     report["protein_hydrogen_set_preserved"] = before_signature == after_signature
     if before_signature != after_signature:
         report["errors"].append(
-            "GLYCAM hydrogen completion changed non-GLYCAM protein/water "
-            "hydrogen atom sets; topology build does not perform generic H repair."
+            "GLYCAM hydrogen completion changed hydrogen atom sets outside "
+            "the exact bond-plan carbohydrate residues; topology build does "
+            "not perform generic H repair."
         )
         report["code"] = "glycam_normalization_changed_protein_hydrogens"
         return omm_topology, omm_positions, report

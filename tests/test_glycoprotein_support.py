@@ -1,6 +1,9 @@
 """Glycoprotein/glycan support tests."""
 from __future__ import annotations
 
+import ast
+import xml.etree.ElementTree as ET
+from importlib import resources
 import textwrap
 from pathlib import Path
 
@@ -736,6 +739,294 @@ def test_glycam_bond_plan_legacy_unit_index_fallback_still_applies(tmp_path):
     assert report["glycam_bond_plan"]["applied_count"] == 1
     assert len(list(normalized.bonds())) == 1
     assert report["unit_index_drift"] == []
+
+
+def test_glycam_name_authority_matches_installed_ffxml_exactly():
+    from mdclaw.amber.forcefield_constants import glycam_template_residue_names
+
+    resource = resources.files("openmmforcefields").joinpath(
+        "ffxml",
+        "amber",
+        "GLYCAM_06j-1.xml",
+    )
+    with resource.open("rb") as handle:
+        expected = frozenset(
+            residue.attrib["name"]
+            for residue in ET.parse(handle).getroot().findall(".//Residue")
+        )
+
+    actual = glycam_template_residue_names()
+    assert actual == expected
+    assert len(actual) > 1000
+    assert {"0FA", "0fA"} <= actual
+
+
+def test_mdclaw_package_has_no_pasted_glycam_name_sets():
+    from mdclaw.amber.forcefield_constants import glycam_template_residue_names
+
+    authority = glycam_template_residue_names()
+    package_root = Path(__file__).parents[1] / "mdclaw"
+    pasted = []
+    for source_path in package_root.rglob("*.py"):
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Set):
+                continue
+            literal_names = {
+                item.value
+                for item in node.elts
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            }
+            overlap = {
+                name
+                for name in literal_names & authority
+                if len(name) == 3 and name[0] in "012346ZYXWVUTSRQP"
+            }
+            if len(overlap) >= 2:
+                pasted.append((source_path.relative_to(package_root), sorted(overlap)))
+
+    assert pasted == []
+
+
+def test_hydrogen_signature_protects_all_nonplanned_chemistry():
+    from openmm.app import Topology, element
+    from mdclaw.amber.glycam_topology import (
+        _glycam_residue_identity_key,
+        _protein_hydrogen_signature_for_glycam,
+    )
+
+    topology = Topology()
+    chain = topology.addChain("A")
+    protected_names = (
+        "ASH", "GLH", "LYN", "CYM", "ACE", "NME",
+        "SEP", "TPO", "PTR", "OLS", "OLT", "OLP", "HYP",
+        "DA", "PA", "HOH",
+    )
+    for index, name in enumerate(protected_names, start=1):
+        residue = topology.addResidue(name, chain, str(index))
+        topology.addAtom("H", element.hydrogen, residue)
+    planned = topology.addResidue("0GA", chain, "90")
+    topology.addAtom("H1", element.hydrogen, planned)
+    unplanned = topology.addResidue("0GA", chain, "91")
+    topology.addAtom("H1", element.hydrogen, unplanned)
+
+    signature = _protein_hydrogen_signature_for_glycam(
+        topology,
+        {_glycam_residue_identity_key(planned)},
+    )
+
+    assert {key[3] for key in signature} >= set(protected_names)
+    assert _glycam_residue_identity_key(planned) not in signature
+    assert _glycam_residue_identity_key(unplanned) in signature
+
+
+def test_hydrogen_guard_allows_only_exact_bond_plan_sugar():
+    from openmm import Vec3, unit
+    from openmm.app import Topology, element
+    from mdclaw.amber.glycam_topology import _normalize_glycam_topology
+
+    class FakeModeller:
+        def __init__(self, topology, positions):
+            self.topology = topology
+            self.positions = positions
+
+        @staticmethod
+        def loadHydrogenDefinitions(_path):
+            return None
+
+        def delete(self, _atoms):
+            return None
+
+        def addHydrogens(self, _forcefield, pH=7.0):
+            planned = next(
+                residue
+                for residue in self.topology.residues()
+                if residue.chain.id == "B"
+            )
+            self.topology.addAtom("HNEW", element.hydrogen, planned)
+
+    class FakeApp:
+        Modeller = FakeModeller
+
+        class ForceField:
+            def __init__(self, *_args):
+                return None
+
+    topology = Topology()
+    protein_chain = topology.addChain("A")
+    nln = topology.addResidue("NLN", protein_chain, "1")
+    topology.addAtom("ND2", element.nitrogen, nln)
+    unplanned_chain = topology.addChain("C")
+    unplanned = topology.addResidue("0GA", unplanned_chain, "3")
+    topology.addAtom("C1", element.carbon, unplanned)
+    planned_chain = topology.addChain("B")
+    planned = topology.addResidue("0GA", planned_chain, "2")
+    topology.addAtom("C1", element.carbon, planned)
+    positions = unit.Quantity(
+        [Vec3(0, 0, 0), Vec3(0.1, 0, 0), Vec3(1, 0, 0)],
+        unit.nanometer,
+    )
+    plan = {
+        "bonds": [{
+            "left": {
+                "unit_index": 1,
+                "atom": "ND2",
+                "resname": "NLN",
+                "chain": "A",
+                "resnum": "1",
+                "icode": "",
+            },
+            "right": {
+                "unit_index": 3,
+                "atom": "C1",
+                "resname": "0GA",
+                "chain": "B",
+                "resnum": "2",
+                "icode": "",
+            },
+        }],
+        "warnings": [],
+        "errors": [],
+    }
+
+    _topology, _positions, report = _normalize_glycam_topology(
+        omm_topology=topology,
+        omm_positions=positions,
+        glycam_bond_plan=plan,
+        protein_forcefield="ff19SB",
+        phosaa_name=None,
+        dna_name=None,
+        rna_name=None,
+        glycan_name="GLYCAM_06j-1",
+        lipid_name=None,
+        app_module=FakeApp,
+        unit_module=unit,
+    )
+
+    assert report["completed"] is True, report["errors"]
+    assert report["hydrogen_completion"]["allowed_sugar_residue_count"] == 1
+    assert report["hydrogen_completion"]["allowed_sugar_residues"] == [{
+        "chain": "B",
+        "resnum": "2",
+        "resname": "0GA",
+    }]
+
+
+def test_hydrogen_guard_keeps_nln_anchor_protected():
+    from openmm import Vec3, unit
+    from openmm.app import Topology, element
+    from mdclaw.amber.glycam_topology import _normalize_glycam_topology
+
+    class FakeModeller:
+        def __init__(self, topology, positions):
+            self.topology = topology
+            self.positions = positions
+
+        @staticmethod
+        def loadHydrogenDefinitions(_path):
+            return None
+
+        def delete(self, _atoms):
+            return None
+
+        def addHydrogens(self, _forcefield, pH=7.0):
+            nln = next(
+                residue
+                for residue in self.topology.residues()
+                if residue.name == "NLN"
+            )
+            self.topology.addAtom("HNEW", element.hydrogen, nln)
+
+    class FakeApp:
+        Modeller = FakeModeller
+
+        class ForceField:
+            def __init__(self, *_args):
+                return None
+
+    topology = Topology()
+    glycan_chain = topology.addChain("B")
+    sugar = topology.addResidue("0GA", glycan_chain, "2")
+    topology.addAtom("C1", element.carbon, sugar)
+    protein_chain = topology.addChain("A")
+    nln = topology.addResidue("NLN", protein_chain, "1")
+    topology.addAtom("ND2", element.nitrogen, nln)
+    positions = unit.Quantity(
+        [Vec3(0, 0, 0), Vec3(0.1, 0, 0)],
+        unit.nanometer,
+    )
+    plan = {
+        "bonds": [{
+            "left": {"unit_index": 2, "atom": "ND2", "resname": "NLN"},
+            "right": {"unit_index": 1, "atom": "C1", "resname": "0GA"},
+        }],
+        "warnings": [],
+        "errors": [],
+    }
+
+    _topology, _positions, report = _normalize_glycam_topology(
+        omm_topology=topology,
+        omm_positions=positions,
+        glycam_bond_plan=plan,
+        protein_forcefield="ff19SB",
+        phosaa_name=None,
+        dna_name=None,
+        rna_name=None,
+        glycan_name="GLYCAM_06j-1",
+        lipid_name=None,
+        app_module=FakeApp,
+        unit_module=unit,
+    )
+
+    assert report["completed"] is False
+    assert report["code"] == "glycam_normalization_changed_protein_hydrogens"
+
+
+def test_orphan_glycan_candidate_requires_composition_and_excludes_anchor():
+    from types import SimpleNamespace
+    from openmm.app import Topology, element
+    from mdclaw.amber.openmm_build import _is_safe_orphan_glycam_candidate
+
+    def _template(*atoms):
+        return SimpleNamespace(
+            atoms=[
+                SimpleNamespace(name=name, element=atom_element)
+                for name, atom_element in atoms
+            ],
+            externalBonds=[0],
+        )
+
+    topology = Topology()
+    chain = topology.addChain("A")
+    sugar = topology.addResidue("0GA", chain, "1")
+    topology.addAtom("C1", element.carbon, sugar)
+    topology.addAtom("O1", element.oxygen, sugar)
+    exact = _template(("C1", element.carbon), ("O1", element.oxygen))
+    mismatch = _template(("C1", element.carbon), ("O2", element.oxygen))
+
+    assert _is_safe_orphan_glycam_candidate(
+        sugar,
+        exact,
+        glycan_forcefield_active=True,
+    )
+    assert not _is_safe_orphan_glycam_candidate(
+        sugar,
+        mismatch,
+        glycan_forcefield_active=True,
+    )
+    assert not _is_safe_orphan_glycam_candidate(
+        sugar,
+        exact,
+        glycan_forcefield_active=False,
+    )
+
+    hyp = topology.addResidue("HYP", chain, "2")
+    topology.addAtom("C1", element.carbon, hyp)
+    assert not _is_safe_orphan_glycam_candidate(
+        hyp,
+        _template(("C1", element.carbon)),
+        glycan_forcefield_active=True,
+    )
 
 
 def test_packmol_solute_identity_restore_keeps_water_renumbering(tmp_path):

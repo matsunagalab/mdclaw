@@ -216,8 +216,11 @@ CANONICAL_WATER_MODELS = {
 }
 
 
-# Common PDB Chemical Component Dictionary residue names for monosaccharides
-# and glycan capping/derivative residues seen in glycoprotein structures.
+# PDB Chemical Component Dictionary namespace for monosaccharides and glycan
+# capping/derivative residues in deposited structures.  These are deliberately
+# separate from the post-prepareforleap GLYCAM force-field template namespace,
+# whose sole authority is glycam_template_residue_names() in
+# mdclaw.amber.forcefield_constants.
 COMMON_GLYCAN_RESNAMES = {
     "NAG", "NDG", "BMA", "MAN", "GAL", "GLC", "FUC", "FUL", "SIA", "SLB",
     "NAN", "NGC", "SGN", "GCU", "GLA", "IDR", "IDS", "RAM", "RHA", "ARA",

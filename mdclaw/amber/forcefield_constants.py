@@ -27,6 +27,9 @@ support; ligand parameterization is not a prep-stage mdclaw artifact.
 # Configure logging early to suppress noisy third-party logs
 import os
 import sys
+import xml.etree.ElementTree as ET
+from functools import lru_cache
+from importlib import resources
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import setup_logger  # noqa: E402
@@ -80,10 +83,38 @@ PHOSAA_LIBRARY_FOR_FF = {
 }
 
 
-_GLYCAM_TOPOLOGY_RESNAMES = {
-    "0YB", "4YA", "4YB", "0LB", "VMB", "0MB", "0FA", "2MA", "0LA",
-    "BMA", "MAN", "NAG", "0YA", "4YS", "0LS",
-}
+@lru_cache(maxsize=1)
+def glycam_template_residue_names() -> frozenset[str]:
+    """Return the exact-case residue namespace shipped by GLYCAM_06j-1.
+
+    This is the sole MDClaw authority for post-``prepareforleap`` GLYCAM
+    template names.  It is intentionally derived from the installed force
+    field instead of copied into Python, so an openmmforcefields update cannot
+    silently make a hand-maintained list stale.
+    """
+    resource = resources.files("openmmforcefields").joinpath(
+        "ffxml",
+        "amber",
+        "GLYCAM_06j-1.xml",
+    )
+    with resource.open("rb") as handle:
+        root = ET.parse(handle).getroot()
+    names = frozenset(
+        residue.attrib["name"]
+        for residue in root.findall(".//Residue")
+        if residue.attrib.get("name")
+    )
+    if not names:
+        raise RuntimeError(
+            "GLYCAM_06j-1.xml contains no residue templates; "
+            "the installed openmmforcefields data is incomplete"
+        )
+    return names
+
+
+def is_glycam_template_residue(residue_name: str) -> bool:
+    """Match the force-field namespace exactly; GLYCAM residue case matters."""
+    return str(residue_name or "") in glycam_template_residue_names()
 
 
 _GLYCAM_LINKED_ASN_RESNAME = "NLN"
@@ -149,7 +180,9 @@ GLYCAN_FORCEFIELDS = {
 }
 
 
-GLYCAM_LINKED_PROTEIN_RESNAMES = {"NLN", "OLS", "OLT", "OLP", "HYP"}
+# Protein-anchor templates in the GLYCAM XML are not carbohydrate residues.
+# Keep them protected when a GLYCAM-only operation is allowed to alter sugars.
+GLYCAM_LINKED_PROTEIN_RESNAMES = {"NLN", "OLS", "OLT", "OLP", "HYP", "CHYP"}
 
 # =============================================================================
 # Force Field Compatibility (based on Amber Manual 2024)
