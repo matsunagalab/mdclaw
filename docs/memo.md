@@ -7,6 +7,55 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-20 — 5L7D in POPC end to end on Rikyu; the membrane fixes hold, and one analyze trap
+
+Ran the v0.6.8 SIF through a real membrane system to check the fixes before
+telling the group to pull: 5L7D (human Smoothened, a class F GPCR with a BRIL
+fusion), chain A only, ligand CLR and the NAG glycans dropped, POPC bilayer,
+0.5 ns NVT + 1.0 ns NPT, 1 ns production. Nine nodes, **0 failed**.
+
+**The membrane fixes hold.**
+
+| Check | Result |
+| --- | --- |
+| Orientation backend | `opm-homolog`. 5L7D is itself in OPM, so identity 1.0, `fit_rmsd` 0.0, hydrophobic thickness 32 A, 10 candidates evaluated. No PPM3 fallback. |
+| Ions in the bilayer | 301 ions, **0** within the middle 80 % of the lipid z-span. This is the `a6cad27` fix (patch salt no longer carried into the assembly) working on a real system. |
+| Lipid headgroup restraint | `lipid_headgroup_restraint_count: 359` on both `min` and `eq` — the new flat-bottom restraint is applied. |
+| Box fitted to solute | 116 x 116 x 173.5 A. The extracellular CRD sets the z height; nothing crosses the cell after NPT contracted it 10 %. |
+| Equilibration | Density 0.917 -> 1.024 g/mL, volume 2416 -> 2164 nm3. |
+| Production | 300.34 +/- 0.68 K, 1.025 +/- 0.001 g/mL, backbone RMSD rising to ~0.15 nm and flat after 40 frames. |
+
+**Throughput:** ~300,000 atoms, one GB200. `min` 32 s, `eq` (1.5 ns) 7 m 58 s,
+`prod` (1 ns) 6 m 09 s — about **270 ns/day**. The whole run cost ~15 min of GPU.
+
+**The trap: `explain_node` says an analyze node is ready when its metric tool is
+not.** Create an `analyze` node parented on `prod`, and `explain_node` reports
+`ready_to_run: true`, no blocking codes, no missing inputs, and resolves
+`topology_file` / `trajectory_chain` / `energy_chain`. Running `analyze_rmsd` on
+that node then fails:
+
+    Validation failed for 'trajectory_file / reference_pdb': Both are required.
+
+The resolver exposes `trajectory_chain` (a list) and `topology_file`; the metric
+wants `trajectory_file` and `reference_pdb`, which only exist after
+`concat_trajectory` has run on that node and written `combined_trajectory` +
+`reference_pdb`. `skills/md-analyze/metrics.md` states this ("After
+`concat_trajectory` ... the combined trajectory and reference PDB are the common
+inputs"), so an agent that reads the skill is fine. An agent that trusts
+`explain_node` — which is what `run-loop.md` says to check before running a
+stage tool — is not. Reproduced cleanly on a fresh node (`analyze_003`).
+
+Either `explain_node` should report the concat prerequisite for metric-bearing
+analyze nodes, or the metrics should accept the chain form the resolver already
+hands them. Not fixed here.
+
+**Not a finding, for the record:** `analyze_rmsd` does return its statistics —
+`mean_rmsd_nm`, `std_rmsd_nm`, `max_rmsd_nm`, `n_frames` as flat keys. An
+earlier read of this session looked for a `statistics` object that the tool
+never promised.
+
+---
+
 ## 2026-08-20 — UTF-8 モードを焼いた SIF (acabf7612b72)
 
 locale 修正 (`preserve_locale` / `new_simulation`)、`bin/mdclaw` の bash 3.2 対応、
