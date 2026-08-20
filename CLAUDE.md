@@ -61,7 +61,7 @@ tests:
 
 ```bash
 conda run -n mdclaw ruff check mdclaw/
-conda run -n mdclaw pytest tests/test_registry.py tests/test_cli.py tests/test_guardrails.py tests/test_slurm_server.py -v
+conda run -n mdclaw pytest tests/test_registry.py tests/test_cli.py tests/test_guardrails.py tests/test_guardrail_code_registry.py tests/test_slurm_server.py -v
 ```
 
 On Linux hosts where creating conda is expensive, use the current SIF as a

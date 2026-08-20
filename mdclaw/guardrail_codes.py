@@ -312,6 +312,8 @@ GUARDRAIL_CODES: dict[str, str] = {
     "modeller_target_sequence_conflict": "Target sequence conflicts with the alignment; resolve one.",
     "modeller_chain_count_mismatch": "Target and template chain counts differ; align them.",
     "modeller_loop_models_invalid": "Use a valid loop-model count.",
+    "modeller_template_conversion_unavailable": "Install gemmi or provide the MODELLER template in PDB format.",
+    "modeller_template_conversion_failed": "Check that the template is valid mmCIF, or provide a PDB-format template.",
     "modeller_execution_failed": "MODELLER execution failed; inspect the structured error.",
 
     # --- SLURM / HPC policy ---
