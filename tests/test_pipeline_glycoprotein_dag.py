@@ -24,7 +24,12 @@ from __future__ import annotations
 
 import pytest
 
-from tests.pipeline_helpers import fetch_pdb_node, node_artifact, require_topology_builder_stack
+from tests.pipeline_helpers import (
+    fetch_pdb_node,
+    node_artifact,
+    require_executable,
+    require_topology_builder_stack,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -39,6 +44,7 @@ class TestPipelineGlycoproteinDag:
     def test_step1_fetch_and_inspect_glycans(self, job_dir):
         from mdclaw.research.inspection import inspect_molecules
 
+        require_executable("cpptraj", "the GLYCAM pipeline integration test")
         self.__class__.fetch_id = fetch_pdb_node(job_dir, "4J12")
         inspected = inspect_molecules(str(node_artifact(job_dir, self.fetch_id, "structure_file")))
         assert inspected["success"], inspected.get("errors")

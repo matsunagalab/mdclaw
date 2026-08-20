@@ -118,9 +118,11 @@ case "$RUNTIME" in
         # In a user namespace the kernel ignores the setuid bit on
         # starter-suid and fusermount3, so the SIF cannot be mounted and every
         # call re-extracts it instead. See docs/developer/container.md.
-        if [ -r /proc/self/uid_map ] \
+        # MDCLAW_UID_MAP_FILE is a test seam, not a supported configuration knob.
+        UID_MAP_FILE="${MDCLAW_UID_MAP_FILE:-/proc/self/uid_map}"
+        if [ -r "$UID_MAP_FILE" ] \
             && ! grep -qE '^[[:space:]]*0[[:space:]]+0[[:space:]]+4294967295' \
-                /proc/self/uid_map; then
+                "$UID_MAP_FILE"; then
             echo "Warning: running $CONTAINER_CMD inside a user namespace;" \
                 "the SIF will be extracted on every call instead of mounted." \
                 "Drop the unshare wrapper and use --no-home with a neutral" \

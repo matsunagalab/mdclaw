@@ -176,7 +176,17 @@ class TestImportServers:
 class TestConfig:
     """Test get_timeout() in servers/_common.py."""
 
-    def test_timeout_defaults(self):
+    def test_timeout_defaults(self, monkeypatch):
+        for name in (
+            "MDCLAW_DEFAULT_TIMEOUT",
+            "MDCLAW_SOLVATION_TIMEOUT",
+            "MDCLAW_MEMBRANE_TIMEOUT",
+            "MDCLAW_AMBER_TIMEOUT",
+            "MDCLAW_MD_SIMULATION_TIMEOUT",
+            "MDCLAW_VISUALIZATION_TIMEOUT",
+            "MDCLAW_STRUCTURE_TIMEOUT",
+        ):
+            monkeypatch.delenv(name, raising=False)
         from mdclaw._common import get_timeout
 
         assert get_timeout("default") == 300
@@ -187,7 +197,8 @@ class TestConfig:
         assert get_timeout("visualization") == 300
         assert get_timeout("structure") == 600
 
-    def test_timeout_unknown_type(self):
+    def test_timeout_unknown_type(self, monkeypatch):
+        monkeypatch.delenv("MDCLAW_DEFAULT_TIMEOUT", raising=False)
         from mdclaw._common import get_timeout
 
         # Unknown type falls back to default

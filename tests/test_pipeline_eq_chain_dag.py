@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.pipeline_helpers import fetch_pdb_node, node_artifact
+from tests.pipeline_helpers import (
+    fetch_pdb_node,
+    node_artifact,
+    require_topology_builder_stack,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -26,6 +30,7 @@ class TestPipelineEqChainDag:
         return tmp_path_factory.mktemp("job_1ake_eq_chain")
 
     def test_step1_fetch_pdb(self, job_dir):
+        require_topology_builder_stack()
         self.__class__.fetch_id = fetch_pdb_node(job_dir, "1AKE")
 
     def test_step2_prepare_chain_a(self, job_dir):

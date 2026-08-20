@@ -1021,32 +1021,38 @@ class TestParameterCoercion:
 # ---------------------------------------------------------------------------
 
 
+def _run_checkout_cli(*args, cwd=None):
+    """Run the checkout's CLI regardless of pytest's invocation directory."""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(REPO_ROOT), env.get("PYTHONPATH", "")]
+    )
+    return subprocess.run(
+        [sys.executable, "-m", "mdclaw._cli", *args],
+        capture_output=True,
+        text=True,
+        cwd=cwd or REPO_ROOT,
+        env=env,
+    )
+
+
 class TestSubprocessCLI:
     """Test CLI via subprocess to verify entry point behavior."""
 
     def test_version(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "mdclaw._cli", "--version"],
-            capture_output=True, text=True,
-        )
+        result = _run_checkout_cli("--version")
         assert result.returncode == 0
         assert "mdclaw" in result.stdout
 
     def test_list(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "mdclaw._cli", "--list"],
-            capture_output=True, text=True,
-        )
+        result = _run_checkout_cli("--list")
         assert result.returncode == 0
         assert "solvate_structure" in result.stdout
         assert "mdclaw --list-json <tool>" in result.stdout
         assert "Total:" in result.stdout
 
     def test_list_json(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "mdclaw._cli", "--list-json"],
-            capture_output=True, text=True,
-        )
+        result = _run_checkout_cli("--list-json")
         assert result.returncode == 0
         payload = json.loads(result.stdout)
         assert payload["success"] is True
@@ -1054,10 +1060,7 @@ class TestSubprocessCLI:
         assert "solvate_structure" in tool_names
 
     def test_tool_help(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "mdclaw._cli", "solvate_structure", "--help"],
-            capture_output=True, text=True,
-        )
+        result = _run_checkout_cli("solvate_structure", "--help")
         assert result.returncode == 0
         assert "--pdb-file" in result.stdout
 
@@ -1067,11 +1070,7 @@ class TestSubprocessCLI:
         `--list` and `--version` do no work, so anything that appears in the
         working directory came from an import-time side effect.
         """
-        result = subprocess.run(
-            [sys.executable, "-m", "mdclaw._cli", "--list"],
-            capture_output=True, text=True, cwd=tmp_path,
-            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
-        )
+        result = _run_checkout_cli("--list", cwd=tmp_path)
         assert result.returncode == 0, result.stderr
         assert sorted(p.name for p in tmp_path.iterdir()) == []
 
@@ -1087,21 +1086,14 @@ class TestSubprocessCLI:
                 pass
             else:
                 pytest.skip("this user can write to a 0555 directory (root?)")
-            result = subprocess.run(
-                [sys.executable, "-m", "mdclaw._cli", "--version"],
-                capture_output=True, text=True, cwd=workdir,
-                env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
-            )
+            result = _run_checkout_cli("--version", cwd=workdir)
         finally:
             workdir.chmod(0o755)
         assert result.returncode == 0, result.stderr
         assert "mdclaw" in result.stdout
 
     def test_no_args_shows_help(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "mdclaw._cli"],
-            capture_output=True, text=True,
-        )
+        result = _run_checkout_cli()
         assert result.returncode == 0
         # Should print help text
         assert "mdclaw" in result.stdout.lower() or "usage" in result.stdout.lower()

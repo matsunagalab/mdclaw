@@ -21,6 +21,12 @@ from pathlib import Path
 
 import pytest
 
+from tests.pipeline_helpers import (
+    require_protein_preparation_stack,
+    require_topology_builder_stack,
+    skip_if_rcsb_unavailable,
+)
+
 servers_dir = Path(__file__).parent.parent / "mdclaw"
 sys.path.insert(0, str(servers_dir))
 
@@ -43,6 +49,8 @@ class Test1akeAp5BuildTopology:
         from mdclaw._node import create_node, read_node
         from mdclaw.research.fetch import fetch_structure
 
+        require_topology_builder_stack()
+        require_protein_preparation_stack()
         node = create_node(str(job_dir), "source", label="PDB 1AKE")
         assert node["success"]
         self.__class__.source_id = node["node_id"]
@@ -54,6 +62,7 @@ class Test1akeAp5BuildTopology:
             job_dir=str(job_dir),
             node_id=self.source_id,
         ))
+        skip_if_rcsb_unavailable(result, "1AKE")
         assert result["success"], result.get("errors")
         assert read_node(str(job_dir), self.source_id)["status"] == "completed"
 

@@ -23,6 +23,12 @@ from pathlib import Path
 
 import pytest
 
+from tests.pipeline_helpers import (
+    require_protein_preparation_stack,
+    require_topology_builder_stack,
+    skip_if_rcsb_unavailable,
+)
+
 # Add servers directory to path for direct imports
 servers_dir = Path(__file__).parent.parent / "mdclaw"
 sys.path.insert(0, str(servers_dir))
@@ -42,6 +48,8 @@ class TestPipeline3PWBLigandDag:
         from mdclaw._node import create_node, read_node
         from mdclaw.research.fetch import fetch_structure
 
+        require_topology_builder_stack()
+        require_protein_preparation_stack()
         node = create_node(str(job_dir), "source", label="PDB 3PWB")
         assert node["success"]
         self.__class__.source_id = node["node_id"]
@@ -53,6 +61,7 @@ class TestPipeline3PWBLigandDag:
             job_dir=str(job_dir),
             node_id=self.source_id,
         ))
+        skip_if_rcsb_unavailable(result, "3PWB")
         assert result["success"], result.get("errors")
         assert Path(result["file_path"]).parent.name == "artifacts"
 
@@ -210,7 +219,7 @@ class TestPipeline3PWBLigandDag:
         assert ligand_sources["GOL"] == "topology_gaff_template_generator"
 
     # Step 6: equilibration (auto-resolves topology from topo)
-    def test_step6_equilibration(self, job_dir):
+    def test_step6_equilibration(self, job_dir, openmm_cpu_platform):
         from mdclaw.simulation.equilibrate import run_equilibration
         from mdclaw._node import create_node, read_node
 
@@ -230,7 +239,7 @@ class TestPipeline3PWBLigandDag:
             pressure_bar=1.0,
             nvt_steps=10,
             npt_steps=10,
-            platform="CPU",
+            platform=openmm_cpu_platform,
         )
         assert result["success"], result.get("errors")
         node_data = read_node(str(job_dir), self.eq_id)
@@ -243,7 +252,7 @@ class TestPipeline3PWBLigandDag:
         assert node_data["metadata"]["integrator_signature"]
 
     # Step 7: production (auto-resolves topology + eq state)
-    def test_step7_production(self, job_dir):
+    def test_step7_production(self, job_dir, openmm_cpu_platform):
         from mdclaw.simulation.production import run_production
         from mdclaw._node import create_node, read_node
 
@@ -262,7 +271,7 @@ class TestPipeline3PWBLigandDag:
             simulation_time_ns=0.0001,
             temperature_kelvin=300.0,
             output_frequency_ps=0.1,
-            platform="CPU",
+            platform=openmm_cpu_platform,
         )
         assert result["success"], result.get("errors")
         node_data = read_node(str(job_dir), self.prod_id)

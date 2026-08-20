@@ -235,7 +235,8 @@ singularity exec --no-home --bind "$PWD:/work" --pwd /work \
 
 If that still fails outright, set `SINGULARITY_HOME` explicitly. A user namespace
 is not the answer. `bin/mdclaw` warns when it is about to launch Singularity from
-inside one.
+inside one. Its `MDCLAW_UID_MAP_FILE` environment variable exists only as a test
+seam for that warning; it is not a supported configuration knob.
 
 ## Runtime Notes
 

@@ -15,6 +15,11 @@ import textwrap
 
 import pytest
 
+from tests.pipeline_helpers import (
+    skip_if_pubchem_unavailable,
+    skip_if_rcsb_unavailable,
+)
+
 from mdclaw._node import create_node, read_node
 
 pytest.importorskip("httpx")
@@ -59,6 +64,32 @@ def prep_node(job_dir):
 
 
 # ── fetch_structure ────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("helper", "result"),
+    [
+        (
+            lambda result: skip_if_rcsb_unavailable(result, "1AKE"),
+            {"success": False, "errors": ["Connection timeout while downloading 1AKE"]},
+        ),
+        (
+            skip_if_pubchem_unavailable,
+            {"success": False, "errors": ["PubChem search failed: URLError: offline"]},
+        ),
+    ],
+)
+def test_remote_service_helpers_skip_connectivity_failures(helper, result):
+    with pytest.raises(pytest.skip.Exception):
+        helper(result)
+
+
+def test_rcsb_helper_does_not_skip_application_failures():
+    result = {
+        "success": False,
+        "errors": ["Downloaded content failed validation for 1AKE: no ATOM records"],
+    }
+    assert skip_if_rcsb_unavailable(result, "1AKE") is None
 
 
 class TestSourceStructureValidation:

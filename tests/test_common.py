@@ -1,10 +1,15 @@
 """Focused tests for shared utility behavior."""
 
+import os
+from pathlib import Path
+
 import pytest
 
 from mdclaw import _common as common_mod
 from mdclaw._common import atomic_write_text_group
 from mdclaw import _lock as lock_mod
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_atomic_write_text_group_commits_all_files(tmp_path):
@@ -99,7 +104,17 @@ def test_importing_mdclaw_does_not_configure_the_root_logger():
         "print(','.join(type(x).__name__ for x in h))"
     )
     proc = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=REPO_ROOT,
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                [str(REPO_ROOT), os.environ.get("PYTHONPATH", "")]
+            ),
+        },
     )
     root_handlers, mdclaw_handlers, handler_types = proc.stdout.split()
     assert root_handlers == "0", "importing mdclaw added a root logger handler"

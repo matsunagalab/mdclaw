@@ -6,10 +6,18 @@ Requires conda env with scientific packages (ambertools, openmm, rdkit, etc.).
 Run with: pytest tests/test_server_smoke.py -v -m slow
 """
 
+import shutil
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.pipeline_helpers import (
+    require_protein_preparation_stack,
+    require_topology_builder_stack,
+    skip_if_pubchem_unavailable,
+    skip_if_rcsb_unavailable,
+)
 
 # Add servers directory to path for direct imports
 servers_dir = Path(__file__).parent.parent / "mdclaw"
@@ -89,6 +97,7 @@ class TestResearchServer:
             format="pdb",
             output_dir=str(tmp_path),
         )
+        skip_if_rcsb_unavailable(result, "1AKE")
         assert result["success"] is True
         assert Path(result["file_path"]).exists()
 
@@ -382,6 +391,7 @@ class TestResearchServer:
             job_dir=str(job_dir),
             node_id=node["node_id"],
         )
+        skip_if_rcsb_unavailable(result, "1AKE")
         assert result["success"], result.get("errors")
         # File landed under the source node's artifacts dir
         assert Path(result["file_path"]).parent.name == "artifacts"
@@ -421,6 +431,7 @@ class TestStructureServer:
     def test_clean_protein(self, small_pdb):
         from mdclaw.structure.clean_protein import clean_protein
 
+        require_protein_preparation_stack()
         result = clean_protein(
             pdb_file=small_pdb,
             ignore_terminal_missing_residues=True,
@@ -474,6 +485,22 @@ class TestStructureServer:
             PDBFixer, "replaceNonstandardResidues", lambda self: None
         )
 
+        def fake_pdb2pqr(args):
+            output = Path(args[args.index("--pdb-output") + 1])
+            shutil.copyfile(args[0], output)
+
+        monkeypatch.setattr(
+            structure_server.pdb2pqr_wrapper, "is_available", lambda: True
+        )
+        monkeypatch.setattr(
+            structure_server.pdb2pqr_wrapper, "run", fake_pdb2pqr
+        )
+        monkeypatch.setattr(
+            structure_server.pdb4amber_wrapper,
+            "is_available",
+            lambda: pytest.fail("tuple unit test fell through to pdb4amber"),
+        )
+
         result = structure_server.clean_protein(
             pdb_file=small_pdb,
             ignore_terminal_missing_residues=True,
@@ -511,6 +538,7 @@ class TestStructureServer:
     def test_prepare_complex(self, small_pdb, tmp_path):
         from mdclaw.structure.prepare_complex import prepare_complex
 
+        require_protein_preparation_stack()
         result = prepare_complex(
             structure_file=small_pdb,
             output_dir=str(tmp_path),
@@ -719,6 +747,8 @@ class TestAmberServer:
         from mdclaw.solvation.water import solvate_structure
         from mdclaw.amber.build_system import build_amber_system
 
+        require_protein_preparation_stack()
+        require_topology_builder_stack()
         # Step 1: Prepare
         prep = prepare_complex(
             structure_file=small_pdb,
@@ -768,6 +798,8 @@ class TestMDSimulationServer:
         from mdclaw.solvation.water import solvate_structure
         from mdclaw.amber.build_system import build_amber_system
 
+        require_protein_preparation_stack()
+        require_topology_builder_stack()
         prep = prepare_complex(
             structure_file=small_pdb,
             output_dir=str(tmp_path / "prep"),
@@ -826,7 +858,12 @@ class TestMDSimulationServer:
         assert Path(result["runtime_system_file"]).stat().st_size > 0
         assert Path(result["integrator_file"]).stat().st_size > 0
 
-    def test_run_production_custom_force_positional_restraint(self, small_pdb, tmp_path):
+    def test_run_production_custom_force_positional_restraint(
+        self,
+        small_pdb,
+        tmp_path,
+        openmm_cpu_platform,
+    ):
         """Custom-force script (positional restraint) runs and logs bias energy."""
         _ot = pytest.importorskip("openmmtorch")
         if not hasattr(_ot, "PythonTorchForce"):
@@ -853,7 +890,7 @@ class TestMDSimulationServer:
             timestep_fs=2.0,
             output_frequency_ps=0.5,
             output_dir=str(tmp_path / "md_restraint"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
             custom_force_script=str(script),
             custom_force_parameters={"k": 1000.0},
         )
@@ -866,7 +903,12 @@ class TestMDSimulationServer:
         assert header == "step,time_ps,bias_energy_kj_mol"
         assert Path(result["collective_variables_meta_file"]).exists()
 
-    def test_run_production_custom_force_distance_bias_logs_cv(self, small_pdb, tmp_path):
+    def test_run_production_custom_force_distance_bias_logs_cv(
+        self,
+        small_pdb,
+        tmp_path,
+        openmm_cpu_platform,
+    ):
         """Custom-force distance bias returns a cv_dict and logs the CV column."""
         _ot = pytest.importorskip("openmmtorch")
         if not hasattr(_ot, "PythonTorchForce"):
@@ -894,7 +936,7 @@ class TestMDSimulationServer:
             timestep_fs=2.0,
             output_frequency_ps=0.5,
             output_dir=str(tmp_path / "md_dist_bias"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
             custom_force_script=str(script),
             custom_force_parameters={"k": 1000.0, "d0": 1.0},
         )
@@ -908,7 +950,12 @@ class TestMDSimulationServer:
         data_rows = cv_csv.read_text().splitlines()[1:]
         assert data_rows and float(data_rows[0].split(",")[-1]) >= 0.0
 
-    def test_run_production_custom_force_node_artifacts(self, small_pdb, tmp_path):
+    def test_run_production_custom_force_node_artifacts(
+        self,
+        small_pdb,
+        tmp_path,
+        openmm_cpu_platform,
+    ):
         """Node-mode custom force records script + CV artifacts and signature."""
         _ot = pytest.importorskip("openmmtorch")
         if not hasattr(_ot, "PythonTorchForce"):
@@ -927,7 +974,7 @@ class TestMDSimulationServer:
             nvt_steps=100,
             npt_steps=100,
             output_dir=str(tmp_path / "equil_cf"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
         )
         assert equil["success"] is True
 
@@ -971,7 +1018,7 @@ class TestMDSimulationServer:
             temperature_kelvin=300.0,
             pressure_bar=1.0,
             output_frequency_ps=0.5,
-            platform="CPU",
+            platform=openmm_cpu_platform,
             job_dir=str(job_dir),
             node_id=prod["node_id"],
             custom_force_script=str(script),
@@ -990,7 +1037,12 @@ class TestMDSimulationServer:
         copied = job_dir / "nodes" / prod["node_id"] / "artifacts" / "custom_force_script.py"
         assert copied.is_file()
 
-    def test_run_md_with_platform_cpu(self, small_pdb, tmp_path):
+    def test_run_md_with_platform_cpu(
+        self,
+        small_pdb,
+        tmp_path,
+        openmm_cpu_platform,
+    ):
         """Run MD with explicit CPU platform selection."""
         from mdclaw.simulation.production import run_production
 
@@ -1006,12 +1058,17 @@ class TestMDSimulationServer:
             timestep_fs=2.0,
             output_frequency_ps=0.5,
             output_dir=str(tmp_path / "md_cpu"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
         )
         assert result["success"] is True
         assert result["platform"] == "CPU"
 
-    def test_run_md_with_checkpoint(self, small_pdb, tmp_path):
+    def test_run_md_with_checkpoint(
+        self,
+        small_pdb,
+        tmp_path,
+        openmm_cpu_platform,
+    ):
         """Verify CheckpointReporter creates a checkpoint file."""
         from mdclaw.simulation.production import run_production
 
@@ -1027,13 +1084,18 @@ class TestMDSimulationServer:
             timestep_fs=2.0,
             output_frequency_ps=0.5,
             output_dir=str(tmp_path / "md_chk"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
         )
         assert result["success"] is True
         assert result["checkpoint_file"] is not None
         assert Path(result["checkpoint_file"]).exists()
 
-    def test_run_md_restart(self, small_pdb, tmp_path):
+    def test_run_md_restart(
+        self,
+        small_pdb,
+        tmp_path,
+        openmm_cpu_platform,
+    ):
         """Run MD, then restart from checkpoint and verify DCD append."""
         from mdclaw.simulation.production import run_production
 
@@ -1050,7 +1112,7 @@ class TestMDSimulationServer:
             timestep_fs=2.0,
             output_frequency_ps=0.5,
             output_dir=str(tmp_path / "md_r1"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
         )
         assert r1["success"] is True
         chk = r1["checkpoint_file"]
@@ -1067,13 +1129,18 @@ class TestMDSimulationServer:
             timestep_fs=2.0,
             output_frequency_ps=0.5,
             output_dir=str(tmp_path / "md_r2"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
             restart_from=chk,
         )
         assert r2["success"] is True
         assert r2["restarted_from"] == chk
 
-    def test_equilibration_to_production_checkpoint_handoff(self, small_pdb, tmp_path):
+    def test_equilibration_to_production_checkpoint_handoff(
+        self,
+        small_pdb,
+        tmp_path,
+        openmm_cpu_platform,
+    ):
         """run_equilibration writes both equilibrated.xml and equilibrated.chk;
         run_production can resume from either. This test exercises the .chk
         path explicitly.
@@ -1109,7 +1176,7 @@ class TestMDSimulationServer:
             nvt_steps=100,
             npt_steps=100,
             output_dir=str(tmp_path / "equil"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
         )
         assert equil["success"] is True
         chk = equil["checkpoint_file"]
@@ -1126,7 +1193,7 @@ class TestMDSimulationServer:
             pressure_bar=1.0,
             output_frequency_ps=0.5,
             output_dir=str(tmp_path / "prod_from_equil"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
             restart_from=chk,
         )
         assert prod["success"] is True
@@ -1138,7 +1205,10 @@ class TestMDSimulationServer:
         assert Path(prod["energy_file"]).stat().st_size > 0
 
     def test_equilibration_xml_restart_npt_to_nvt_cross_ensemble(
-        self, small_pdb, tmp_path
+        self,
+        small_pdb,
+        tmp_path,
+        openmm_cpu_platform,
     ):
         """eq → eq with an ensemble switch: an NPT-saved equilibration
         XML state can be resumed into a fresh equilibration call that
@@ -1162,7 +1232,7 @@ class TestMDSimulationServer:
             nvt_steps=100,
             npt_steps=100,
             output_dir=str(tmp_path / "equil_npt"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
         )
         assert equil_npt["success"] is True
         npt_state_xml = equil_npt["state_file"]
@@ -1186,7 +1256,7 @@ class TestMDSimulationServer:
             nvt_steps=100,
             npt_steps=0,
             output_dir=str(tmp_path / "equil_nvt"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
             restart_from=npt_equilibrated_xml,
         )
         assert equil_nvt["success"] is True, equil_nvt["errors"]
@@ -1210,14 +1280,17 @@ class TestMDSimulationServer:
             pressure_bar=None,  # NVT prod
             output_frequency_ps=0.5,
             output_dir=str(tmp_path / "prod_after_nvt_eq"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
             restart_from=nvt_equilibrated_xml,
         )
         assert prod["success"] is True, prod["errors"]
         assert prod["restarted_from"] == nvt_equilibrated_xml
 
     def test_run_production_xml_restart_cross_ensemble_npt_state_into_nvt(
-        self, small_pdb, tmp_path
+        self,
+        small_pdb,
+        tmp_path,
+        openmm_cpu_platform,
     ):
         """run_production XML restart must allow NPT-eq state -> NVT prod
         (and the reverse). signature_mismatches on (ensemble, pressure_bar)
@@ -1238,7 +1311,7 @@ class TestMDSimulationServer:
             nvt_steps=100,
             npt_steps=100,
             output_dir=str(tmp_path / "equil_npt_for_prod"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
         )
         assert equil_npt["success"] is True, equil_npt["errors"]
         npt_state_xml = str(Path(equil_npt["output_dir"]) / "equilibrated.xml")
@@ -1252,7 +1325,7 @@ class TestMDSimulationServer:
             pressure_bar=0,  # NVT prod
             output_frequency_ps=0.5,
             output_dir=str(tmp_path / "prod_nvt_from_npt_state"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
             restart_from=npt_state_xml,
         )
         assert prod_nvt["success"] is True, prod_nvt["errors"]
@@ -1265,7 +1338,12 @@ class TestMDSimulationServer:
             f"{prod_nvt.get('warnings')!r}"
         )
 
-    def test_run_production_node_mode_records_relative_artifacts(self, small_pdb, tmp_path):
+    def test_run_production_node_mode_records_relative_artifacts(
+        self,
+        small_pdb,
+        tmp_path,
+        openmm_cpu_platform,
+    ):
         """Node-mode production should write non-empty outputs and relative artifacts."""
         from mdclaw.simulation.equilibrate import run_equilibration
         from mdclaw.simulation.production import run_production
@@ -1282,7 +1360,7 @@ class TestMDSimulationServer:
             nvt_steps=100,
             npt_steps=100,
             output_dir=str(tmp_path / "equil_node_mode"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
         )
         assert equil["success"] is True
 
@@ -1321,7 +1399,7 @@ class TestMDSimulationServer:
             temperature_kelvin=300.0,
             pressure_bar=1.0,
             output_frequency_ps=0.5,
-            platform="CPU",
+            platform=openmm_cpu_platform,
             job_dir=str(job_dir),
             node_id=prod["node_id"],
         )
@@ -1337,7 +1415,12 @@ class TestMDSimulationServer:
         assert prod_node["artifacts"]["energy"] == "artifacts/energy.dat"
         assert prod_node["metadata"]["output_frequency_ps"] == 0.5
 
-    def test_run_md_with_hmr(self, small_pdb, tmp_path):
+    def test_run_md_with_hmr(
+        self,
+        small_pdb,
+        tmp_path,
+        openmm_cpu_platform,
+    ):
         """Run MD with HMR enabled and 4fs timestep."""
         from mdclaw.simulation.production import run_production
 
@@ -1353,7 +1436,7 @@ class TestMDSimulationServer:
             timestep_fs=4.0,
             output_frequency_ps=0.5,
             output_dir=str(tmp_path / "md_hmr"),
-            platform="CPU",
+            platform=openmm_cpu_platform,
             hmr=True,
         )
         assert result["success"] is True
@@ -1386,6 +1469,8 @@ class TestGenesisServer:
     """Smoke tests for genesis_server.py tools."""
 
     def test_rdkit_validate_smiles(self):
+        pytest.importorskip("rdkit")
+        pytest.importorskip("pubchempy")
         from mdclaw.genesis import rdkit_validate_smiles
 
         result = rdkit_validate_smiles(smiles="CCO")
@@ -1393,15 +1478,20 @@ class TestGenesisServer:
         assert "canonical_smiles" in result
 
     def test_rdkit_validate_smiles_invalid(self):
+        pytest.importorskip("rdkit")
+        pytest.importorskip("pubchempy")
         from mdclaw.genesis import rdkit_validate_smiles
 
         result = rdkit_validate_smiles(smiles="not_a_smiles_XYZ")
         assert result["success"] is False
 
     def test_pubchem_get_smiles_from_name(self):
+        pytest.importorskip("rdkit")
+        pytest.importorskip("pubchempy")
         from mdclaw.genesis import pubchem_get_smiles_from_name
 
         result = pubchem_get_smiles_from_name(chemical_name="aspirin")
+        skip_if_pubchem_unavailable(result)
         assert result["success"] is True
         assert "smiles" in result
 

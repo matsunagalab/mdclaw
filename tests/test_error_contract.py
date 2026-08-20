@@ -11,6 +11,7 @@ the server modules.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -60,6 +61,8 @@ def _write_minimal_pdb(path: Path) -> None:
         "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\n"
         "END\n"
     )
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +184,13 @@ def _run_cli(*args: str, expected_exit: int = 1) -> dict:
         [sys.executable, "-m", "mdclaw._cli", *args],
         capture_output=True,
         text=True,
+        cwd=REPO_ROOT,
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                [str(REPO_ROOT), os.environ.get("PYTHONPATH", "")]
+            ),
+        },
     )
     assert proc.returncode == expected_exit, (
         f"expected exit {expected_exit}, got {proc.returncode}; stderr={proc.stderr[:400]}"

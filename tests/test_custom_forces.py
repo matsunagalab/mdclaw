@@ -13,6 +13,10 @@ import types
 import numpy as np
 import pytest
 
+pytest.importorskip("mdtraj")
+pytest.importorskip("openmm")
+pytest.importorskip("torch")
+
 from mdclaw.simulation import custom_forces as cf
 
 

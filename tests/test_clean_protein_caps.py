@@ -8,6 +8,11 @@ uses a cap-aware removal (`_remove_heterogens_preserving_caps`) instead.
 
 import types
 
+import pytest
+
+pytest.importorskip("openmm")
+pytest.importorskip("pdbfixer")
+
 from openmm import Vec3, unit
 from openmm.app import Topology, element
 

@@ -65,6 +65,24 @@ def pytest_runtest_makereport(item, call):
 
 # --- Minimal PDB fixtures ---
 
+
+@pytest.fixture
+def openmm_cpu_platform():
+    """Return CPU only after proving OpenMM can create a CPU Context."""
+    openmm = pytest.importorskip("openmm")
+    try:
+        platform = openmm.Platform.getPlatformByName("CPU")
+        system = openmm.System()
+        system.addParticle(1.0)
+        integrator = openmm.VerletIntegrator(0.001)
+        context = openmm.Context(system, integrator, platform)
+        context.setPositions([[0.0, 0.0, 0.0]])
+        del context, integrator
+    except Exception as exc:
+        pytest.skip(f"OpenMM CPU platform is not usable on this host: {exc}")
+    return "CPU"
+
+
 ALANINE_DIPEPTIDE_PDB = textwrap.dedent("""\
 REMARK   Alanine dipeptide (ACE-ALA-NME) for testing
 ATOM      1  CH3 ACE A   1       2.000   1.000   0.000  1.00  0.00           C

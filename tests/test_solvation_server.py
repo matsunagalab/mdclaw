@@ -1529,7 +1529,7 @@ def test_patch_membrane_fingerprint_ignores_packmol_memgen_version():
     ).parameters
 
 
-def test_patch_molecule_ids_group_lipid_fragments_and_split_solvent():
+def test_patch_molecule_ids_group_lipid_fragments_and_split_solvent(tmp_path):
     from mdclaw.solvation.patch_membrane import _parse_pdb_atoms, _patch_molecule_ids
 
     pdb = (
@@ -1547,7 +1547,7 @@ def test_patch_molecule_ids_group_lipid_fragments_and_split_solvent():
         + _pdb_hetatm(9, "O", "HOH", "C", 1, "O")
         + _pdb_hetatm(10, "H1", "HOH", "C", 1, "H")
     )
-    path = Path("/tmp/mdclaw_wrap_ids.pdb")
+    path = tmp_path / "mdclaw_wrap_ids.pdb"
     path.write_text(pdb)
     _lines, atoms = _parse_pdb_atoms(path)
     ids = _patch_molecule_ids(atoms)

@@ -73,8 +73,11 @@ def _hydrogenated_dipeptide_pdb(tmp_path: Path) -> Path:
 
 def test_load_topology_uses_pablo_for_canonical_protein(tmp_path):
     pdb = _hydrogenated_dipeptide_pdb(tmp_path)
-    result = tp.load_topology(pdb)
+    # Canonical amino acids are part of Pablo's installed definitions; this
+    # test must neither consult a user CCD cache nor reach the network.
+    result = tp.load_topology(pdb, auto_download=False)
     assert result.used_pablo is True
+    assert result.auto_download is False
     assert "pablo_topology_fallback" not in result.guardrail_codes
     # 23 atoms is the expected ALA-ALA hydrogenated count (10 heavy + 13 H).
     assert result.topology.getNumAtoms() == 23
@@ -89,7 +92,9 @@ def test_load_topology_falls_back_on_unknown_residue(tmp_path):
         ATOM      2  C   XXX A   1       1.000   0.000   0.000  1.00  0.00           C
         END
         """))
-    result = tp.load_topology(pdb)
+    # An unknown residue is the fallback contract under test. Keep a populated
+    # ambient CCD cache or network response from changing that input.
+    result = tp.load_topology(pdb, auto_download=False)
     assert result.used_pablo is False
     assert "pablo_topology_fallback" in result.guardrail_codes
     assert any("Pablo" in w for w in result.warnings)

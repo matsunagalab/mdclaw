@@ -1,6 +1,10 @@
 import json
 from inspect import signature
 
+import pytest
+
+pytest.importorskip("openmm")
+
 from openmm.app import Topology, element
 
 from mdclaw.simulation.equilibrate import run_equilibration

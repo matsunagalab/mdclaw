@@ -131,15 +131,16 @@ def test_preload_without_torch_installed_is_a_noop(monkeypatch):
 def test_importing_mdclaw_does_not_import_torch_or_openmm():
     """The regression guard for the whole point of the lazy preload: the CLI
     imports ``mdclaw`` on every call, so that import must stay cheap."""
+    repo_root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(
-        [str(Path.cwd()), env.get("PYTHONPATH", "")]
+        [str(repo_root), env.get("PYTHONPATH", "")]
     )
     result = subprocess.run(
         [sys.executable, "-c",
          "import mdclaw, sys; "
          "print(sorted(m for m in ('torch', 'openmm') if m in sys.modules))"],
-        cwd=Path.cwd(), env=env, capture_output=True, text=True,
+        cwd=repo_root, env=env, capture_output=True, text=True,
     )
 
     assert result.returncode == 0, result.stderr

@@ -6,19 +6,24 @@ split. These tests build their inputs with gemmi rather than downloading them,
 so they run on a compute node with no network.
 """
 
+import shutil
+from pathlib import Path
+
 import pytest
 
-from mdclaw.structure.clean_protein import (
+gemmi = pytest.importorskip("gemmi")
+pytest.importorskip("pdbfixer")
+
+from mdclaw.structure.clean_protein import (  # noqa: E402
     MODELLER_REPAIR_RANDOM_SEED,
     _repair_missing_residues_with_modeller,
     _validate_modeller_repair_model,
     clean_protein,
 )
-from mdclaw.structure.protonation import _normalize_protonation_state_overrides
-from mdclaw.structure.split import split_molecules
-
-gemmi = pytest.importorskip("gemmi")
-pytest.importorskip("pdbfixer")
+from mdclaw.structure.protonation import (  # noqa: E402
+    _normalize_protonation_state_overrides,
+)
+from mdclaw.structure.split import split_molecules  # noqa: E402
 
 
 # Two chains with deliberately DIFFERENT sequences and lengths: a chain-to-entity
@@ -101,6 +106,26 @@ def _write_model(path, residues):
     return path
 
 
+@pytest.fixture
+def stub_amber_conversion(monkeypatch):
+    """Keep missing-residue tests independent of host Amber executables."""
+    import importlib
+
+    clean_module = importlib.import_module("mdclaw.structure.clean_protein")
+
+    def fake_pdb2pqr(args):
+        output = Path(args[args.index("--pdb-output") + 1])
+        shutil.copyfile(args[0], output)
+
+    monkeypatch.setattr(clean_module.pdb2pqr_wrapper, "is_available", lambda: True)
+    monkeypatch.setattr(clean_module.pdb2pqr_wrapper, "run", fake_pdb2pqr)
+    monkeypatch.setattr(
+        clean_module.pdb4amber_wrapper,
+        "is_available",
+        lambda: pytest.fail("missing-residue test fell through to pdb4amber"),
+    )
+
+
 def test_split_carries_each_chain_own_reference_sequence(tmp_path):
     source = _build_two_chain_structure(tmp_path / "two_chains.pdb")
     result = split_molecules(
@@ -143,7 +168,10 @@ def test_split_output_makes_the_gap_visible_to_pdbfixer(tmp_path):
     assert gaps[tuple(CHAIN_B_SEQ)] == 0
 
 
-def test_missing_gap_is_silent_without_a_reference_sequence(tmp_path):
+def test_missing_gap_is_silent_without_a_reference_sequence(
+    tmp_path,
+    stub_amber_conversion,
+):
     """A structure with no SEQRES reports 'not checked', not 'none found'."""
     source = _build_two_chain_structure(tmp_path / "two_chains.pdb")
     stripped = tmp_path / "no_seqres.pdb"
@@ -159,7 +187,11 @@ def test_missing_gap_is_silent_without_a_reference_sequence(tmp_path):
     assert any("means 'not checked'" in w for w in result["warnings"])
 
 
-def test_auto_uses_pdbfixer_for_an_in_scope_gap(tmp_path, monkeypatch):
+def test_auto_uses_pdbfixer_for_an_in_scope_gap(
+    tmp_path,
+    monkeypatch,
+    stub_amber_conversion,
+):
     source = _build_two_chain_structure(tmp_path / "two_chains.pdb")
     result = split_molecules(
         structure_file=str(source),
@@ -511,6 +543,7 @@ def test_detection_describes_the_structure_before_repair(
     tmp_path,
     monkeypatch,
     method,
+    stub_amber_conversion,
 ):
     """A repaired chain must not report its gaps as 'never checked'.
 

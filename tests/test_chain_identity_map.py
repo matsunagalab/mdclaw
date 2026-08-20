@@ -1,5 +1,9 @@
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("openmm")
+
 from openmm.app import PDBFile
 
 from mdclaw.structure.merge import (
