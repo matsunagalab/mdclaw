@@ -137,6 +137,7 @@ and reports `SKIP` rather than `FAIL`:
 | `MDCLAW_CUFFT_MIN_VERSION` | arm64 image (`12.1.0.78`) | cuFFT floor and API level |
 | `MDCLAW_FUSEFIX_LIB` | arm64 image | the FUSE preload shim being present and mapped |
 | `MDCLAW_PPM3_PATCHED` | both images | `immers` being the rebuilt binary, not the one the conda package ships |
+| `PYTHONUTF8` | both images | interpreter UTF-8 mode, and text I/O staying UTF-8 after a driver resets the locale |
 
 The amd64 / CUDA 11.8 image declares none of the last two, ships cuFFT from the
 CUDA 11.8 family, and has no shim, so both checks skip there. Adding a contract
@@ -251,6 +252,12 @@ inside one.
   FORMAT string: running `immers` with no input dies at the first read, long
   before the bad descriptor is reached, so the two builds cannot be told apart
   by exit status.
+- `PYTHONUTF8=1` is set in both images. A GPU platform driver can reset the
+  process locale to C while it initialises — Apple's OpenCL does — and with
+  `LANG=C.UTF-8` that makes every read and write without an explicit encoding
+  ASCII, so a report containing an em dash fails to write. `preserve_locale`
+  covers the Contexts MDClaw creates; UTF-8 mode covers everything else by
+  taking the locale out of the decision.
 - The image ships CUDA 11.8 to cover mixed HPC clusters with older drivers.
 - OpenMM 8.5.1 is source-built against CUDA 11.8 so NVRTC-generated PTX matches
   the driver floor. 8.5.1 is the floor required by openmmforcefields >= 0.16

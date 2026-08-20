@@ -294,6 +294,12 @@ COPY --from=openmm-builder /opt/mdclaw-layer-parts/targets/ /opt/mdclaw/targets/
 COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc.so* /opt/mdclaw/lib/
 COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc-builtins.so* /opt/mdclaw/lib/
 
+# Text I/O in UTF-8 regardless of the locale. A GPU platform driver can reset
+# the process locale to C while it initialises (mdclaw._common.preserve_locale
+# undoes that where MDClaw creates the Context, but nothing can undo it for code
+# paths inside third-party libraries), and with LANG=C.UTF-8 set - an ordinary
+# HPC setting - that turns every unencoded read and write into ASCII. UTF-8 mode
+# takes the locale out of the decision entirely.
 ENV PATH="/opt/mdclaw/bin:$PATH" \
     AMBERHOME="/opt/mdclaw" \
     MDCLAW_CUDA_TOOLKIT_VERSION="13.0" \
@@ -303,6 +309,7 @@ ENV PATH="/opt/mdclaw/bin:$PATH" \
     MDCLAW_MODELLER_VERSION="10.8" \
     MDCLAW_PPM3_PATCHED="1" \
     PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages" \
+    PYTHONUTF8="1" \
     OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins" \
     LD_PRELOAD="/opt/mdclaw/lib/libmdclaw_fusefix.so" \
     LD_LIBRARY_PATH="/opt/mdclaw/lib:/opt/mdclaw/lib/modeller-10.8/lib/armv8-gnu:/opt/mdclaw/lib/python3.12/site-packages/torch/lib:${LD_LIBRARY_PATH}" \

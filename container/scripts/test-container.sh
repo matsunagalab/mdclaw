@@ -54,6 +54,21 @@ check "model-backend CLI discoverable" bash -c "mdclaw --list | grep -q setup_mo
 check "ruff" python -m ruff --version
 check "pytest" python -m pytest --version
 check "pytest-asyncio" python -c "import pytest_asyncio"
+check_declared PYTHONUTF8 "UTF-8 mode contract" python -c "
+import locale
+import pathlib
+import sys
+import tempfile
+
+assert sys.flags.utf8_mode == 1, sys.flags.utf8_mode
+# A GPU driver can leave the process in the C locale; under UTF-8 mode that must
+# not change how text is written.
+locale.setlocale(locale.LC_ALL, 'C')
+path = pathlib.Path(tempfile.mkdtemp()) / 'em-dash.txt'
+path.write_text('an em dash \u2014 here')
+assert '\u2014' in path.read_text()
+print('UTF-8 mode active and locale-independent')
+"
 
 # --- Python imports ---
 echo ""

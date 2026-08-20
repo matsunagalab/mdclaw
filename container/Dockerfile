@@ -239,6 +239,13 @@ COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc-builtins.so* /opt/mdcl
 ENV PATH="/opt/mdclaw/bin:$PATH"
 ENV AMBERHOME="/opt/mdclaw"
 ENV PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages"
+# Text I/O in UTF-8 regardless of the locale. A GPU platform driver can reset
+# the process locale to C while it initialises (mdclaw._common.preserve_locale
+# undoes that where MDClaw creates the Context, but nothing can undo it for code
+# paths inside third-party libraries), and with LANG=C.UTF-8 set - an ordinary
+# HPC setting - that turns every unencoded read and write into ASCII. UTF-8 mode
+# takes the locale out of the decision entirely.
+ENV PYTHONUTF8="1"
 ENV OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins"
 # Declares that this image ships MODELLER, so the shared smoke test checks it.
 # The arm64 image declares it too, installed from the generic tarball rather
