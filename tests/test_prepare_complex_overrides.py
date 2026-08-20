@@ -852,7 +852,7 @@ def test_summary_is_emitted_once_with_everything_assigned(caplog):
         ]},
     }
 
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("INFO"):
         report_confirmation_items(items)
 
     text = caplog.text
@@ -869,7 +869,7 @@ def test_nothing_is_printed_when_nothing_was_assigned(caplog):
         "protonation_states": {"source": "auto_detected", "states": []},
     }
 
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("INFO"):
         report_confirmation_items(items)
 
     assert "Chemistry assigned" not in caplog.text

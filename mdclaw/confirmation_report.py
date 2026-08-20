@@ -51,7 +51,10 @@ def report_confirmation_items(confirmation_items: dict) -> None:
         "from_input_structure came in with the structure and will not move "
         "when you change --ph."
     )
-    logger.warning("\n".join(lines))
+    # INFO, not WARNING: nothing went wrong. These are ordinary decisions a
+    # successful preparation makes, and flagging them as warnings trains the
+    # reader to expect a failure that is not there.
+    logger.info("\n".join(lines))
 
 
 def _residue_sort_key(item: tuple) -> tuple:
