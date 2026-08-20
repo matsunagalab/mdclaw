@@ -144,6 +144,7 @@ def create_node(
     label: Optional[str] = None,
     conditions: Optional[dict] = None,
     continue_from: Optional[str] = None,
+    node_id: Optional[str] = None,
 ) -> dict:
     """Create a new node directory and register it in ``progress.json``.
 
@@ -153,6 +154,10 @@ def create_node(
     actual ``prod`` node (so ``restart_from`` auto-resolution behaves as
     expected). It is mutually exclusive with ``parent_node_ids``; mixing
     the two is rejected to avoid ambiguity.
+
+    ``node_id`` exists only so CLI callers who naturally pass the global or
+    per-tool ``--node-id`` flag receive a structured error. IDs are always
+    allocated by this function and are never caller-selectable.
 
     Returns::
 
@@ -164,6 +169,24 @@ def create_node(
             "next_command": "mdclaw explain_node --job-dir ... --node-id eq_001",
         }
     """
+    if node_id is not None:
+        message = (
+            "create_node assigns the node id automatically; do not supply "
+            f"node_id={node_id!r}. Use the node_id returned by create_node."
+        )
+        return {
+            "success": False,
+            "code": "create_node_id_not_allowed",
+            "error": message,
+            "message": message,
+            "errors": [message],
+            "warnings": [],
+            "next_action": (
+                "Omit --node-id, run create_node, and use the node_id it returns."
+            ),
+            "recoverable": True,
+        }
+
     if node_type not in NODE_TYPES:
         return {
             "success": False,

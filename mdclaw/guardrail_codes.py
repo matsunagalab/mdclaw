@@ -33,6 +33,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "node_context_required": "Create the node, then run it with both --job-dir and --node-id.",
     "missing_node_context": "Pass both --job-dir and --node-id for this workflow tool.",
     "node_id_requires_job_dir": "--node-id was passed without --job-dir; pass both together.",
+    "create_node_id_not_allowed": "Omit --node-id; use the node_id returned by create_node.",
     "node_mode_required": "Specify the node mode required by this tool.",
     "node_missing": "Node id does not exist; use IDs from inspect_job/explain_node.",
     "node_not_started": "Execute the pending node before waiting on it.",

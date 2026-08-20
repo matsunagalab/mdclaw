@@ -25,6 +25,7 @@
   "continue_from_parents_conflict",
   "covalent_glycan_selection_incomplete",
   "covalently_linked_glycan_chains_auto_included",
+  "create_node_id_not_allowed",
   "empty_ligand_resname_selection",
   "equilibration_restraint_atoms_invalid",
   "equilibration_time_step_conflict",

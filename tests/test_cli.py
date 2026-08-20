@@ -1428,6 +1428,44 @@ class TestNodeCLIParameters:
         assert args.continue_from == "prod_001"
         assert args.parent_node_ids == ["prod_001"]
 
+    def test_create_node_rejects_global_node_id(self, tmp_path, capsys):
+        from mdclaw._cli import main
+
+        job_dir = tmp_path / "global_node_id"
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "--job-dir", str(job_dir),
+                "--node-id", "my_chosen_id",
+                "create_node",
+                "--node-type", "prep",
+            ])
+
+        assert exc_info.value.code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["code"] == "create_node_id_not_allowed"
+        assert "create_node assigns the node id" in payload["message"]
+        assert "use the node_id returned by create_node" in payload["message"].lower()
+        assert not job_dir.exists()
+
+    def test_create_node_rejects_per_tool_node_id(self, tmp_path, capsys):
+        from mdclaw._cli import main
+
+        job_dir = tmp_path / "per_tool_node_id"
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "create_node",
+                "--job-dir", str(job_dir),
+                "--node-id", "my_chosen_id",
+                "--node-type", "prep",
+            ])
+
+        assert exc_info.value.code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["code"] == "create_node_id_not_allowed"
+        assert "create_node assigns the node id" in payload["message"]
+        assert "use the node_id returned by create_node" in payload["message"].lower()
+        assert not job_dir.exists()
+
     def test_create_node_rejects_mutual_exclusion_at_tool_layer(self, tmp_path):
         """End-to-end guard: passing both options through the CLI entry
         point yields a non-zero exit (the tool layer catches the mutual
