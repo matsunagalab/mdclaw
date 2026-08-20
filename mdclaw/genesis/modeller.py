@@ -258,6 +258,53 @@ def _has_modeller_license_env() -> bool:
     )
 
 
+def _stage_template_as_pdb(source: Path, destination: Path) -> dict:
+    """Put the template in MODELLER's working directory as real PDB.
+
+    A PDB source is copied. An mmCIF one is converted -- MODELLER has no CIF
+    reader, and renaming the file only moves the failure to its parser.
+
+    Returns ``{success, errors, warnings, code}``.
+    """
+    outcome: dict = {"success": False, "errors": [], "warnings": [], "code": None}
+
+    if source.suffix.lower() not in {".cif", ".mmcif"}:
+        shutil.copy2(source, destination)
+        outcome["success"] = True
+        return outcome
+
+    try:
+        import gemmi
+    except ImportError:
+        outcome["errors"].append(
+            f"template_pdb is mmCIF ({source.name}) and gemmi is not available "
+            "to convert it; pass a PDB-format template instead"
+        )
+        outcome["code"] = "modeller_template_conversion_unavailable"
+        return outcome
+
+    try:
+        structure = gemmi.make_structure_from_block(gemmi.cif.read(str(source))[0])
+        structure.setup_entities()
+        structure.write_pdb(str(destination))
+    except Exception as exc:  # noqa: BLE001 - reported to the caller
+        outcome["errors"].append(
+            f"could not convert mmCIF template {source.name} to PDB: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        outcome["code"] = "modeller_template_conversion_failed"
+        return outcome
+
+    outcome["warnings"].append(
+        f"Converted mmCIF template {source.name} to PDB for MODELLER. "
+        "Anything the PDB format cannot hold -- residue names longer than "
+        "three characters, more chains than single letters -- is dropped in "
+        "the conversion."
+    )
+    outcome["success"] = True
+    return outcome
+
+
 def _sanitize_modeller_code(value: str, fallback: str) -> str:
     """Make a MODELLER-safe identifier from a filename stem or user value."""
     raw = (value or fallback).strip() or fallback
@@ -644,8 +691,16 @@ def modeller_from_alignment(
     )
     target_code_clean = _sanitize_modeller_code(target_code or "target", "target")
 
+    # MODELLER reads PDB, and reads it by format rather than by extension, so
+    # copying an mmCIF to a .pdb name hands it a file it cannot parse: it dies
+    # on the first CIF line with "file is probably corrupt". Convert instead.
     template_copy = out_dir / f"{template_code_clean}.pdb"
-    shutil.copy2(template_path, template_copy)
+    staged = _stage_template_as_pdb(template_path, template_copy)
+    if not staged["success"]:
+        result["errors"].extend(staged["errors"])
+        result["code"] = staged["code"]
+        return result
+    result["warnings"].extend(staged["warnings"])
 
     # Resolve the template chain segment used by the multi-chain aligner.
     template_segment = None

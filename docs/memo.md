@@ -7,6 +7,43 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-20 — MODELLER now converts an mmCIF template instead of renaming it
+
+Fixes trap 2 from the 9UWI entry below. `modeller_from_alignment` staged the
+template into MODELLER's working directory with `shutil.copy2(template_path,
+out_dir / f"{code}.pdb")` — extension change only. MODELLER picks its reader
+from the file's contents, not its name, so an mmCIF under a `.pdb` name is not
+degraded, it is unreadable: `read_pd_702E> ... file is probably corrupt` on the
+first CIF line.
+
+New `_stage_template_as_pdb` copies a PDB source and converts an mmCIF one via
+gemmi (`make_structure_from_block` → `setup_entities` → `write_pdb`). The
+conversion is reported as a warning, because PDB cannot hold everything mmCIF
+can — residue names longer than three characters, more chains than single
+letters. Failures return structured codes rather than a corrupt file:
+`modeller_template_conversion_unavailable` (no gemmi) and
+`modeller_template_conversion_failed` (unparsable input).
+
+Verified against the file that produced the original failure: the full
+`9UWI.cif` (562 residues, Atosiban included) passed straight to `--template-pdb`
+with the 269-residue chain-A sequence now builds a model —
+`selection_reason: lowest_dope_score`, DOPE -37149, CA RMSD after fit 0.748 Å —
+where before it died in MODELLER's PDB parser. The staged `9UWI.pdb` contains
+no `_atom_site.` or `loop_` lines. `tests/test_modeller_template_staging.py`
+covers copy, conversion, the `.mmcif` suffix, and the unparsable case; 204 tests
+and ruff pass.
+
+The chain-A workaround written by hand for that run
+(`studies/9uwi-popc/templates/9UWI_A.pdb`) is no longer needed for format
+reasons. It is still the right input when the template should exclude the other
+chains and the ligand — the tool converts the file it is given, it does not
+subset it.
+
+Not in the shared SIF. Members run the container's own mdclaw, so this and the
+other fixes from 2026-08-19/20 reach them only on the next image rebuild.
+
+---
+
 ## 2026-08-20 — 9UWI chain A through MODELLER into POPC; three traps on the way
 
 Second member target, and the first real exercise of the MODELLER path baked
