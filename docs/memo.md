@@ -7,6 +7,63 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-20 — フルスイートの 21 failure の原因は OpenCL ドライバの setlocale だった
+
+「単体で走らせると通り、フル実行だと落ちる」21 件。**flaky ではなく実バグ**で、原因は
+1 つだった。
+
+### 特定までの経路
+
+`read_text()` が ASCII デコーダで落ちていたので locale を疑ったが、環境変数をどう変えても
+Python 3.12 は C ロケールを UTF-8 へ強制するため再現しない。テストモジュールの import を
+1 つずつ追っても倒れない。**全ファイル収集 + 1 テストだけ実行では再現せず、実行すると再現**
+したので「どれかのテストの実行中」に絞り、5 ファイルまで縮めて 22 秒で再現、二分探索で
+`test_ap5_build_topology_smoke.py::test_step4_topology_via_gaff` に到達した。
+
+Python の `locale.setlocale` / `ctypes.CDLL` / `subprocess.Popen` を全部張っても検出できず
+(C レベルの dlopen 経由だったため)、**2 ms 周期で LC_CTYPE を読みメインスレッドのスタックを
+ダンプするサンプラースレッド**で瞬間を捕まえた。
+
+```
+build_amber_system -> openmm_build.py:1555 Simulation(...) -> mm.Context(...)
+-> プラットフォーム未指定なので OpenCL が選ばれる
+-> Apple の OpenCL ドライバ初期化が setlocale(LC_ALL, "C")
+-> プロセスの既定エンコーディングが US-ASCII に固定
+-> 以降 encoding 未指定のテキスト I/O が全部 ASCII、em dash (U+2014) で死ぬ
+```
+
+### テストだけの問題ではない
+
+`render_structure_preview` の 4 件は **MDClaw が自分の出力を書けずに** `UnicodeEncodeError`
+で落ちていた。Linux arm64 イメージ内で実測:
+
+| 環境 | `utf8_mode` | ドライバが LC_ALL=C にした後 | 結果 |
+|---|---|---|---|
+| LANG 未設定 (コンテナ既定) | 1 | utf-8 のまま | 影響なし |
+| LANG=en_US.UTF-8 | 1 | utf-8 のまま | 影響なし |
+| **LANG=C.UTF-8** | **0** | **ANSI_X3.4-1968** | **UnicodeEncodeError** |
+
+`LANG=C.UTF-8` は HPC で普通に設定される。**macOS 固有ではない。**
+
+### 修正
+
+`_common.py` に `preserve_locale()` と `new_simulation()` を追加し、MDClaw が Simulation を
+作る 12 箇所すべてを経由させた。ドライバは今も倒すが、プロセスには残らない。`bin/mdclaw` の
+bash 3.2 問題 (`set -u` 下の空配列展開) も別件として直した。
+
+`tests/test_locale_guard.py` は復元・例外時の復元に加えて、**`_common.py` 以外で `Simulation(`
+を直接呼んでいないこと**をソースレベルで検査する (ガードは全呼び出し箇所が使って初めて意味が
+あるため)。1 箇所戻すと落ちることを確認済み。
+
+```
+before  21 failed, 1454 passed
+after   1478 passed, 7 skipped, 0 failed
+```
+
+`PYTHONUTF8=1` をイメージに入れれば表の 3 行目も構造的に消えるが、未実施。
+
+---
+
 ## 2026-08-20 — CLI が read-only CWD で起動しない件を修正。SIF 再作成。既存の 21 failure は locale 依存
 
 ### 修正した本体
