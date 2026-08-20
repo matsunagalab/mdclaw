@@ -1,4 +1,5 @@
 [
+  "amber_variant_restore_incomplete",
   "ambiguous_ligand_residue_repair",
   "analyze_conditions_invalid",
   "analyze_parent_invalid_type",

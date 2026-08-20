@@ -239,6 +239,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "missing_xml_topology_inputs": "Run or repair the topo node that emits the XML triple.",
     "topology_pdb_not_found": "topology.pdb not found; rebuild the topo node.",
     "topology_validation_failed": "Topology validation failed; inspect the structured error.",
+    "amber_variant_restore_incomplete": "Inspect topology_validation.protonation_variants; fix duplicate, missing, or atom-inconsistent ASH/GLH/LYN/CYM residues and rebuild topology.",
     "missing_forcefield_xml": "Supply at least one OpenMM ForceField XML in forcefield_xml.",
     "invalid_nonbonded_method": "Use a supported nonbonded_method (e.g. PME, NoCutoff, CutoffPeriodic).",
     "invalid_constraints": "Use a supported constraints value: HBonds, AllBonds, or None.",

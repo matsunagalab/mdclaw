@@ -111,6 +111,84 @@ def _validate_final_disulfides(
     }
 
 
+_AMBER_VARIANT_ATOM_CONTRACTS = {
+    "ASH": {"required": {"HD2"}, "forbidden": set()},
+    "GLH": {"required": {"HE2"}, "forbidden": set()},
+    "LYN": {"required": set(), "forbidden": {"HZ3"}},
+    "CYM": {"required": set(), "forbidden": {"HG"}},
+}
+
+
+def _validate_final_protonation_variants(
+    *,
+    topology: Any,
+    restore_report: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """Validate each restored variant by exact site, uniqueness, and H pattern."""
+    restore_report = restore_report or {
+        "expected_count": 0,
+        "restored_count": 0,
+        "records": [],
+    }
+    expected_count = int(restore_report.get("expected_count") or 0)
+    restored_count = int(restore_report.get("restored_count") or 0)
+    topology_residues = list(topology.residues())
+    records = []
+    for requested in restore_report.get("records") or []:
+        variant = requested.get("variant")
+        candidates = [
+            residue
+            for residue in topology_residues
+            if str(getattr(residue.chain, "id", "") or "").strip()
+            == str(requested.get("chain") or "").strip()
+            and str(residue.id) == str(requested.get("resnum"))
+            and residue.name == variant
+        ]
+        contract = _AMBER_VARIANT_ATOM_CONTRACTS.get(
+            variant,
+            {"required": set(), "forbidden": set()},
+        )
+        atom_names = (
+            {atom.name for atom in candidates[0].atoms()}
+            if len(candidates) == 1
+            else set()
+        )
+        missing_atoms = sorted(contract["required"] - atom_names)
+        forbidden_atoms_present = sorted(contract["forbidden"] & atom_names)
+        passed = (
+            requested.get("restored") is True
+            and len(candidates) == 1
+            and not missing_atoms
+            and not forbidden_atoms_present
+        )
+        records.append({
+            **requested,
+            "final_candidate_count": len(candidates),
+            "required_atoms": sorted(contract["required"]),
+            "forbidden_atoms": sorted(contract["forbidden"]),
+            "missing_atoms": missing_atoms,
+            "forbidden_atoms_present": forbidden_atoms_present,
+            "status": "passed" if passed else "failed",
+        })
+    if expected_count == 0:
+        status = "not_requested"
+    elif (
+        restored_count == expected_count
+        and len(records) == expected_count
+        and all(record["status"] == "passed" for record in records)
+    ):
+        status = "passed"
+    else:
+        status = "failed"
+    return {
+        "status": status,
+        "expected_count": expected_count,
+        "restored_count": restored_count,
+        "validated_count": sum(record["status"] == "passed" for record in records),
+        "records": records,
+    }
+
+
 def _build_topology_validation_report(
     *,
     topology: Any,
@@ -124,6 +202,7 @@ def _build_topology_validation_report(
     patch_summary: dict[str, Any],
     disulfide_bonds: Optional[list[dict[str, Any]]],
     manual_disulfide_added_count: int,
+    amber_variant_restore: Optional[dict[str, Any]],
     non_authoritative_notes: list[str],
 ) -> dict[str, Any]:
     """Build an agent-facing validation report from final artifacts."""
@@ -164,8 +243,16 @@ def _build_topology_validation_report(
         disulfide_bonds=disulfide_bonds,
         manual_added_count=manual_disulfide_added_count,
     )
+    protonation_variants = _validate_final_protonation_variants(
+        topology=topology,
+        restore_report=amber_variant_restore,
+    )
     status = "passed"
-    if core["status"] != "passed" or disulfides["status"] == "failed":
+    if (
+        core["status"] != "passed"
+        or disulfides["status"] == "failed"
+        or protonation_variants["status"] == "failed"
+    ):
         status = "failed"
     return {
         "schema_version": "1.0",
@@ -179,5 +266,6 @@ def _build_topology_validation_report(
         },
         "patches": patch_summary,
         "disulfides": disulfides,
+        "protonation_variants": protonation_variants,
         "non_authoritative_notes": _unique_messages(non_authoritative_notes),
     }

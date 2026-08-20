@@ -78,27 +78,43 @@ WORKING_DIR = Path("outputs").resolve()
 _CHARGE_FIT_TIMEOUT_FLOOR_SECONDS = 1800  # 30 min
 
 
-def _restore_amber_variant_names(topology: Any, amber_variant_resids: dict) -> None:
+def _restore_amber_variant_names(topology: Any, amber_variant_resids: dict) -> dict:
     """Put ASH/GLH/LYN/CYM back on the residues that were renamed for Pablo.
 
     ``amber_variant_resids`` maps ``(chain, residue number)`` to the record
     written when the name was substituted. That key is not unique in an
     assembled system -- lipids, ions and waters restart numbering, so a POPC
-    tail can share a chain and number with a protein aspartate -- so the chain
-    and the substituted name are both checked before anything is renamed back.
+    tail can share a chain and number with a protein aspartate. Restore only
+    when exactly one residue at that key carries the substituted base name,
+    and return the per-record counts for final artifact validation.
     """
-    if not amber_variant_resids:
-        return
-    for residue in topology.residues():
-        chain_id = _normalize_pdb_chain_id(residue.chain.id)
-        record = amber_variant_resids.get((chain_id, str(residue.id)))
-        if record is None:
-            continue
-        if chain_id != record["chain"]:
-            continue
-        if residue.name != record["base_name"]:
-            continue
-        residue.name = record["variant"]
+    report = {
+        "expected_count": len(amber_variant_resids),
+        "restored_count": 0,
+        "records": [],
+    }
+    residues = list(topology.residues())
+    for (chain_id, resnum), record in amber_variant_resids.items():
+        candidates = [
+            residue
+            for residue in residues
+            if _normalize_pdb_chain_id(residue.chain.id) == chain_id
+            and str(residue.id) == resnum
+            and residue.name == record["base_name"]
+        ]
+        restored = len(candidates) == 1
+        if restored:
+            candidates[0].name = record["variant"]
+            report["restored_count"] += 1
+        report["records"].append({
+            "chain": chain_id,
+            "resnum": resnum,
+            "variant": record["variant"],
+            "base_name": record["base_name"],
+            "candidate_count": len(candidates),
+            "restored": restored,
+        })
+    return report
 
 
 def _resolve_charge_fit_timeout() -> int:
@@ -970,7 +986,6 @@ def _run_openmmforcefields_build(
                         amber_variant_resids[(chain_id, resseq.strip())] = {
                             "variant": rn_strip,
                             "base_name": base_name,
-                            "chain": chain_id,
                         }
                         line = line[:17] + f"{base_name:>3}" + line[20:]
                 fh_out.write(line)
@@ -1016,7 +1031,10 @@ def _run_openmmforcefields_build(
     # so a POPC tail at chain A residue 97 was being renamed to ASH. The
     # force field then reported "no template for residue N (ASH); the set
     # of atoms matches PA", which is exactly what it was.
-    _restore_amber_variant_names(omm_topology, amber_variant_resids)
+    amber_variant_restore = _restore_amber_variant_names(
+        omm_topology,
+        amber_variant_resids,
+    )
 
     # Strip the HOP2 / HOP3 protons that ``phosphorylate_residues`` added
     # only so Pablo's CCD-shipped (protonated) PHOSPHOSERINE /
@@ -1665,6 +1683,7 @@ def _run_openmmforcefields_build(
         patch_summary=patch_summary,
         disulfide_bonds=disulfide_bonds,
         manual_disulfide_added_count=manual_disulfide_added_count,
+        amber_variant_restore=amber_variant_restore,
         non_authoritative_notes=result["topology_notes"],
     )
     disulfide_notes = topology_validation["disulfides"].get(
@@ -1679,17 +1698,27 @@ def _run_openmmforcefields_build(
     result["topology_validation"] = topology_validation
     if topology_validation["status"] != "passed":
         disulfides = topology_validation["disulfides"]
+        protonation_variants = topology_validation["protonation_variants"]
         result["errors"].append(
             "Final topology validation failed: "
             f"core={topology_validation['core']['status']}, "
-            f"disulfides={disulfides['status']} "
+            f"disulfides={disulfides['status']}, "
+            f"protonation_variants={protonation_variants['status']} "
+            f"(expected {protonation_variants['expected_count']}, "
+            f"restored {protonation_variants['restored_count']}, "
+            f"validated {protonation_variants['validated_count']}); "
+            "disulfides "
             f"(expected {disulfides['expected_count']}, "
             f"topology observed "
             f"{disulfides['observed_topology_sg_sg_bond_count']}, "
             f"system observed "
             f"{disulfides['observed_system_harmonic_sg_sg_bond_count']})."
         )
-        result["code"] = "topology_validation_failed"
+        result["code"] = (
+            "amber_variant_restore_incomplete"
+            if protonation_variants["status"] == "failed"
+            else "topology_validation_failed"
+        )
         return result
     if demotable_warnings:
         demote_set = set(demotable_warnings)

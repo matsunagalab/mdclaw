@@ -307,6 +307,7 @@ def test_topology_validation_records_loader_and_patch_notes_as_non_authoritative
         },
         disulfide_bonds=None,
         manual_disulfide_added_count=0,
+        amber_variant_restore=None,
         non_authoritative_notes=["Pablo fallback was validated by final artifacts."],
     )
 
@@ -314,6 +315,7 @@ def test_topology_validation_records_loader_and_patch_notes_as_non_authoritative
     assert report["loader"]["status"] == "fallback_validated"
     assert report["core"]["atom_count_preserved"] is True
     assert report["patches"]["template_internal_bonds_added"] == 2
+    assert report["protonation_variants"]["status"] == "not_requested"
     assert report["non_authoritative_notes"] == [
         "Pablo fallback was validated by final artifacts."
     ]
