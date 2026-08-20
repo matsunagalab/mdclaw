@@ -26,6 +26,7 @@ from typing import NamedTuple, TextIO, Union, get_args, get_origin
 
 from mdclaw import __version__
 from mdclaw._benchmark_log import _write_benchmark_harness_record
+from mdclaw.confirmation_report import report_confirmation_items
 from mdclaw._common import create_validation_error, finalize_error
 from mdclaw._registry import SERVER_REGISTRY
 from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE
@@ -1118,6 +1119,8 @@ def main(argv: list[str] | None = None) -> None:
             exit_code=exit_code,
             started_at=started_at,
         )
+        if isinstance(result, dict) and result.get("confirmation_needed"):
+            report_confirmation_items(result["confirmation_needed"])
         json.dump(result, sys.stdout, indent=2, default=str)
         print()  # trailing newline
         sys.exit(exit_code)

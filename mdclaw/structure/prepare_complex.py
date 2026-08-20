@@ -2261,9 +2261,16 @@ def prepare_complex(
                 artifacts["glycan_linkages"] = "artifacts/glycan_linkages.json"
             if result.get("source_selection_file"):
                 artifacts["source_selection"] = result["source_selection_file"]
+            # Keep the confirmation block on the node, not only in this
+            # result. stderr scrolls away and a batch job has no one reading
+            # it; three days later `inspect_job` still has to be able to say
+            # what protonation and disulfides this system was built with.
+            node_metadata = dict(result.get("preparation_summary", {}))
+            if result.get("confirmation_needed"):
+                node_metadata["confirmation_needed"] = result["confirmation_needed"]
             complete_node(job_dir, node_id,
                 artifacts=artifacts,
-                metadata=result.get("preparation_summary", {}),
+                metadata=node_metadata,
                 warnings=result.get("warnings", []))
             update_job_summaries(job_dir,
                 system={

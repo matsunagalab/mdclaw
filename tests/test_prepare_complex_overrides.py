@@ -796,3 +796,80 @@ class TestPrecedence:
         # pair (1/2) did not.
         assert [(p["resnum1"], p["resnum2"]) for p in handed] == [(99, 100)]
         assert mock_clean.call_args.kwargs["histidine_states"] == {"A:99": "HIP"}
+
+
+# ── the chemistry summary printed for the user ────────────────────────────
+
+
+from mdclaw.confirmation_report import (  # noqa: E402
+    _format_disulfide_pair,
+    _format_protonation_state,
+    _residue_sort_key,
+    report_confirmation_items,
+)
+
+
+def test_disulfide_pair_reads_as_a_bond_with_its_evidence():
+    pair = {
+        "cys1": {"chain": "A", "resnum": 124, "resname": "CYS"},
+        "cys2": {"chain": "A", "resnum": 203, "resname": "CYS"},
+        "distance_angstrom": 2.02,
+        "confidence": "high",
+    }
+    assert _format_disulfide_pair(pair) == "A:124 - A:203  2.02 A (high)"
+
+
+def test_unrecognised_disulfide_shape_is_shown_not_swallowed():
+    assert _format_disulfide_pair({"unexpected": 1}) == "{'unexpected': 1}"
+    assert _format_disulfide_pair(["A:1", "A:2"]) == "A:1 - A:2"
+
+
+def test_protonation_state_names_what_it_replaced():
+    entry = {
+        "chain": "A", "resnum": "97", "icode": "",
+        "state": "ASH", "default_state": "ASP", "source": "auto_detected",
+    }
+    assert _format_protonation_state(entry) == "A:97 ASP -> ASH (auto_detected)"
+
+
+def test_residues_sort_by_number_not_lexically():
+    keys = [("A:112", "HID"), ("A:77", "HIE"), ("B:5", "HIP")]
+    assert [k for k, _ in sorted(keys, key=_residue_sort_key)] == [
+        "A:77", "A:112", "B:5",
+    ]
+
+
+def test_summary_is_emitted_once_with_everything_assigned(caplog):
+    items = {
+        "disulfide_bonds": {"source": "auto_detected", "pairs": [
+            {"cys1": {"chain": "A", "resnum": 124},
+             "cys2": {"chain": "A", "resnum": 203}},
+        ]},
+        "histidine_states": {"source": "auto_detected", "states": {"A:77": "HID"}},
+        "protonation_states": {"source": "auto_detected", "states": [
+            {"chain": "A", "resnum": "97", "state": "ASH",
+             "default_state": "ASP", "source": "auto_detected"},
+        ]},
+    }
+
+    with caplog.at_level("WARNING"):
+        report_confirmation_items(items)
+
+    text = caplog.text
+    assert "A:124 - A:203" in text
+    assert "A:77 HID" in text
+    assert "A:97 ASP -> ASH" in text
+    assert text.count("Chemistry assigned") == 1
+
+
+def test_nothing_is_printed_when_nothing_was_assigned(caplog):
+    items = {
+        "disulfide_bonds": {"source": "auto_detected", "pairs": []},
+        "histidine_states": {"source": "auto_detected", "states": {}},
+        "protonation_states": {"source": "auto_detected", "states": []},
+    }
+
+    with caplog.at_level("WARNING"):
+        report_confirmation_items(items)
+
+    assert "Chemistry assigned" not in caplog.text

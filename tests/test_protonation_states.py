@@ -139,3 +139,35 @@ def test_merge_handles_either_side_being_empty():
     assert _merge_protonation_states(
         [], [{"chain": "A", "resnum": "5", "state": "ASP"}]
     )[0]["source"] == "user_override"
+
+
+def test_states_already_in_the_input_are_marked_as_such(tmp_path):
+    # A state that arrived with the structure will not move when the caller
+    # changes --ph, so it is reported differently from one pdb2pqr assigned.
+    pdb = tmp_path / "out.pdb"
+    pdb.write_text(
+        "ATOM      1  N   ASH A  97       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  N   GLH A 210       0.000   0.000   0.000  1.00  0.00           N\n"
+        "END\n"
+    )
+
+    states = _extract_non_default_protonation_states(
+        pdb, preexisting={("A", "97", "")}
+    )
+
+    assert [(s["resnum"], s["source"]) for s in states] == [
+        ("97", "from_input_structure"),
+        ("210", "auto_detected"),
+    ]
+
+
+def test_no_preexisting_set_means_everything_is_newly_assigned(tmp_path):
+    pdb = tmp_path / "out.pdb"
+    pdb.write_text(
+        "ATOM      1  N   ASH A  97       0.000   0.000   0.000  1.00  0.00           N\nEND\n"
+    )
+
+    assert _extract_non_default_protonation_states(pdb)[0]["source"] == "auto_detected"
+    assert _extract_non_default_protonation_states(
+        pdb, preexisting=set()
+    )[0]["source"] == "auto_detected"
