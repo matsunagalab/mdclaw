@@ -78,6 +78,99 @@ def _extract_histidine_states(pdb_file: Path) -> dict:
     return his_states
 
 
+# Non-default protonation states pdb2pqr/propka can assign at the requested pH.
+# Histidine is handled separately by ``_extract_histidine_states``: every HIS
+# carries one of HID/HIE/HIP, so reporting it says which tautomer was chosen.
+# These names instead appear only when a residue was moved off its default
+# charge state, which is the thing worth confirming before solvation.
+_NON_DEFAULT_PROTONATION_RESNAMES = {
+    "ASH": "ASP",   # protonated (neutral) aspartate
+    "GLH": "GLU",   # protonated (neutral) glutamate
+    "LYN": "LYS",   # deprotonated (neutral) lysine
+    "CYM": "CYS",   # deprotonated (anionic) cysteine
+    "TYM": "TYR",   # deprotonated (anionic) tyrosine
+    "ARN": "ARG",   # deprotonated (neutral) arginine
+}
+
+
+def _merge_protonation_states(detected: list, requested: list) -> list:
+    """Combine what was read back from the structure with what the caller asked for.
+
+    A residue the caller named explicitly is reported once, as
+    ``source="user_override"``, even when it also shows up in the structure --
+    the caller already made that decision and does not need to confirm it
+    again. Everything else keeps ``source="auto_detected"``.
+    """
+    def _key(entry: dict) -> tuple:
+        return (
+            entry.get("chain"),
+            str(entry.get("resnum")),
+            entry.get("icode", "") or "",
+        )
+
+    merged: list = []
+    requested_keys = set()
+    for entry in requested or []:
+        if not isinstance(entry, dict):
+            continue
+        item = dict(entry)
+        item.setdefault("source", "user_override")
+        requested_keys.add(_key(item))
+        merged.append(item)
+    for entry in detected or []:
+        if isinstance(entry, dict) and _key(entry) not in requested_keys:
+            merged.append(entry)
+    return merged
+
+
+def _extract_non_default_protonation_states(pdb_file: Path) -> list:
+    """Report residues pdb2pqr/propka moved off their default charge state.
+
+    ``_extract_histidine_states`` covers the HIS tautomers. This covers the
+    rest: ASH, GLH, LYN, CYM, TYM, ARN. They are chemically legitimate at the
+    requested pH, but they change the net charge and not every force-field
+    bundle has a template for them, so they belong in ``confirmation_needed``
+    rather than only in the coordinates.
+
+    Args:
+        pdb_file: Path to the PDB file with protonation assigned.
+
+    Returns:
+        List of dicts, one per residue, each with ``residue`` (``chain:resnum``),
+        ``state`` (the assigned name), and ``default`` (the name it replaced),
+        ordered by first appearance.
+    """
+    states: list = []
+    seen: set = set()
+    try:
+        with open(pdb_file) as f:
+            for line in f:
+                if not line.startswith(("ATOM", "HETATM")):
+                    continue
+                resname = line[17:20].strip()
+                default = _NON_DEFAULT_PROTONATION_RESNAMES.get(resname)
+                if default is None:
+                    continue
+                chain = line[21].strip() or "A"
+                resnum = line[22:26].strip()
+                icode = line[26].strip()
+                key = (chain, resnum, icode)
+                if key in seen:
+                    continue
+                seen.add(key)
+                states.append({
+                    "chain": chain,
+                    "resnum": resnum,
+                    "icode": icode,
+                    "state": resname,
+                    "default_state": default,
+                    "source": "auto_detected",
+                })
+    except Exception as e:
+        logger.warning(f"Could not extract non-default protonation states: {e}")
+    return states
+
+
 def _apply_histidine_states(pdb_file: Path, histidine_states: dict) -> None:
     """Apply user-specified histidine protonation states to a PDB file.
 

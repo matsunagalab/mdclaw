@@ -82,7 +82,7 @@ _NUCLEIC_5P_TERMINAL_PHOSPHATE_OXYGENS = {
 }
 
 from mdclaw.structure.pdb_utils import _pdb_atom_count, _pdb_hydrogen_count, _pdb_residue_names, _read_pdb_unique_residues, restore_residue_numbering_from_reference  # noqa: E402
-from mdclaw.structure.protonation import _apply_protonation_states_with_modeller, _extract_histidine_states, _normalize_protonation_state_overrides  # noqa: E402
+from mdclaw.structure.protonation import _apply_protonation_states_with_modeller, _extract_histidine_states, _extract_non_default_protonation_states, _merge_protonation_states, _normalize_protonation_state_overrides  # noqa: E402
 from mdclaw.structure.terminal_caps import _complete_terminal_cap_hydrogens_with_modeller, _resolve_terminal_cap_settings  # noqa: E402
 
 
@@ -900,10 +900,16 @@ def clean_protein(
                                 "method": "pdb2pqr+openmm_modeller_user_states",
                                 "ph": ph,
                                 "histidine_states": his_states,
-                                "protonation_states": user_protonation_applied,
+                                "protonation_states": _merge_protonation_states(
+                                    _extract_non_default_protonation_states(amber_output_file),
+                                    user_protonation_applied,
+                                ),
                             })
                             result["protonation_method"] = "pdb2pqr+openmm_modeller_user_states"
-                            result["protonation_states"] = user_protonation_applied
+                            result["protonation_states"] = _merge_protonation_states(
+                                _extract_non_default_protonation_states(amber_output_file),
+                                user_protonation_applied,
+                            )
                             logger.info(
                                 f"Applied {len(user_protonation_applied)} user-specified "
                                 "residue protonation state(s)"
@@ -916,8 +922,14 @@ def clean_protein(
                                 "method": "pdb2pqr+propka",
                                 "ph": ph,
                                 "histidine_states": his_states,
+                                "protonation_states": _extract_non_default_protonation_states(
+                                    amber_output_file
+                                ),
                             })
                             result["protonation_method"] = "pdb2pqr+propka"
+                            result["protonation_states"] = _extract_non_default_protonation_states(
+                                amber_output_file
+                            )
                             logger.info(f"pH-aware protonation complete: {len(his_states)} histidine states determined")
 
                         result["output_file"] = str(amber_output_file)
@@ -994,10 +1006,16 @@ def clean_protein(
                             "method": "pdb4amber+openmm_modeller_user_states",
                             "ph": ph,
                             "histidine_states": his_states,
-                            "protonation_states": user_protonation_applied,
+                            "protonation_states": _merge_protonation_states(
+                                _extract_non_default_protonation_states(amber_output_file),
+                                user_protonation_applied,
+                            ),
                         })
                         result["protonation_method"] = "pdb4amber+openmm_modeller_user_states"
-                        result["protonation_states"] = user_protonation_applied
+                        result["protonation_states"] = _merge_protonation_states(
+                            _extract_non_default_protonation_states(amber_output_file),
+                            user_protonation_applied,
+                        )
                         result["histidine_states"] = his_states
                     result["operations"].append(op)
                     result["output_file"] = str(amber_output_file)

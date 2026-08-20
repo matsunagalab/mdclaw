@@ -46,19 +46,43 @@ parse as PDB. Converting to a real PDB first fixed it. Restricting the template
 to chain A also dropped Atosiban's `A1EQM`, whose 5-character residue name has
 no PDB representation.
 
-**Trap 3: `prepare_complex` assigns ASH silently, and the membrane path cannot
-build it.** Two aspartates (97, 112) came back protonated, but
+**Trap 3: `prepare_complex` assigns ASH silently, and it does not survive
+topology loading.** Two aspartates (97, 112) came back protonated, but
 `confirmation_needed.protonation_states` was `{"source": "auto_detected",
 "states": []}` — empty. `embed_in_membrane` then failed at the net-charge step:
 
     No template found for residue 399 (ASH). The set of atoms matches PA, but
     the residue has no bonds between its atoms.
 
-Two problems in one. The force-field bundle has no ASH template, and the
-protonation change that introduced it was never surfaced for confirmation.
 `--protonation-states '{"A:97": "ASP", "A:112": "ASP"}'` gets past it. 5L7D never
 hit this, so it is structure-dependent — any member whose receptor has a buried
 Asp will.
+
+**Correction, after tracing it: ff19SB does have an ASH template.** The error's
+first sentence is a red herring; the operative half is *"the residue has no bonds
+between its atoms"*. Pablo fails to parse the whole structure and
+`_topology_pablo.load_topology` falls back to `openmm.app.PDBFile`, whose name
+replacement maps `HID`/`HIE`/`HIP` back to `HIS` — a name `Topology`'s bond
+database knows — but leaves `ASH` alone. `ASH` is in neither the replacement
+table nor the bond database, so it loads with **zero bonds** and never reaches
+template matching. Measured on the failing structure: 5 HIS variants normalised
+to `HIS` with 180 bonds; 2 `ASH` with 0. That is exactly why 5L7D passed and
+9UWI did not — 5L7D only ever had histidine variants.
+
+So there are two independent defects, and the force field is not one of them:
+
+1. **Reporting.** `confirmation_needed.protonation_states` only ever carried
+   caller-supplied overrides, never what pdb2pqr actually assigned — while
+   `histidine_states` reads the produced structure. Fixed here: added
+   `_extract_non_default_protonation_states` (ASH/GLH/LYN/CYM/TYM/ARN) and
+   `_merge_protonation_states`, wired into all three recording sites in
+   `clean_protein.py` and into the operation records the summary aggregates
+   from. The failing 9UWI prep now reports both aspartates with their
+   `default_state`, and a caller-specified residue is reported once as
+   `user_override`. Tests in `tests/test_protonation_states.py`.
+2. **Loading.** A non-histidine protonation variant still cannot survive the
+   PDBFile fallback. Not fixed. The reporting fix means you at least see it
+   coming.
 
 **The run.** Orientation came from OPM homolog **7QVM** (identity 0.60, fit_rmsd
 2.29 A, hydrophobic thickness 31.8 A), not from 9UWI itself — so unlike 5L7D
