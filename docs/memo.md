@@ -7,6 +7,81 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-20 — Prep chemistry and missing-residue contracts corrected after independent review
+
+This review was done with a second agent and checked by direct measurement, not
+only by reading the diff. No commit was made during the review.
+
+The OpenMM bundled in `mdclaw.sif` was measured directly. Its `pdbNames.xml`
+aliases ASH→ASP, GLH→GLU, CYX→CYS, and HID/HIE/HIP/HSD/HSE/HSP→HIS. LYN, CYM,
+TYM, and ARN have no alias. An ALA-ASH-ALA PDB loads as ASP through both
+`openmm.app.PDBFile` and PDBFixer and writes back as ASP. This corrects the
+earlier 2026-08-20 memo entry's “second correction”, which said the loader was
+not at fault, and the old `pdb_utils.py` docstring, which listed LYN→LYS and
+CYM→CYS as loader normalizations. Both were wrong in the same direction.
+
+Consequently, the old `from_input_structure` protonation label could never be
+true for the aliased names: it described a state re-derived after the input
+decision had already been erased. With `--missing-residue-method modeller` the
+scan was also reading the MODELLER model rather than the user's input. That
+machinery was removed. Prep now scans the original PDB or mmCIF with gemmi and
+promotes raw-input ASH/GLH/LYN/CYM into caller overrides; explicit overrides
+still win. These residues survive PDBFixer/PDBFile normalization, are reported
+as `user_override` with `override_origin=input_structure`, and no longer move
+when `--ph` changes. CYX remains under the disulfide bond contract, and
+histidine tautomers remain separate.
+
+The recovery contract introduced in 8980391 was measured to be unexecutable. A
+prep node that fails with `pdbfixer_missing_residues_out_of_scope` is terminal
+and sealed; re-running that node with `--missing-residue-method modeller`
+returns `node_terminal`, although the recommendation said verbatim “Re-run
+this same node with the flag”. Recovery now creates a new prep node with the
+same completed parent, and the result names both commands: `create_node` with
+the explicit parent, then `prepare_complex` on the new node with the MODELLER
+method.
+
+The deleted glycoprotein pipeline test exposed a separate pre-existing
+structural error rather than a regression. 6YA2 chain C really has a
+13-residue internal gap from 194 to 208; the flanking CA atoms are 15.49 Å
+apart. Before 8980391, chain splitting dropped SEQRES, PDBFixer saw zero
+reference sequences and reported no missing residues, and no residue was
+modeled. `openmm.app.PDBFile.createStandardBonds` then joined SER194 C to
+PRO208 N at 17.26 Å without a distance check, against a 1.33 Å equilibrium
+peptide bond. The test therefore asserted success on a structure containing a
+17 Å peptide bond. The corrected visibility rule has a real blast radius:
+structures with more than 10 internal missing residues, or any single gap
+longer than 5, now stop at prep where they previously passed silently.
+`tests/test_pipeline_glycoprotein_dag.py` was deleted at the user's direction;
+that also removed the repository's only GLYCAM topology integration coverage,
+which remains a known test gap.
+
+The review also found that the guardrail golden was stale for five codes and
+two MODELLER conversion codes were not registered. MODELLER in-place repair
+accepted any existing output, including a one-atom “successful” model.
+`_restore_template_frame` discarded insertion codes, so template residues
+100A/100B collided and the model kept MODELLER's 1..N numbering behind a
+success result. Repair now requires complete target length and sequence,
+preserved observed residue identities, and complete author renumbering;
+insertion codes round-trip, while genuine numbering collisions fail.
+
+On the topology side, Amber ASH/GLH/LYN/CYM restoration could skip silently
+and still build a System at the default ASP/GLU/LYS/CYS charge, one elementary
+charge wrong per missed residue. The restore now reports unique candidates,
+and final topology validation checks both restore counts and the
+variant-specific hydrogen identity (ASH HD2, GLH HE2, LYN without HZ3, CYM
+without HG) under `amber_variant_restore_incomplete`.
+
+Finally, `confirmation_needed` labelled mixed auto-detected protonation and
+predicted MODELLER loops as `user_override`; its policy explicitly permits
+skipping prompts for that source. Provenance is now derived per entry,
+predicted coordinates use `source=predicted` with a separate
+`method_requested`, and terminal-only omissions are reported as UNMODELED.
+The pdb4amber+reduce fallback now reports protonation states at all. The
+measured 9UWI case, where 77 terminal residues were left unmodeled, now reaches
+the confirmation report instead of disappearing.
+
+---
+
 ## 2026-08-20 — Missing residues were invisible inside prepare_complex; gaps are now repairable in place
 
 Two problems, one fix. Started from the MODELLER ordering trap (fetching a
