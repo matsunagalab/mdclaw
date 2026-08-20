@@ -19,6 +19,7 @@ from mdclaw._common import (  # noqa: E402
     create_validation_error,
     ensure_directory,
     generate_job_id,
+    new_simulation,
 )
 
 # Default output location, created when a tool writes there, not at import.
@@ -209,7 +210,7 @@ def run_minimization(
         return _fail_node_if_running(job_dir, node_id, result)
 
     try:
-        from openmm.app import HCT, OBC1, OBC2, GBn, GBn2, Simulation
+        from openmm.app import HCT, OBC1, OBC2, GBn, GBn2
         from openmm import CustomExternalForce, Platform, VerletIntegrator
         from openmm.unit import kilojoules_per_mole, nanometer
     except ImportError:
@@ -363,12 +364,12 @@ def run_minimization(
                 if device_index and plat_key in ("cuda", "opencl"):
                     platform_properties["DeviceIndex"] = device_index
         if platform_obj:
-            simulation = Simulation(
+            simulation = new_simulation(
                 xml_inputs.topology, system_min, integrator,
                 platform_obj, platform_properties,
             )
         else:
-            simulation = Simulation(xml_inputs.topology, system_min, integrator)
+            simulation = new_simulation(xml_inputs.topology, system_min, integrator)
         result["platform"] = simulation.context.getPlatform().getName()
         simulation.context.setPositions(positions)
         if xml_inputs.is_periodic and xml_inputs.box_vectors is not None:

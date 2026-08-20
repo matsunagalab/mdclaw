@@ -29,7 +29,7 @@ import os
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from mdclaw._common import setup_logger  # noqa: E402
+from mdclaw._common import new_simulation, setup_logger  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -1065,7 +1065,7 @@ def _run_openmmforcefields_build(
     # --- 5. SystemGenerator + Modeller (extra particles, ligand mols) ----
     try:
         from openmm import app, unit, XmlSerializer, LangevinIntegrator
-        from openmm.app import Modeller, PDBFile, Simulation
+        from openmm.app import Modeller, PDBFile
         from openmmforcefields.generators import SystemGenerator
     except ImportError as exc:
         result["errors"].append(
@@ -1552,7 +1552,7 @@ def _run_openmmforcefields_build(
         integrator = LangevinIntegrator(
             300 * unit.kelvin, 1.0 / unit.picosecond, 2.0 * unit.femtoseconds
         )
-        simulation = Simulation(modeller.topology, system, integrator)
+        simulation = new_simulation(modeller.topology, system, integrator)
         simulation.context.setPositions(modeller.positions)
         initial_state = simulation.context.getState(
             getEnergy=True,

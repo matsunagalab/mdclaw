@@ -137,14 +137,17 @@ case "$RUNTIME" in
         # package is only the dependency layer).
         CWD="$(pwd)"
         # Arrays, not word-split strings: a bind path may contain spaces.
+        # Expanded as ${arr[@]+"${arr[@]}"}: under `set -u`, bash 3.2 — still
+        # the system bash on macOS — treats "${arr[@]}" on an empty array as an
+        # unbound variable and aborts, where bash 4.4+ expands it to nothing.
         PKG_BIND=()
         if [ "$PKG_ROOT" != "$CWD" ]; then
             PKG_BIND=(--bind "${PKG_ROOT}:${PKG_ROOT}")
         fi
         NV=()
         [ -n "$NV_FLAG" ] && NV=("$NV_FLAG")
-        exec "$CONTAINER_CMD" exec "${NV[@]}" \
-            --bind "${CWD}:${CWD}" "${PKG_BIND[@]}" \
+        exec "$CONTAINER_CMD" exec ${NV[@]+"${NV[@]}"} \
+            --bind "${CWD}:${CWD}" ${PKG_BIND[@]+"${PKG_BIND[@]}"} \
             --pwd "${CWD}" \
             --env PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
             "$SIF" mdclaw "$@"
@@ -174,8 +177,8 @@ case "$RUNTIME" in
         [ -n "$GPU_FLAG" ] && GPU=($GPU_FLAG)
         USER_ARGS=()
         [ -n "$USER_FLAG" ] && USER_ARGS=($USER_FLAG)
-        exec docker run --rm "${GPU[@]}" "${USER_ARGS[@]}" \
-            -v "${CWD}:${CWD}" "${PKG_MOUNT[@]}" -w "${CWD}" \
+        exec docker run --rm ${GPU[@]+"${GPU[@]}"} ${USER_ARGS[@]+"${USER_ARGS[@]}"} \
+            -v "${CWD}:${CWD}" ${PKG_MOUNT[@]+"${PKG_MOUNT[@]}"} -w "${CWD}" \
             -e PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
             "$DOCKER_IMAGE" mdclaw "$@"
         ;;

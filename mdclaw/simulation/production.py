@@ -5,7 +5,7 @@ import os
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from mdclaw._common import setup_logger  # noqa: E402
+from mdclaw._common import new_simulation, setup_logger  # noqa: E402
 from mdclaw._tool_meta import node_tool  # noqa: E402
 
 logger = setup_logger(__name__)
@@ -422,7 +422,6 @@ def run_production(
     try:
         from openmm.app import (
             DCDReporter, StateDataReporter, CheckpointReporter,
-            Simulation,
             HCT, OBC1, OBC2, GBn, GBn2,
         )
         from openmm import (
@@ -691,12 +690,12 @@ def run_production(
 
         # Create simulation
         if platform_obj:
-            simulation = Simulation(
+            simulation = new_simulation(
                 xml_inputs.topology, system, integrator,
                 platform=platform_obj, platformProperties=platform_properties,
             )
         else:
-            simulation = Simulation(xml_inputs.topology, system, integrator)
+            simulation = new_simulation(xml_inputs.topology, system, integrator)
 
         result["platform"] = simulation.context.getPlatform().getName()
         if device_index:

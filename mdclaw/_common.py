@@ -3,7 +3,9 @@
 Provides: logging, directory management, external tool wrappers, error helpers.
 """
 
+import contextlib
 import hashlib
+import locale
 import logging
 import os
 import re
@@ -69,6 +71,47 @@ def setup_logger(name: str, level: int | None = None) -> logging.Logger:
 # ---------------------------------------------------------------------------
 # File / directory utilities
 # ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def preserve_locale():
+    """Restore the process locale around code that lets a GPU driver load.
+
+    Creating an OpenMM ``Context`` loads the platform's driver, and some of them
+    reset the locale as part of their own initialisation — Apple's OpenCL sets
+    ``LC_ALL=C``. That is process-global and permanent, so every later text read
+    or write that does not name an encoding silently becomes ASCII: writing a
+    report containing an em dash then raises UnicodeEncodeError somewhere far
+    from the platform that caused it, and the same run reads its own UTF-8 files
+    as ASCII. Restoring what we had keeps that blast radius at zero.
+    """
+    saved = locale.setlocale(locale.LC_ALL)
+    try:
+        yield
+    finally:
+        if locale.setlocale(locale.LC_ALL) != saved:
+            try:
+                locale.setlocale(locale.LC_ALL, saved)
+            except locale.Error:
+                logger.warning(
+                    "A platform driver changed the locale to %s and %s could not "
+                    "be restored; text without an explicit encoding may now be "
+                    "read and written as ASCII.",
+                    locale.setlocale(locale.LC_ALL),
+                    saved,
+                )
+
+
+def new_simulation(*args, **kwargs):
+    """Construct an ``openmm.app.Simulation`` without losing the locale.
+
+    Every MDClaw code path that builds a Simulation goes through here; see
+    ``preserve_locale`` for what the platform drivers do otherwise.
+    """
+    from openmm.app import Simulation
+
+    with preserve_locale():
+        return Simulation(*args, **kwargs)
 
 
 def ensure_directory(path: Union[str, Path]) -> Path:

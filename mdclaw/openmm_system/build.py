@@ -14,6 +14,7 @@ from mdclaw._common import (  # noqa: E402
     create_unique_subdir,
     create_validation_error,
     ensure_directory,
+    new_simulation,
     tail_for_agent,
 )
 from mdclaw import _topology_pablo
@@ -437,7 +438,7 @@ def build_openmm_system(
 
     try:
         from openmm import app, unit, XmlSerializer, LangevinIntegrator
-        from openmm.app import ForceField, Modeller, PDBFile, Simulation
+        from openmm.app import ForceField, Modeller, PDBFile
     except ImportError as exc:
         result["errors"].append(
             f"OpenMM stack not importable: {exc}. Run `conda env update -f environment.yml`."
@@ -571,7 +572,7 @@ def build_openmm_system(
         integrator = LangevinIntegrator(
             300 * unit.kelvin, 1.0 / unit.picosecond, 2.0 * unit.femtoseconds
         )
-        simulation = Simulation(modeller.topology, system, integrator)
+        simulation = new_simulation(modeller.topology, system, integrator)
         simulation.context.setPositions(modeller.positions)
         initial_state = simulation.context.getState(
             getEnergy=True,

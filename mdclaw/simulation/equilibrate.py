@@ -5,7 +5,7 @@ import os
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from mdclaw._common import setup_logger  # noqa: E402
+from mdclaw._common import new_simulation, setup_logger  # noqa: E402
 from mdclaw._tool_meta import node_tool  # noqa: E402
 
 logger = setup_logger(__name__)
@@ -438,7 +438,7 @@ def run_equilibration(
 
     try:
         from openmm.app import (
-            Simulation, StateDataReporter,
+            StateDataReporter,
             HCT, OBC1, OBC2, GBn, GBn2,
         )
         from openmm import (
@@ -687,10 +687,10 @@ def run_equilibration(
                     platform_properties["DeviceIndex"] = device_index
 
         if platform_obj:
-            sim_nvt = Simulation(xml_inputs.topology, system_nvt, integrator_nvt,
+            sim_nvt = new_simulation(xml_inputs.topology, system_nvt, integrator_nvt,
                                  platform_obj, platform_properties)
         else:
-            sim_nvt = Simulation(xml_inputs.topology, system_nvt, integrator_nvt)
+            sim_nvt = new_simulation(xml_inputs.topology, system_nvt, integrator_nvt)
 
         result["platform"] = sim_nvt.context.getPlatform().getName()
         nvt_energy_file = out_dir / "nvt_energy.dat"
@@ -945,10 +945,10 @@ def run_equilibration(
                 integrator_npt.setRandomNumberSeed(effective_random_seed)
 
             if platform_obj:
-                sim_npt = Simulation(xml_inputs.topology, system_npt, integrator_npt,
+                sim_npt = new_simulation(xml_inputs.topology, system_npt, integrator_npt,
                                      platform_obj, platform_properties)
             else:
-                sim_npt = Simulation(xml_inputs.topology, system_npt, integrator_npt)
+                sim_npt = new_simulation(xml_inputs.topology, system_npt, integrator_npt)
             npt_energy_file = out_dir / "npt_energy.dat"
             sim_npt.reporters.append(StateDataReporter(
                 str(npt_energy_file),
@@ -1084,12 +1084,12 @@ def run_equilibration(
             integrator_clean.setRandomNumberSeed(effective_random_seed)
 
         if platform_obj:
-            sim_clean = Simulation(
+            sim_clean = new_simulation(
                 xml_inputs.topology, system_clean, integrator_clean,
                 platform_obj, platform_properties,
             )
         else:
-            sim_clean = Simulation(xml_inputs.topology, system_clean, integrator_clean)
+            sim_clean = new_simulation(xml_inputs.topology, system_clean, integrator_clean)
 
         sim_clean.context.setPositions(final_state_full.getPositions())
         sim_clean.context.setVelocities(final_state_full.getVelocities())
