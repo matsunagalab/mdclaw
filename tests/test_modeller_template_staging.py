@@ -6,6 +6,8 @@ not its name. Handing it an mmCIF under a ``.pdb`` name therefore does not
 corrupt``. ``_stage_template_as_pdb`` converts instead of renaming.
 """
 
+import gzip
+
 import pytest
 
 from mdclaw.genesis.modeller import _stage_template_as_pdb
@@ -77,6 +79,31 @@ def test_mmcif_suffix_variant_is_also_converted(tmp_path):
 
     assert outcome["success"] is True
     assert "_atom_site." not in destination.read_text()
+
+
+def test_misnamed_mmcif_is_detected_from_content(tmp_path):
+    source = _write_cif(tmp_path / "actually_cif.pdb", MINIMAL_PDB)
+    destination = tmp_path / "tmpl.pdb"
+
+    outcome = _stage_template_as_pdb(source, destination)
+
+    assert outcome["success"] is True
+    assert "_atom_site." not in destination.read_text()
+    assert any("Converted mmCIF" in warning for warning in outcome["warnings"])
+
+
+@pytest.mark.parametrize("suffix", [".cif.gz", ".mmcif.gz"])
+def test_compressed_mmcif_is_detected_and_converted(tmp_path, suffix):
+    uncompressed = _write_cif(tmp_path / "source.cif", MINIMAL_PDB)
+    source = tmp_path / f"template{suffix}"
+    source.write_bytes(gzip.compress(uncompressed.read_bytes()))
+    destination = tmp_path / "tmpl.pdb"
+
+    outcome = _stage_template_as_pdb(source, destination)
+
+    assert outcome["success"] is True
+    assert "_atom_site." not in destination.read_text()
+    assert gemmi.read_pdb(str(destination))[0]["A"][0].seqid.num == 10
 
 
 def test_unparsable_mmcif_reports_a_code(tmp_path):

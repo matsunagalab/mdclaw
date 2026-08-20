@@ -12,6 +12,10 @@ every new tool that assigns chemistry is a new place to forget; rendering once
 at the boundary covers all of them. And an agent is free to skip relaying a
 JSON field, while a batch job has no agent at all -- so this goes to stderr,
 where stdout stays the JSON contract.
+
+The summary deliberately uses INFO and obeys ``MDCLAW_LOG_LEVEL``. Setting the
+level to WARNING suppresses this convenience rendering; ``confirmation_needed``
+in the returned JSON and node metadata remains the durable batch record.
 """
 
 from mdclaw._common import setup_logger

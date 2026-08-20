@@ -569,6 +569,21 @@ def _json_stdout_tail(payload: dict) -> str:
     return json.dumps(payload, indent=2, default=str) + "\n"
 
 
+def _report_confirmation_items_safely(result: object) -> None:
+    """Keep optional human rendering from invalidating a completed tool result."""
+    if not isinstance(result, dict) or not result.get("confirmation_needed"):
+        return
+    try:
+        report_confirmation_items(result["confirmation_needed"])
+    except Exception as exc:  # noqa: BLE001 - final JSON remains authoritative
+        logging.getLogger(__name__).warning(
+            "Could not render confirmation_needed summary; the structured result "
+            "remains available: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+
+
 def _json_error_and_exit(error: dict) -> None:
     json.dump(finalize_error(error), sys.stdout, indent=2, default=str)
     print()
@@ -1119,8 +1134,7 @@ def main(argv: list[str] | None = None) -> None:
             exit_code=exit_code,
             started_at=started_at,
         )
-        if isinstance(result, dict) and result.get("confirmation_needed"):
-            report_confirmation_items(result["confirmation_needed"])
+        _report_confirmation_items_safely(result)
         json.dump(result, sys.stdout, indent=2, default=str)
         print()  # trailing newline
         sys.exit(exit_code)

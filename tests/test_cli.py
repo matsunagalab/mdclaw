@@ -29,6 +29,29 @@ def _dependency_available(module_name):
     return find_spec(module_name) is not None
 
 
+def test_confirmation_rendering_failure_does_not_replace_tool_result(
+    monkeypatch,
+    caplog,
+):
+    import mdclaw._cli as cli
+
+    def fail_rendering(_items):
+        raise RuntimeError("renderer broke")
+
+    result = {
+        "success": True,
+        "confirmation_needed": {"protonation_states": {"states": [{"state": "ASH"}]}},
+    }
+    monkeypatch.setattr(cli, "report_confirmation_items", fail_rendering)
+
+    with caplog.at_level("WARNING"):
+        cli._report_confirmation_items_safely(result)
+
+    assert result["success"] is True
+    assert result["confirmation_needed"]
+    assert "structured result remains available" in caplog.text
+
+
 def test_attach_dag_handoff_reports_registered_artifacts(tmp_path):
     from mdclaw._cli import _attach_dag_handoff
 

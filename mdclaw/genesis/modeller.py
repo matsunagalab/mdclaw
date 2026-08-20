@@ -261,35 +261,57 @@ def _has_modeller_license_env() -> bool:
 def _stage_template_as_pdb(source: Path, destination: Path) -> dict:
     """Put the template in MODELLER's working directory as real PDB.
 
-    A PDB source is copied. An mmCIF one is converted -- MODELLER has no CIF
-    reader, and renaming the file only moves the failure to its parser.
+    Gemmi detects the coordinate format from content. A PDB source is copied;
+    an mmCIF source (including misnamed and gzip-compressed files) is converted
+    because MODELLER has no CIF reader.
 
     Returns ``{success, errors, warnings, code}``.
     """
     outcome: dict = {"success": False, "errors": [], "warnings": [], "code": None}
 
-    if source.suffix.lower() not in {".cif", ".mmcif"}:
+    try:
+        import gemmi
+    except ImportError:
+        is_declared_mmcif = source.name.lower().endswith(
+            (".cif", ".mmcif", ".cif.gz", ".mmcif.gz")
+        )
+        if is_declared_mmcif:
+            outcome["errors"].append(
+                f"template_pdb is mmCIF ({source.name}) and gemmi is not available "
+                "to convert it; pass a PDB-format template instead"
+            )
+            outcome["code"] = "modeller_template_conversion_unavailable"
+            return outcome
         shutil.copy2(source, destination)
         outcome["success"] = True
         return outcome
 
     try:
-        import gemmi
-    except ImportError:
-        outcome["errors"].append(
-            f"template_pdb is mmCIF ({source.name}) and gemmi is not available "
-            "to convert it; pass a PDB-format template instead"
+        structure = gemmi.read_structure(
+            str(source),
+            format=gemmi.CoorFormat.Detect,
         )
-        outcome["code"] = "modeller_template_conversion_unavailable"
-        return outcome
-
-    try:
-        structure = gemmi.make_structure_from_block(gemmi.cif.read(str(source))[0])
+        detected_format = structure.input_format
+        atom_count = sum(
+            1
+            for model in structure
+            for chain in model
+            for residue in chain
+            for _atom in residue
+        )
+        if len(structure) == 0 or atom_count == 0:
+            raise ValueError("coordinate file contains no atoms")
+        if detected_format == gemmi.CoorFormat.Pdb:
+            shutil.copy2(source, destination)
+            outcome["success"] = True
+            return outcome
+        if detected_format != gemmi.CoorFormat.Mmcif:
+            raise ValueError(f"unsupported coordinate format: {detected_format}")
         structure.setup_entities()
         structure.write_pdb(str(destination))
     except Exception as exc:  # noqa: BLE001 - reported to the caller
         outcome["errors"].append(
-            f"could not convert mmCIF template {source.name} to PDB: "
+            f"could not detect or convert coordinate template {source.name} to PDB: "
             f"{type(exc).__name__}: {exc}"
         )
         outcome["code"] = "modeller_template_conversion_failed"

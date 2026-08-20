@@ -13,8 +13,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mdclaw.structure.prepare_complex import prepare_complex
-from mdclaw.structure.prepare_complex import _validate_prepare_node_context
+from mdclaw.structure.prepare_complex import (
+    _confirmation_source_from_entries,
+    _has_unmodeled_terminal_residues,
+    _missing_residue_confirmation_block,
+    _remap_missing_residue_record,
+    _validate_prepare_node_context,
+    prepare_complex,
+)
 from mdclaw.structure.pdb_utils import (
     _exclude_deuterium_atoms_from_pdb,
     _pdb_noncap_protein_hydrogen_signature,
@@ -70,6 +76,7 @@ def test_prepare_node_context_includes_protonation_overrides(monkeypatch):
         process_ligands=True,
         histidine_states={"A:10": "HIE"},
         protonation_states={"A:11": "GLH"},
+        missing_residue_method=" MODELLER ",
         include_types=["protein"],
         include_ligand_ids=None,
         include_ligand_resnames=None,
@@ -81,6 +88,75 @@ def test_prepare_node_context_includes_protonation_overrides(monkeypatch):
     assert result["success"] is True
     assert captured["histidine_states"] == {"A:10": "HIE"}
     assert captured["protonation_states"] == {"A:11": "GLH"}
+    assert captured["missing_residue_method"] == "modeller"
+
+
+def test_confirmation_source_reports_mixed_entry_provenance():
+    assert _confirmation_source_from_entries([
+        {"source": "user_override"},
+        {"source": "auto_detected"},
+    ]) == "mixed"
+    assert _confirmation_source_from_entries([
+        {"source": "user_override"},
+    ]) == "user_override"
+
+
+def test_terminal_omission_detection_requires_a_nonzero_residue_count():
+    assert _has_unmodeled_terminal_residues({
+        "terminal_excluded": {"total_residues": 77}
+    })
+    assert not _has_unmodeled_terminal_residues({
+        "terminal_excluded": {"total_residues": 0}
+    })
+
+
+def test_missing_residue_confirmation_never_calls_predicted_coordinates_override():
+    repair = {
+        "chain_id": "A",
+        "method": "modeller",
+        "total_residues": 33,
+    }
+    block = _missing_residue_confirmation_block(
+        [repair],
+        [],
+        "modeller",
+    )
+
+    assert block["source"] == "predicted"
+    assert block["method_requested"] == "modeller"
+    assert block["source"] != "user_override"
+
+
+def test_terminal_only_omissions_create_a_confirmation_block():
+    detection = {
+        "chain_id": "A",
+        "reference_sequence_available": True,
+        "terminal_excluded": {"total_residues": 77},
+    }
+
+    block = _missing_residue_confirmation_block([], [detection], "pdbfixer")
+
+    assert block is not None
+    assert block["source"] == "auto_detected"
+    assert block["terminal_unmodeled"] == [detection]
+
+
+def test_missing_residue_records_use_merged_chain_and_keep_provenance():
+    record = _remap_missing_residue_record(
+        {"chain_id": "label_A", "author_chain": "AUTH"},
+        {
+            "status": "modeled",
+            "total_residues": 3,
+            "segments": [{"chain_id": "A", "residue_count": 3}],
+        },
+        {"label_A": "B"},
+    )
+
+    assert record["chain_id"] == "B"
+    assert record["source_chain"] == "label_A"
+    assert record["author_chain"] == "AUTH"
+    assert record["segments"][0]["chain_id"] == "B"
+    assert record["segments"][0]["source_chain"] == "A"
 
 
 @pytest.fixture

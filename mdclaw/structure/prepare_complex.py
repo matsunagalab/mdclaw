@@ -567,6 +567,7 @@ def _validate_prepare_node_context(
     process_ligands: bool,
     histidine_states: Optional[Dict[str, str]],
     protonation_states: Optional[Dict[str, Any]],
+    missing_residue_method: str,
     include_types: Optional[List[str]],
     include_ligand_ids: Optional[List[str]],
     include_ligand_resnames: Optional[List[str]],
@@ -597,6 +598,9 @@ def _validate_prepare_node_context(
             "process_ligands": process_ligands,
             "histidine_states": histidine_states,
             "protonation_states": protonation_states,
+            "missing_residue_method": str(
+                missing_residue_method or "pdbfixer"
+            ).strip().lower(),
             "include_types": include_types,
             "include_ligand_ids": include_ligand_ids,
             "include_ligand_resnames": include_ligand_resnames,
@@ -882,6 +886,9 @@ def prepare_complex(
     result["source_selection"] = _resolved_structure.get("source_selection")
     result["source_structure_id"] = _resolved_structure.get("source_structure_id")
     solvent_type = _normalize_prepare_solvent_type(solvent_type)
+    missing_residue_method = str(
+        missing_residue_method or "pdbfixer"
+    ).strip().lower()
     result["solvent_type"] = solvent_type
     if solvent_type is not None and solvent_type not in SUPPORTED_PREP_SOLVENT_TYPES:
         blocked = {
@@ -942,6 +949,7 @@ def prepare_complex(
             process_ligands=process_ligands,
             histidine_states=histidine_states,
             protonation_states=protonation_states,
+            missing_residue_method=missing_residue_method,
             include_types=include_types,
             include_ligand_ids=include_ligand_ids,
             include_ligand_resnames=include_ligand_resnames,
@@ -1400,6 +1408,10 @@ def prepare_complex(
 
                 protein_result = {
                     "chain_id": chain_id,
+                    "author_chain": (
+                        chain_info_map.get(chain_id, {}).get("author_chain")
+                        or chain_id
+                    ),
                     "input_file": protein_file,
                     "output_file": None,
                     "success": False,
@@ -2063,7 +2075,6 @@ def prepare_complex(
                         preparation_summary["histidine_states"], _cmap
                     )
                 )
-        result.pop("_chain_remap_source_to_merged", None)
         successful_proteins = [p for p in result.get("proteins", []) if p.get("success")]
 
         # Aggregate what happened to missing residues across the chains. This
@@ -2071,15 +2082,24 @@ def prepare_complex(
         # nobody reads stderr, and a rebuilt 30-residue loop is a structural
         # decision the study rests on.
         repairs = [
-            {"chain_id": protein.get("chain_id"), **protein["missing_residue_repair"]}
+            _remap_missing_residue_record(
+                protein,
+                protein["missing_residue_repair"],
+                _cmap,
+            )
             for protein in successful_proteins
             if protein.get("missing_residue_repair")
         ]
         detections = [
-            {"chain_id": protein.get("chain_id"), **protein["missing_residue_detection"]}
+            _remap_missing_residue_record(
+                protein,
+                protein["missing_residue_detection"],
+                _cmap,
+            )
             for protein in successful_proteins
             if protein.get("missing_residue_detection")
         ]
+        result.pop("_chain_remap_source_to_merged", None)
         if detections:
             preparation_summary["missing_residue_detection"] = detections
         if repairs:
