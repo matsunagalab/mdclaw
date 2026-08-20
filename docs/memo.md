@@ -7,6 +7,35 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-20 — UTF-8 モードを焼いた SIF (acabf7612b72)
+
+locale 修正 (`preserve_locale` / `new_simulation`)、`bin/mdclaw` の bash 3.2 対応、
+両イメージへの `PYTHONUTF8=1` を含めて焼き直した。
+
+```
+image   ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev-acabf7612b72
+sif     ~/Downloads/mdclaw-rikyu-arm64-cuda130-ppm3-acabf7612b72.sif
+        6,774,358,016 bytes
+        SHA-256 acbc89e6e279376b2fa8d1be6f8019a6e0b609c10c83c7e4b71cb83c88f1522d
+smoke   Docker 24/24、SIF からも 24/24 (24 件目が UTF-8 mode contract)
+```
+
+SIF から実地確認した 2 点:
+
+```
+read-only CWD で mdclaw --version   -> mdclaw 0.6.8、outputs/ も残らない
+LANG=C.UTF-8 + LC_ALL=C 後の書き込み -> utf8_mode=1、em dash が往復する
+```
+
+後者は `PYTHONUTF8=1` が無ければ `UnicodeEncodeError` になる条件。これで
+「ドライバがロケールを倒す」経路は、MDClaw 内 (preserve_locale) と第三者ライブラリ内
+(UTF-8 モード) の両方が塞がった。
+
+前世代の SIF: `36f13d131a89` は locale 修正前、`34230ff20567` は CWD 修正が 1 ファイル
+欠けた失敗作。どちらも破棄してよい。
+
+---
+
 ## 2026-08-20 — フルスイートの 21 failure の原因は OpenCL ドライバの setlocale だった
 
 「単体で走らせると通り、フル実行だと落ちる」21 件。**flaky ではなく実バグ**で、原因は
