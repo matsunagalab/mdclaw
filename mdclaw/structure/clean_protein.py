@@ -450,19 +450,31 @@ def _repair_missing_residues_with_modeller(
 def _missing_residue_regeneration_recommendation(summary: dict) -> dict:
     return {
         "reason": "internal_missing_residues_exceed_pdbfixer_scope",
-        # Repairing in place is the first answer: it needs no template, no
-        # sequence, and no second node -- this structure is its own template
-        # and its reference sequence is already loaded. Regenerating the source
-        # is for when there is nothing here worth repairing.
-        "recommended_next_action": "rerun_with_modeller_missing_residue_method",
+        # The failed prep node is terminal and sealed. Repair the same source
+        # structure in a new sibling prep node with the same completed parent.
+        "recommended_next_action": "create_new_prep_node_with_modeller_missing_residue_method",
         "restart_stage": "prep",
+        "next_commands": [
+            (
+                "mdclaw create_node --job-dir <job_dir> --node-type prep "
+                "--parent-node-ids <completed_parent_node_id>"
+            ),
+            (
+                "mdclaw --job-dir <job_dir> --node-id <new_prep_node_id> "
+                "prepare_complex --missing-residue-method modeller"
+            ),
+        ],
         "options": [
             {
-                "option": "repair_in_place_with_modeller",
+                "option": "repair_gaps_in_new_prep_node",
                 "next_skill": "skills/md-prepare/SKILL.md",
                 "tool": "prepare_complex",
                 "flag": "--missing-residue-method modeller",
-                "when": "The structure itself is the right starting point and only its gaps need rebuilding. Re-run this same node with the flag; no new source node is involved.",
+                "when": (
+                    "The structure itself is the right starting point and only "
+                    "its gaps need rebuilding. Create a new prep node with the "
+                    "failed node's same completed parent; failed nodes are sealed."
+                ),
                 "required_inputs": [],
             },
             {
@@ -856,6 +868,7 @@ def clean_protein(
                 result["workflow_recommendation"] = recommendation
                 result["recommended_next_action"] = recommendation["recommended_next_action"]
                 result["recommended_next_skills"] = [
+                    "skills/md-prepare/SKILL.md",
                     "skills/modeller-predict/SKILL.md",
                     "skills/boltz-predict/SKILL.md",
                 ]

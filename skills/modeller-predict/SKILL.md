@@ -16,16 +16,12 @@ MODELLER PIR/ALI alignment. Prefer `skills/boltz-predict/SKILL.md` when there is
 no suitable template or when the user asks for AI structure prediction.
 
 Do **not** use this skill to fill gaps in a structure you are already
-preparing. `pdbfixer_missing_residues_out_of_scope` is answered by re-running
-the same prep node with `prepare_complex --missing-residue-method modeller`,
-which rebuilds the gaps in place: the chain is its own template and its own
-target sequence. Coming here instead means fetching a template into the job's
-`source` node, which completes that node and leaves MODELLER unable to write to
-it.
+preparing. For `pdbfixer_missing_residues_out_of_scope`, create a **new** prep
+node with the failed node's same completed parent; failed nodes are sealed.
+Follow the exact commands in `skills/md-prepare/defaults-and-guardrails.md`.
 
-This skill is for the other case: the target is a **different sequence** from
-the template, so a new source structure has to be modeled rather than repaired
-— homology modeling, a construct with no experimental structure, a chimera.
+Use this skill when the target is a **different sequence** from the template:
+homology modeling, constructs without experimental structures, or chimeras.
 
 ## Required Inputs
 

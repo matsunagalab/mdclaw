@@ -157,8 +157,8 @@ def test_invalid_missing_residue_method_is_rejected(tmp_path):
     assert result["code"] == "invalid_missing_residue_method"
 
 
-def test_out_of_scope_recommends_repairing_in_place(tmp_path):
-    """The guardrail must name the flag, not send the agent to a new source node."""
+def test_out_of_scope_recommends_a_new_prep_node(tmp_path):
+    """A failed prep is sealed, so recovery must create a sibling prep node."""
     from mdclaw.structure.clean_protein import _missing_residue_regeneration_recommendation
 
     recommendation = _missing_residue_regeneration_recommendation(
@@ -166,9 +166,19 @@ def test_out_of_scope_recommends_repairing_in_place(tmp_path):
     )
 
     first = recommendation["options"][0]
-    assert first["option"] == "repair_in_place_with_modeller"
+    assert first["option"] == "repair_gaps_in_new_prep_node"
     assert first["flag"] == "--missing-residue-method modeller"
     assert recommendation["restart_stage"] == "prep"
+    commands = recommendation["next_commands"]
+    assert len(commands) == 2
+    assert "create_node" in commands[0]
+    assert "--node-type prep" in commands[0]
+    assert "--parent-node-ids <completed_parent_node_id>" in commands[0]
+    assert "--node-id <new_prep_node_id>" in commands[1]
+    assert "--missing-residue-method modeller" in commands[1]
+    serialized = str(recommendation).lower()
+    assert "same node" not in serialized
+    assert "re-run this" not in serialized
 
 
 def test_repair_models_only_the_observed_span(tmp_path, monkeypatch):

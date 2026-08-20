@@ -38,7 +38,7 @@ class _LargeGapPDBFixer:
         }
 
 
-def test_clean_protein_routes_large_missing_gaps_to_source_regeneration(
+def test_clean_protein_routes_large_missing_gaps_to_new_prep_node(
     tmp_path,
     monkeypatch,
 ):
@@ -53,8 +53,12 @@ def test_clean_protein_routes_large_missing_gaps_to_source_regeneration(
 
     assert result["success"] is False
     assert result["code"] == "pdbfixer_missing_residues_out_of_scope"
-    assert result["recommended_next_action"] == "regenerate_source_structure"
+    assert (
+        result["recommended_next_action"]
+        == "create_new_prep_node_with_modeller_missing_residue_method"
+    )
     assert result["recommended_next_skills"] == [
+        "skills/md-prepare/SKILL.md",
         "skills/modeller-predict/SKILL.md",
         "skills/boltz-predict/SKILL.md",
     ]
@@ -66,5 +70,6 @@ def test_clean_protein_routes_large_missing_gaps_to_source_regeneration(
         option["option"]
         for option in result["workflow_recommendation"]["options"]
     }
+    assert "repair_gaps_in_new_prep_node" in options
     assert "use_modeller_template_modeling" in options
     assert "use_boltz2_structure_prediction" in options

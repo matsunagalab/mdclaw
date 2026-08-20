@@ -76,7 +76,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "missing_structure_file": "Provide the structure file this tool requires.",
     "missing_uniprot_id": "Provide a valid UniProt accession.",
     "source_candidate_selection_required": "Choose one listed source candidate and pass --source-structure-id to the prep tool.",
-    "pdbfixer_missing_residues_out_of_scope": "Re-run the same prep node with --missing-residue-method modeller to rebuild the gaps in place.",
+    "pdbfixer_missing_residues_out_of_scope": "Create a new prep node with the failed node's same completed parent, then run prepare_complex with --missing-residue-method modeller.",
 
     # --- prep / cleaning / selection ---
     "invalid_prep_solvent_type": "Use a supported solvent type for prep.",
