@@ -1,12 +1,12 @@
 # Visual QA
 
-The canonical structure-preview + visual-review procedure shared by every
-stage (prep, equilibration, production, analyze). Reference this page instead
+The canonical structure-preview + visual-review procedure for every stage:
+`prep`, `solv`, `min`, `eq`, `prod`, and `analyze`. Reference this page instead
 of duplicating the checklist per skill.
 
-Attempt a render after every stage that changes the system, in both
-interaction modes: `autonomous` skips confirmations, not reporting. Rendering
-itself is best-effort — a failure to render is not a stage failure.
+Render a preview after every stage that changes the system.
+This applies in `autonomous` mode: autonomous skips confirmations, not reporting.
+Rendering itself is best-effort — a failure to render is not a stage failure.
 
 What the picture can tell you is limited. It catches obvious visual accidents;
 it does not validate force fields, protonation states, parameters, chemistry,
@@ -46,7 +46,7 @@ stage. If the harness cannot deliver files, print the absolute paths. If PyMOL
 is unavailable (`code=pymol_not_available`), say rendering was skipped; it is
 not a failure.
 
-## Inspect (if the agent/UI can see images)
+## Inspect the images
 
 Open both `structure_preview_png` and `structure_preview_png_top` and check
 only:
