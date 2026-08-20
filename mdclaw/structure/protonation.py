@@ -83,13 +83,17 @@ def _extract_histidine_states(pdb_file: Path) -> dict:
 # carries one of HID/HIE/HIP, so reporting it says which tautomer was chosen.
 # These names instead appear only when a residue was moved off its default
 # charge state, which is the thing worth confirming before solvation.
+# Kept in step with ``_PABLO_AMBER_VARIANT_BASES`` in
+# ``mdclaw/amber/openmm_build.py``: these are the variants the topology path
+# round-trips through CCD names for Pablo and restores afterwards, and the ones
+# ff19SB actually defines templates for. TYM and ARN are deliberately absent —
+# ff19SB has no template for either, so reporting them would promise a system
+# that cannot be built.
 _NON_DEFAULT_PROTONATION_RESNAMES = {
     "ASH": "ASP",   # protonated (neutral) aspartate
     "GLH": "GLU",   # protonated (neutral) glutamate
     "LYN": "LYS",   # deprotonated (neutral) lysine
     "CYM": "CYS",   # deprotonated (anionic) cysteine
-    "TYM": "TYR",   # deprotonated (anionic) tyrosine
-    "ARN": "ARG",   # deprotonated (neutral) arginine
 }
 
 
@@ -127,7 +131,7 @@ def _extract_non_default_protonation_states(pdb_file: Path) -> list:
     """Report residues pdb2pqr/propka moved off their default charge state.
 
     ``_extract_histidine_states`` covers the HIS tautomers. This covers the
-    rest: ASH, GLH, LYN, CYM, TYM, ARN. They are chemically legitimate at the
+    rest: ASH, GLH, LYN, CYM. They are chemically legitimate at the
     requested pH, but they change the net charge and not every force-field
     bundle has a template for them, so they belong in ``confirmation_needed``
     rather than only in the coordinates.

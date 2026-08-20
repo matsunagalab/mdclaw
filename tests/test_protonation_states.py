@@ -71,7 +71,8 @@ ATOM      2  CA  ASH A  97       1.450   0.000   0.000  1.00  0.00           C
 ATOM      3  N   HID A  77       0.000   0.000   0.000  1.00  0.00           N
 ATOM      4  N   GLH B 210       0.000   0.000   0.000  1.00  0.00           N
 ATOM      5  N   LYN B 211A      0.000   0.000   0.000  1.00  0.00           N
-ATOM      6  N   ASP A  98       0.000   0.000   0.000  1.00  0.00           N
+ATOM      6  N   CYM B 212       0.000   0.000   0.000  1.00  0.00           N
+ATOM      7  N   ASP A  98       0.000   0.000   0.000  1.00  0.00           N
 TER
 END
 """)
@@ -89,6 +90,7 @@ def test_extract_reports_non_default_states_but_not_histidine(tmp_path):
         ("A", "97", "ASH"),
         ("B", "210", "GLH"),
         ("B", "211", "LYN"),
+        ("B", "212", "CYM"),
     ]
     assert all(s["source"] == "auto_detected" for s in states)
     assert states[0]["default_state"] == "ASP"

@@ -46,8 +46,8 @@ parse as PDB. Converting to a real PDB first fixed it. Restricting the template
 to chain A also dropped Atosiban's `A1EQM`, whose 5-character residue name has
 no PDB representation.
 
-**Trap 3: `prepare_complex` assigns ASH silently, and it does not survive
-topology loading.** Two aspartates (97, 112) came back protonated, but
+**Trap 3: a protonated aspartate renamed lipids, and nothing said it was
+there.** Two aspartates (97, 112) came back protonated, but
 `confirmation_needed.protonation_states` was `{"source": "auto_detected",
 "states": []}` — empty. `embed_in_membrane` then failed at the net-charge step:
 
@@ -58,31 +58,51 @@ topology loading.** Two aspartates (97, 112) came back protonated, but
 hit this, so it is structure-dependent — any member whose receptor has a buried
 Asp will.
 
-**Correction, after tracing it: ff19SB does have an ASH template.** The error's
-first sentence is a red herring; the operative half is *"the residue has no bonds
-between its atoms"*. Pablo fails to parse the whole structure and
-`_topology_pablo.load_topology` falls back to `openmm.app.PDBFile`, whose name
-replacement maps `HID`/`HIE`/`HIP` back to `HIS` — a name `Topology`'s bond
-database knows — but leaves `ASH` alone. `ASH` is in neither the replacement
-table nor the bond database, so it loads with **zero bonds** and never reaches
-template matching. Measured on the failing structure: 5 HIS variants normalised
-to `HIS` with 180 bonds; 2 `ASH` with 0. That is exactly why 5L7D passed and
-9UWI did not — 5L7D only ever had histidine variants.
+**First correction: ff19SB does have an ASH template**, so "no template found"
+is not about the force field lacking one. OpenMM matches templates by atom
+composition, not by name.
 
-So there are two independent defects, and the force field is not one of them:
+**Second correction — the loader was not at fault either.** `pdbNames.xml`
+registers `ASH` as an alias of `ASP` (and `HID`/`HIE`/`HIP` of `HIS`), so
+`openmm.app.PDBFile` normalises it and bonds fine; measured on a synthetic
+ALA-ASH-ALA, `ASH` loads as `ASP` with 14 bonds whether written as ATOM or
+HETATM. `LYN` and `CYM` have no alias and are the ones that would load bare.
+So a residue arriving at template matching still *named* `ASH` never went
+through that normalisation — which points at MDClaw's own code.
 
-1. **Reporting.** `confirmation_needed.protonation_states` only ever carried
-   caller-supplied overrides, never what pdb2pqr actually assigned — while
-   `histidine_states` reads the produced structure. Fixed here: added
-   `_extract_non_default_protonation_states` (ASH/GLH/LYN/CYM/TYM/ARN) and
-   `_merge_protonation_states`, wired into all three recording sites in
-   `clean_protein.py` and into the operation records the summary aggregates
-   from. The failing 9UWI prep now reports both aspartates with their
-   `default_state`, and a caller-specified residue is reported once as
-   `user_override`. Tests in `tests/test_protonation_states.py`.
-2. **Loading.** A non-histidine protonation variant still cannot survive the
-   PDBFile fallback. Not fixed. The reporting fix means you at least see it
-   coming.
+**The actual cause is in `mdclaw/amber/openmm_build.py`.** The topology path
+deliberately rewrites ASH/GLH/LYN/CYM to their CCD names so Pablo can identify
+them, then restores the Amber names on the loaded topology. The histidine
+restore guards on `residue.name != "HIS"`; the variant restore had no such
+guard and renamed on `(chain, residue number)` alone. **That key is not unique
+in an assembled membrane.** In this system chain A carries both the protein
+`ASP` 97/112 and POPC `PA` residues numbered 97 and 112, so lipid tails were
+renamed to `ASH`. The force field's "no template for residue 399 (ASH), the set
+of atoms matches PA" was reporting precisely that: a PA residue wearing the
+name ASH.
+
+Two defects, then, and neither is the force field or OpenMM:
+
+1. **Restore.** Fixed: `_restore_amber_variant_names` now checks the recorded
+   chain and that the residue still carries the base name that was substituted,
+   before renaming it back. Extracted to a module-level helper with tests in
+   `tests/test_amber_variant_restore.py` covering the lipid, water and ion
+   collisions and all four variants. Verified on the failing system: the same
+   prep that produced `membrane_neutralization_failed` now embeds cleanly with
+   both aspartates kept as ASH and the lipids untouched.
+2. **Reporting.** `confirmation_needed.protonation_states` only ever carried
+   caller-supplied overrides, never what pdb2pqr assigned — while
+   `histidine_states` reads the produced structure. Fixed: added
+   `_extract_non_default_protonation_states` and `_merge_protonation_states`,
+   wired into all three recording sites in `clean_protein.py` and into the
+   operation records the summary aggregates from. Reported names are kept in
+   step with what the topology path can round-trip (ASH/GLH/LYN/CYM; ff19SB has
+   no TYM or ARN template, so promising them would promise an unbuildable
+   system). The failing 9UWI prep now reports both aspartates with the state
+   they replaced.
+
+The workaround used during the run — forcing the aspartates back to ASP — was
+therefore treating a symptom. It is no longer needed.
 
 **The run.** Orientation came from OPM homolog **7QVM** (identity 0.60, fit_rmsd
 2.29 A, hydrophobic thickness 31.8 A), not from 9UWI itself — so unlike 5L7D

@@ -77,6 +77,29 @@ WORKING_DIR = Path("outputs").resolve()
 _CHARGE_FIT_TIMEOUT_FLOOR_SECONDS = 1800  # 30 min
 
 
+def _restore_amber_variant_names(topology: Any, amber_variant_resids: dict) -> None:
+    """Put ASH/GLH/LYN/CYM back on the residues that were renamed for Pablo.
+
+    ``amber_variant_resids`` maps ``(chain, residue number)`` to the record
+    written when the name was substituted. That key is not unique in an
+    assembled system -- lipids, ions and waters restart numbering, so a POPC
+    tail can share a chain and number with a protein aspartate -- so the chain
+    and the substituted name are both checked before anything is renamed back.
+    """
+    if not amber_variant_resids:
+        return
+    for residue in topology.residues():
+        chain_id = _normalize_pdb_chain_id(residue.chain.id)
+        record = amber_variant_resids.get((chain_id, str(residue.id)))
+        if record is None:
+            continue
+        if chain_id != record["chain"]:
+            continue
+        if residue.name != record["base_name"]:
+            continue
+        residue.name = record["variant"]
+
+
 def _resolve_charge_fit_timeout() -> int:
     """Return the charge-fitting timeout in seconds, never below the floor."""
     raw = os.environ.get("MDCLAW_CHARGE_FIT_TIMEOUT")
@@ -915,7 +938,7 @@ def _run_openmmforcefields_build(
     }
 
     his_amber_resids: set[tuple[str, str]] = set()
-    amber_variant_resids: dict[tuple[str, str], str] = {}
+    amber_variant_resids: dict[tuple[str, str], dict[str, str]] = {}
     sanitized_input = pablo_input
     needs_sanitize = False
     try:
@@ -949,8 +972,12 @@ def _run_openmmforcefields_build(
                     elif rn_strip in _PABLO_AMBER_VARIANT_BASES:
                         chain_id = _normalize_pdb_chain_id(line[21:22])
                         resseq = line[22:26]
-                        amber_variant_resids[(chain_id, resseq.strip())] = rn_strip
                         base_name = _PABLO_AMBER_VARIANT_BASES[rn_strip]
+                        amber_variant_resids[(chain_id, resseq.strip())] = {
+                            "variant": rn_strip,
+                            "base_name": base_name,
+                            "chain": chain_id,
+                        }
                         line = line[:17] + f"{base_name:>3}" + line[20:]
                 fh_out.write(line)
 
@@ -987,12 +1014,15 @@ def _run_openmmforcefields_build(
             else:
                 residue.name = "HID"
 
-    if amber_variant_resids:
-        for residue in omm_topology.residues():
-            chain_id = _normalize_pdb_chain_id(residue.chain.id)
-            variant = amber_variant_resids.get((chain_id, str(residue.id)))
-            if variant:
-                residue.name = variant
+    # Same restore for the remaining protonation variants, with the same
+    # guard the histidine pass uses: only rename a residue that is still
+    # carrying the CCD base name we substituted on the way in. Without it
+    # the (chain, resid) key alone decides, and in an assembled membrane
+    # that key is not unique -- lipids, ions and waters restart numbering,
+    # so a POPC tail at chain A residue 97 was being renamed to ASH. The
+    # force field then reported "no template for residue N (ASH); the set
+    # of atoms matches PA", which is exactly what it was.
+    _restore_amber_variant_names(omm_topology, amber_variant_resids)
 
     # Strip the HOP2 / HOP3 protons that ``phosphorylate_residues`` added
     # only so Pablo's CCD-shipped (protonated) PHOSPHOSERINE /
