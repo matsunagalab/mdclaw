@@ -7,6 +7,45 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-21 — SIF 名から cufft121-fusefix を落としていた（私のミス）
+
+`a34dba5bdb21` の SIF を渡したところ、名前に `cufft121-fusefix` が無いことを指摘された。
+**中身は入っており、名前だけの誤りだった。** SIF から実測:
+
+```
+MDCLAW_CUFFT_MIN_VERSION = 12.1.0.78
+同梱 cuFFT               = libcufft.so.12.1.0.78 (API 12100)
+MDCLAW_FUSEFIX_LIB       = /opt/mdclaw/lib/libmdclaw_fusefix.so
+  LD_PRELOAD に載る = True / プロセスに mmap 済み = True
+NVRTC 13.0 / math libs 13.1
+```
+
+### 何を間違えたか
+
+あの系列のタグは積み上げだった (`cuda130` -> `cuda130-cufft121` ->
+`cuda130-cufft121-fusefix`)。私は「今回の目玉は PPM3」と考えて末尾を `ppm3` に
+**置き換えた**。しかし 3 つのタグはいずれも**ホスト互換性の契約** — NVRTC/PTX が
+13.0、sm_100 の PME に必要な cuFFT の下限、FUSE マウント対策の preload shim —
+であって、「このファイルがその環境で動くか」を決めるもの。PPM3 / MODELLER /
+UTF-8 モードはソフトウェアの機能で、git revision が既に一意に特定している。
+
+### 決めた命名規則
+
+```
+mdclaw-rikyu-arm64-<ホスト互換性の契約>-<git rev>.sif
+現行: mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-<rev>.sif
+```
+
+**名前に載せるのは契約だけ。機能は revision に任せる。** そうしないと機能追加の
+たびにタグが伸びる。契約が変わったとき (CUDA 世代を上げる、shim が不要になる)
+にだけ名前を変える。
+
+`~/Downloads` の SIF は改名済み (内容は同一、SHA-256
+`e5b989e5b9bf9a4eff70c0185b39438e9bcccfd13a28714f5cc4765be34c275f`)。
+過去エントリ中の `...-ppm3-<rev>.sif` という表記は同じ理由で誤り。
+
+---
+
 ## 2026-08-20 — Prep chemistry and missing-residue contracts corrected after independent review
 
 This review was done with a second agent and checked by direct measurement, not
