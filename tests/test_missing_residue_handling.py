@@ -580,6 +580,21 @@ def test_detection_describes_the_structure_before_repair(
             "PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH",
             2,
         )
+        # What is under test is the detection record after an escalated
+        # repair, not whether this machine has MODELLER. Without pinning the
+        # usability probe the assertions below read the ambient
+        # ``KEY_MODELLER*``: the test passes wherever a key happens to be
+        # exported and fails everywhere else.
+        monkeypatch.setattr(
+            clean_module,
+            "_modeller_repair_usability",
+            lambda: {
+                "usable": True,
+                "license_env_present": True,
+                "modeller_importable": True,
+                "import_error": None,
+            },
+        )
 
     result = clean_protein(pdb_file=chain_a, missing_residue_method=method)
 
