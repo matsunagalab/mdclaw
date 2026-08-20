@@ -52,6 +52,17 @@ def _write_pdb(path, residues, coords, chain, offset):
     path.write_text("\n".join(lines) + "\nTER\nEND\n")
 
 
+def _write_pdb_with_icodes(path, residues, coords, chain, offset):
+    lines = []
+    for i, ((num, icode, name), xyz) in enumerate(zip(residues, coords)):
+        x, y, z = xyz + offset
+        lines.append(
+            f"ATOM  {i + 1:>5}  CA  {name} {chain}{num:>4}{icode}   "
+            f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           C"
+        )
+    path.write_text("\n".join(lines) + "\nTER\nEND\n")
+
+
 def _write_pir(path, target_code, template_code):
     path.write_text(
         f">P1;{target_code}\n"
@@ -132,6 +143,96 @@ def test_applying_the_fit_restores_frame_and_numbering(case):
     # Matched residues now sit on their template positions.
     for (num, _name), expected in zip(TEMPLATE_RESIDUES, TEMPLATE_XYZ):
         assert coords[num] == pytest.approx(expected, abs=1e-3)
+
+
+def test_applying_the_fit_preserves_template_insertion_codes(tmp_path):
+    template = tmp_path / "insertion_template.pdb"
+    model = tmp_path / "insertion_model.pdb"
+    alignment = tmp_path / "insertion.ali"
+    template_residues = [
+        (99, " ", "ALA"),
+        (100, "A", "ASP"),
+        (100, "B", "GLY"),
+        (101, " ", "SER"),
+    ]
+    model_residues = [(1, "ALA"), (2, "ASP"), (3, "GLY"), (4, "SER")]
+    coords = [
+        np.array([0.0, 0.0, 0.0]),
+        np.array([3.0, 1.0, 0.0]),
+        np.array([5.0, 3.0, 1.0]),
+        np.array([8.0, 2.0, 2.0]),
+    ]
+    _write_pdb_with_icodes(
+        template, template_residues, coords, "A", np.zeros(3)
+    )
+    _write_pdb(
+        model, model_residues, coords, " ", np.array([25.0, -10.0, 4.0])
+    )
+    alignment.write_text(
+        ">P1;tgt\nsequence:tgt:::::::0.00: 0.00\nADGS*\n"
+        ">P1;tpl\nstructureX:tpl:::::::0.00: 0.00\nADGS*\n"
+    )
+
+    info = _restore_template_frame(
+        model, template, alignment, "tgt", "tpl", apply_transform=True
+    )
+    identities = [
+        (line[21], int(line[22:26]), line[26])
+        for line in model.read_text().splitlines()
+        if line.startswith("ATOM")
+    ]
+
+    assert info["applied"] is True
+    assert identities == [
+        ("A", 99, " "),
+        ("A", 100, "A"),
+        ("A", 100, "B"),
+        ("A", 101, " "),
+    ]
+
+
+def test_genuine_gap_numbering_collision_refuses_to_renumber(tmp_path):
+    template = tmp_path / "collision_template.pdb"
+    model = tmp_path / "collision_model.pdb"
+    alignment = tmp_path / "collision.ali"
+    template_residues = [(10, "ALA"), (11, "ALA"), (12, "ALA")]
+    model_residues = [(1, "ALA"), (2, "ALA"), (3, "ALA"), (4, "ALA")]
+    template_coords = [
+        np.array([0.0, 0.0, 0.0]),
+        np.array([4.0, 2.0, 0.0]),
+        np.array([8.0, 1.0, 2.0]),
+    ]
+    model_coords = [
+        template_coords[0],
+        np.array([2.0, 1.0, 1.0]),
+        template_coords[1],
+        template_coords[2],
+    ]
+    _write_pdb(template, template_residues, template_coords, "A", np.zeros(3))
+    _write_pdb(model, model_residues, model_coords, " ", np.zeros(3))
+    alignment.write_text(
+        ">P1;tgt\nsequence:tgt:::::::0.00: 0.00\nAAAA*\n"
+        ">P1;tpl\nstructureX:tpl:::::::0.00: 0.00\nA-AA*\n"
+    )
+
+    info = _restore_template_frame(
+        model, template, alignment, "tgt", "tpl", apply_transform=True
+    )
+    identities = [
+        (line[21], int(line[22:26]), line[26])
+        for line in model.read_text().splitlines()
+        if line.startswith("ATOM")
+    ]
+
+    assert info["applied"] is True
+    assert info["residues_renumbered"] == 0
+    assert any("would collide" in warning for warning in info["warnings"])
+    assert identities == [
+        (" ", 1, " "),
+        (" ", 2, " "),
+        (" ", 3, " "),
+        (" ", 4, " "),
+    ]
 
 
 def test_unusable_alignment_is_reported_not_raised(tmp_path, case):

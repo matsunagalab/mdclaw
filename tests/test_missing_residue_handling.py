@@ -11,8 +11,10 @@ import pytest
 from mdclaw.structure.clean_protein import (
     MODELLER_REPAIR_RANDOM_SEED,
     _repair_missing_residues_with_modeller,
+    _validate_modeller_repair_model,
     clean_protein,
 )
+from mdclaw.structure.protonation import _normalize_protonation_state_overrides
 from mdclaw.structure.split import split_molecules
 
 gemmi = pytest.importorskip("gemmi")
@@ -69,6 +71,34 @@ def _seqres_of(path):
         if line.startswith("SEQRES"):
             names.extend(line[19:].split())
     return names
+
+
+def _write_model(path, residues):
+    """Write a realistic single-chain model with author residue identities."""
+    structure = gemmi.Structure()
+    model = gemmi.Model("1")
+    chain = gemmi.Chain("A")
+    for offset, (seqnum, icode, resname) in enumerate(residues):
+        residue = gemmi.Residue()
+        residue.name = resname
+        residue.seqid = gemmi.SeqId(seqnum, icode)
+        for atom_name, element, dx in (
+            ("N", "N", 0.0),
+            ("CA", "C", 1.5),
+            ("C", "C", 2.5),
+            ("O", "O", 3.0),
+        ):
+            atom = gemmi.Atom()
+            atom.name = atom_name
+            atom.element = gemmi.Element(element)
+            atom.pos = gemmi.Position(offset * 3.8 + dx, 0.0, 0.0)
+            atom.occ, atom.b_iso = 1.0, 20.0
+            residue.add_atom(atom)
+        chain.add_residue(residue)
+    model.add_chain(chain)
+    structure.add_model(model)
+    structure.write_pdb(str(path))
+    return path
 
 
 def test_split_carries_each_chain_own_reference_sequence(tmp_path):
@@ -219,7 +249,18 @@ def test_repair_models_only_the_observed_span(tmp_path, monkeypatch):
 
     captured = {}
     model_file = tmp_path / "model.pdb"
-    model_file.write_text("ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\nEND\n")
+    _write_model(
+        model_file,
+        [
+            (4, " ", "THR"),
+            (5, " ", "VAL"),
+            (6, " ", "LEU"),
+            (7, " ", "ILE"),
+            (8, " ", "PRO"),
+            (9, " ", "PHE"),
+            (10, " ", "TYR"),
+        ],
+    )
 
     def fake_modeller(**kwargs):
         captured.update(kwargs)
@@ -227,7 +268,10 @@ def test_repair_models_only_the_observed_span(tmp_path, monkeypatch):
             "success": True,
             "warnings": [],
             "errors": [],
-            "selected_model": {"path": str(model_file)},
+            "selected_model": {
+                "path": str(model_file),
+                "template_frame": {"applied": True, "residues_renumbered": 7},
+            },
         }
 
     monkeypatch.setattr(
@@ -257,12 +301,21 @@ def test_repair_records_seed_and_template_identity(tmp_path, monkeypatch):
     chain_a = next(p for p in split["protein_files"] if _seqres_of(p) == CHAIN_A_SEQ)
 
     model_file = tmp_path / "model.pdb"
-    model_file.write_text("ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\nEND\n")
+    _write_model(
+        model_file,
+        [(index, " ", name) for index, name in enumerate(CHAIN_A_SEQ, 1)],
+    )
     monkeypatch.setattr(
         "mdclaw.genesis.modeller.modeller_from_alignment",
         lambda **kwargs: {
             "success": True, "warnings": [], "errors": [],
-            "selected_model": {"path": str(model_file)},
+            "selected_model": {
+                "path": str(model_file),
+                "template_frame": {
+                    "applied": True,
+                    "residues_renumbered": len(CHAIN_A_SEQ),
+                },
+            },
         },
     )
 
@@ -272,6 +325,152 @@ def test_repair_records_seed_and_template_identity(tmp_path, monkeypatch):
     assert outcome["template"]["file"] == chain_a
     assert len(outcome["template"]["sha256"]) == 64
     assert outcome["operation"]["total_residues"] == 3
+
+
+def test_repair_rejects_a_truncated_successful_model(tmp_path, monkeypatch):
+    source = _build_two_chain_structure(tmp_path / "two_chains.pdb")
+    split = split_molecules(
+        structure_file=str(source),
+        output_dir=str(tmp_path / "split"),
+        include_types=["protein"],
+    )
+    chain_a = next(p for p in split["protein_files"] if _seqres_of(p) == CHAIN_A_SEQ)
+    truncated = tmp_path / "truncated.pdb"
+    _write_model(truncated, [(1, " ", "ALA")])
+    monkeypatch.setattr(
+        "mdclaw.genesis.modeller.modeller_from_alignment",
+        lambda **kwargs: {
+            "success": True,
+            "warnings": [],
+            "errors": [],
+            "selected_model": {
+                "path": str(truncated),
+                "template_frame": {"applied": True, "residues_renumbered": 1},
+            },
+        },
+    )
+
+    outcome = _repair_missing_residues_with_modeller(chain_a)
+
+    assert outcome["success"] is False
+    assert outcome["applied"] is False
+    assert outcome["code"] == "modeller_missing_residue_repair_validation_failed"
+    assert outcome["validation"]["observed_residue_count"] == 1
+    assert outcome["validation"]["expected_residue_count"] == len(CHAIN_A_SEQ)
+    assert outcome["validation"]["missing_observed_residues"]
+
+
+def test_repair_validation_rejects_unrestored_template_numbering(tmp_path):
+    residues = [(index, " ", name) for index, name in enumerate(CHAIN_B_SEQ, 1)]
+    template = _write_model(tmp_path / "template.pdb", residues)
+    model = _write_model(tmp_path / "model.pdb", residues)
+
+    validation = _validate_modeller_repair_model(
+        template,
+        model,
+        "KRDE",
+        # ``applied`` only says coordinates were fitted. A collision leaves
+        # author numbering untouched while still reporting applied=True.
+        {"applied": True, "residues_renumbered": 0},
+    )
+
+    assert validation["success"] is False
+    assert validation["template_numbering_restored"] is False
+    assert any("author numbering" in error for error in validation["errors"])
+
+
+def test_repair_preserves_insertion_coded_protonation_site(tmp_path, monkeypatch):
+    source = tmp_path / "insertion_gap.pdb"
+    structure = gemmi.Structure()
+    model = gemmi.Model("1")
+    chain = gemmi.Chain("A")
+    observed = [
+        (99, " ", "ALA"),
+        (100, "A", "ASP"),
+        (102, " ", "SER"),
+    ]
+    for offset, (seqnum, icode, resname) in enumerate(observed):
+        residue = gemmi.Residue()
+        residue.name = resname
+        residue.seqid = gemmi.SeqId(seqnum, icode)
+        for atom_name, element, dx in (
+            ("N", "N", 0.0),
+            ("CA", "C", 1.5),
+            ("C", "C", 2.5),
+            ("O", "O", 3.0),
+        ):
+            atom = gemmi.Atom()
+            atom.name = atom_name
+            atom.element = gemmi.Element(element)
+            atom.pos = gemmi.Position(offset * 3.8 + dx, 0.0, 0.0)
+            atom.occ, atom.b_iso = 1.0, 20.0
+            residue.add_atom(atom)
+        chain.add_residue(residue)
+    model.add_chain(chain)
+    structure.add_model(model)
+    structure.setup_entities()
+    next(
+        entity
+        for entity in structure.entities
+        if entity.entity_type == gemmi.EntityType.Polymer
+    ).full_sequence = ["ALA", "ASP", "GLY", "SER"]
+    structure.write_pdb(str(source))
+
+    # PDBFixer's gap finder does not report this synthetic insertion-coded
+    # alignment, so isolate the repair/identity contract by supplying the gap
+    # record it would receive for an experimental structure.
+    from pdbfixer import PDBFixer
+
+    probe = PDBFixer(filename=str(source))
+
+    class GapAwareFixer:
+        def __init__(self, filename):
+            self.topology = probe.topology
+            self.sequences = probe.sequences
+            self.missingResidues = {}
+
+        def findMissingResidues(self):
+            self.missingResidues = {(0, 2): ["GLY"]}
+
+    monkeypatch.setattr("pdbfixer.PDBFixer", GapAwareFixer)
+
+    repaired = tmp_path / "repaired.pdb"
+    _write_model(
+        repaired,
+        [
+            (99, " ", "ALA"),
+            (100, "A", "ASP"),
+            (101, " ", "GLY"),
+            (102, " ", "SER"),
+        ],
+    )
+    monkeypatch.setattr(
+        "mdclaw.genesis.modeller.modeller_from_alignment",
+        lambda **kwargs: {
+            "success": True,
+            "warnings": [],
+            "errors": [],
+            "selected_model": {
+                "path": str(repaired),
+                "template_frame": {"applied": True, "residues_renumbered": 4},
+            },
+        },
+    )
+
+    outcome = _repair_missing_residues_with_modeller(source)
+    override = _normalize_protonation_state_overrides(
+        protonation_states={"A:100:A": "ASH"}
+    )[0]
+    model_sites = {
+        (line[21], line[22:26].strip(), line[26].strip())
+        for line in repaired.read_text().splitlines()
+        if line.startswith("ATOM")
+    }
+
+    assert outcome["success"] is True
+    assert outcome["applied"] is True
+    assert outcome["validation"]["template_numbering_restored"] is True
+    assert (override["chain"], override["resnum"], override["icode"]) in model_sites
 
 
 def test_repair_declines_when_there_is_nothing_internal_to_fill(tmp_path, monkeypatch):

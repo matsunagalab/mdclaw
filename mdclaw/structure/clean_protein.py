@@ -265,6 +265,91 @@ MISSING_RESIDUE_METHODS = ("pdbfixer", "modeller")
 MODELLER_REPAIR_RANDOM_SEED = -8123
 
 
+def _validate_modeller_repair_model(
+    template_path: Path,
+    model_path: Path,
+    target_sequence: str,
+    template_frame: dict | None,
+) -> dict:
+    """Verify that an in-place MODELLER repair is a complete drop-in replacement."""
+    import gemmi
+
+    from mdclaw.genesis.modeller import _pdb_residue_order
+
+    result = {
+        "success": False,
+        "errors": [],
+        "expected_residue_count": len(target_sequence),
+        "observed_residue_count": 0,
+        "missing_observed_residues": [],
+        "target_sequence_matches": False,
+        "residues_renumbered": (
+            int(template_frame.get("residues_renumbered") or 0)
+            if isinstance(template_frame, dict)
+            else 0
+        ),
+    }
+    result["template_numbering_restored"] = (
+        result["residues_renumbered"] == len(target_sequence)
+    )
+    if not result["template_numbering_restored"]:
+        result["errors"].append(
+            "MODELLER did not restore template author numbering for every target "
+            f"residue: expected {len(target_sequence)}, restored "
+            f"{result['residues_renumbered']}"
+        )
+
+    template_chains, template_residues, _ = _pdb_residue_order(Path(template_path))
+    model_chains, model_residues, _ = _pdb_residue_order(Path(model_path))
+    template_keys = {
+        (chain, resnum, icode)
+        for chain in template_chains
+        for resnum, icode in template_residues[chain]
+    }
+    model_order = [
+        (chain, resnum, icode)
+        for chain in model_chains
+        for resnum, icode in model_residues[chain]
+    ]
+    model_keys = set(model_order)
+    missing_observed = sorted(template_keys - model_keys)
+    result["missing_observed_residues"] = [
+        {"chain": chain, "resnum": resnum, "icode": icode.strip()}
+        for chain, resnum, icode in missing_observed
+    ]
+    if missing_observed:
+        result["errors"].append(
+            "MODELLER output lost observed template residue identities: "
+            f"{result['missing_observed_residues']}"
+        )
+
+    result["observed_residue_count"] = len(model_order)
+    if len(model_order) != len(target_sequence):
+        result["errors"].append(
+            "MODELLER output residue count does not match the requested target span: "
+            f"expected {len(target_sequence)}, observed {len(model_order)}"
+        )
+
+    residue_names: dict[tuple[str, int, str], str] = {}
+    for line in Path(model_path).read_text().splitlines():
+        if line.startswith(("ATOM", "HETATM")):
+            key = (line[21], int(line[22:26]), line[26])
+            residue_names.setdefault(key, line[17:20].strip())
+    model_sequence = gemmi.one_letter_code(
+        [residue_names[key] for key in model_order if key in residue_names]
+    ).upper()
+    result["observed_sequence"] = model_sequence
+    result["target_sequence_matches"] = model_sequence == target_sequence
+    if not result["target_sequence_matches"]:
+        result["errors"].append(
+            "MODELLER output sequence does not match the requested target span: "
+            f"expected {target_sequence}, observed {model_sequence}"
+        )
+
+    result["success"] = not result["errors"]
+    return result
+
+
 def _repair_missing_residues_with_modeller(
     input_path: Path,
     random_seed: int = MODELLER_REPAIR_RANDOM_SEED,
@@ -296,6 +381,7 @@ def _repair_missing_residues_with_modeller(
         "operation": None,
         "detection": None,
         "template": None,
+        "validation": None,
         "random_seed": random_seed,
         "errors": [],
         "warnings": [],
@@ -416,6 +502,19 @@ def _repair_missing_residues_with_modeller(
         )
         return outcome
 
+    validation = _validate_modeller_repair_model(
+        input_path,
+        Path(model_file),
+        target_sequence,
+        (model_result.get("selected_model") or {}).get("template_frame"),
+    )
+    outcome["validation"] = validation
+    if not validation["success"]:
+        outcome["success"] = False
+        outcome["code"] = "modeller_missing_residue_repair_validation_failed"
+        outcome["errors"].extend(validation["errors"])
+        return outcome
+
     outcome["applied"] = True
     outcome["model_file"] = model_file
     outcome["template"] = {
@@ -439,6 +538,7 @@ def _repair_missing_residues_with_modeller(
         "random_seed": random_seed,
         "template": outcome["template"],
         "reference_sequence_length": len(target_sequence),
+        "validation": validation,
         "details": (
             f"Rebuilt {summary['total_residues']} internal missing residue(s) in "
             f"{summary['segment_count']} segment(s) with MODELLER loop modeling"
@@ -680,6 +780,7 @@ def clean_protein(
                     "model_file": repair["model_file"],
                     "random_seed": repair["random_seed"],
                     "template": repair["template"],
+                    "validation": repair["validation"],
                     **repair["summary"],
                 }
                 input_path = Path(repair["model_file"])

@@ -209,18 +209,18 @@ def _restore_template_frame(
 
     # Template numbering for paired residues; gap-filled residues continue from
     # the previous paired number. Refuse to renumber if that would collide.
-    renumber: dict[tuple, tuple[str, int]] = {}
+    renumber: dict[tuple, tuple[str, int, str]] = {}
     prev_chain, prev_num = None, None
     for key in model_order:
         if key in pairs:
-            tpl_chain, tpl_num = pairs[key][0], pairs[key][1]
-            renumber[key] = (tpl_chain, tpl_num)
+            tpl_chain, tpl_num, tpl_icode = pairs[key]
+            renumber[key] = (tpl_chain, tpl_num, tpl_icode)
             prev_chain, prev_num = tpl_chain, tpl_num
         elif prev_num is not None:
             prev_num += 1
-            renumber[key] = (prev_chain, prev_num)
+            renumber[key] = (prev_chain, prev_num, " ")
         else:
-            renumber[key] = (key[0], key[1])
+            renumber[key] = key
     taken = list(renumber.values())
     if len(set(taken)) != len(taken):
         info["warnings"].append(
@@ -239,9 +239,9 @@ def _restore_template_frame(
             [float(line[30:38]), float(line[38:46]), float(line[46:54])]
         )
         x, y, z = (xyz - Pc) @ R.T + Qc
-        chain, num = renumber.get(key, (line[21], int(line[22:26])))
+        chain, num, icode = renumber.get(key, key)
         out_lines.append(
-            f"{line[:21]}{chain}{num:>4}{line[26:30]}"
+            f"{line[:21]}{chain}{num:>4}{icode}{line[27:30]}"
             f"{x:8.3f}{y:8.3f}{z:8.3f}{line[54:]}"
         )
     model_path.write_text("\n".join(out_lines) + "\n")

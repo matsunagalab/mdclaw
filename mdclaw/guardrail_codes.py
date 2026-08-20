@@ -85,6 +85,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "invalid_protonation_state": "Use a valid protonation state specification.",
     "invalid_missing_residue_method": "Use --missing-residue-method pdbfixer or modeller.",
     "modeller_missing_residue_repair_failed": "MODELLER gap repair failed; read its errors, or fall back to --missing-residue-method pdbfixer.",
+    "modeller_missing_residue_repair_validation_failed": "Do not use the rejected model; inspect frame, residue-identity, count, and sequence errors, then regenerate a complete model preserving author numbering.",
     "modeller_repair_reference_sequence_unavailable": "The chain carries no single reference sequence to rebuild against; supply a structure with SEQRES or model it with modeller_from_alignment.",
     "protonation_state_override_failed": "Protonation override failed; check residue/state spec.",
     "invalid_terminal_cap": "Use a supported terminal cap type.",
