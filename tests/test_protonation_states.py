@@ -141,9 +141,7 @@ def test_merge_handles_either_side_being_empty():
     )[0]["source"] == "user_override"
 
 
-def test_states_already_in_the_input_are_marked_as_such(tmp_path):
-    # A state that arrived with the structure will not move when the caller
-    # changes --ph, so it is reported differently from one pdb2pqr assigned.
+def test_extract_reports_assigned_states_as_auto_detected(tmp_path):
     pdb = tmp_path / "out.pdb"
     pdb.write_text(
         "ATOM      1  N   ASH A  97       0.000   0.000   0.000  1.00  0.00           N\n"

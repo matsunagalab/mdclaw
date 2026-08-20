@@ -1175,14 +1175,6 @@ def clean_protein(
         # first creates an Amber-compatible protein PDB, then OpenMM Modeller
         # applies the requested residue variants and validates the H pattern.
         logger.info(f"Applying pH-dependent protonation (pH {ph})")
-        # Non-default protonation already present before pdb2pqr runs. Reported
-        # separately afterwards: a state that arrived with the structure will
-        # not move when the caller changes --ph, so saying which is which saves
-        # a wasted retry.
-        preexisting_protonation = {
-            (entry["chain"], entry["resnum"], entry["icode"])
-            for entry in _extract_non_default_protonation_states(input_path)
-        }
         amber_output_file = input_path.parent / f"{stem}.amber.pdb"
         pdb2pqr_success = False
         user_protonation_applied: list[dict[str, str]] = []
@@ -1230,50 +1222,42 @@ def clean_protein(
                                 return result
                             user_protonation_applied = protonation_result["applied_states"]
                             his_states = _extract_histidine_states(amber_output_file)
+                            detected_protonation = _extract_non_default_protonation_states(
+                                amber_output_file
+                            )
+                            reported_protonation = _merge_protonation_states(
+                                detected_protonation,
+                                user_protonation_applied,
+                            )
                             result["operations"].append({
                                 "step": "protonation",
                                 "status": "success",
                                 "method": "pdb2pqr+openmm_modeller_user_states",
                                 "ph": ph,
                                 "histidine_states": his_states,
-                                "protonation_states": _merge_protonation_states(
-                                    _extract_non_default_protonation_states(
-                                        amber_output_file,
-                                        preexisting=preexisting_protonation,
-                                    ),
-                                    user_protonation_applied,
-                                ),
+                                "protonation_states": reported_protonation,
                             })
                             result["protonation_method"] = "pdb2pqr+openmm_modeller_user_states"
-                            result["protonation_states"] = _merge_protonation_states(
-                                _extract_non_default_protonation_states(
-                                        amber_output_file,
-                                        preexisting=preexisting_protonation,
-                                    ),
-                                user_protonation_applied,
-                            )
+                            result["protonation_states"] = reported_protonation
                             logger.info(
                                 f"Applied {len(user_protonation_applied)} user-specified "
                                 "residue protonation state(s)"
                             )
                         else:
                             his_states = _extract_histidine_states(amber_output_file)
+                            detected_protonation = _extract_non_default_protonation_states(
+                                amber_output_file
+                            )
                             result["operations"].append({
                                 "step": "protonation",
                                 "status": "success",
                                 "method": "pdb2pqr+propka",
                                 "ph": ph,
                                 "histidine_states": his_states,
-                                "protonation_states": _extract_non_default_protonation_states(
-                                    amber_output_file,
-                                    preexisting=preexisting_protonation,
-                                ),
+                                "protonation_states": detected_protonation,
                             })
                             result["protonation_method"] = "pdb2pqr+propka"
-                            result["protonation_states"] = _extract_non_default_protonation_states(
-                                amber_output_file,
-                                preexisting=preexisting_protonation,
-                            )
+                            result["protonation_states"] = detected_protonation
                             logger.info(f"pH-aware protonation complete: {len(his_states)} histidine states determined")
 
                         result["output_file"] = str(amber_output_file)
@@ -1346,27 +1330,28 @@ def clean_protein(
                             return result
                         user_protonation_applied = protonation_result["applied_states"]
                         his_states = _extract_histidine_states(amber_output_file)
+                        detected_protonation = _extract_non_default_protonation_states(
+                            amber_output_file
+                        )
+                        reported_protonation = _merge_protonation_states(
+                            detected_protonation,
+                            user_protonation_applied,
+                        )
                         op.update({
                             "method": "pdb4amber+openmm_modeller_user_states",
                             "ph": ph,
                             "histidine_states": his_states,
-                            "protonation_states": _merge_protonation_states(
-                                _extract_non_default_protonation_states(
-                                        amber_output_file,
-                                        preexisting=preexisting_protonation,
-                                    ),
-                                user_protonation_applied,
-                            ),
+                            "protonation_states": reported_protonation,
                         })
                         result["protonation_method"] = "pdb4amber+openmm_modeller_user_states"
-                        result["protonation_states"] = _merge_protonation_states(
-                            _extract_non_default_protonation_states(
-                                        amber_output_file,
-                                        preexisting=preexisting_protonation,
-                                    ),
-                            user_protonation_applied,
-                        )
+                        result["protonation_states"] = reported_protonation
                         result["histidine_states"] = his_states
+                    else:
+                        detected_protonation = _extract_non_default_protonation_states(
+                            amber_output_file
+                        )
+                        op["protonation_states"] = detected_protonation
+                        result["protonation_states"] = detected_protonation
                     result["operations"].append(op)
                     result["output_file"] = str(amber_output_file)
                     result["pdbfixer_output"] = str(output_file)

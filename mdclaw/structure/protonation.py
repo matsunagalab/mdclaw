@@ -127,9 +127,7 @@ def _merge_protonation_states(detected: list, requested: list) -> list:
     return merged
 
 
-def _extract_non_default_protonation_states(
-    pdb_file: Path, *, preexisting: set | None = None
-) -> list:
+def _extract_non_default_protonation_states(pdb_file: Path) -> list:
     """Report residues pdb2pqr/propka moved off their default charge state.
 
     ``_extract_histidine_states`` covers the HIS tautomers. This covers the
@@ -140,11 +138,6 @@ def _extract_non_default_protonation_states(
 
     Args:
         pdb_file: Path to the PDB file with protonation assigned.
-        preexisting: ``(chain, resnum, icode)`` keys that already carried a
-            non-default state before protonation ran. Those are reported as
-            ``from_input_structure`` rather than ``auto_detected``: changing
-            ``--ph`` will not move them, so the distinction is the difference
-            between a useful retry and a wasted one.
 
     Returns:
         List of dicts, one per residue, each with ``residue`` (``chain:resnum``),
@@ -175,11 +168,7 @@ def _extract_non_default_protonation_states(
                     "icode": icode,
                     "state": resname,
                     "default_state": default,
-                    "source": (
-                        "from_input_structure"
-                        if preexisting and key in preexisting
-                        else "auto_detected"
-                    ),
+                    "source": "auto_detected",
                 })
     except Exception as e:
         logger.warning(f"Could not extract non-default protonation states: {e}")

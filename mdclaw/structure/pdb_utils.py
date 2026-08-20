@@ -178,10 +178,11 @@ def restore_resnames_from_source_pdb(
 
     ``openmm.app.PDBFile`` normalizes Amber protonation-state and water residue
     names when it *loads* a structure (``GLH``->``GLU``, ``ASH``->``ASP``,
-    ``HID``/``HIE``/``HIP``->``HIS``, ``LYN``->``LYS``, ``CYX``/``CYM``->``CYS``,
-    ``WAT``->``HOH``, ...). A structure written back out from that loaded
-    topology therefore loses the protonation-state name even though the protons
-    (``HE2`` etc.) are still present and the chemistry is unchanged. The source
+    ``HID``/``HIE``/``HIP``->``HIS``, ``CYX``->``CYS``, ``WAT``->``HOH``,
+    ...). ``LYN`` and ``CYM`` are not aliases. A structure written back out
+    from that loaded topology therefore loses the protonation-state name even
+    though the protons (``HE2`` etc.) are still present and the chemistry is
+    unchanged. The source
     ``topology.pdb`` emitted by the topo build carries the canonical names; this
     rewrites the residue-name column (cols 18-21) of each ``ATOM``/``HETATM``
     record from that source, matched by record order (identical atom order,
