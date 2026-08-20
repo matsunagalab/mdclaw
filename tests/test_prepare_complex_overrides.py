@@ -860,6 +860,83 @@ def test_summary_is_emitted_once_with_everything_assigned(caplog):
     assert "A:77 HID" in text
     assert "A:97 ASP -> ASH" in text
     assert text.count("Chemistry assigned") == 1
+    assert "--disulfide-pairs / --histidine-states / --protonation-states" in text
+    assert "from_input_structure" not in text
+
+
+def test_summary_footer_only_names_relevant_missing_residue_flag(caplog):
+    items = {
+        "missing_residues": {
+            "method": "modeller",
+            "repairs": [{
+                "chain_id": "A",
+                "total_residues": 3,
+                "segment_count": 1,
+                "max_segment_length": 3,
+            }],
+            "detection": [],
+        },
+    }
+
+    with caplog.at_level("INFO"):
+        report_confirmation_items(items)
+
+    text = caplog.text
+    assert "--missing-residue-method" in text
+    assert "--disulfide-pairs" not in text
+    assert "--histidine-states" not in text
+    assert "--protonation-states" not in text
+    assert "from_input_structure" not in text
+
+
+def test_summary_footer_says_input_states_are_fixed_across_ph(caplog):
+    items = {
+        "protonation_states": {
+            "source": "user_override",
+            "states": [{
+                "chain": "A",
+                "resnum": "97",
+                "state": "ASH",
+                "source": "user_override",
+                "override_origin": "input_structure",
+                "input_state_preserved": True,
+            }],
+        },
+    }
+
+    with caplog.at_level("INFO"):
+        report_confirmation_items(items)
+
+    assert "preserved from the input are fixed overrides" in caplog.text
+    assert "changing --ph will not move those residues" in caplog.text
+
+
+def test_summary_renders_terminal_only_omissions_as_unmodeled(caplog):
+    items = {
+        "missing_residues": {
+            "source": "auto_detected",
+            "method": "pdbfixer",
+            "method_requested": "pdbfixer",
+            "repairs": [],
+            "detection": [],
+            "terminal_unmodeled": [{
+                "chain_id": "A",
+                "terminal_excluded": {
+                    "total_residues": 77,
+                    "n_terminal_residues": 10,
+                    "c_terminal_residues": 67,
+                },
+            }],
+        },
+    }
+
+    with caplog.at_level("INFO"):
+        report_confirmation_items(items)
+
+    assert "terminal missing residues UNMODELED: 77 residue(s)" in caplog.text
+    assert "10 N-terminal, 67 C-terminal" in caplog.text
+    assert "rebuilt" not in caplog.text
+    assert "--missing-residue-method" in caplog.text
 
 
 def test_nothing_is_printed_when_nothing_was_assigned(caplog):

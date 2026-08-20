@@ -68,6 +68,94 @@ from mdclaw.structure.split import _inspect_molecules_impl, split_molecules  # n
 from mdclaw.structure.terminal_caps import _resolve_terminal_cap_settings  # noqa: E402
 
 
+def _confirmation_source_from_entries(
+    entries: list[dict],
+    default: str = "auto_detected",
+) -> str:
+    """Summarize per-entry provenance without hiding mixed decisions."""
+    sources = {
+        str(entry.get("source") or default)
+        for entry in entries
+        if isinstance(entry, dict)
+    }
+    if not sources:
+        return default
+    if len(sources) == 1:
+        return next(iter(sources))
+    return "mixed"
+
+
+def _has_unmodeled_terminal_residues(detection: dict) -> bool:
+    terminal = detection.get("terminal_excluded") or {}
+    return int(terminal.get("total_residues") or 0) > 0
+
+
+def _missing_residue_confirmation_block(
+    repairs: list[dict],
+    detections: list[dict],
+    method: str,
+) -> dict | None:
+    """Build confirmation data without treating method choice as approval."""
+    undetectable = [
+        detection
+        for detection in detections
+        if not detection.get("reference_sequence_available")
+    ]
+    terminal_unmodeled = [
+        detection
+        for detection in detections
+        if _has_unmodeled_terminal_residues(detection)
+    ]
+    if not (repairs or undetectable or terminal_unmodeled):
+        return None
+    return {
+        "source": "predicted" if repairs else "auto_detected",
+        "method": method,
+        "method_requested": method,
+        "repairs": repairs,
+        "detection": detections,
+        "terminal_unmodeled": terminal_unmodeled,
+    }
+
+
+def _remap_missing_residue_record(
+    protein: dict,
+    record: dict,
+    chain_map: dict,
+) -> dict:
+    """Make merged.pdb chain identity primary while retaining provenance."""
+    source_chain = protein.get("chain_id")
+    author_chain = protein.get("author_chain") or source_chain
+    merged_chain = chain_map.get(source_chain, source_chain)
+    remapped = {
+        **record,
+        "chain_id": merged_chain,
+        "source_chain": source_chain,
+        "author_chain": author_chain,
+    }
+
+    def _remap_segments(segments: list[dict]) -> list[dict]:
+        return [
+            {
+                **segment,
+                "chain_id": merged_chain,
+                "source_chain": segment.get("chain_id") or source_chain,
+                "author_chain": author_chain,
+            }
+            for segment in segments
+        ]
+
+    if isinstance(record.get("segments"), list):
+        remapped["segments"] = _remap_segments(record["segments"])
+    terminal = record.get("terminal_excluded")
+    if isinstance(terminal, dict) and isinstance(terminal.get("segments"), list):
+        remapped["terminal_excluded"] = {
+            **terminal,
+            "segments": _remap_segments(terminal["segments"]),
+        }
+    return remapped
+
+
 def _as_linkage_resnum(value: object) -> object:
     text = str(value or "").strip()
     return int(text) if text.lstrip("-").isdigit() else text
@@ -2149,9 +2237,12 @@ def prepare_complex(
         # again when the caller already supplied an explicit value.
         applied_his = preparation_summary.get("histidine_states", {}) or {}
         applied_protonation = preparation_summary.get("protonation_states", []) or []
-        protonation_source = (
+        protonation_source = _confirmation_source_from_entries(
+            applied_protonation
+        )
+        histidine_source = (
             "user_override"
-            if (histidine_states or protonation_states)
+            if histidine_states
             else "auto_detected"
         )
         confirmation_items = {
@@ -2160,7 +2251,7 @@ def prepare_complex(
                 "pairs": result.get("disulfide_bonds", []),
             },
             "histidine_states": {
-                "source": protonation_source,
+                "source": histidine_source,
                 "states": applied_his,
             },
             "protonation_states": {
@@ -2171,17 +2262,13 @@ def prepare_complex(
         # Rebuilt residues belong here too: they are coordinates that were not
         # measured, and everything downstream treats them the same as the ones
         # that were.
-        if repairs or [d for d in detections if not d.get("reference_sequence_available")]:
-            confirmation_items["missing_residues"] = {
-                "source": (
-                    "user_override"
-                    if missing_residue_method != "pdbfixer"
-                    else "auto_detected"
-                ),
-                "method": missing_residue_method,
-                "repairs": repairs,
-                "detection": detections,
-            }
+        missing_confirmation = _missing_residue_confirmation_block(
+            repairs,
+            detections,
+            missing_residue_method,
+        )
+        if missing_confirmation:
+            confirmation_items["missing_residues"] = missing_confirmation
         if (
             confirmation_items["disulfide_bonds"]["pairs"]
             or applied_his
@@ -2193,7 +2280,9 @@ def prepare_complex(
                 "and confirm before invoking solvate_structure. In autonomous "
                 "mode, log and continue. When `source == user_override` the "
                 "skill may skip the prompt — the caller already made the "
-                "decision. To change auto-detected values, re-run "
+                "decision. Predicted missing-residue coordinates always require "
+                "confirmation regardless of `method_requested`. To change "
+                "auto-detected values, re-run "
                 "prepare_complex with --disulfide-pairs, --histidine-states, "
                 "or --protonation-states."
             )

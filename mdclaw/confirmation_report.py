@@ -44,13 +44,26 @@ def report_confirmation_items(confirmation_items: dict) -> None:
     his_states = his.get("states") or {}
     prot = confirmation_items.get("protonation_states", {}) or {}
     prot_states = prot.get("states") or []
+    input_preserved_states = [
+        entry
+        for entry in prot_states
+        if isinstance(entry, dict) and entry.get("input_state_preserved")
+    ]
     missing = confirmation_items.get("missing_residues", {}) or {}
     repairs = missing.get("repairs") or []
+    terminal_unmodeled = missing.get("terminal_unmodeled") or []
     undetectable = [
         entry for entry in (missing.get("detection") or [])
         if not entry.get("reference_sequence_available")
     ]
-    if not (pairs or his_states or prot_states or repairs or undetectable):
+    if not (
+        pairs
+        or his_states
+        or prot_states
+        or repairs
+        or terminal_unmodeled
+        or undetectable
+    ):
         return
 
     lines = ["Chemistry assigned — check this before building on it:"]
@@ -76,17 +89,63 @@ def report_confirmation_items(confirmation_items: dict) -> None:
         )
         for entry in repairs:
             lines.append(f"    {_format_missing_residue_repair(entry)}")
+    if terminal_unmodeled:
+        total = sum(
+            int((entry.get("terminal_excluded") or {}).get("total_residues") or 0)
+            for entry in terminal_unmodeled
+        )
+        lines.append(
+            f"  terminal missing residues UNMODELED: {total} residue(s) in "
+            f"{len(terminal_unmodeled)} chain(s)"
+        )
+        for entry in terminal_unmodeled:
+            terminal = entry.get("terminal_excluded") or {}
+            segments = terminal.get("segments") or []
+            n_terminal = terminal.get("n_terminal_residues")
+            if n_terminal is None:
+                n_terminal = sum(
+                    int(segment.get("residue_count") or 0)
+                    for segment in segments
+                    if segment.get("terminus") == "N"
+                )
+            c_terminal = terminal.get("c_terminal_residues")
+            if c_terminal is None:
+                c_terminal = sum(
+                    int(segment.get("residue_count") or 0)
+                    for segment in segments
+                    if segment.get("terminus") == "C"
+                )
+            lines.append(
+                f"    chain {entry.get('chain_id', '?')}: "
+                f"{int(terminal.get('total_residues') or 0)} residue(s) "
+                f"({int(n_terminal or 0)} N-terminal, "
+                f"{int(c_terminal or 0)} C-terminal)"
+            )
     for entry in undetectable:
         lines.append(
             f"  chain {entry.get('chain_id', '?')}: no reference sequence, so missing "
             "residues were NOT checked (absence of gaps here proves nothing)"
         )
-    lines.append(
-        "  To change any of these, re-run prep with --disulfide-pairs / "
-        "--histidine-states / --protonation-states. A state marked "
-        "from_input_structure came in with the structure and will not move "
-        "when you change --ph."
-    )
+    change_flags = []
+    if pairs:
+        change_flags.append("--disulfide-pairs")
+    if his_states:
+        change_flags.append("--histidine-states")
+    if prot_states:
+        change_flags.append("--protonation-states")
+    if repairs or terminal_unmodeled or undetectable:
+        change_flags.append("--missing-residue-method")
+    if change_flags:
+        lines.append(
+            "  To change these decisions, create a new prep node and use "
+            + " / ".join(change_flags)
+            + "."
+        )
+    if input_preserved_states:
+        lines.append(
+            "  Protonation states preserved from the input are fixed overrides; "
+            "changing --ph will not move those residues."
+        )
     # INFO, not WARNING: nothing went wrong. These are ordinary decisions a
     # successful preparation makes, and flagging them as warnings trains the
     # reader to expect a failure that is not there.
