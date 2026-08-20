@@ -66,6 +66,15 @@ Important outputs:
   by default; override with `--ligand-ph`, disable with
   `--no-protonate-ligands`. An explicitly charged SMILES (`[O-]`/`[NH3+]`) or a
   known `net_charge` takes precedence (charge selects the matching state).
+- `missing_residue_detection`: per chain, whether gaps could be detected at
+  all. A chain whose input carries no reference sequence (SEQRES) reports
+  `status="not_detectable"` — there zero gaps means "not checked", not "none
+  present". Also lists the unresolved terminal residues that were deliberately
+  left unmodeled, which are excluded from the repair on purpose.
+- `missing_residue_repair`: per chain, how internal gaps were rebuilt, by which
+  method, how many residues in how many segments, and for MODELLER the random
+  seed and the template's checksum. Rebuilt residues are predicted coordinates;
+  report them to the user rather than treating them as measured.
 - `residue_mapping`: source-to-merged nucleic residue mapping.
 - `glycan_metadata` and `glycan_linkages`: GLYCAM topology inputs.
 

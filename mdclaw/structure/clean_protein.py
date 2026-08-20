@@ -29,6 +29,7 @@ from pdbfixer import PDBFixer  # noqa: E402
 from openmm.app import PDBFile  # noqa: E402
 from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,
+    sha256_file,
 )
 from mdclaw.forcefield_templates import nucleic_residue_name_map  # noqa: E402
 from mdclaw.research.nucleic import (  # noqa: E402
@@ -254,17 +255,221 @@ def _missing_residue_summary(records: list[dict]) -> dict:
     }
 
 
+MISSING_RESIDUE_METHODS = ("pdbfixer", "modeller")
+
+
+# MODELLER loop generation is stochastic. A fixed seed keeps a re-run of the
+# same node producing the same loops; without one, re-running a job quietly
+# changes the structure the whole study rests on. MODELLER wants a negative
+# seed in [-50000, -2].
+MODELLER_REPAIR_RANDOM_SEED = -8123
+
+
+def _repair_missing_residues_with_modeller(
+    input_path: Path,
+    random_seed: int = MODELLER_REPAIR_RANDOM_SEED,
+) -> dict:
+    """Rebuild a chain's internal missing residues with MODELLER loop modeling.
+
+    PDBFixer builds missing residues geometrically and is reliable only for
+    short gaps; the caller asked for MODELLER instead. Everything MODELLER
+    needs is already here: the template is this very structure, and the target
+    sequence is its own SEQRES, which is also what told PDBFixer the residues
+    were missing in the first place.
+
+    Terminal tails are left alone, matching ``ignore_terminal_missing_residues``
+    -- an unresolved terminus is disorder, not a gap to bridge.
+
+    Returns ``{applied, success, model_file, summary, operation, errors,
+    warnings, code}``. ``applied`` is False when there is nothing internal to
+    fill, including when the structure carries no reference sequence: that is
+    not an error, it just leaves the normal PDBFixer path in charge.
+    """
+    from pdbfixer import PDBFixer
+
+    input_path = Path(input_path)
+    outcome: dict = {
+        "applied": False,
+        "success": True,
+        "model_file": None,
+        "summary": None,
+        "operation": None,
+        "detection": None,
+        "template": None,
+        "random_seed": random_seed,
+        "errors": [],
+        "warnings": [],
+        "code": None,
+    }
+
+    probe = PDBFixer(filename=str(input_path))
+    probe.findMissingResidues()
+    chains = list(probe.topology.chains())
+
+    internal: dict = {}
+    leading_terminal = 0
+    trailing_terminal = 0
+    for (chain_idx, res_idx), residues in probe.missingResidues.items():
+        if not 0 <= chain_idx < len(chains):
+            continue
+        chain_length = len(list(chains[chain_idx].residues()))
+        if res_idx == 0:
+            leading_terminal += len(residues)
+            continue
+        if res_idx == chain_length:
+            trailing_terminal += len(residues)
+            continue
+        internal[(chain_idx, res_idx)] = residues
+
+    records = _internal_missing_residue_records(internal, chains)
+    if not records:
+        return outcome
+    summary = _missing_residue_summary(records)
+    outcome["summary"] = summary
+    # Describe the structure as it was BEFORE repair. The model MODELLER writes
+    # carries no SEQRES, so detection run on it afterwards would report
+    # "not checked" directly under a line saying 40 residues were rebuilt.
+    outcome["detection"] = {
+        "reference_sequence_available": True,
+        "reference_sequence_chains": len(getattr(probe, "sequences", None) or []),
+        "modeled_residues": len(list(probe.topology.residues())),
+        "status": "detected",
+        "terminal_excluded": {
+            "total_residues": leading_terminal + trailing_terminal,
+            "n_terminal_residues": leading_terminal,
+            "c_terminal_residues": trailing_terminal,
+        },
+    }
+
+    sequences = list(getattr(probe, "sequences", None) or [])
+    if len(sequences) != 1:
+        outcome["success"] = False
+        outcome["code"] = "modeller_repair_reference_sequence_unavailable"
+        outcome["errors"].append(
+            "MODELLER missing-residue repair needs exactly one reference "
+            f"sequence for {input_path.name}, found {len(sequences)}"
+        )
+        return outcome
+
+    import gemmi
+
+    # Model only the span between the first and last observed residue. The
+    # reference sequence covers the unresolved termini too, and handing it over
+    # whole would have MODELLER grow long de-novo tails that nothing measured
+    # -- the same disorder the terminal filter just decided to leave alone.
+    reference_residues = list(sequences[0].residues)
+    span = reference_residues[
+        leading_terminal : len(reference_residues) - trailing_terminal or None
+    ]
+    if leading_terminal or trailing_terminal:
+        outcome["warnings"].append(
+            f"Left {leading_terminal + trailing_terminal} unresolved terminal "
+            f"residue(s) out of the MODELLER repair ({leading_terminal} N, "
+            f"{trailing_terminal} C); only the {len(span)}-residue observed span "
+            "was rebuilt"
+        )
+    outcome["detection"]["reference_sequence_length"] = len(reference_residues)
+    target_sequence = gemmi.one_letter_code(span).upper()
+    if "X" in target_sequence:
+        outcome["warnings"].append(
+            f"{target_sequence.count('X')} residue(s) in the reference sequence "
+            "have no one-letter code and were passed to MODELLER as X"
+        )
+
+    from mdclaw.genesis.modeller import modeller_from_alignment
+
+    out_dir = input_path.parent / f"{input_path.stem}.modeller_repair"
+    model_result = modeller_from_alignment(
+        template_pdb=str(input_path),
+        target_sequence=target_sequence,
+        template_code=input_path.stem,
+        target_code=f"{input_path.stem}_filled",
+        num_models=1,
+        loop_refinement=True,
+        loop_models=2,
+        # The default ceiling is 30; raise it so the largest gap present is
+        # actually refined rather than silently left as built.
+        loop_max_length=max(30, int(summary["max_segment_length"])),
+        # The repaired chain has to stay superposed on the structure it came
+        # from, or a membrane orientation or partner chain kept from the
+        # original lands in the wrong place.
+        template_frame=True,
+        random_seed=random_seed,
+        output_dir=str(out_dir),
+    )
+    outcome["warnings"].extend(model_result.get("warnings", []))
+
+    if not model_result.get("success"):
+        outcome["success"] = False
+        outcome["errors"].extend(
+            model_result.get("errors") or ["MODELLER missing-residue repair failed"]
+        )
+        outcome["code"] = model_result.get("code") or "modeller_missing_residue_repair_failed"
+        return outcome
+
+    model_file = (model_result.get("selected_model") or {}).get("path")
+    if not model_file or not Path(model_file).is_file():
+        outcome["success"] = False
+        outcome["code"] = "modeller_missing_residue_repair_failed"
+        outcome["errors"].append(
+            "MODELLER reported success but produced no readable model file"
+        )
+        return outcome
+
+    outcome["applied"] = True
+    outcome["model_file"] = model_file
+    outcome["template"] = {
+        # For a repair the template is the input structure itself, and that is
+        # part of the scientific record of the model: it says which coordinates
+        # the rebuilt loops were grown from.
+        "file": str(input_path),
+        "sha256": sha256_file(input_path),
+        "role": "self_template_repair",
+    }
+    outcome["operation"] = {
+        "step": "missing_residues",
+        "status": "modeled_with_modeller",
+        "method": "modeller",
+        "count": len(records),
+        "segment_count": summary["segment_count"],
+        "total_residues": summary["total_residues"],
+        "max_segment_length": summary["max_segment_length"],
+        "segments": records,
+        "model_file": model_file,
+        "random_seed": random_seed,
+        "template": outcome["template"],
+        "reference_sequence_length": len(target_sequence),
+        "details": (
+            f"Rebuilt {summary['total_residues']} internal missing residue(s) in "
+            f"{summary['segment_count']} segment(s) with MODELLER loop modeling"
+        ),
+    }
+    return outcome
+
+
 def _missing_residue_regeneration_recommendation(summary: dict) -> dict:
     return {
         "reason": "internal_missing_residues_exceed_pdbfixer_scope",
-        "recommended_next_action": "regenerate_source_structure",
-        "restart_stage": "source",
+        # Repairing in place is the first answer: it needs no template, no
+        # sequence, and no second node -- this structure is its own template
+        # and its reference sequence is already loaded. Regenerating the source
+        # is for when there is nothing here worth repairing.
+        "recommended_next_action": "rerun_with_modeller_missing_residue_method",
+        "restart_stage": "prep",
         "options": [
+            {
+                "option": "repair_in_place_with_modeller",
+                "next_skill": "skills/md-prepare/SKILL.md",
+                "tool": "prepare_complex",
+                "flag": "--missing-residue-method modeller",
+                "when": "The structure itself is the right starting point and only its gaps need rebuilding. Re-run this same node with the flag; no new source node is involved.",
+                "required_inputs": [],
+            },
             {
                 "option": "use_modeller_template_modeling",
                 "next_skill": "skills/modeller-predict/SKILL.md",
                 "tool": "modeller_from_alignment",
-                "when": "A reliable template PDB and target sequence or PIR/ALI alignment are available.",
+                "when": "The target is a different sequence from the template, so a new source structure has to be modeled rather than repaired.",
                 "required_inputs": [
                     "template_pdb",
                     "target_sequence or alignment_file",
@@ -304,6 +509,7 @@ def clean_protein(
     disulfide_pairs: list[dict] | None = None,
     histidine_states: dict[str, str] | None = None,
     protonation_states: Optional[Dict[str, Any]] = None,
+    missing_residue_method: str = "pdbfixer",
 ) -> dict:
     """Clean a monomer protein PDB/mmCIF file for MD simulation using PDBFixer.
 
@@ -325,6 +531,14 @@ def clean_protein(
                                  Modeller cap-hydrogen completion. Defaults
                                  to ff19SB; pass the planned topology protein
                                  force field when it differs.
+        missing_residue_method: How to rebuild internal missing residues.
+                                ``"pdbfixer"`` (default) builds them
+                                geometrically and refuses gaps beyond its
+                                scope; ``"modeller"`` rebuilds every internal
+                                gap with MODELLER loop modeling instead, using
+                                this structure as the template and its own
+                                reference sequence as the target. MODELLER is
+                                licensed -- export a ``KEY_MODELLER*`` variable.
         replace_nonstandard_residues: Replace non-standard residues with standard ones (default: True)
         remove_heterogens: Remove heteroatoms (ligands, ions, etc.) (default: True)
         keep_water: Keep water molecules when removing heterogens (default: False)
@@ -423,7 +637,42 @@ def clean_protein(
     result["output_file"] = str(output_file)
     result["final_output_file"] = str(final_output_file)
     
+    method = str(missing_residue_method or "pdbfixer").strip().lower()
+    if method not in MISSING_RESIDUE_METHODS:
+        result["errors"].append(
+            f"missing_residue_method must be one of {list(MISSING_RESIDUE_METHODS)}, "
+            f"got {missing_residue_method!r}"
+        )
+        result["code"] = "invalid_missing_residue_method"
+        return result
+    result["missing_residue_method"] = method
+
     try:
+        # Rebuild internal gaps with MODELLER first when asked, so the rest of
+        # the cleaning runs on a chain that no longer has any. Doing it here
+        # rather than mid-flow keeps the terminal-cap bookkeeping below working
+        # on a single, final PDBFixer instance.
+        if method == "modeller":
+            repair = _repair_missing_residues_with_modeller(input_path)
+            result["warnings"].extend(repair["warnings"])
+            if not repair["success"]:
+                result["errors"].extend(repair["errors"])
+                result["code"] = repair["code"]
+                return result
+            if repair["applied"]:
+                result["operations"].append(repair["operation"])
+                result["missing_residue_detection"] = repair["detection"]
+                result["missing_residue_repair"] = {
+                    "method": "modeller",
+                    "status": "modeled",
+                    "model_file": repair["model_file"],
+                    "random_seed": repair["random_seed"],
+                    "template": repair["template"],
+                    **repair["summary"],
+                }
+                input_path = Path(repair["model_file"])
+                logger.info("Continuing from the MODELLER-repaired chain %s", input_path)
+
         # Load structure
         logger.info("Loading structure with PDBFixer")
         fixer = PDBFixer(filename=str(input_path))
@@ -448,28 +697,94 @@ def clean_protein(
         # Get chain information for terminal handling
         chains = list(fixer.topology.chains())
         
+        # Record what the reference sequence made visible. Without SEQRES
+        # PDBFixer has nothing to compare coordinates against and reports zero
+        # missing residues — indistinguishable, in the result, from a complete
+        # chain. Say which of the two it is.
+        reference_sequences = list(getattr(fixer, "sequences", None) or [])
+        reference_length = (
+            len(list(reference_sequences[0].residues))
+            if len(reference_sequences) == 1
+            else None
+        )
+        result.setdefault("missing_residue_detection", {
+            "reference_sequence_available": bool(reference_sequences),
+            "reference_sequence_chains": len(reference_sequences),
+            "reference_sequence_length": reference_length,
+            "modeled_residues": len(initial_residues),
+        })
+        if not reference_sequences and result["missing_residue_detection"].get(
+            "status"
+        ) != "detected":
+            result["missing_residue_detection"]["status"] = "not_detectable"
+            result["warnings"].append(
+                f"{input_path.name} carries no reference sequence (SEQRES), so "
+                "missing residues cannot be detected: a report of zero gaps here "
+                "means 'not checked', not 'none present'"
+            )
+            result["operations"].append({
+                "step": "missing_residues",
+                "status": "not_detectable",
+                "details": (
+                    "No reference sequence in the input; PDBFixer cannot tell "
+                    "modeled residues from missing ones"
+                ),
+            })
+        elif reference_sequences:
+            result["missing_residue_detection"]["status"] = "detected"
+
         # Step 1a: Handle terminal missing residues
         terminal_caps_requested = bool(resolved_n_terminal_cap or resolved_c_terminal_cap)
         if ignore_terminal_missing_residues and not terminal_caps_requested:
             # Remove terminal missing residues from the dictionary
             keys_to_remove = []
+            terminal_records = []
             for key in list(fixer.missingResidues.keys()):
                 chain_idx, res_idx = key
                 chain = chains[chain_idx]
                 chain_length = len(list(chain.residues()))
                 if res_idx == 0 or res_idx == chain_length:
                     keys_to_remove.append(key)
+                    terminal_records.append({
+                        "chain_index": chain_idx,
+                        "chain_id": str(getattr(chain, "id", chain_idx)),
+                        "terminus": "N" if res_idx == 0 else "C",
+                        "residue_count": len(fixer.missingResidues[key]),
+                    })
             
             for key in keys_to_remove:
                 del fixer.missingResidues[key]
             
             if keys_to_remove:
+                # Segments and residues are different numbers, and the second
+                # is the one that matters: 2 unresolved termini can be 77
+                # residues. Report both so an empty internal-gap list is not
+                # read as "the structure was complete".
+                terminal_residue_total = sum(
+                    record["residue_count"] for record in terminal_records
+                )
+                result["missing_residue_detection"]["terminal_excluded"] = {
+                    "segment_count": len(terminal_records),
+                    "total_residues": terminal_residue_total,
+                    "segments": terminal_records,
+                }
                 result["operations"].append({
                     "step": "missing_residues",
                     "status": "modified",
-                    "details": f"Found {num_missing_residues} missing residue(s), ignored {len(keys_to_remove)} terminal missing residue(s)"
+                    "segment_count": len(terminal_records),
+                    "total_residues": terminal_residue_total,
+                    "segments": terminal_records,
+                    "details": (
+                        f"Found {num_missing_residues} missing residue segment(s); "
+                        f"left {terminal_residue_total} residue(s) in "
+                        f"{len(terminal_records)} unresolved terminus/termini unmodeled"
+                    ),
                 })
-                result["warnings"].append(f"Ignored {len(keys_to_remove)} terminal missing residue(s)")
+                result["warnings"].append(
+                    f"Left {terminal_residue_total} terminal residue(s) in "
+                    f"{len(terminal_records)} segment(s) unmodeled; an unresolved "
+                    "terminus is disorder, not a gap to bridge"
+                )
         
         # Step 1b: Add requested terminal caps. ``cap_termini=True`` resolves
         # to the historical ACE+NME pair; explicit one-sided cap arguments
@@ -524,13 +839,13 @@ def clean_protein(
                 "segments": internal_missing_records,
                 "details": f"Found {len(internal_missing)} internal missing residue(s) to be modeled"
             })
-            result["missing_residue_repair"] = {
+            result.setdefault("missing_residue_repair", {}).update({
                 "method": "pdbfixer",
                 "status": "within_scope",
                 "max_internal_missing_residues": PDBFIXER_MAX_INTERNAL_MISSING_RESIDUES,
                 "max_missing_residue_segment_length": PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH,
                 **missing_summary,
-            }
+            })
             if (
                 missing_summary["total_residues"] > PDBFIXER_MAX_INTERNAL_MISSING_RESIDUES
                 or missing_summary["max_segment_length"] > PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH

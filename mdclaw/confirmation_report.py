@@ -19,6 +19,23 @@ from mdclaw._common import setup_logger
 logger = setup_logger(__name__)
 
 
+def _format_missing_residue_repair(entry: dict) -> str:
+    """One line per chain: how much was built, in how many stretches, how long."""
+    chain = entry.get("chain_id") or "?"
+    total = entry.get("total_residues")
+    segments = entry.get("segment_count")
+    longest = entry.get("max_segment_length")
+    text = f"chain {chain}: {total} residue(s) in {segments} segment(s)"
+    if longest:
+        text += f", longest {longest}"
+    seed = entry.get("random_seed")
+    if seed is not None:
+        text += f" (seed {seed})"
+    if entry.get("interface_context") == "chain_isolated":
+        text += " [built without partner chains]"
+    return text
+
+
 def report_confirmation_items(confirmation_items: dict) -> None:
     """Write the block as human-readable lines, or nothing if it is empty."""
     disulfides = confirmation_items.get("disulfide_bonds", {}) or {}
@@ -27,7 +44,13 @@ def report_confirmation_items(confirmation_items: dict) -> None:
     his_states = his.get("states") or {}
     prot = confirmation_items.get("protonation_states", {}) or {}
     prot_states = prot.get("states") or []
-    if not (pairs or his_states or prot_states):
+    missing = confirmation_items.get("missing_residues", {}) or {}
+    repairs = missing.get("repairs") or []
+    undetectable = [
+        entry for entry in (missing.get("detection") or [])
+        if not entry.get("reference_sequence_available")
+    ]
+    if not (pairs or his_states or prot_states or repairs or undetectable):
         return
 
     lines = ["Chemistry assigned — check this before building on it:"]
@@ -45,6 +68,19 @@ def report_confirmation_items(confirmation_items: dict) -> None:
         )
         for entry in prot_states:
             lines.append(f"    {_format_protonation_state(entry)}")
+    if repairs:
+        total = sum(int(entry.get("total_residues") or 0) for entry in repairs)
+        lines.append(
+            f"  missing residues rebuilt ({missing.get('method', 'pdbfixer')}): "
+            f"{total} residue(s) in {len(repairs)} chain(s) — predicted, not measured"
+        )
+        for entry in repairs:
+            lines.append(f"    {_format_missing_residue_repair(entry)}")
+    for entry in undetectable:
+        lines.append(
+            f"  chain {entry.get('chain_id', '?')}: no reference sequence, so missing "
+            "residues were NOT checked (absence of gaps here proves nothing)"
+        )
     lines.append(
         "  To change any of these, re-run prep with --disulfide-pairs / "
         "--histidine-states / --protonation-states. A state marked "

@@ -7,6 +7,107 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-20 — Missing residues were invisible inside prepare_complex; gaps are now repairable in place
+
+Two problems, one fix. Started from the MODELLER ordering trap (fetching a
+template completes the job's only `source` node, and a completed node is sealed,
+so `modeller_from_alignment` cannot then write to it). Every CLI structure-
+acquisition tool is `@node_tool("source")` — verified by running
+`fetch_structure --output-dir` and getting `code=node_context_required` — so
+inside one job there is no correct order to document. The workaround used for
+9UWI left `studies/9uwi-popc` with three registered jobs (`main`, `modelled`,
+`modelled2`) of which two hold nothing but a source node, and with `main` and
+`modelled` recording `job_dir` against different path roots.
+
+**The bigger finding: `prepare_complex` could not see missing residues at all.**
+`split_molecules` builds each chain as a fresh `gemmi.Structure()` holding only
+the modeled residues, so SEQRES stayed behind in the parent. PDBFixer finds
+gaps by comparing coordinates to that reference; with none it reports zero.
+Measured on 4AKE:
+
+    source candidate (candidate_001.cif):  SEQRES chains=2   <- reference present
+    split chain file (protein_1.pdb):      SEQRES chains=0   <- gone
+
+So `pdbfixer_missing_residues_out_of_scope` could never fire from the
+`prepare_complex` path, and internal gaps entered MD as silent chain breaks.
+All three studies confirm it: `missing_residue_repair` was `None` on every prep
+node of 4ake-apo-trial, 5l7d-popc and 9uwi-popc.
+
+### What changed
+
+`_carry_reference_sequence` (`mdclaw/structure/split.py`) copies the owning
+entity's `full_sequence` onto the extracted chain. The recipe matters:
+`setup_entities()` on the *new* structure first (gemmi writes SEQRES from an
+entity whose subchains match the chain being written), then fill the empty
+`full_sequence` it produced. Attaching the parent entity directly writes no
+SEQRES at all — tried it, got 0 lines.
+
+`missing_residue_method` on `clean_protein` and `prepare_complex`, default
+`pdbfixer`, alternative `modeller`. With `modeller` the gaps are rebuilt before
+PDBFixer runs, in the same prep node: the chain is its own template and its own
+SEQRES is the target, so no template file, no target sequence, and no second
+source node are involved. The DAG stays `source_001 -> prep_001 -> ...`, one
+job, and `NodeSealedError` never appears.
+
+Deliberately not done: no automatic escalation and no upper ceiling. Rebuilding
+a 33-residue ICL3 is a scientific judgement, so it happens only behind an
+explicit flag.
+
+### Impact on existing studies, measured before shipping
+
+    4ake  SEQRES=214  internal=0   -> unchanged
+    5l7d  SEQRES=638  internal=0   -> unchanged
+    9uwi  SEQRES=386  internal=40 in 3 segments, max 33, terminal 77
+                                  -> now OUT_OF_SCOPE (was silent)
+
+One of three studies changes behaviour, and it is the one that actually needed
+MODELLER. 5L7D turned out to have no internal gaps — worth recording, since I
+had assumed a cryo-EM GPCR would.
+
+### Verified end to end on 9UWI chain A
+
+Default path stops with the code unchanged (`pdbfixer_missing_residues_out_of_scope`
+is a public contract) but the first recommended option is now
+`repair_in_place_with_modeller` carrying `--missing-residue-method modeller`,
+where it used to say "regenerate the source" and point straight at the two-job
+trap. MODELLER path: 40 residues rebuilt in 3 segments, longest 33, seed -8123.
+
+Residue numbering survives: all 269 observed residues keep both number and name,
+model 309 residues total. The first attempt produced 386 — the whole SEQRES,
+including a fabricated 67-residue C-terminal tail — because the full reference
+sequence was handed to MODELLER. Fixed by modeling only the span between the
+first and last observed residue, so unresolved termini are left alone exactly as
+the terminal filter intended.
+
+One bug found by running it end to end rather than at unit level: detection
+originally ran on the post-repair file, which is a MODELLER model with no
+SEQRES, so the node reported `status="not_detectable"` for chain A directly
+under a line saying 40 residues had just been rebuilt. Detection now describes
+the structure as it was before repair (SEQRES 386, modeled 269, terminal
+excluded 77).
+
+### Also now reported
+
+A chain with no reference sequence reports `status="not_detectable"` rather than
+zero gaps — "not checked" and "none present" were indistinguishable before.
+Terminal segments excluded from repair are reported with segment *and* residue
+counts (9UWI: 2 segments, 77 residues); the old message counted segments while
+saying "residue(s)". The MODELLER random seed and the template's sha256 go on
+the node, because a loop that cannot be reproduced makes the whole study
+irreproducible. In a multi-chain structure each repair is tagged
+`interface_context: chain_isolated`, since chains are repaired from separate
+files and an interface loop never sees its partner.
+
+`tests/test_missing_residue_handling.py` builds its inputs with gemmi rather
+than downloading them, so it runs on a compute node with no network. The
+two-chain fixture uses deliberately different sequences and lengths per chain: a
+chain-to-entity mix-up survives a same-length check, and 4AKE and 5L7D both have
+identical chains, so neither would catch it.
+
+Not in the shared SIF. Members run the container's own mdclaw.
+
+---
+
 ## 2026-08-20 — MODELLER now converts an mmCIF template instead of renaming it
 
 Fixes trap 2 from the 9UWI entry below. `modeller_from_alignment` staged the

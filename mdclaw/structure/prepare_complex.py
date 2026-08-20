@@ -596,6 +596,7 @@ def prepare_complex(
     source_candidate_id: Optional[str] = None,
     source_model_index: Optional[int] = None,
     source_model_id: Optional[str] = None,
+    missing_residue_method: str = "pdbfixer",
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
@@ -630,6 +631,12 @@ def prepare_complex(
                        gemmi's internal ``chain_id`` is an auto-generated
                        subchain label like ``Axp`` / ``Ax1`` / ``Axw`` and
                        is not user-facing. None = all chains.
+        missing_residue_method: How internal missing residues are rebuilt.
+            ``"pdbfixer"`` (default) builds short gaps geometrically and stops
+            with ``pdbfixer_missing_residues_out_of_scope`` beyond its limits;
+            ``"modeller"`` rebuilds every internal gap with MODELLER loop
+            modeling in this same node, using each chain as its own template.
+            MODELLER is licensed — export a ``KEY_MODELLER*`` variable.
         ph: pH for protonation state (default: 7.4)
         cap_termini: Backward-compatible shortcut to add ACE at the
                      N terminus and NME at the C terminus (default: False).
@@ -1324,6 +1331,7 @@ def prepare_complex(
                         disulfide_pairs=sa_disulfide_pairs,
                         histidine_states=sa_histidine_states,
                         protonation_states=sa_protonation_states,
+                        missing_residue_method=missing_residue_method,
                     )
 
                     if clean_result["success"]:
@@ -1339,6 +1347,9 @@ def prepare_complex(
                         protein_result["terminal_cap_hydrogen_completion"] = clean_result.get(
                             "terminal_cap_hydrogen_completion"
                         )
+                        for key in ("missing_residue_repair", "missing_residue_detection"):
+                            if clean_result.get(key) is not None:
+                                protein_result[key] = clean_result[key]
                         protein_result["success"] = True
                         logger.info(f"  ✓ Protein {chain_id}: {clean_result['output_file']}")
                     else:
@@ -1966,6 +1977,45 @@ def prepare_complex(
                 )
         result.pop("_chain_remap_source_to_merged", None)
         successful_proteins = [p for p in result.get("proteins", []) if p.get("success")]
+
+        # Aggregate what happened to missing residues across the chains. This
+        # belongs on the node, not only in the log: in autonomous or batch runs
+        # nobody reads stderr, and a rebuilt 30-residue loop is a structural
+        # decision the study rests on.
+        repairs = [
+            {"chain_id": protein.get("chain_id"), **protein["missing_residue_repair"]}
+            for protein in successful_proteins
+            if protein.get("missing_residue_repair")
+        ]
+        detections = [
+            {"chain_id": protein.get("chain_id"), **protein["missing_residue_detection"]}
+            for protein in successful_proteins
+            if protein.get("missing_residue_detection")
+        ]
+        if detections:
+            preparation_summary["missing_residue_detection"] = detections
+        if repairs:
+            preparation_summary["missing_residue_repair"] = repairs
+            modelled = [r for r in repairs if r.get("method") == "modeller"]
+            if modelled:
+                total = sum(int(r.get("total_residues") or 0) for r in modelled)
+                result.setdefault("warnings", []).append(
+                    f"MODELLER rebuilt {total} internal missing residue(s) across "
+                    f"{len(modelled)} chain(s); these coordinates are predicted, "
+                    "not experimental"
+                )
+                if len(successful_proteins) > 1:
+                    # Each chain is repaired from its own file, so a loop that
+                    # packs against a partner chain in the real complex is built
+                    # without ever seeing it.
+                    result.setdefault("warnings", []).append(
+                        f"Gaps were rebuilt chain by chain in a {len(successful_proteins)}-chain "
+                        "structure: loops near a chain-chain interface were modeled "
+                        "without the partner chain present"
+                    )
+                    for repair in modelled:
+                        repair["interface_context"] = "chain_isolated"
+
         n_caps = sorted({
             p.get("n_terminal_cap")
             for p in successful_proteins
@@ -2118,7 +2168,26 @@ def prepare_complex(
                 "states": applied_protonation,
             },
         }
-        if confirmation_items["disulfide_bonds"]["pairs"] or applied_his or applied_protonation:
+        # Rebuilt residues belong here too: they are coordinates that were not
+        # measured, and everything downstream treats them the same as the ones
+        # that were.
+        if repairs or [d for d in detections if not d.get("reference_sequence_available")]:
+            confirmation_items["missing_residues"] = {
+                "source": (
+                    "user_override"
+                    if missing_residue_method != "pdbfixer"
+                    else "auto_detected"
+                ),
+                "method": missing_residue_method,
+                "repairs": repairs,
+                "detection": detections,
+            }
+        if (
+            confirmation_items["disulfide_bonds"]["pairs"]
+            or applied_his
+            or applied_protonation
+            or confirmation_items.get("missing_residues")
+        ):
             confirmation_items["policy"] = (
                 "In human_in_the_loop mode, present these values to the user "
                 "and confirm before invoking solvate_structure. In autonomous "

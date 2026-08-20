@@ -599,6 +599,62 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
     return result
 
 
+def _carry_reference_sequence(
+    source_structure,
+    subchain_id: str,
+    chain_structure,
+    out_file,
+) -> None:
+    """Copy the chain's SEQRES reference sequence onto the extracted chain.
+
+    Splitting builds a fresh ``gemmi.Structure`` holding only the modeled
+    residues, so the reference sequence stays behind in the parent. PDBFixer
+    finds missing residues by comparing coordinates against that reference:
+    without it ``findMissingResidues()`` returns nothing and every internal
+    gap passes through preparation as a silent chain break.
+
+    ``setup_entities`` first, because gemmi writes SEQRES from an entity whose
+    subchains match the chain it is writing; the entity it builds here starts
+    with an empty ``full_sequence`` for us to fill.
+
+    A source without SEQRES (a stripped PDB, a predicted model) simply has no
+    reference to carry, and the chain is written as before.
+    """
+    import gemmi
+
+    try:
+        source_entity = next(
+            (
+                entity
+                for entity in source_structure.entities
+                if subchain_id in list(entity.subchains)
+            ),
+            None,
+        )
+        if source_entity is None or not len(source_entity.full_sequence):
+            return
+
+        chain_structure.setup_entities()
+        carried = False
+        for entity in chain_structure.entities:
+            if entity.entity_type == gemmi.EntityType.Polymer:
+                entity.full_sequence = list(source_entity.full_sequence)
+                carried = True
+        if carried:
+            logger.info(
+                "Carried %d-residue reference sequence to %s",
+                len(source_entity.full_sequence),
+                out_file,
+            )
+    except Exception as exc:  # noqa: BLE001 - never block the split itself
+        logger.warning(
+            "Could not carry the reference sequence for subchain %s: %s: %s",
+            subchain_id,
+            type(exc).__name__,
+            exc,
+        )
+
+
 def split_molecules(
     structure_file: str,
     output_dir: Optional[str] = None,
@@ -1557,6 +1613,11 @@ def split_molecules(
                     ligand_files.append(str(out_file))
                     ligand_idx += 1
                 
+                if chain_type in {"protein", "nucleic"}:
+                    _carry_reference_sequence(
+                        structure, chain_id, new_structure, out_file,
+                    )
+
                 new_structure.write_pdb(str(out_file))
                 logger.info(f"Wrote {chain_type}: {out_file}")
                 chain_file_info.append({

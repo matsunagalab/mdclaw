@@ -76,13 +76,16 @@ GUARDRAIL_CODES: dict[str, str] = {
     "missing_structure_file": "Provide the structure file this tool requires.",
     "missing_uniprot_id": "Provide a valid UniProt accession.",
     "source_candidate_selection_required": "Choose one listed source candidate and pass --source-structure-id to the prep tool.",
-    "pdbfixer_missing_residues_out_of_scope": "Regenerate the source with MODELLER/Boltz-2 instead of PDBFixer repair.",
+    "pdbfixer_missing_residues_out_of_scope": "Re-run the same prep node with --missing-residue-method modeller to rebuild the gaps in place.",
 
     # --- prep / cleaning / selection ---
     "invalid_prep_solvent_type": "Use a supported solvent type for prep.",
     "invalid_atom_count": "Structure atom count is invalid; inspect the input structure.",
     "invalid_coordinate_frame": "Provide valid coordinates/frame for this operation.",
     "invalid_protonation_state": "Use a valid protonation state specification.",
+    "invalid_missing_residue_method": "Use --missing-residue-method pdbfixer or modeller.",
+    "modeller_missing_residue_repair_failed": "MODELLER gap repair failed; read its errors, or fall back to --missing-residue-method pdbfixer.",
+    "modeller_repair_reference_sequence_unavailable": "The chain carries no single reference sequence to rebuild against; supply a structure with SEQRES or model it with modeller_from_alignment.",
     "protonation_state_override_failed": "Protonation override failed; check residue/state spec.",
     "invalid_terminal_cap": "Use a supported terminal cap type.",
     "terminal_cap_missing": "Add the required terminal cap before proceeding.",

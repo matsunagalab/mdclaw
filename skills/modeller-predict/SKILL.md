@@ -15,10 +15,17 @@ Use this skill when the user has a template PDB and a target protein sequence or
 MODELLER PIR/ALI alignment. Prefer `skills/boltz-predict/SKILL.md` when there is
 no suitable template or when the user asks for AI structure prediction.
 
-Also use this skill when `prepare_complex` or `clean_protein` returns
-`code="pdbfixer_missing_residues_out_of_scope"` and the user can provide a
-template plus target sequence/alignment. The goal is to regenerate the source
-candidate rather than patch a large missing loop inside PDBFixer.
+Do **not** use this skill to fill gaps in a structure you are already
+preparing. `pdbfixer_missing_residues_out_of_scope` is answered by re-running
+the same prep node with `prepare_complex --missing-residue-method modeller`,
+which rebuilds the gaps in place: the chain is its own template and its own
+target sequence. Coming here instead means fetching a template into the job's
+`source` node, which completes that node and leaves MODELLER unable to write to
+it.
+
+This skill is for the other case: the target is a **different sequence** from
+the template, so a new source structure has to be modeled rather than repaired
+— homology modeling, a construct with no experimental structure, a chimera.
 
 ## Required Inputs
 
@@ -42,6 +49,17 @@ variable such as `KEY_MODELLER10v8` before running.
 | Variant | single chain / multi-chain / loop refinement / explicit alignment |
 | Number of models | 1 (default) / 3-5 for a small ranked set |
 | Mode | source node (default) / standalone file |
+
+## Getting The Template
+
+The job's `source` node holds the MODELLER **model**, never the template. The
+template is an input to producing it, like the target sequence.
+
+Do not run `fetch_structure` on the node you intend to model into: it completes
+that node, and a completed node is sealed, so `modeller_from_alignment` then
+fails with `NodeSealedError`. Pass the template as a file with
+`--template-pdb` (mmCIF is accepted and converted). If the only copy of the
+template lives in another job's source node, use that file's path directly.
 
 ## Source Node Workflow
 

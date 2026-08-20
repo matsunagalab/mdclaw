@@ -46,6 +46,13 @@ mdclaw --job-dir <job_dir> --node-id <source_node_id> modeller_from_alignment \
 
 ## Loop refinement (fill cryo-EM / X-ray gaps)
 
+Reach for this variant only when the gapped structure is not already going
+through preparation. To fill gaps in a structure you are preparing, re-run that
+prep node with `prepare_complex --missing-residue-method modeller` — it does the
+same loop modeling in place, derives the target sequence from the structure's
+own SEQRES, keeps the observed residue numbering, and leaves unresolved termini
+alone. It also avoids spending the job's `source` node on the template.
+
 Pass the structure as the template and its full sequence (e.g. from SEQRES) as
 the target, and add `--loop-refinement`. The base model builds the missing
 residues; MODELLER `LoopModel` then rebuilds every gap loop. `--loop-models`

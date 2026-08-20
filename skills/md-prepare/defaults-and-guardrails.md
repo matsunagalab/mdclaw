@@ -26,11 +26,14 @@ Preparation-specific defaults:
 Guardrail handling:
 
 - Branch on structured `code` values.
-- If `pdbfixer_missing_residues_out_of_scope` appears, do not retry
-  `prepare_complex` with the same source. Restart from `source` and use
-  `skills/modeller-predict/SKILL.md` when a template/alignment exists, or
-  `skills/boltz-predict/SKILL.md` when the sequence should be predicted
-  directly.
+- If `pdbfixer_missing_residues_out_of_scope` appears, re-run the **same** prep
+  node with `--missing-residue-method modeller`. The gaps are rebuilt in place:
+  each chain is its own template and its own reference sequence, so no template
+  file, no target sequence, and no new source node are involved. MODELLER is
+  licensed — a `KEY_MODELLER*` variable must be exported. Restart from `source`
+  only when the structure itself is the wrong starting point: use
+  `skills/modeller-predict/SKILL.md` to model a *different* target sequence from
+  a template, or `skills/boltz-predict/SKILL.md` to predict from sequence.
 - If `forcefield_water_blocked` appears, change the incompatible pairing rather
   than retrying.
 - If ligand preparation returns `workflow_recommendation.options`, present only
