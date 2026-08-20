@@ -101,9 +101,9 @@ logging bias energy and CV values for analysis.
 
 1. Verify the `prod` node is `completed`.
 2. Perform Visual QA per `skills/common/visual-qa.md` (render preview, inspect,
-   `register_visual_review`; `--style publication` for the final structure,
-   `--style ligand_site` / `--style membrane` when relevant). If severity is
-   `high`, ask the user before using the production output downstream.
+   `register_visual_review`). That page owns the style table; do not pick a
+   style from memory. If severity is `high`, ask the user before using the
+   production output downstream.
 3. Follow the stopping rule in `skills/common/run-loop.md`. If the current
    request requires analysis or a scientific answer, invoke
    `skills/md-analyze/SKILL.md` on this `job_dir`. Otherwise present:

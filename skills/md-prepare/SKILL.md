@@ -145,9 +145,9 @@ use the HPacker-based `create_mutated_structure` branch in
    create, explain, and run `topo`; let `build_amber_system` resolve the
    completed `solv` parent for explicit/membrane or `prep` parent for
    implicit/vacuum. Never pass a free-standing raw PDB.
-8. After each completed structural node where human inspection is useful
-   (`source`, `prep`, `solv`, `topo`), perform Visual QA per
-   `skills/common/visual-qa.md` and register it with `register_visual_review`.
+8. After each completed structural node (`source`, `prep`, `solv`, `topo`),
+   perform Visual QA per `skills/common/visual-qa.md` and register it with
+   `register_visual_review`.
    Visual QA is only an obvious-accident check; never infer force-field,
    protonation, parameter, or chemistry correctness from the image. If a
    high-severity visual accident is reported, ask the user before moving to the
