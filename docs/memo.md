@@ -7,6 +7,83 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-21 — Membrane ions came out drifting across y, and it was the stride's arithmetic
+
+Spotted from a preview during the 9UWI validation run: ions above the bilayer
+sat to one side, ions below to the other. Real, and 9UWI only.
+
+    solv (initial)  upper n= 75 <y>=+21.8+-3.4   lower n=119 <y>=-16.3+-3.1
+    5L7D            upper n=168 <y>= -2.4+-2.5   lower n=133 <y>= -4.3+-2.7
+
+Water was uniform in y in both (<y> ~= -2), so the ions were not following the
+solvent. Na+ and Cl- drifted the *same* way (+25.0 / +18.8 upper, -13.0 / -18.7
+lower), which rules out electrostatics — a field separates the species, it does
+not move them together.
+
+### Cause
+
+`_apply_neutralizing_swap` (`mdclaw/solvation/patch_membrane.py`) sorted the
+candidate waters by `(z, x, y)` and took every `stride`-th one, `stride =
+len(candidates) // needed`. Three facts combine:
+
+1. Tiling copies the patch in x and y only, so copies keep z bit-for-bit.
+   Measured: 9UWI held 32126 waters at only 3597 distinct z, 100% of them
+   shared; 5L7D the same. The z key is therefore almost always tied and x/y
+   decide the order, lining the list up with the 3x3 tile grid.
+2. Offset k inside a slab maps to tile (k//3, k%3) — k%3 is the y column.
+3. 9UWI's real stride was 150. 150 mod 9 = 6, gcd(6,9) = 3, so the walk visits
+   offsets 0, 6, 3, ... — all k%3 = 0, one y column. Varying slab sizes (9 and
+   18) and the carved-out regions drift that phase slowly with z, which turns a
+   fixed column into a monotone y drift.
+
+Replaying the selection with the true strides reproduces both systems:
+
+    9UWI stride 150 (mod 9 = 6, gcd 3)  replay rho=+0.489   observed rho=+0.618
+    5L7D stride 172 (mod 9 = 1, gcd 1)  replay rho=+0.074   observed rho=+0.069
+
+and moving 9UWI's stride by one kills it (148/149/151/152 give +0.03..-0.07),
+while pushing 5L7D onto 171 (gcd 9) or 174 (gcd 3) raises it to +0.18. **5L7D
+was not immune, it was lucky.** The within-slab offset histogram agrees: 9UWI
+depletes offsets 1, 4, 7 (all k%3 = 1) about threefold, 5L7D is flat.
+
+The strides I first assumed (166 / 182, from the full water set) do not
+reproduce it — the real candidate list excludes non-bulk and near-protein
+waters, giving 150 / 172. Reading the chosen ions' ranks in the sorted pool
+settled it: 0, 150, 300, 450, ... exactly.
+
+### Wrong answers along the way
+
+Uncapped termini (true, but a localised +-1 cannot move both species one way),
+protein net charge and the extended ICL3 (the candidate pool is uniform in y at
+every carve cutoff, rho ~= 0), and a species-specific rule (both species drift
+together). An earlier fix in this same function had already dealt with a
+species-ordering bug; this one is in the site selection underneath it.
+
+### Fix
+
+One site per equal-sized block of the sorted list, position inside the block
+drawn from a fixed seed (`ION_PLACEMENT_SEED`). Blocks keep the z spread the
+stride was there for; a seeded draw cannot resonate with the tile period. Same
+seed, same placement, so a rebuild still reproduces bit-for-bit. Measured on
+the real systems: 9UWI rho_y +0.489 -> -0.033, 5L7D +0.074 -> +0.051, z range
+preserved.
+
+Tests assert the mechanism rather than a correlation magnitude: a resonant
+stride never leaves its tile column (spread 0.0), the shipped selection always
+visits every column, across ion counts 150..320.
+
+### Impact
+
+None on the runs already done — MD relaxes it. 9UWI upper <y>: +24.0 initial,
++2.5 after eq, +4.4 after prod, i.e. inside 1 sigma by the end of equilibration.
+
+It would have mattered for replicates. The selection is deterministic, so the
+same system rebuilt for a second replicate got the identical biased placement;
+changing only the integrator seed would not have decorrelated the ions. That is
+exactly the kind of hidden correlation adaptive sampling cannot afford.
+
+---
+
 ## 2026-08-21 — SIF 名から cufft121-fusefix を落としていた（私のミス）
 
 `a34dba5bdb21` の SIF を渡したところ、名前に `cufft121-fusefix` が無いことを指摘された。

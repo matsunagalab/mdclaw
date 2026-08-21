@@ -31,6 +31,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -2734,6 +2735,12 @@ def _write_assembled_pdb(
     Path(output_file).write_text("\n".join(out_lines) + "\n", encoding="utf-8")
 
 
+# Seed for the ion-site draw inside each z block. Fixed so that rebuilding the
+# same system reproduces the same placement; change it only to deliberately
+# decorrelate replicates.
+ION_PLACEMENT_SEED = 20260821
+
+
 def _apply_neutralizing_swap(
     membrane: list[tuple[PDBAtom, str, float, float, float]],
     *,
@@ -2788,16 +2795,37 @@ def _apply_neutralizing_swap(
             continue
         candidates.append((key, rep))
 
-    # Deterministic spread: sort by z then x then y and stride-sample.
+    # Deterministic spread in z, one site per equal-sized block of the sorted
+    # list, with the position inside each block drawn from a fixed seed.
+    #
+    # A constant stride over a list sorted by (z, x, y) looks like an even
+    # spread and is not. Tiling copies the patch in x and y only, so the copies
+    # keep the original z bit-for-bit: measured on a POPC system, 100% of the
+    # waters shared their z with another, 32126 of them holding only 3597
+    # distinct values. The z key is therefore almost always tied and the x/y
+    # keys decide the order, which lines the list up with the tile grid. A
+    # stride sharing a factor with the tile count then locks onto one column of
+    # tiles: with 9 tiles and stride 150 (150 mod 9 = 6, gcd 3) the walk visits
+    # offsets 0, 6, 3, ... which are all the same y column, and the ions come
+    # out drifting across y as z advances (Spearman rho = 0.62 between an ion's
+    # z rank and its y). Stride 172 on the same system gives rho = 0.07 -- the
+    # bias is a coincidence of arithmetic, not a property of the structure.
+    #
+    # Blocks keep the z spread the stride was there for; the seeded draw inside
+    # each block cannot resonate with the tile period. Same seed, same
+    # placement, so a rerun still reproduces bit-for-bit.
     candidates.sort(key=lambda item: (item[1][2], item[1][0], item[1][1]))
     needed = n_cation + n_anion
     chosen: list[tuple[tuple, tuple[float, float, float]]] = []
     if needed > 0 and candidates:
-        stride = max(1, len(candidates) // needed)
-        for i in range(0, len(candidates), stride):
-            chosen.append(candidates[i])
-            if len(chosen) >= needed:
-                break
+        rng = random.Random(ION_PLACEMENT_SEED)
+        total = len(candidates)
+        for block in range(min(needed, total)):
+            start = (block * total) // needed
+            stop = ((block + 1) * total) // needed
+            if stop <= start:
+                stop = start + 1
+            chosen.append(candidates[rng.randrange(start, min(stop, total))])
 
     cation_res = _cation_resname(salt_c)
     anion_res = _anion_resname(salt_a)

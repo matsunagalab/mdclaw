@@ -2770,3 +2770,123 @@ def test_a_channel_through_the_cell_is_caught_though_the_z_profile_passes():
     # ... and the columns are not: one of sixteen is empty through the whole
     # water region, and the gate only counts a column that is.
     assert report["void_column_fraction"] > 0.08
+
+
+TILES_PER_SIDE = 3
+TILE_COUNT = TILES_PER_SIDE * TILES_PER_SIDE
+
+
+def _tiled_water_sites(n_slabs=3200):
+    """Water sites shaped like a tiled patch, sorted the way the code sorts them.
+
+    Tiling copies the patch in x and y only, so every copy keeps the original z
+    bit-for-bit -- measured on a real POPC system, 32126 waters held only 3597
+    distinct z values, 100% of them shared. The z key of the (z, x, y) sort is
+    therefore almost always tied and the x/y keys decide the order, lining the
+    candidate list up with the tile grid.
+    """
+    tile = 116.0 / TILES_PER_SIDE
+    sites = []
+    for slab in range(n_slabs):
+        z = round(-60.0 + slab * 0.0375, 3)
+        for ix in range(TILES_PER_SIDE):
+            for iy in range(TILES_PER_SIDE):
+                sites.append((ix * tile - 58.0, iy * tile - 58.0, z))
+    sites.sort(key=lambda p: (p[2], p[0], p[1]))
+    return sites
+
+
+def _tile_offsets(sites, chosen):
+    """Which position inside its z slab each chosen site occupies (0..8)."""
+    offset_of = {}
+    seen_z = None
+    k = 0
+    for site in sites:
+        if site[2] != seen_z:
+            seen_z, k = site[2], 0
+        offset_of[site] = k
+        k += 1
+    return [offset_of[c] for c in chosen]
+
+
+def _column_spread(offsets):
+    """Ratio of the least- to most-visited tile column. 1.0 is perfectly even."""
+    counts = [0] * TILES_PER_SIDE
+    for off in offsets:
+        counts[off % TILES_PER_SIDE] += 1
+    return min(counts) / max(counts) if max(counts) else 0.0
+
+
+def _select_blocks(candidates, needed):
+    """The shipped selection, run on plain coordinate tuples."""
+    import random
+
+    from mdclaw.solvation.patch_membrane import ION_PLACEMENT_SEED
+
+    rng = random.Random(ION_PLACEMENT_SEED)
+    total = len(candidates)
+    chosen = []
+    for block in range(min(needed, total)):
+        start = (block * total) // needed
+        stop = ((block + 1) * total) // needed
+        if stop <= start:
+            stop = start + 1
+        chosen.append(candidates[rng.randrange(start, min(stop, total))])
+    return chosen
+
+
+def test_a_constant_stride_can_lock_onto_one_column_of_tiles():
+    """The failure the shipped selection exists to avoid.
+
+    A stride sharing a factor with the tile count walks the within-slab offsets
+    0, 6, 3, ... which all sit in the same y column, so the ions come out
+    drifting across y as z advances. Measured on a real 9UWI POPC system,
+    stride 150 gave Spearman rho = 0.62 between an ion's z rank and its y,
+    while stride 172 on 5L7D gave 0.07 -- a coincidence of arithmetic, not a
+    property of either structure.
+    """
+    sites = _tiled_water_sites()
+
+    resonant = _tile_offsets(sites, sites[::150][:194])
+    coprime = _tile_offsets(sites, sites[::172][:194])
+
+    # The resonant stride never leaves its column; the coprime one spreads.
+    assert _column_spread(resonant) == 0.0
+    assert _column_spread(coprime) > 0.5
+
+
+def test_block_selection_visits_every_tile_column():
+    """The shipped selection stays even at the stride that broke."""
+    sites = _tiled_water_sites()
+
+    chosen = _select_blocks(sites, 194)
+
+    assert len(chosen) == 194
+    assert _column_spread(_tile_offsets(sites, chosen)) > 0.5
+
+
+def test_block_selection_is_even_across_many_ion_counts():
+    """Evenness must not depend on how the ion count divides the candidates."""
+    sites = _tiled_water_sites()
+
+    worst = min(
+        _column_spread(_tile_offsets(sites, _select_blocks(sites, needed)))
+        for needed in range(150, 320, 7)
+    )
+
+    assert worst > 0.4
+
+
+def test_block_selection_keeps_the_z_spread_and_is_reproducible():
+    """Blocks preserve the spread the stride was there for, deterministically."""
+    sites = _tiled_water_sites()
+
+    chosen = _select_blocks(sites, 194)
+    again = _select_blocks(sites, 194)
+
+    assert chosen == again, "same seed must reproduce the same placement"
+    zs = [c[2] for c in chosen]
+    all_z = [s[2] for s in sites]
+    assert min(zs) - min(all_z) < 2.0
+    assert max(all_z) - max(zs) < 2.0
+    assert len(set(zs)) > 150, "picks must not pile into a few slabs"
