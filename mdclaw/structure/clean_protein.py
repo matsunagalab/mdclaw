@@ -729,9 +729,83 @@ def _missing_residue_regeneration_recommendation(summary: dict) -> dict:
     }
 
 
+def _restrict_missing_to_window(fixer, chains, window) -> dict:
+    """Drop the parts of each missing-residue segment that fall outside a range.
+
+    PDBFixer reports a segment as "these residues belong between residue i-1 and
+    residue i", with no numbers of their own until they are built.  Their numbers
+    follow from the chain: the leading segment counts backwards from the first
+    resolved residue, a trailing segment counts forwards from the last, and an
+    internal segment lies between two known ones and is never outside a window
+    that contains both of its anchors.  Only the two ends need bounding.
+    """
+    start, end = window
+    trimmed = {}
+
+    def _number(residue):
+        """The residue's author number, or None when it carries an insertion code.
+
+        A chain numbered 100, 100A, 100B has no arithmetic to do, so a segment
+        anchored on one is left alone rather than trimmed on a wrong number.
+        """
+        try:
+            return int(str(residue.id).strip())
+        except (TypeError, ValueError):
+            return None
+
+    for key in list(fixer.missingResidues.keys()):
+        chain_idx, res_idx = key
+        residues = list(chains[chain_idx].residues())
+        if not residues:
+            continue
+        segment = fixer.missingResidues[key]
+        if res_idx == 0:
+            anchor = _number(residues[0])
+            numbers = (None if anchor is None
+                       else list(range(anchor - len(segment), anchor)))
+        elif res_idx == len(residues):
+            anchor = _number(residues[-1])
+            numbers = (None if anchor is None
+                       else list(range(anchor + 1, anchor + 1 + len(segment))))
+        else:
+            # Internal segments are bounded by both of their anchors, so they
+            # cannot leave a window that holds the anchors -- but only while
+            # cropping has already removed everything outside it. Trimming them
+            # from the anchors as well means the two do not have to agree.
+            left, right = _number(residues[res_idx - 1]), _number(residues[res_idx])
+            numbers = (None if left is None or right is None
+                       or right - left - 1 != len(segment)
+                       else list(range(left + 1, right)))
+        if numbers is None:
+            trimmed[f"chain {chain_idx} position {res_idx}"] = {
+                "requested_window": f"{start}-{end}",
+                "segment_residues": len(segment),
+                "kept": len(segment),
+                "note": "left alone: the anchoring residue numbers are not plain "
+                        "integers, so the segment's numbers cannot be derived",
+            }
+            continue
+        keep = [name for name, number in zip(segment, numbers)
+                if start <= number <= end]
+        if len(keep) == len(segment):
+            continue
+        trimmed[f"chain {chain_idx} position {res_idx}"] = {
+            "requested_window": f"{start}-{end}",
+            "segment_residues": len(segment),
+            "kept": len(keep),
+        }
+        if keep:
+            fixer.missingResidues[key] = keep
+        else:
+            del fixer.missingResidues[key]
+    return trimmed
+
+
 def clean_protein(
     pdb_file: str,
     ignore_terminal_missing_residues: bool = True,
+    build_terminal_missing_residues: bool = False,
+    build_window: Optional[tuple] = None,
     cap_termini: bool = False,
     n_terminal_cap: str | None = None,
     c_terminal_cap: str | None = None,
@@ -1050,6 +1124,41 @@ def clean_protein(
 
         # Step 1a: Handle terminal missing residues
         terminal_caps_requested = bool(resolved_n_terminal_cap or resolved_c_terminal_cap)
+        if not (ignore_terminal_missing_residues and not terminal_caps_requested):
+            # Building them is the requested branch; say so and say how many.
+            # Otherwise "the terminus was rebuilt" would have to be inferred
+            # from the absence of the warning that says it was not.
+            # The residue range, when one was requested, bounds what may be
+            # built: asking for 4-315 of a chain whose SEQRES runs to 317 must
+            # add residue 315 and not 316 or 317. Without the window the switch
+            # rebuilds the whole overhang -- measured on 6W9C, 1-317 instead of
+            # the 4-315 that was asked for.
+            if build_window is not None:
+                _trimmed = _restrict_missing_to_window(fixer, chains, build_window)
+                if _trimmed:
+                    result["missing_residue_detection"]["window_trimmed"] = _trimmed
+            built = []
+            for key in list(fixer.missingResidues.keys()):
+                chain_idx, res_idx = key
+                chain = chains[chain_idx]
+                if res_idx == 0 or res_idx == len(list(chain.residues())):
+                    built.append({
+                        "chain_index": chain_idx,
+                        "chain_id": str(getattr(chain, "id", chain_idx)),
+                        "terminus": "N" if res_idx == 0 else "C",
+                        "residue_count": len(fixer.missingResidues[key]),
+                    })
+            if built:
+                total = sum(record["residue_count"] for record in built)
+                result["missing_residue_detection"]["terminal_built"] = {
+                    "segment_count": len(built),
+                    "total_residues": total,
+                    "segments": built,
+                }
+                result["warnings"].append(
+                    f"Rebuilt {total} terminal residue(s) in {len(built)} "
+                    "segment(s); a terminus has an anchor on one side only, so "
+                    "these coordinates are predicted rather than measured")
         if ignore_terminal_missing_residues and not terminal_caps_requested:
             # Remove terminal missing residues from the dictionary
             keys_to_remove = []
@@ -1108,10 +1217,22 @@ def clean_protein(
             capped_chains = []
             for chain_idx, chain in enumerate(chains):
                 chain_length = len(list(chain.residues()))
+                # A cap normally takes the terminal slot outright: asking for
+                # caps is asking for ACE/NME at the end of what was resolved,
+                # not for the unresolved tail to be modelled first. When the
+                # tail was asked for in its own right the two are both honoured
+                # instead, with the cap on the outside of the residues it caps
+                # -- otherwise a request to build residue 315 and cap the
+                # terminus would quietly build NME in its place.
+                keep_tail = build_terminal_missing_residues
                 if resolved_n_terminal_cap:
-                    fixer.missingResidues[chain_idx, 0] = [resolved_n_terminal_cap]
+                    tail = fixer.missingResidues.get((chain_idx, 0), []) if keep_tail else []
+                    fixer.missingResidues[chain_idx, 0] = [resolved_n_terminal_cap] + list(tail)
                 if resolved_c_terminal_cap:
-                    fixer.missingResidues[chain_idx, chain_length] = [resolved_c_terminal_cap]
+                    tail = (fixer.missingResidues.get((chain_idx, chain_length), [])
+                            if keep_tail else [])
+                    fixer.missingResidues[chain_idx, chain_length] = (
+                        list(tail) + [resolved_c_terminal_cap])
                 capped_chains.append(chain.id)
             
             result["operations"].append({

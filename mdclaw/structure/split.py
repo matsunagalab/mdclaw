@@ -665,6 +665,7 @@ def split_molecules(
     exclude_ligand_ids: Optional[List[str]] = None,
     keep_crystal_waters: bool = False,
     include_associated_ligands: bool = False,
+    residue_ranges: Optional[List[str]] = None,
 ) -> dict:
     """Split an mmCIF or PDB structure file into separate chain files.
 
@@ -830,9 +831,26 @@ def split_molecules(
         "chain_file_info": [],
         "include_types": include_types,
         "selection_adjustments": [],
+        "residue_ranges": {"requested": [], "resolved": {}, "delivered": {}},
         "errors": [],
         "warnings": []
     }
+
+    # Parse the ranges before anything else touches the file: a malformed range
+    # is the caller's to fix and there is nothing to read the structure for.
+    from mdclaw.structure.residue_range import (
+        ResidueRangeError,
+        describe_span,
+        parse_residue_ranges,
+    )
+    try:
+        parsed_ranges = parse_residue_ranges(residue_ranges)
+    except ResidueRangeError as exc:
+        result["errors"].append(str(exc))
+        result["code"] = exc.code
+        result["hints"] = exc.hints
+        return result
+    result["residue_ranges"]["requested"] = [entry.spelled() for entry in parsed_ranges]
 
     if (
         "ligand" not in include_types
@@ -866,6 +884,37 @@ def split_molecules(
         return result
     
     result["all_chains"] = analysis["chains"]
+
+    # Resolve each residue range to the chains it names, once and globally, so
+    # the per-chain loop only has to look up an answer. Two rules matter here.
+    # Label wins over author: 6W9C's zinc is label I with author chain C, so a
+    # range written "C:4-315" for the protein would otherwise also empty the
+    # zinc. And a range applies to polymers only -- it describes a construct,
+    # while ions, ligands and water are selected by their own identifiers.
+    _labels = {info.get("chain_id") for info in analysis["chains"]}
+    range_by_chain_id = {}
+    for entry in parsed_ranges:
+        if entry.chain in _labels:
+            matched = [info for info in analysis["chains"]
+                       if info.get("chain_id") == entry.chain]
+        else:
+            matched = [info for info in analysis["chains"]
+                       if info.get("author_chain") == entry.chain]
+        for info in matched:
+            if info.get("chain_type") in ("protein", "nucleic", "glycan"):
+                range_by_chain_id[info.get("chain_id")] = entry
+                # Published so nothing downstream resolves the ranges a second
+                # time. Two independent resolutions of the same name drift: a
+                # homodimer whose copies are labels C and E under one author
+                # chain C is cropped here on the label (C only) while a
+                # re-resolution on the author name would bound E as well, and
+                # E was never cropped.
+                result["residue_ranges"]["resolved"][info.get("chain_id")] = {
+                    "range": entry.spelled(),
+                    "start": entry.start[0],
+                    "end": entry.end[0],
+                    "author_chain": info.get("author_chain"),
+                }
 
     if include_ligand_ids is not None and "ligand" in include_types:
         requested_ligand_ids = sorted(
@@ -1523,6 +1572,11 @@ def split_molecules(
             residue_count = 0
             
             waters_skipped = 0
+            # The residue range, if this chain was given one. Matched against
+            # both names because a range may be written with either, which is
+            # the contract chain selection already follows.
+            chain_range = range_by_chain_id.get(chain_id)
+            range_kept, range_dropped, range_boundary_icodes = [], [], []
             for residue in subchain:
                 res_name = residue.name.strip()
                 # Skip water residues unless explicitly keeping them
@@ -1530,6 +1584,23 @@ def split_molecules(
                 if res_name in WATER_NAMES and not keep_crystal_waters:
                     waters_skipped += 1
                     continue
+                if chain_range is not None:
+                    icode = str(residue.seqid.icode or "").strip()
+                    if chain_range.contains(residue.seqid.num, icode):
+                        range_kept.append(residue.seqid.num)
+                    else:
+                        range_dropped.append(residue.seqid.num)
+                        # A bound written as a plain number sorts before the
+                        # same number with an insertion code, so "1-100" keeps
+                        # 100 and drops 100A. That is a real answer but not an
+                        # obvious one, and nothing downstream can see it: the
+                        # coverage check reads the number column, where 100A
+                        # reads as 100.
+                        if icode and residue.seqid.num in (chain_range.start[0],
+                                                           chain_range.end[0]):
+                            range_boundary_icodes.append(
+                                f"{residue.name}{residue.seqid.num}{icode}")
+                        continue
                 
                 new_residue = gemmi.Residue()
                 new_residue.name = residue.name
@@ -1554,6 +1625,28 @@ def split_molecules(
 
             if waters_skipped > 0:
                 logger.info(f"Skipped {waters_skipped} water residue(s) in chain {chain_id}")
+
+            # Recorded before the chain can be dropped for being empty: a range
+            # that selected nothing has to be reported as an empty range, not
+            # lost along with the chain it emptied.
+            if chain_range is not None:
+                if range_boundary_icodes:
+                    result["warnings"].append(
+                        f"Residue range {chain_range.spelled()} drops "
+                        f"{len(range_boundary_icodes)} residue(s) that share an "
+                        f"endpoint number but carry an insertion code "
+                        f"({', '.join(range_boundary_icodes[:4])}); write the "
+                        "endpoint with the insertion code to include them")
+                key = f"{chain_range.spelled()}@{chain_id}"
+                result["residue_ranges"]["delivered"][key] = {
+                    "range": chain_range.spelled(),
+                    "chain_id": chain_id,
+                    "author_chain": author_chain,
+                    "kept": len(range_kept),
+                    "dropped": len(range_dropped),
+                    "span_in_file": describe_span(range_kept + range_dropped),
+                    "span_delivered": describe_span(range_kept),
+                }
 
             if len(list(new_chain)):
                 new_model.add_chain(new_chain)
@@ -1652,6 +1745,57 @@ def split_molecules(
             result["warnings"].append("No output files were generated")
             result["warnings"].append("Hint: All chains may have been filtered out by selection or water exclusion")
         
+        # A range that met nothing is a request that was not carried out, and a
+        # smaller structure is not a smaller answer to it. Refuse, and put the
+        # chain's real span in the message so the corrected range can be written
+        # straight from it.
+        for entry in parsed_ranges:
+            records = [record for record in result["residue_ranges"]["delivered"].values()
+                       if record["range"] == entry.spelled()]
+            if len(records) > 1:
+                result["warnings"].append(
+                    f"Residue range {entry.spelled()} matched "
+                    f"{len(records)} chains ("
+                    + ", ".join(record["chain_id"] for record in records)
+                    + "); a name that is an author chain rather than a label "
+                      "covers every copy under it, and the range was applied to "
+                      "all of them")
+            delivered = records[0] if records else None
+            if delivered is None:
+                available = sorted({
+                    name for info in result["all_chains"]
+                    for name in (info.get("chain_id"), info.get("author_chain"))
+                    if name
+                })
+                result["errors"].append(
+                    f"Residue range {entry.spelled()} names a chain that is not in "
+                    f"the selection; the structure offers {', '.join(available)}")
+                result["code"] = "residue_range_chain_not_found"
+                result["hints"] = [
+                    "Chain names come from the same space as select_chains: the "
+                    "label for mmCIF, the author chain for PDB.",
+                    "Selecting a range does not select the chain; pass it to "
+                    "select_chains as well.",
+                    "A range applies to polymers only, so a chain dropped by "
+                    "include_types, or one holding an ion or a ligand, will not "
+                    "be found here even though the structure contains it.",
+                ]
+                return result
+            if all(record["kept"] == 0 for record in records):
+                result["errors"].append(
+                    f"Residue range {entry.spelled()} selects no residue; chain "
+                    f"{delivered['chain_id']} resolves {delivered['dropped']} "
+                    f"residue(s) spanning {delivered['span_in_file']}")
+                result["code"] = "residue_range_selects_nothing"
+                result["hints"] = [
+                    f"Write the range inside the chain's own numbering, for "
+                    f"example {entry.chain}:{delivered['span_in_file']}.",
+                    "A range may reach past what is resolved when the missing "
+                    "residues can be built, so the reachable span is the "
+                    "reference sequence rather than the resolved one.",
+                ]
+                return result
+
         # Write metadata file
         metadata_file = out_dir / "split_metadata.json"
         with open(metadata_file, 'w') as f:

@@ -655,6 +655,151 @@ def _prepare_complex_initial_result(job_id: str, structure_file: Optional[str]) 
     }
 
 
+def _drop_detections_outside_ranges(result, split_result, disulfide_bonds, metal_sites):
+    """Detection runs on the whole structure; the range decides what survives.
+
+    Disulfides and metal sites are found before the split, so they know nothing
+    about a residue range applied during it.  Left alone, a bond or a site whose
+    residues were cropped is still requested of a structure that no longer holds
+    them: measured on 4OW0 with ``A:4-226``, the zinc keeps all four of its
+    cysteines assigned and cleaning fails with "Protonation target not found:
+    A:227", which names the symptom and not the cause.
+
+    Returns (disulfide_bonds, metal_sites) with what the range removed taken
+    out, and says so in the warnings.
+    """
+    resolved = ((split_result or {}).get("residue_ranges") or {}).get("resolved") or {}
+    if not resolved:
+        return disulfide_bonds, metal_sites
+
+    bounds = {}
+    for entry in resolved.values():
+        for name in (entry.get("author_chain"),):
+            if name:
+                bounds[str(name).strip()] = (entry["start"], entry["end"])
+
+    def inside(chain, resnum):
+        window = bounds.get(str(chain).strip())
+        if window is None:
+            return True
+        try:
+            number = int(str(resnum).strip())
+        except (TypeError, ValueError):
+            return True
+        return window[0] <= number <= window[1]
+
+    kept_bonds = []
+    for pair in disulfide_bonds:
+        ends = [(pair.get("cys1") or {}), (pair.get("cys2") or {})]
+        if all(inside(end.get("chain"), end.get("resnum")) for end in ends):
+            kept_bonds.append(pair)
+        else:
+            result.setdefault("warnings", []).append(
+                f"Dropped the disulfide "
+                f"{ends[0].get('chain')}:{ends[0].get('resnum')}-"
+                f"{ends[1].get('chain')}:{ends[1].get('resnum')}: a residue range "
+                "cut one of its cysteines, so the bond has nothing to join and "
+                "the cysteine that remains is left free rather than renamed CYX")
+
+    kept_sites = []
+    for site in metal_sites:
+        outside = [item for item in site["ligands"]
+                   if not inside(item["chain"], item["resnum"])]
+        if not outside:
+            kept_sites.append(site)
+        else:
+            names = ", ".join(f"{item['chain']}:{item['resname']}{item['resnum']}"
+                              for item in outside)
+            result.setdefault("warnings", []).append(
+                f"{site['label']} ({site['motif']}) loses {len(outside)} ligand(s) "
+                f"to a residue range ({names}); the site is no longer the one that "
+                "was detected, so no metal-derived protonation is assigned and the "
+                "remaining ligands keep whatever pdb2pqr gives them")
+
+    return kept_bonds, kept_sites
+
+
+def _residue_range_coverage(split_result, protein_results):
+    """Which requested residues each cleaned chain actually delivered.
+
+    The split's own check only sees the crop; what a chain finally holds is
+    decided afterwards, when missing residues are rebuilt or left out.  Asking
+    for 4-315 and receiving 4-314 is exactly the difference this parameter
+    exists to stop going unnoticed, so the comparison is made on the cleaned
+    file rather than on the intent.
+    """
+    resolved = ((split_result or {}).get("residue_ranges") or {}).get("resolved") or {}
+    if not resolved:
+        return {}
+    coverage = {}
+    for protein in protein_results:
+        entry = resolved.get(protein.get("chain_id"))
+        output = protein.get("output_file")
+        if not entry or not output or not protein.get("success"):
+            continue
+        present = set()
+        try:
+            for line in Path(output).read_text().splitlines():
+                if line.startswith(("ATOM", "HETATM")):
+                    try:
+                        present.add(int(line[22:26]))
+                    except ValueError:
+                        continue
+        except OSError:
+            continue
+        wanted = set(range(entry["start"], entry["end"] + 1))
+        missing = sorted(wanted - present)
+        coverage[protein["chain_id"]] = {
+            "range": entry["range"],
+            "requested": len(wanted),
+            "delivered": len(wanted & present),
+            "missing": missing,
+        }
+    return coverage
+
+
+def _window_for_chain(split_result, chain_id):
+    """The (start, end) this chain was cropped to, or None.
+
+    Read from the split's own resolution rather than resolved again here.  The
+    two would drift: a homodimer whose copies are labels C and E under one
+    author chain C is cropped on the label, so only C is cropped, while a
+    second resolution on the author name would also bound E -- and E still
+    holds the residues the bound would have removed.
+
+    Insertion codes are dropped: a rebuilt residue has none, so the numeric
+    bound is the whole of what a window can say about it.
+    """
+    resolved = ((split_result or {}).get("residue_ranges") or {}).get("resolved") or {}
+    entry = resolved.get(chain_id)
+    return (entry["start"], entry["end"]) if entry else None
+
+
+def _states_for_chain(states, author_chain, chain_id):
+    """The protonation records that belong to one split protein file.
+
+    Cleaning runs per chain, on a file containing only that chain, and
+    ``_apply_protonation_states_with_modeller`` fails the whole node when a
+    record names a residue the file does not hold.  Passing the whole list to
+    every chain therefore turns any multi-chain assignment into a failure -- and
+    metal-site assignment produces one whenever a homo-oligomer has a site in
+    each copy.  Records whose chain does not match are dropped rather than
+    failed: they could never have applied to this file.
+    """
+    if not states:
+        return states
+    wanted = {str(value).strip() for value in (author_chain, chain_id) if value}
+    # The split writes PDB, whose chain column is one character wide, so a
+    # multi-letter author chain (7QVK's "BBB") reaches the file as "B". A record
+    # written in author space would then match nothing and fail the whole chain
+    # on "target not found", so the truncation is accepted here too.
+    wanted |= {name[:1] for name in wanted if name}
+    matching = [state for state in states
+                if str(state.get("chain", "")).strip() in wanted
+                or str(state.get("chain", "")).strip()[:1] in wanted]
+    return matching or None
+
+
 @node_tool(node_type="prep")
 @tool_parameter_examples(
     ligand_smiles=[{"LIG": "CCO"}],
@@ -701,6 +846,8 @@ def prepare_complex(
     source_model_index: Optional[int] = None,
     source_model_id: Optional[str] = None,
     missing_residue_method: str = "auto",
+    build_terminal_missing_residues: bool = False,
+    residue_ranges: Optional[List[str]] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
@@ -740,6 +887,29 @@ def prepare_complex(
             out-of-scope gaps when licensed; ``"pdbfixer"`` never escalates;
             ``"modeller"`` always uses MODELLER loop modeling.
             MODELLER is licensed — export a ``KEY_MODELLER*`` variable.
+        residue_ranges: Which residues of a chain to build from, as
+            ``CHAIN:START-END`` strings using author residue numbers -- for
+            example ``["A:4-315"]``, or several separated by commas. A chain
+            with no range is taken whole, and ions, ligands and water are
+            unaffected: a range describes a polymer construct, while the rest
+            are selected by their own identifiers. The range is a request, so a
+            range naming a chain that is not there, or selecting no residue,
+            is an error carrying the chain's real span rather than a quietly
+            smaller system. Combined with
+            ``build_terminal_missing_residues`` it also bounds what may be
+            built: ``A:4-315`` on a chain whose SEQRES runs to 317 adds residue
+            315 and stops.
+        build_terminal_missing_residues: Also rebuild residues missing from a
+            chain's termini (default: False). An unresolved terminus is
+            disorder rather than a gap to bridge, and a simulation normally
+            starts from what the deposit resolved, so this stays off unless
+            asked for. Turn it on when the target range is known to run past
+            the resolved one -- a reference simulation covering residues
+            4-315 of a chain the deposit resolves to 314, say. Note what the
+            default protects against: an unresolved terminus can be one
+            residue or seventy-seven, and the count is reported either way,
+            under ``missing_residue_detection.terminal_excluded`` when they
+            are left alone and ``.terminal_built`` when they are made.
         ph: pH for protonation state (default: 7.4)
         cap_termini: Backward-compatible shortcut to add ACE at the
                      N terminus and NME at the C terminus (default: False).
@@ -1081,6 +1251,25 @@ def prepare_complex(
                    f"{summary['num_ligand_chains']} ligands, "
                    f"{summary['num_ion_chains']} ions")
 
+        # Translate select_chains (label_asym_id per Fix B) into the author_chain
+        # values that SSBOND / _struct_conn records and gemmi's ``chain.name``
+        # actually carry, for both PDB and mmCIF. Without this mapping a chain
+        # filter silently drops everything whose auth_asym_id differs from the
+        # user-supplied label (e.g. 7QVK label "B" <-> auth "BBB"). Computed
+        # here rather than inside disulfide detection because metal-site
+        # detection filters on the same selection.
+        ss_select_chains: Optional[List[str]] = None
+        if select_chains is not None:
+            chain_id_map = inspection.get("summary", {}).get("chain_id_map", {})
+            author_chains_set = set(chain_id_map.values())
+            ss_select_chains = []
+            for ch in select_chains:
+                if ch in chain_id_map:
+                    ss_select_chains.append(chain_id_map[ch])   # label -> auth
+                elif ch in author_chains_set:
+                    ss_select_chains.append(ch)                 # already auth (fallback)
+                # else: unknown ID — let split_molecules raise the error.
+
         # Step 1.5: Aggregate disulfide bonds. When the caller supplies
         # ``disulfide_pairs`` explicitly, it is a **complete replacement** of
         # auto-detection — empty list means "no disulfides at all". Otherwise
@@ -1103,24 +1292,6 @@ def prepare_complex(
             )
             ssbond_pairs = _parse_ssbond_records(structure_path)
             distance_pairs = _detect_disulfide_candidates(structure_path)
-            # Translate select_chains (label_asym_id per Fix B) into the
-            # author_chain values that SSBOND / _struct_conn records
-            # actually carry — gemmi's ``chain.name`` / ``partner.chain_name``
-            # return auth_asym_id for both PDB and mmCIF. Without this
-            # mapping, ``_merge_disulfide_pairs``'s filter silently drops
-            # pairs whose auth_asym_id differs from the user-supplied label
-            # (e.g. 7QVK label "B" ↔ auth "BBB").
-            ss_select_chains: Optional[List[str]] = None
-            if select_chains is not None:
-                chain_id_map = inspection.get("summary", {}).get("chain_id_map", {})
-                author_chains_set = set(chain_id_map.values())
-                ss_select_chains = []
-                for ch in select_chains:
-                    if ch in chain_id_map:
-                        ss_select_chains.append(chain_id_map[ch])   # label -> auth
-                    elif ch in author_chains_set:
-                        ss_select_chains.append(ch)                 # already auth (fallback path)
-                    # else: unknown ID — let split_molecules raise the error.
             disulfide_bonds = _merge_disulfide_pairs(
                 ssbond_pairs, distance_pairs, select_chains=ss_select_chains
             )
@@ -1130,8 +1301,54 @@ def prepare_complex(
                     f"(ssbond={len(ssbond_pairs)}, distance={len(distance_pairs)})"
                 )
             disulfide_source = "auto_detected"
+        # A sulfur holds one disulfide whatever the source. `_merge_disulfide_pairs`
+        # enforces that for auto-detected pairs; a caller-supplied list bypassed it
+        # entirely, so an impossible pairing reached the builder unremarked. An
+        # explicit instruction is refused rather than silently trimmed.
+        claimed_by: dict = {}
+        for pair in disulfide_bonds:
+            for end in ((pair.get("cys1") or {}), (pair.get("cys2") or {})):
+                key = (end.get("chain"), end.get("resnum"))
+                if key == (None, None):
+                    continue
+                claimed_by.setdefault(key, []).append(pair)
+        overbonded = {key: pairs for key, pairs in claimed_by.items() if len(pairs) > 1}
+        if overbonded:
+            named = ", ".join(f"{chain}:{resnum}" for chain, resnum in sorted(
+                overbonded, key=lambda k: (str(k[0]), str(k[1]))))
+            result["errors"].append(
+                f"Disulfide pairing gives more than one bond to {named}; a cysteine "
+                "holds at most one disulfide")
+            result["code"] = "invalid_disulfide_pairing"
+            result["overall_status"] = "failed"
+            return result
+
         result["disulfide_bonds"] = disulfide_bonds
         result["disulfide_source"] = disulfide_source
+
+        # Metal sites, from the same structure and the same selection as the
+        # disulfides. A cysteine ligating a metal is a thiolate, and nothing
+        # told the protonation step so: the split hands pdb2pqr the protein
+        # alone and the ion leaves in its own file, so propka never sees the
+        # metal. Measured on 6W9C/6WRH/4OW0, it deprotonates one cysteine of a
+        # four-cysteine zinc; the other three stay neutral and leave the metal
+        # during MD.
+        #
+        # Whether a site survives is decided after the split, not here: chain
+        # selection works in label_asym_id space while these records are in
+        # author space, and 4OW0's zinc is author chain A and label chain C, so
+        # "--select-chains A" drops it while an author-space filter still sees
+        # it. Assigning thiolates to a metal that was dropped would leave a
+        # -4 pocket with nothing in it.
+        from mdclaw.structure.metal_site import (
+            detect_metal_sites,
+            describe_sites,
+            protonation_states_for_metal_sites,
+        )
+        detected_metal_sites = detect_metal_sites(structure_path,
+                                                  select_chains=ss_select_chains)
+        metal_sites: list = []
+        metal_protonation_states: list = []
 
         try:
             resolved_n_terminal_cap, resolved_c_terminal_cap = _resolve_terminal_cap_settings(
@@ -1146,6 +1363,21 @@ def prepare_complex(
             return result
         terminal_caps_requested = bool(resolved_n_terminal_cap or resolved_c_terminal_cap)
 
+        # Parsed once here as well: split validates and reports them, and the
+        # cleaning step needs the same bounds to know what it may build.
+        from mdclaw.structure.residue_range import (
+            ResidueRangeError,
+            parse_residue_ranges,
+        )
+        try:
+            parsed_residue_ranges = parse_residue_ranges(residue_ranges)
+        except ResidueRangeError as exc:
+            result["errors"].append(str(exc))
+            result["code"] = exc.code
+            result["hints"] = exc.hints
+            result["overall_status"] = "failed"
+            return result
+
         # Step 2: Split structure
         logger.info("Step 2: Splitting structure...")
         split_result = split_molecules(
@@ -1158,6 +1390,7 @@ def prepare_complex(
             exclude_ligand_ids=exclude_ligand_ids,
             include_associated_ligands=include_associated_ligands,
             keep_crystal_waters=keep_crystal_waters,
+            residue_ranges=residue_ranges,
         )
         if glycan_selection_adjustment is not None:
             split_result.setdefault("selection_adjustments", []).append(
@@ -1181,6 +1414,7 @@ def prepare_complex(
             result["component_disposition_summary"] = component_disposition["summary"]
             result["retained_ion_files"] = disposition_result["retained_ion_files"]
             result["excluded_ion_files"] = disposition_result["excluded_ion_files"]
+
             if component_disposition["summary"]["experimental_isotope_atoms_excluded"]:
                 result["warnings"].append(
                     "Excluded experimental deuterium atom(s) during component "
@@ -1191,7 +1425,7 @@ def prepare_complex(
                     "Excluded explicit ion component(s) from implicit-solvent "
                     "prep output; topology will use the continuum solvent model"
                 )
-        
+
         result["split"] = {
             "success": split_result["success"],
             "protein_files": split_result.get("protein_files", []),
@@ -1202,7 +1436,8 @@ def prepare_complex(
             "retained_ion_files": result.get("retained_ion_files", []),
             "excluded_ion_files": result.get("excluded_ion_files", []),
             "water_files": split_result.get("water_files", []),
-            "chain_file_info": split_result.get("chain_file_info", [])
+            "chain_file_info": split_result.get("chain_file_info", []),
+            "residue_ranges": split_result.get("residue_ranges", {}),
         }
         for key in ("ligand_selection", "selection_adjustments"):
             if key in split_result:
@@ -1224,6 +1459,69 @@ def prepare_complex(
                     result[key] = split_result[key]
             return result
         
+        # Which metals survived the split, identified by residue name, chain and
+        # number rather than by element: 6W9C chain C carries two zincs, one on
+        # the Cys4 site and one shared between three copies at Cys270, and
+        # selecting only the first still leaves "a ZN survived" true. Matching on
+        # element alone deprotonated Cys270 for a metal that had been dropped.
+        # Sites whose metal is gone contribute no protonation; sites whose metal
+        # is gone but whose ligands stayed are a silent structural change and are
+        # warned about -- the guardrail table had a "metals" heading and nothing
+        # under it.
+        surviving_metals = set()
+        for ion_file in result.get("retained_ion_files") or []:
+            try:
+                for line in Path(ion_file).read_text().splitlines():
+                    if line.startswith(("ATOM", "HETATM")):
+                        surviving_metals.add((line[17:20].strip().upper(),
+                                              line[21].strip(),
+                                              line[22:26].strip(),
+                                              line[26].strip()))
+            except OSError as exc:
+                result.setdefault("warnings", []).append(
+                    f"Could not read {ion_file} to confirm which metals survived "
+                    f"the selection ({exc}); metal-bound cysteines keep whatever "
+                    "state pdb2pqr assigns them")
+
+        def _survived(site: dict) -> bool:
+            """Match on residue name, number and insertion code; chain loosely.
+
+            The split writes PDB, whose chain column is one character wide, so a
+            multi-character auth chain (7QVK's "BBB") arrives truncated and an
+            exact comparison never matches.
+            """
+            chain = str(site["chain"]).strip()
+            for resname, pdb_chain, resnum, icode in surviving_metals:
+                if resname != site["resname"]:
+                    continue
+                if resnum != str(site["resnum"]) or icode != site.get("icode", ""):
+                    continue
+                if pdb_chain in (chain, chain[:1]):
+                    return True
+            return False
+
+        for site in detected_metal_sites:
+            if _survived(site):
+                metal_sites.append(site)
+            elif len(site["ligands"]) >= 2:
+                ligands = ", ".join(f"{item['chain']}:{item['resname']}{item['resnum']}"
+                                    for item in site["ligands"])
+                result.setdefault("warnings", []).append(
+                    f"{site['label']} ({site['motif']}) was dropped by the selection "
+                    f"but is held by {len(site['ligands'])} side chain(s) ({ligands}); "
+                    "that removes a structural metal and leaves its ligands "
+                    "uncoordinated. Select the chain the metal is in to keep it.")
+        # Before either detection is used: what the range removed is not there
+        # to bond to or to coordinate.
+        disulfide_bonds, metal_sites = _drop_detections_outside_ranges(
+            result, split_result, disulfide_bonds, metal_sites)
+        result["disulfide_bonds"] = disulfide_bonds
+
+        metal_protonation_states = protonation_states_for_metal_sites(metal_sites)
+        result["metal_sites"] = metal_sites
+        for line in describe_sites(metal_sites):
+            logger.info(f"Metal site: {line}")
+
         # Build lookup for chain info
         # Create a lookup from chain_id to all_chain_data (match by chain_id, not index)
         all_chains_lookup = {c["chain_id"]: c for c in split_result.get("all_chains", [])}
@@ -1409,6 +1707,43 @@ def prepare_complex(
                                 sa_histidine_states[f"{chain}:{resnum}"] = state
                         logger.info(f"Using {len(sa_histidine_states)} pre-defined histidine state(s)")
 
+            # Metal-bound cysteines are thiolates. Added last and never over an
+            # explicit choice: a caller who names a residue has decided it, and
+            # the deprotonation here is only for residues nobody spoke for.
+            if metal_protonation_states:
+                def _site_key(chain, resnum, icode=""):
+                    return (str(chain).strip(), str(resnum).strip(),
+                            str(icode or "").strip())
+
+                spoken_for = {
+                    _site_key(state.get("chain"), state.get("resnum"),
+                              state.get("icode"))
+                    for state in (sa_protonation_states or [])
+                }
+                for key in (sa_histidine_states or {}):
+                    spoken_for.add(_site_key(*key.split(":")))
+                pending = [state for state in metal_protonation_states
+                           if _site_key(state["chain"], state["resnum"],
+                                        state.get("icode")) not in spoken_for]
+                if pending:
+                    try:
+                        sa_protonation_states = _normalize_protonation_state_overrides(
+                            protonation_states=list(sa_protonation_states or []) + pending,
+                            histidine_states=sa_histidine_states,
+                        )
+                    except ValueError as exc:
+                        result["errors"].append(str(exc))
+                        result["code"] = "invalid_protonation_state"
+                        result["overall_status"] = "failed"
+                        return result
+                    sa_histidine_states = None
+                    logger.info(
+                        f"Metal coordination: {len(pending)} cysteine(s) assigned "
+                        f"{', '.join(sorted({s['state'] for s in pending}))} "
+                        f"({', '.join(s['chain'] + ':' + s['resnum'] for s in pending)})"
+                    )
+                    result.setdefault("metal_protonation_applied", []).extend(pending)
+
             for protein_file in split_result["protein_files"]:
                 # Find chain info for this file
                 chain_id = None
@@ -1438,10 +1773,18 @@ def prepare_complex(
                         n_terminal_cap=n_terminal_cap,
                         c_terminal_cap=c_terminal_cap,
                         terminal_cap_forcefield=terminal_cap_forcefield,
-                        ignore_terminal_missing_residues=not terminal_caps_requested,
+                        # Caps already implied terminal rebuilding; asking for
+                        # it outright is the other way in, and the two are ORed
+                        # so neither route changes what the other did.
+                        ignore_terminal_missing_residues=not (
+                            terminal_caps_requested or build_terminal_missing_residues),
+                        build_terminal_missing_residues=build_terminal_missing_residues,
+                        build_window=_window_for_chain(split_result, chain_id),
                         disulfide_pairs=sa_disulfide_pairs,
                         histidine_states=sa_histidine_states,
-                        protonation_states=sa_protonation_states,
+                        protonation_states=_states_for_chain(
+                            sa_protonation_states, protein_result["author_chain"],
+                            chain_id),
                         missing_residue_method=missing_residue_method,
                     )
                     escalation_warnings = [
@@ -1726,6 +2069,35 @@ def prepare_complex(
                 result["ligands"].append(ligand_result)
         
         # Determine overall success
+        # A residue range is a request, and the answer is what the cleaned file
+        # holds, not what the crop selected. Handing back 4-314 for "4-315" is
+        # the difference this parameter exists to make visible, so it is refused
+        # here rather than reported as a smaller success.
+        coverage = _residue_range_coverage(split_result, result["proteins"])
+        if coverage:
+            result["residue_range_coverage"] = coverage
+        short = {chain: record for chain, record in coverage.items() if record["missing"]}
+        if short:
+            for chain, record in short.items():
+                shown = record["missing"][:6]
+                result["errors"].append(
+                    f"Residue range {record['range']} asked for "
+                    f"{record['requested']} residues of chain {chain} and the "
+                    f"prepared chain holds {record['delivered']}; "
+                    f"{len(record['missing'])} are absent: {shown}")
+            result["code"] = "residue_range_not_delivered"
+            result["hints"] = [
+                "Residues the deposit does not resolve are only built when "
+                "build_terminal_missing_residues is enabled for a terminus, or "
+                "by the missing-residue repair for an internal gap.",
+                "Otherwise narrow the range to what can be built.",
+            ]
+            result["next_action"] = (
+                "Enable build_terminal_missing_residues, or set residue_ranges to "
+                "a range the structure can supply.")
+            result["overall_status"] = "failed"
+            return result
+
         # Success if requested protein/ligand processing succeeded; nucleic
         # chains are pass-through inputs and only fail if split omitted them.
         proteins_ok = all(p["success"] for p in result["proteins"]) if result["proteins"] else True
