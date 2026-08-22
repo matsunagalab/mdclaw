@@ -239,11 +239,34 @@ RECOMMENDED_COMBINATIONS = {
 }
 
 
-CANONICAL_PROTEIN_FORCEFIELDS = {
-    "ff14sb": "ff14SB",
-    "ff19sb": "ff19SB",
-    "ff14sbonlysc": "ff14SBonlysc",
-}
+# Every catalog entry the builder will accept, keyed by lowercased alias.
+#
+# Derived from ``PROTEIN_FORCEFIELDS`` rather than hand-listed, because the two
+# had drifted: the guardrail layer already passes ``legacy`` entries with a
+# warning ("ff99SBildn is a legacy force field. ... works but newer choices are
+# preferred") and blocks only ``obsolete`` ones against Amber25 manual section
+# 3.12, yet this map named three entries, so ff99SB / ff99SBildn / ff99SBnmr /
+# ff03.r1 / ff03ua were rejected as ``unknown_forcefield`` before their
+# guardrail ever ran, and the ``supported`` ff15ipq and fb15 were rejected too.
+# ``resolve_xml_bundle`` has always read the XML straight from the catalog, so
+# nothing else had to change.
+#
+# ``obsolete`` stays out: the catalog blocks ff99 / ff96 / ff94 on an external
+# authority, and a name that reaches the builder only to be refused downstream
+# is worse than one refused here.
+def _accepted_protein_forcefields() -> dict[str, str]:
+    from mdclaw.forcefield_catalog import PROTEIN_FORCEFIELDS
+
+    accepted: dict[str, str] = {}
+    for name, entry in PROTEIN_FORCEFIELDS.items():
+        if entry.status == "obsolete":
+            continue
+        accepted[name.lower()] = name
+        accepted[name.lower().replace(".", "")] = name
+    return accepted
+
+
+CANONICAL_PROTEIN_FORCEFIELDS = _accepted_protein_forcefields()
 
 # =============================================================================
 # Helper Functions
