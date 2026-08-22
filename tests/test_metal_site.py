@@ -126,3 +126,121 @@ def test_a_disulfide_cysteine_near_a_metal_is_left_alone(tmp_path):
     sites = detect_metal_sites(path)
     assert sites[0]["established"] is True
     assert assigned(sites) == [("A", "20", "CYM")], "only the free cysteine"
+
+
+# --- a variant name must survive a round trip through HPacker ----------------
+# Preparation now emits CYM at a metal site, and mutation runs on preparation's
+# output.  HPacker's pipeline loses a residue whose name is a variant: measured
+# on a prepared 6WRH chain, mutating S111C failed with "Protein residue missing
+# after HPacker hydrogen rebuild: A:189 CYS", and renaming that file's CYM to
+# CYS -- nothing else changed -- made the same mutation succeed.
+
+def test_variants_are_canonicalised_for_hpacker_and_restored(tmp_path):
+    from mdclaw.structure.mutation import (
+        _canonicalise_variants_for_hpacker,
+        _restore_variants,
+    )
+
+    rows = [
+        "ATOM      1  N   CYM A 189      10.000  10.000  10.000  1.00  0.00           N\n",
+        "ATOM      2  SG  CYM A 189      11.000  10.000  10.000  1.00  0.00           S\n",
+        "ATOM      3  N   HIP A 269      20.000  10.000  10.000  1.00  0.00           N\n",
+        "ATOM      4  N   ALA A 270      24.000  10.000  10.000  1.00  0.00           N\n",
+        "HETATM    5 ZN    ZN A 901      12.000  11.000  10.000  1.00  0.00          ZN\n",
+        "END\n",
+    ]
+    source = tmp_path / "in.pdb"
+    source.write_text("".join(rows))
+    packed = tmp_path / "packed.pdb"
+
+    original = _canonicalise_variants_for_hpacker(source, packed)
+    names = [line[17:20].strip() for line in packed.read_text().splitlines()
+             if line.startswith(("ATOM", "HETATM"))]
+    assert names == ["CYS", "CYS", "HIP", "ALA", "ZN"], \
+        "the cysteine goes to HPacker as CYS; the histidine keeps its tautomer"
+    assert list(original.values()) == ["CYM"], \
+        "one entry, for the one residue whose name was changed"
+
+    _restore_variants(packed, original)
+    names = [line[17:20].strip() for line in packed.read_text().splitlines()
+             if line.startswith(("ATOM", "HETATM"))]
+    assert names == ["CYM", "CYM", "HIP", "ALA", "ZN"], "and come back as themselves"
+
+
+def test_a_rebuilt_hydrogen_does_not_come_back_with_the_variant(tmp_path):
+    """A CYM carrying HG is not a thiolate.
+
+    HPacker's pipeline rebuilds hydrogens on the residue it was handed, so a
+    CYM sent in as CYS returns with the HG that completes a thiol.  Restoring
+    the name alone produced an 11-atom CYM, which the topology builder refused
+    with "expected 4, restored 4, validated 0".
+    """
+    from mdclaw.structure.mutation import _restore_variants
+
+    path = tmp_path / "rebuilt.pdb"
+    path.write_text(
+        "ATOM      1  SG  CYS A 189      11.000  10.000  10.000  1.00  0.00           S\n"
+        "ATOM      2  HG  CYS A 189      11.800  10.400  10.000  1.00  0.00           H\n"
+        "END\n")
+    removed = _restore_variants(path, {("A", " 189", " "): "CYM"})
+    kept = [line[12:16].strip() for line in path.read_text().splitlines()
+            if line.startswith("ATOM")]
+    assert kept == ["SG"], "the hydrogen a thiolate cannot hold is taken back"
+    assert removed == {"CYM": 1}, "and the removal is reported"
+
+
+def test_histidine_tautomers_are_not_canonicalised(tmp_path):
+    """Canonicalising them loses which nitrogen carries the proton.
+
+    Measured on a real chain: sending HID and HIE through under the name HIS
+    brought some of them back with the other tautomer's hydrogen, and stripping
+    by name then left them at 16 atoms where they went in at 17.  They pass
+    through HPacker intact, so they are left alone.
+    """
+    from mdclaw.structure.mutation import _canonicalise_variants_for_hpacker
+
+    source = tmp_path / "his.pdb"
+    source.write_text(
+        "ATOM      1  ND1 HID A  70      10.000  10.000  10.000  1.00  0.00           N\n"
+        "ATOM      2  NE2 HIE A  86      20.000  10.000  10.000  1.00  0.00           N\n"
+        "END\n")
+    target = tmp_path / "out.pdb"
+    assert _canonicalise_variants_for_hpacker(source, target) == {}
+    assert source.read_text() == target.read_text()
+
+
+def test_restoring_nothing_leaves_the_file_alone(tmp_path):
+    path = tmp_path / "plain.pdb"
+    text = "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\nEND\n"
+    path.write_text(text)
+    from mdclaw.structure.mutation import _restore_variants
+    _restore_variants(path, {})
+    assert path.read_text() == text
+
+
+def test_a_conect_to_a_removed_hydrogen_goes_with_it(tmp_path):
+    """The packer carries CONECT across, so a record must not outlive its atom."""
+    from mdclaw.structure.mutation import _restore_variants
+
+    path = tmp_path / "conect.pdb"
+    path.write_text(
+        "ATOM      1  SG  CYS A 189      11.000  10.000  10.000  1.00  0.00           S\n"
+        "ATOM      2  HG  CYS A 189      11.800  10.400  10.000  1.00  0.00           H\n"
+        "ATOM      3  SG  CYS A 224      14.000  10.000  10.000  1.00  0.00           S\n"
+        "CONECT    1    2\n"
+        "CONECT    1    3\n"
+        "END\n")
+    _restore_variants(path, {("A", " 189", " "): "CYM"})
+    text = path.read_text()
+    assert "CONECT    1    2" not in text, "the record naming the removed HG is gone"
+    assert "CONECT    1    3" in text, "and the one that still has both atoms stays"
+
+
+def test_only_subset_variants_may_be_canonicalised():
+    """ASH and GLH add a hydrogen; no amount of removing atoms puts one back."""
+    from mdclaw.structure.mutation import _HPACKER_UNSAFE_VARIANTS
+
+    assert set(_HPACKER_UNSAFE_VARIANTS) == {"CYM", "CYX"}
+    for name in ("ASH", "GLH", "HIP", "HID", "HIE"):
+        assert name not in _HPACKER_UNSAFE_VARIANTS, \
+            f"{name} cannot be restored by removing atoms"

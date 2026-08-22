@@ -50,6 +50,122 @@ pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 
 
+# Variants that may be sent to HPacker under a parent name, and only those.
+#
+# The mechanism is rename, rebuild, then take back the atoms the variant cannot
+# hold, so it can only restore a variant that is a *subset* of its parent: one
+# with atoms absent and none added. ASH, GLH and HIP add a hydrogen to theirs,
+# and no amount of removing atoms puts a hydrogen back, so they must never join
+# this map -- if one of them ever breaks HPacker the answer is to re-apply
+# protonation after packing, not to rename it here.
+#
+# CYM and CYX qualify, and they are also the measured need: on a prepared 6WRH
+# chain, mutating S111C failed with "Protein residue missing after HPacker
+# hydrogen rebuild: A:189 CYS", and renaming that file's CYM to CYS -- nothing
+# else changed -- made the same mutation succeed.
+#
+# Histidine tautomers are excluded although HID and HIE are subsets of HIS:
+# they pass through intact, and canonicalising them is worse than leaving them.
+# The rebuild can return the other tautomer's hydrogen, and restoring the
+# original name then strips the one it does have -- measured, HID and HIE came
+# back at 16 atoms where they went in at 17. LYN is a subset too and is left
+# out until it has been measured rather than assumed.
+def _hpacker_unsafe_variants() -> dict:
+    from mdclaw.structure.protonation import _PROTONATION_STATE_SPECS
+
+    return {
+        name: spec["base"]
+        for name, spec in _PROTONATION_STATE_SPECS.items()
+        if name in ("CYM", "CYX") and spec["absent"] and not spec["present"]
+    }
+
+
+_HPACKER_UNSAFE_VARIANTS = _hpacker_unsafe_variants()
+
+
+def _canonicalise_variants_for_hpacker(source: Path, target: Path) -> dict:
+    """Write *source* to *target* with unsafe variants under their parent name.
+
+    HPacker's pipeline loses a residue whose name is a variant: measured on a
+    prepared 6WRH chain, a CYM is absent from the packed output and the run
+    fails with "Protein residue missing after HPacker hydrogen rebuild".
+    Renaming the same file's CYM to CYS -- nothing else changed -- makes the
+    mutation succeed.  The variants carry no atoms of their own that matter
+    here, so the names go out and come back.
+
+    Returns {(chain, resseq, icode): original name} for restoring afterwards.
+    """
+    original = {}
+    lines = []
+    for line in source.read_text().splitlines(keepends=True):
+        if line.startswith(("ATOM", "HETATM")):
+            name = line[17:20].strip().upper()
+            parent = _HPACKER_UNSAFE_VARIANTS.get(name)
+            if parent:
+                original[(line[21], line[22:26], line[26])] = name
+                line = line[:17] + f"{parent:>3}" + line[20:]
+        lines.append(line)
+    target.write_text("".join(lines))
+    return original
+
+
+def _restore_variants(path: Path, original: dict) -> dict:
+    """Put the variant names back, and take back the atoms they must not have.
+
+    Renaming alone is not enough.  HPacker's pipeline rebuilds hydrogens on the
+    residue it was handed, so a CYM that went in as CYS comes back with the HG
+    that completes a thiol -- and a CYM carrying HG is not a thiolate.  The
+    topology builder catches it ("expected 4, restored 4, validated 0") rather
+    than the state being wrong silently, but the name has to come back with the
+    atom set it implies.
+
+    Returns {variant name: atoms removed}, for reporting.
+    """
+    if not original:
+        return {}
+    from mdclaw.structure.protonation import _PROTONATION_STATE_SPECS
+
+    removed: dict = {}
+    dropped_serials: set = set()
+    seen: set = set()
+    lines = []
+    for line in path.read_text().splitlines(keepends=True):
+        if line.startswith(("ATOM", "HETATM")):
+            key = (line[21], line[22:26], line[26])
+            name = original.get(key)
+            if name:
+                seen.add(key)
+                forbidden = _PROTONATION_STATE_SPECS.get(name, {}).get("absent", set())
+                if line[12:16].strip() in forbidden:
+                    removed[name] = removed.get(name, 0) + 1
+                    dropped_serials.add(line[6:11].strip())
+                    continue
+                line = line[:17] + f"{name:>3}" + line[20:]
+        lines.append(line)
+
+    # A CONECT naming an atom that is no longer there points at nothing, and the
+    # packer deliberately carries CONECT across, so the records follow the atoms.
+    if dropped_serials:
+        kept = []
+        for line in lines:
+            if line.startswith("CONECT"):
+                fields = [line[6 + 5 * i:11 + 5 * i].strip() for i in range(5)]
+                if any(field in dropped_serials for field in fields if field):
+                    continue
+            kept.append(line)
+        lines = kept
+
+    missing = set(original) - seen
+    if missing:
+        logger.warning(
+            "%d residue(s) sent to HPacker under a parent name did not come back "
+            "under the same (chain, number): %s. Their variant names were not "
+            "restored -- check whether the packer renumbered the chain.",
+            len(missing), sorted(missing)[:4])
+    path.write_text("".join(lines))
+    return removed
+
+
 @node_tool(node_type="prep")
 def create_mutated_structure(
     pdb_file: Optional[str] = None,
@@ -246,8 +362,15 @@ def create_mutated_structure(
     from mdclaw.sidechain_packer import run_hpacker_mutation
 
     logger.info("Running HPacker mutation: %s -> %s", pdb_path, output_path)
+    # HPacker drops a residue whose name is a protonation variant, so the file
+    # goes in under parent names and comes back out under its own.
+    packer_input = (base_dir / f"{pref}hpacker_input.pdb").resolve()
+    variant_names = _canonicalise_variants_for_hpacker(pdb_path, packer_input)
+    if variant_names:
+        logger.info("Canonicalised %d protonation variant residue(s) for HPacker",
+                    len(variant_names))
     hpacker_result = run_hpacker_mutation(
-        pdb_path,
+        packer_input,
         output_path,
         mutations=mutations,
         sequence=sequence,
@@ -255,6 +378,10 @@ def create_mutated_structure(
         repack_radius_angstrom=repack_radius_angstrom,
         refinement_iterations=refinement_iterations,
     )
+    if not hpacker_result.success:
+        # Never leave it behind: it is a .pdb in the node's artifacts, and a
+        # consumer looking for "the prepared structure" would find it there.
+        packer_input.unlink(missing_ok=True)
     result["warnings"].extend(hpacker_result.warnings)
     result["errors"].extend(hpacker_result.errors)
     result["code"] = hpacker_result.code
@@ -263,6 +390,25 @@ def create_mutated_structure(
     result["hpacker_version"] = hpacker_result.hpacker_version
 
     if hpacker_result.success and output_path.is_file():
+        # A residue the mutation itself replaced is not the variant it was:
+        # a CYM sent in as CYS and packed to ALA must not be renamed CYM again.
+        for spec in hpacker_result.mutation_specs or []:
+            match = re.match(r"^(?:([^:]+):)?[A-Za-z](-?\d+)([A-Za-z]?)[A-Za-z]$",
+                             str(spec).strip())
+            if not match:
+                continue
+            chain = (match.group(1) or " ").strip() or " "
+            key_number = f"{match.group(2):>4}"
+            for icode in {" ", (match.group(3) or " ")}:
+                variant_names.pop((chain, key_number, icode), None)
+        stripped = _restore_variants(output_path, variant_names)
+        if stripped:
+            result["warnings"].append(
+                "Removed hydrogens HPacker rebuilt onto protonation variants: "
+                + ", ".join(f"{count} from {name}" for name, count in sorted(stripped.items()))
+                + " -- the variant name implies the atom set, and the rebuild "
+                  "completes the parent residue instead")
+        packer_input.unlink(missing_ok=True)
         result["success"] = True
         result["output_dir"] = str(base_dir)
         result["output_path"] = str(output_path)
