@@ -1,0 +1,43 @@
+REMARK  Trimmed from RCSB 1BPI: the six cysteines of BPTI's three disulfides.
+REMARK  SSBOND records are kept.  Measured SG-SG: 2.01, 2.03, 2.02 A.
+REMARK  These must keep being detected after the metal and valence guards.
+SSBOND   1 CYS A    5    CYS A   55                          1555   1555  2.01  
+SSBOND   2 CYS A   14    CYS A   38                          1555   1555  2.03  
+SSBOND   3 CYS A   30    CYS A   51                          1555   1555  2.02  
+ATOM     38  N   CYS A   5      33.239  10.364  -6.649  1.00  5.41           N  
+ATOM     39  CA  CYS A   5      31.773  10.208  -6.681  1.00  5.42           C  
+ATOM     40  C   CYS A   5      31.396   8.841  -7.132  1.00  6.63           C  
+ATOM     41  O   CYS A   5      30.234   8.461  -6.967  1.00  8.27           O  
+ATOM     42  CB  CYS A   5      31.195  11.255  -7.630  1.00  7.57           C  
+ATOM     43  SG  CYS A   5      31.456  12.942  -7.124  1.00  8.77           S  
+ATOM    109  N   CYS A  14      34.093   2.099  12.694  1.00  6.29           N  
+ATOM    110  CA  CYS A  14      33.450   2.557  13.906  1.00  6.68           C  
+ATOM    111  C   CYS A  14      32.003   2.205  13.922  1.00  5.65           C  
+ATOM    112  O   CYS A  14      31.414   1.805  12.909  1.00  7.96           O  
+ATOM    113  CB  CYS A  14      33.737   4.034  14.121  1.00  5.49           C  
+ATOM    114  SG  CYS A  14      35.432   4.427  14.566  1.00  6.71           S  
+ATOM    241  N   CYS A  30      21.772  10.963  -5.323  1.00  3.88           N  
+ATOM    242  CA  CYS A  30      22.257  10.927  -3.921  1.00  3.04           C  
+ATOM    243  C   CYS A  30      21.283  10.194  -3.076  1.00  5.39           C  
+ATOM    244  O   CYS A  30      20.063  10.500  -3.140  1.00  6.25           O  
+ATOM    245  CB  CYS A  30      22.480  12.359  -3.449  1.00  5.51           C  
+ATOM    246  SG  CYS A  30      23.777  13.225  -4.312  1.00  6.79           S  
+ATOM    301  N   CYS A  38      33.879   7.245  12.032  1.00  4.90           N  
+ATOM    302  CA  CYS A  38      35.282   7.502  11.824  1.00  5.55           C  
+ATOM    303  C   CYS A  38      35.767   7.131  10.471  1.00  6.78           C  
+ATOM    304  O   CYS A  38      35.197   6.242   9.811  1.00  6.12           O  
+ATOM    305  CB  CYS A  38      36.123   6.888  12.935  1.00  5.90           C  
+ATOM    306  SG  CYS A  38      36.284   5.103  12.857  1.00  6.59           S  
+ATOM    407  N   CYS A  51      25.796  16.839  -1.641  1.00  4.32           N  
+ATOM    408  CA  CYS A  51      26.050  15.720  -2.551  1.00  3.47           C  
+ATOM    409  C   CYS A  51      25.771  16.066  -3.961  1.00  4.90           C  
+ATOM    410  O   CYS A  51      26.565  15.754  -4.865  1.00  5.88           O  
+ATOM    411  CB  CYS A  51      25.224  14.529  -2.059  1.00  3.72           C  
+ATOM    412  SG  CYS A  51      25.341  13.057  -3.044  1.00  6.26           S  
+ATOM    441  N   CYS A  55      28.696  16.005  -6.811  1.00  7.34           N  
+ATOM    442  CA  CYS A  55      28.650  14.780  -7.571  1.00  5.84           C  
+ATOM    443  C   CYS A  55      27.590  14.738  -8.610  1.00  6.76           C  
+ATOM    444  O   CYS A  55      27.589  13.726  -9.376  1.00  8.16           O  
+ATOM    445  CB  CYS A  55      28.579  13.580  -6.633  1.00  5.58           C  
+ATOM    446  SG  CYS A  55      30.061  13.221  -5.711  1.00  7.77           S  
+END

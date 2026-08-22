@@ -126,6 +126,87 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
     }
 
 
+# Metals whose sulfur coordination is routinely mistaken for a disulfide.
+# Two cysteines ligating the same metal sit far closer than two unrelated ones:
+# measured on RCSB 6W9C chain C, SG(192)-SG(224) is 3.00 A with the zinc 2.85
+# and 2.57 A away from those same sulfurs.  That pair fell inside the 3.0 A
+# candidate window, so distance alone bonded two ligands of one metal site to
+# each other; the built system carried a real 0.2038 nm bond term and the
+# sulfurs closed to 2.04 A during MD, destroying the site.
+#
+# The guard is physical, not documentary: it does not ask whether the deposit
+# annotated a disulfide.  A missing SSBOND record is not evidence of absence --
+# depositions omit them and simulations are run on unannotated disulfides -- so
+# only the presence of a bridging metal rejects a pair.
+#
+# It is a conservative guard, not a proof.  A metal within METAL_SULFUR_ANGSTROM
+# of both sulfurs suppresses the pair whether or not it is really coordinating
+# them, and detection runs on the whole structure, so a metal that the chain
+# selection later drops can still suppress a pair in the part that is kept.  It
+# withholds an automatic bond; it does not assert that no bond exists.
+DISULFIDE_METAL_ELEMENTS = frozenset({
+    "ZN", "FE", "CU", "NI", "CO", "MN", "CD", "HG", "PT", "AU", "AG", "MO", "W",
+})
+
+# Longest metal-S separation that still counts as coordination.  Zn-S is 2.3 A
+# and Hg-S 2.4 A, but deposited sites are not that tidy: in 6W9C the same Cys4
+# zinc measures 2.19/2.53/3.21 A in chain A and 2.48/2.85/2.57 A in chain C, so
+# a 3.0 A limit left chain A's pair looking like a disulfide while chain C's was
+# rejected.  3.5 A covers the distortion.  It cannot mistake a real disulfide
+# for a metal site by itself: bonded sulfurs sit 2.03 A apart, while every
+# metal-bridged pair measured here is 2.9-3.0 A.
+METAL_SULFUR_ANGSTROM = 3.5
+
+
+def _pair_key(pair: dict) -> frozenset:
+    """A disulfide identified by its two (chain, resnum) ends, unordered."""
+    return frozenset({
+        (pair["cys1"]["chain"], pair["cys1"]["resnum"]),
+        (pair["cys2"]["chain"], pair["cys2"]["resnum"]),
+    })
+
+
+def _bridging_metal(pos1, pos2, metal_atoms) -> Optional[tuple]:
+    """The metal coordinating both sulfurs, as (name, d1, d2), or None."""
+    best = None
+    for name, pos in metal_atoms:
+        d1, d2 = pos.dist(pos1), pos.dist(pos2)
+        if d1 <= METAL_SULFUR_ANGSTROM and d2 <= METAL_SULFUR_ANGSTROM:
+            if best is None or max(d1, d2) < max(best[1], best[2]):
+                best = (name, round(d1, 2), round(d2, 2))
+    return best
+
+
+def _enforce_one_disulfide_per_cysteine(pairs: List[dict]) -> List[dict]:
+    """A sulfur holds one disulfide, so a residue may appear in one pair.
+
+    Distance alone does not respect that.  6W9C's three copies put Cys270 of
+    chain A within 3 A of Cys270 of chain B (2.84) and of chain C (3.00), which
+    offers A270 two bonds at once.  Records from the deposit outrank
+    distance-only candidates, and among equals the shorter bond wins.
+    """
+    def rank(pair: dict) -> tuple:
+        recorded = 0 if "ssbond" in str(pair.get("source") or "") else 1
+        distance = pair.get("distance_angstrom")
+        return (recorded, distance if distance is not None else float("inf"))
+
+    claimed: set = set()
+    keep: set = set()
+    for pair in sorted(pairs, key=rank):
+        ends = _pair_key(pair)
+        if ends & claimed:
+            logger.warning(
+                "Dropping disulfide candidate %s-%s (%s A): a cysteine cannot "
+                "hold two disulfides and a closer or recorded pair claims it",
+                pair["cys1"]["resnum"], pair["cys2"]["resnum"],
+                pair.get("distance_angstrom"),
+            )
+            continue
+        claimed |= ends
+        keep.add(ends)
+    return [pair for pair in pairs if _pair_key(pair) in keep]
+
+
 def _merge_disulfide_pairs(
     ssbond_pairs: List[dict],
     distance_pairs: List[dict],
@@ -143,11 +224,7 @@ def _merge_disulfide_pairs(
     BOTH residues' chains are selected — pairs that span dropped chains
     cannot exist in the merged PDB downstream.
     """
-    def _key(pair: dict) -> frozenset:
-        return frozenset({
-            (pair["cys1"]["chain"], pair["cys1"]["resnum"]),
-            (pair["cys2"]["chain"], pair["cys2"]["resnum"]),
-        })
+    _key = _pair_key
 
     selected = set(select_chains) if select_chains else None
 
@@ -177,7 +254,7 @@ def _merge_disulfide_pairs(
         else:
             merged[k] = dict(pair)
 
-    return list(merged.values())
+    return _enforce_one_disulfide_per_cysteine(list(merged.values()))
 
 
 # =============================================================================
@@ -208,6 +285,16 @@ def _detect_disulfide_candidates(structure_path: Path) -> list[dict]:
 
         model = st[0]
 
+        # Metal atoms first: a pair of sulfurs ligating one of these is a metal
+        # site, not a disulfide, however close the two sulfurs happen to be.
+        metal_atoms = []
+        for chain in model:
+            for res in chain:
+                for atom in res:
+                    element = (atom.element.name or "").strip().upper()
+                    if element in DISULFIDE_METAL_ELEMENTS:
+                        metal_atoms.append((f"{res.name}{res.seqid.num}", atom.pos))
+
         # Find all CYS residues with SG atoms
         cys_residues = []
         for chain in model:
@@ -233,6 +320,18 @@ def _detect_disulfide_candidates(structure_path: Path) -> list[dict]:
 
                 # Typical S-S distance is ~2.03Å, consider up to 3.0Å as candidates
                 if distance < 3.0:
+                    bridging = _bridging_metal(
+                        cys1["sg_pos"], cys2["sg_pos"], metal_atoms
+                    )
+                    if bridging is not None:
+                        logger.info(
+                            "Not a disulfide: %s%s-%s%s are %.2f A apart but both "
+                            "coordinate %s (%.2f and %.2f A)",
+                            cys1["resname"], cys1["resnum"],
+                            cys2["resname"], cys2["resnum"], distance,
+                            bridging[0], bridging[1], bridging[2],
+                        )
+                        continue
                     confidence = "high" if distance < 2.5 else "medium"
                     candidates.append({
                         "cys1": {

@@ -1,0 +1,25 @@
+REMARK  Trimmed from RCSB 6W9C chain C: the structural zinc and the four
+REMARK  cysteines that coordinate it.  The deposit carries no SSBOND record.
+REMARK  SG(192)-SG(224) is 3.00 A -- inside the old 3.0 A distance window,
+REMARK  so disulfide detection bonded two metal ligands to each other.
+ATOM   6395  N   CYS C 189     -75.511  29.765  41.611  1.00 93.15           N  
+ATOM   6396  CA  CYS C 189     -75.073  30.997  42.328  1.00 95.95           C  
+ATOM   6397  C   CYS C 189     -76.318  31.808  42.711  1.00 97.89           C  
+ATOM   6398  O   CYS C 189     -77.244  31.899  41.872  1.00101.20           O  
+ATOM   6399  CB  CYS C 189     -74.121  31.847  41.484  1.00 97.47           C  
+ATOM   6400  SG  CYS C 189     -73.343  33.220  42.382  1.00 99.47           S  
+ATOM   6417  N   CYS C 192     -76.128  34.888  39.987  1.00 98.93           N  
+ATOM   6418  CA  CYS C 192     -76.295  34.620  38.528  1.00 98.54           C  
+ATOM   6419  C   CYS C 192     -77.193  33.403  38.271  1.00 95.79           C  
+ATOM   6420  O   CYS C 192     -77.167  32.899  37.127  1.00 94.75           O  
+ATOM   6421  CB  CYS C 192     -74.946  34.406  37.856  1.00 99.50           C  
+ATOM   6422  SG  CYS C 192     -73.746  35.684  38.310  1.00102.03           S  
+ATOM   6664  N   CYS C 224     -67.732  32.250  39.520  1.00100.02           N  
+ATOM   6665  CA  CYS C 224     -68.850  32.604  38.595  1.00 99.28           C  
+ATOM   6666  C   CYS C 224     -68.299  33.323  37.352  1.00 97.84           C  
+ATOM   6667  O   CYS C 224     -67.766  34.441  37.518  1.00 95.49           O  
+ATOM   6668  CB  CYS C 224     -69.894  33.465  39.305  1.00 99.82           C  
+ATOM   6669  SG  CYS C 224     -71.222  34.070  38.229  1.00100.40           S  
+HETATM 7372 ZN    ZN C 401     -35.337  13.022  37.125  1.00 53.87          ZN  
+HETATM 7373 ZN    ZN C 402     -72.359  34.497  40.498  1.00117.57          ZN  
+END

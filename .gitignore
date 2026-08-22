@@ -62,6 +62,9 @@ outputs/
 ref/
 slide/
 *.pdb
+# Test fixtures are inputs, not output: the guards they pin exist because real
+# deposits produced them, and a test that has to fetch from RCSB is not a test.
+!tests/data/*.pdb
 # but ship the prebuilt bundled membrane patch cache (equilibrated patch PDBs)
 !mdclaw/data/membrane_patches/**/*.pdb
 *.mol2
