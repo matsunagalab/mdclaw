@@ -55,7 +55,15 @@ class TestPipelineMetalDag:
         merged_pdb = node_artifact(job_dir, self.prep_id, "merged_pdb")
         merged_text = merged_pdb.read_text()
         assert " ZN " in merged_text
-        assert " CYS " in merged_text or " CYX " in merged_text
+        # The zinc's own cysteines come out as CYM: a cysteine ligating a metal
+        # is a thiolate, and preparation assigns that rather than leaving
+        # pdb2pqr to decide without knowing the metal is there. 4ZNF is
+        # Cys2His2, so the two histidines are deliberately left alone -- which
+        # nitrogen coordinates decides the tautomer and a distance does not say.
+        assert " CYM " in merged_text, "the metal's cysteines are thiolates"
+        assert result["metal_protonation_applied"], "and the assignment is recorded"
+        assert all(state["state"] == "CYM"
+                   for state in result["metal_protonation_applied"])
 
     def test_step3_topology_builds_with_standard_zinc_ion(self, job_dir):
         """Default OPC water XML provides a bare ZN template."""
