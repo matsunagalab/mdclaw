@@ -488,8 +488,18 @@ def _apply_protonation_states_with_modeller(
         matched: dict[int, dict[str, str]] = {}
 
         for record in protonation_states:
+            # The chain name may not survive the split: PDB's chain column is one
+            # character wide, so a multi-letter author chain (7QVK's "BBB")
+            # reaches this file as "B" while the record still says "BBB". An
+            # exact lookup then misses and fails the whole chain on
+            # "target not found", which is how metal-derived states would break
+            # every such structure.
             site = (record["chain"], record["resnum"], record.get("icode", ""))
             residue = residue_by_site.get(site)
+            if residue is None and len(str(record["chain"]).strip()) > 1:
+                residue = residue_by_site.get(
+                    (str(record["chain"]).strip()[:1], record["resnum"],
+                     record.get("icode", "")))
             if residue is None:
                 result["errors"].append(
                     f"Protonation target not found: {record['chain']}:{record['resnum']}"
@@ -507,6 +517,28 @@ def _apply_protonation_states_with_modeller(
                 )
                 continue
 
+            # Asking for the state a residue already holds must be a no-op.
+            # It was not: renaming CYM to its base CYS and handing that to
+            # ``addHydrogens`` with the CYM variant re-added the whole set,
+            # taking the residue from 10 atoms to 14 with H, HA, HB2 and HB3
+            # duplicated.  Nothing downstream noticed, because the validation
+            # below compares sets of names.
+            if current_name == state:
+                result["applied_states"].append({
+                    "chain": record["chain"],
+                    "resnum": record["resnum"],
+                    "icode": record.get("icode", ""),
+                    "state": state,
+                    "modeller_variant": "",
+                    "already_in_requested_state": True,
+                })
+                if state in {"HID", "HIE", "HIP"}:
+                    key = f"{record['chain']}:{record['resnum']}"
+                    if record.get("icode"):
+                        key += f":{record['icode']}"
+                    result["histidine_states"][key] = state
+                continue
+
             residue.name = spec["base"]
             variants[residue.index] = spec["modeller_variant"]
             matched[residue.index] = record
@@ -521,14 +553,20 @@ def _apply_protonation_states_with_modeller(
             state = record["state"]
             residue = rebuilt_residues[residue_index]
             residue.name = state
-            atoms = {atom.name for atom in residue.atoms()}
+            names = [atom.name for atom in residue.atoms()]
+            atoms = set(names)
             spec = _PROTONATION_STATE_SPECS[state]
             missing = sorted(spec["present"] - atoms)
             forbidden = sorted(spec["absent"] & atoms)
-            if missing or forbidden:
+            # Count, do not just intersect: a set cannot see an atom added
+            # twice, so a residue that came back with four duplicated
+            # hydrogens passed this check with success=True and no errors.
+            duplicated = sorted({name for name in names if names.count(name) > 1})
+            if missing or forbidden or duplicated:
                 result["errors"].append(
                     f"Protonation validation failed for {record['chain']}:{record['resnum']} "
-                    f"as {state}: missing={missing}, forbidden_present={forbidden}"
+                    f"as {state}: missing={missing}, forbidden_present={forbidden}, "
+                    f"duplicated={duplicated}"
                 )
                 continue
             applied = {
