@@ -1046,6 +1046,7 @@ def run_production(
                     state.getPeriodicBoxVectors() if is_periodic else None
                 ),
                 image=is_periodic,
+                warnings=result["warnings"],
             )
         )
 

@@ -489,3 +489,56 @@ def test_a_long_bound_chain_is_not_carried_a_box_away():
     assert nearest < 0.5, "the bound chain was carried away from the solute"
     # bulk solvent still fills the cell centred on the solute
     assert 0.0 <= out[-1][0] <= 10.0
+
+
+# --- a residue key is only an identity inside one molecule --------------------
+# Lipid21 writes its heads and tails into the same chain letters the protein
+# uses and restarts their numbering, so in a real membrane topology 280
+# (chain, resnum, icode) keys name both a lipid and an amino acid. Overlaying on
+# that renames by collision: restoring one such file from *itself* -- an identity
+# operation -- rewrote 5449 atom records, PA to LEU 552 times.
+
+def test_an_ambiguous_source_is_refused_rather_than_applied(tmp_path):
+    from mdclaw.structure.pdb_utils import restore_resnames_by_residue_key
+
+    source = tmp_path / "assembled.pdb"
+    source.write_text(
+        "ATOM      1  N   TYR A  18       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  P   PA  A  18      40.000   0.000   0.000  1.00  0.00           P\n"
+        "END\n")
+    assert restore_resnames_by_residue_key(source.read_text(), source) is None
+
+
+def test_a_source_of_one_molecule_still_restores(tmp_path):
+    from mdclaw.structure.pdb_utils import restore_resnames_by_residue_key
+
+    source = tmp_path / "protein.pdb"
+    source.write_text(
+        "ATOM      1  N   HIE A  18       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  SG  CYX A  19       4.000   0.000   0.000  1.00  0.00           S\n"
+        "END\n")
+    normalised = source.read_text().replace("HIE", "HIS").replace("CYX", "CYS")
+    restored = restore_resnames_by_residue_key(normalised, source)
+    assert restored is not None
+    names = [line[17:20].strip() for line in restored.splitlines()
+             if line.startswith("ATOM")]
+    assert names == ["HIE", "CYX"]
+
+
+def test_a_restore_that_cannot_happen_is_reported(tmp_path):
+    """It used to fall back to the un-restored text and report success."""
+    from openmm.app import PDBFile
+
+    from mdclaw.structure.pdb_utils import render_simulation_pdb_preserving_resnames
+
+    source = tmp_path / "topology.pdb"
+    source.write_text(
+        "ATOM      1  N   HIE A  18       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  CA  HIE A  18       1.450   0.900   0.000  1.00  0.00           C\n"
+        "END\n")
+    pdb = PDBFile(str(source))
+    warnings: list = []
+    text = render_simulation_pdb_preserving_resnames(
+        pdb.topology, pdb.positions, str(tmp_path / "absent.pdb"), warnings=warnings)
+    assert warnings and "not restored" in warnings[0]
+    assert "HIS" in text, "and the caller can see why its file says HIS"

@@ -676,6 +676,26 @@ def build_openmm_system(
         topology_pdb_text = preserve_long_resnames_in_pdb_text(
             topology_buffer.getvalue(), modeller.topology
         )
+        # And restore what the loader normalised, which un-truncating does not
+        # touch. This path had only the truncation patch, so its topology.pdb
+        # lost every reader-normalised name: measured on a prepared structure
+        # carrying CYX 2 / HIE 5 / HID 4 / WAT 43530, it wrote CYS 10 / HIS 9 /
+        # HOH 43530. The amber path substitutes those names before Pablo and
+        # restores them afterwards; here the source PDB is the record, and the
+        # atom count survives the load, so the atom-order overlay applies.
+        from mdclaw.structure.pdb_utils import (
+            restore_resnames_from_source_pdb,
+        )
+        _restored = restore_resnames_from_source_pdb(topology_pdb_text, pdb_path)
+        if _restored is None:
+            result["warnings"].append(
+                f"Residue names were not restored from {pdb_path}: the source "
+                "could not be read or its atom order does not match the built "
+                "topology, so names OpenMM normalised on load (HIE and HID as "
+                "HIS, ASH as ASP, CYX as CYS, WAT as HOH) remain normalised in "
+                "topology.pdb")
+        else:
+            topology_pdb_text = _restored
         atomic_write_text_group([
             (system_xml_file, XmlSerializer.serialize(system)),
             (state_xml_file, XmlSerializer.serialize(state)),

@@ -250,10 +250,30 @@ def restore_resnames_by_residue_key(
     except OSError:
         return None
     name_by_key: dict[tuple, str] = {}
+    ambiguous: set = set()
     for line in src_lines:
         if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 27:
             key = (line[21], line[22:26], line[26])
-            name_by_key.setdefault(key, line[17:21].strip())
+            name = line[17:21].strip()
+            if name_by_key.setdefault(key, name) != name:
+                ambiguous.add(key)
+    if ambiguous:
+        # The key is only an identity while the source is one molecule's worth
+        # of residues. An assembled system is not: Lipid21 writes its tails and
+        # heads into the same chain letters the protein uses and restarts their
+        # numbering, so in a real membrane topology 280 keys name both a lipid
+        # and an amino acid. Overlaying on that renames lipids to amino acids --
+        # measured, restoring one such file from *itself* rewrites 5449 atom
+        # records, PA to LEU 552 times. Refuse; the caller keeps the names it
+        # has, which are wrong in a way that is at least uniform.
+        logger.warning(
+            "Not restoring residue names from %s: %d residue key(s) there name "
+            "more than one residue, so the overlay would rename by collision "
+            "(e.g. %s). This source is an assembled system rather than a single "
+            "molecule's residues.",
+            source_pdb, len(ambiguous), sorted(ambiguous)[:3],
+        )
+        return None
     exclude = exclude_keys or set()
     out_lines: list[str] = []
     for line in pdb_text.splitlines():
@@ -317,6 +337,7 @@ def render_simulation_pdb_preserving_resnames(
     box_vectors: Any = None,
     image: bool = False,
     keep_ids: bool = True,
+    warnings: Optional[list] = None,
 ) -> str:
     """Serialize an OpenMM topology+positions to PDB text, preserving the
     Amber/PTM/water residue names that OpenMM's ``PDBFile`` loader normalized
@@ -339,6 +360,10 @@ def render_simulation_pdb_preserving_resnames(
 
     ``image`` whole-molecule images the exported coordinates around the solute;
     see :func:`_image_positions_for_export`.
+
+    ``warnings``, when given, collects the message written if the restore does
+    not happen, so a caller can report that its export carries the reader's names
+    rather than the source's instead of returning a quiet success.
 
     ``keep_ids`` is on, and should stay on: without it ``PDBFile`` renumbers
     every residue 1..N inside its chain and relabels chains by index, so the
@@ -378,6 +403,22 @@ def render_simulation_pdb_preserving_resnames(
             buffer.getvalue(), source_topology_pdb
         )
     if text is None:
+        # The fallback un-truncates long names and nothing else, so the names the
+        # reader normalised stay normalised. That is the defect this function
+        # exists to prevent, and it used to happen in silence: a source whose
+        # atom count differs from the loaded topology -- a multi-MODEL PDB, for
+        # one -- made the restore return None and the caller reported success on
+        # an export carrying HIS where the source had HIE.
+        if source_topology_pdb:
+            message = (
+                f"Residue names were not restored from {source_topology_pdb}: the "
+                "source could not be read or its atom order does not match the "
+                "exported topology, so names OpenMM normalised on load (HIE and "
+                "HID as HIS, ASH as ASP, CYX as CYS, WAT as HOH) remain "
+                "normalised in this file")
+            logger.warning(message)
+            if warnings is not None:
+                warnings.append(message)
         text = preserve_long_resnames_in_pdb_text(buffer.getvalue(), topology)
     return text
 

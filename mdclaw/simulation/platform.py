@@ -145,7 +145,7 @@ def export_state_pdb(
             render_simulation_pdb_preserving_resnames(
                 topology, positions, str(topology_path),
                 box_vectors=box_vectors, keep_ids=keep_ids,
-                image=periodic,
+                image=periodic, warnings=result["warnings"],
             )
         )
 

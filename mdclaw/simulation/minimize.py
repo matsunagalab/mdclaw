@@ -441,6 +441,7 @@ def run_minimization(
                     if minimized_periodic else None
                 ),
                 image=minimized_periodic,
+                warnings=result["warnings"],
             )
         )
         result["minimized_structure"] = str(minimized_structure)

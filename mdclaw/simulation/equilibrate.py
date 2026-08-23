@@ -1011,6 +1011,7 @@ def run_equilibration(
                 topology_pdb_file,
                 box_vectors=final_box_vectors,
                 image=final_box_vectors is not None,
+                warnings=result["warnings"],
             )
         )
         result["final_structure"] = str(final_pdb)
