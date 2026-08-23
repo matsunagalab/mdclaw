@@ -116,6 +116,11 @@ _AMBER_VARIANT_ATOM_CONTRACTS = {
     "GLH": {"required": {"HE2"}, "forbidden": set()},
     "LYN": {"required": set(), "forbidden": {"HZ3"}},
     "CYM": {"required": set(), "forbidden": {"HG"}},
+    # A disulfide cysteine is not a titration state, but it goes through the
+    # same substitute-and-restore and so needs the same contract: without it a
+    # CYX carrying HG validated as passed with an empty forbidden list, while
+    # the identical residue named CYM failed on the same atom.
+    "CYX": {"required": set(), "forbidden": {"HG"}},
 }
 
 

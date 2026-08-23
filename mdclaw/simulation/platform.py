@@ -110,14 +110,20 @@ def export_state_pdb(
             )
             return result
 
+        # Whether the system is periodic is the topology's answer, not the
+        # state's: an OpenMM State always carries box vectors, so taking them
+        # unconditionally stamped a default 2 nm cell onto an export of a
+        # structure that has no CRYST1 at all.
+        periodic = topology.getPeriodicBoxVectors() is not None
         box_vectors = None
-        try:
-            box_vectors = state.getPeriodicBoxVectors()
-        except Exception as exc:  # noqa: BLE001
-            result["warnings"].append(
-                "Could not copy periodic box vectors from state.xml: "
-                f"{type(exc).__name__}: {exc}"
-            )
+        if periodic:
+            try:
+                box_vectors = state.getPeriodicBoxVectors()
+            except Exception as exc:  # noqa: BLE001
+                result["warnings"].append(
+                    "Could not copy periodic box vectors from state.xml: "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
         ensure_directory(output_path.parent)
         # The same export path min / eq / prod use, so this tool cannot drift
@@ -129,10 +135,17 @@ def export_state_pdb(
         from mdclaw.structure.pdb_utils import (
             render_simulation_pdb_preserving_resnames,
         )
+        # Imaged whenever there is a box, as min / eq / prod do. A state.xml
+        # from a production node has molecules that diffused across the
+        # boundary: exporting one measured 293 x 333 x 176 A of coordinates
+        # inside a 109 x 109 x 98 A cell, three box edges of drift, while the
+        # same state imaged is 126 x 130 x 99. On a topology-time state the
+        # imaging is a no-op, so the documented path is unchanged.
         output_path.write_text(
             render_simulation_pdb_preserving_resnames(
                 topology, positions, str(topology_path),
                 box_vectors=box_vectors, keep_ids=keep_ids,
+                image=periodic,
             )
         )
 

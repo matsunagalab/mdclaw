@@ -81,7 +81,8 @@ _CHARGE_FIT_TIMEOUT_FLOOR_SECONDS = 1800  # 30 min
 def _restore_amber_variant_names(topology: Any, amber_variant_resids: dict) -> dict:
     """Put ASH/GLH/LYN/CYM/CYX back on the residues that were renamed for Pablo.
 
-    ``amber_variant_resids`` maps ``(chain, residue number)`` to the record
+    ``amber_variant_resids`` maps ``(chain, residue number, insertion code)`` to
+    the record
     written when the name was substituted. That key is not unique in an
     assembled system -- lipids, ions and waters restart numbering, so a POPC
     tail can share a chain and number with a protein aspartate. Restore only
@@ -94,12 +95,13 @@ def _restore_amber_variant_names(topology: Any, amber_variant_resids: dict) -> d
         "records": [],
     }
     residues = list(topology.residues())
-    for (chain_id, resnum), record in amber_variant_resids.items():
+    for (chain_id, resnum, icode), record in amber_variant_resids.items():
         candidates = [
             residue
             for residue in residues
             if _normalize_pdb_chain_id(residue.chain.id) == chain_id
             and str(residue.id) == resnum
+            and str(getattr(residue, "insertionCode", "") or "").strip() == icode
             and residue.name == record["base_name"]
         ]
         restored = len(candidates) == 1
@@ -985,8 +987,8 @@ def _run_openmmforcefields_build(
     # often re-aligns these fields, so match on stripped value rather than
     # exact bytes and re-emit with PDB-format padding.
     _HIS_AMBER_VARIANTS = ("HID", "HIE", "HIP", "HSD", "HSE", "HSP")
-    his_amber_resids: set[tuple[str, str]] = set()
-    amber_variant_resids: dict[tuple[str, str], dict[str, str]] = {}
+    his_amber_resids: set[tuple[str, str, str]] = set()
+    amber_variant_resids: dict[tuple[str, str, str], dict[str, str]] = {}
     sanitized_input = pablo_input
     needs_sanitize = False
     try:
@@ -1015,13 +1017,21 @@ def _run_openmmforcefields_build(
                     elif rn_strip in _HIS_AMBER_VARIANTS:
                         chain_id = _normalize_pdb_chain_id(line[21:22])
                         resseq = line[22:26]
-                        his_amber_resids.add((chain_id, resseq.strip()))
+                        his_amber_resids.add((chain_id, resseq.strip(),
+                                              line[26:27].strip()))
                         line = line[:17] + "HIS" + line[20:]
                     elif rn_strip in AMBER_RESTORED_VARIANT_BASES:
                         chain_id = _normalize_pdb_chain_id(line[21:22])
                         resseq = line[22:26]
                         base_name = AMBER_RESTORED_VARIANT_BASES[rn_strip]
-                        amber_variant_resids[(chain_id, resseq.strip())] = {
+                        # The insertion code belongs in the key: 52 and 52A are
+                        # two residues, and without it the second overwrites the
+                        # first. An ASH at 52 followed by a CYX at 52A left one
+                        # record saying CYX, restored it, reported expected 1 /
+                        # restored 1 / passed -- and the ASH came out ASP with
+                        # nothing to say so.
+                        amber_variant_resids[(chain_id, resseq.strip(),
+                                              line[26:27].strip())] = {
                             "variant": rn_strip,
                             "base_name": base_name,
                         }
@@ -1049,7 +1059,8 @@ def _run_openmmforcefields_build(
             if residue.name != "HIS":
                 continue
             chain_id = _normalize_pdb_chain_id(residue.chain.id)
-            if (chain_id, str(residue.id)) not in his_amber_resids:
+            icode = str(getattr(residue, "insertionCode", "") or "").strip()
+            if (chain_id, str(residue.id), icode) not in his_amber_resids:
                 continue
             atoms = {a.name for a in residue.atoms()}
             if "HD1" in atoms and "HE2" in atoms:
@@ -1061,7 +1072,9 @@ def _run_openmmforcefields_build(
             else:
                 residue.name = "HID"
 
-    # Same restore for the remaining protonation variants, with the same
+    # Same restore for the remaining substituted variants -- the protonation
+    # ones and the disulfide CYX, which is not a titration state but goes the
+    # same way round -- with the same
     # guard the histidine pass uses: only rename a residue that is still
     # carrying the CCD base name we substituted on the way in. Without it
     # the (chain, resid) key alone decides, and in an assembled membrane

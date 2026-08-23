@@ -183,3 +183,40 @@ def test_export_state_pdb_keeps_the_names_the_reader_normalised(tmp_path):
     numbers = {line[22:26].strip() for line in out.read_text().splitlines()
                if line.startswith("ATOM")}
     assert numbers == {"17", "18"}
+
+
+def test_a_non_periodic_export_gets_no_box_and_no_imaging(tmp_path):
+    """An OpenMM State always carries box vectors; a structure need not.
+
+    Taking them unconditionally stamped a default 2 nm cell onto an export of a
+    structure with no CRYST1, and then imaged the coordinates into it.
+    """
+    from openmm import Context, System, VerletIntegrator, XmlSerializer, unit
+    from openmm.app import PDBFile
+
+    from mdclaw.simulation.platform import export_state_pdb
+
+    source = tmp_path / "vacuum.pdb"
+    source.write_text(
+        "ATOM      1  N   ALA A   1     10.000  20.000  30.000  1.00  0.00           N\n"
+        "ATOM      2  CA  ALA A   1     11.450  20.900  30.000  1.00  0.00           C\n"
+        "END\n")
+    pdb = PDBFile(str(source))
+    assert pdb.topology.getPeriodicBoxVectors() is None
+
+    system = System()
+    for _ in range(2):
+        system.addParticle(12.0 * unit.amu)
+    context = Context(system, VerletIntegrator(1.0 * unit.femtosecond))
+    context.setPositions(pdb.positions)
+    state_file = tmp_path / "state.xml"
+    state_file.write_text(
+        XmlSerializer.serialize(context.getState(getPositions=True)))
+
+    out = tmp_path / "exported.pdb"
+    assert export_state_pdb(str(source), str(state_file), str(out))["success"]
+    text = out.read_text()
+    assert "CRYST1" not in text, "no box was ever asked for"
+    coordinates = [float(line[30:38]) for line in text.splitlines()
+                   if line.startswith("ATOM")]
+    assert coordinates == [10.0, 11.45], "and nothing was wrapped"

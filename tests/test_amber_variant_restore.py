@@ -51,7 +51,7 @@ def _record(variant, base):
 def test_restores_the_residue_it_renamed():
     asp = _Residue("ASP", "A", "97")
     report = _restore_amber_variant_names(
-        _Topology([asp]), {("A", "97"): _record("ASH", "ASP")}
+        _Topology([asp]), {("A", "97", ""): _record("ASH", "ASP")}
     )
     assert asp.name == "ASH"
     assert report["restored_count"] == report["expected_count"] == 1
@@ -62,7 +62,7 @@ def test_leaves_a_lipid_sharing_the_chain_and_number_alone():
     lipid = _Residue("PA", "A", "97")
 
     _restore_amber_variant_names(
-        _Topology([asp, lipid]), {("A", "97"): _record("ASH", "ASP")}
+        _Topology([asp, lipid]), {("A", "97", ""): _record("ASH", "ASP")}
     )
 
     assert asp.name == "ASH"
@@ -77,7 +77,7 @@ def test_leaves_water_and_ions_sharing_the_number_alone():
     ]
 
     _restore_amber_variant_names(
-        _Topology(residues), {("A", "112"): _record("ASH", "ASP")}
+        _Topology(residues), {("A", "112", ""): _record("ASH", "ASP")}
     )
 
     assert [r.name for r in residues] == ["ASH", "HOH", "NA"]
@@ -86,7 +86,7 @@ def test_leaves_water_and_ions_sharing_the_number_alone():
 def test_does_not_cross_chains():
     other_chain = _Residue("ASP", "B", "97")
     report = _restore_amber_variant_names(
-        _Topology([other_chain]), {("A", "97"): _record("ASH", "ASP")}
+        _Topology([other_chain]), {("A", "97", ""): _record("ASH", "ASP")}
     )
     assert other_chain.name == "ASP"
     assert report["records"][0]["candidate_count"] == 0
@@ -98,7 +98,7 @@ def test_does_not_cross_chains():
 def test_every_variant_round_trips(variant, base):
     residue = _Residue(base, "A", "10")
     _restore_amber_variant_names(
-        _Topology([residue]), {("A", "10"): _record(variant, base)}
+        _Topology([residue]), {("A", "10", ""): _record(variant, base)}
     )
     assert residue.name == variant
 
@@ -118,7 +118,7 @@ def test_duplicate_same_key_base_candidates_are_not_renamed():
 
     report = _restore_amber_variant_names(
         _Topology(residues),
-        {("A", "97"): _record("ASH", "ASP")},
+        {("A", "97", ""): _record("ASH", "ASP")},
     )
 
     assert [residue.name for residue in residues] == ["ASP", "ASP"]
@@ -244,3 +244,62 @@ def test_the_protonation_extractor_still_leaves_cyx_alone(tmp_path):
         "TER\nEND\n")
     states = _extract_input_protonation_state_overrides(pdb)
     assert {s["state"] for s in states} == {"CYM"}
+
+
+# --- 52 and 52A are two residues ---------------------------------------------
+# The substitute-and-restore key carried chain and residue number and not the
+# insertion code, so a second variant at the same number overwrote the first
+# record. While only the four titratable variants went through it that took two
+# of them at one number; adding CYX made it reachable with one of each, and then
+# an ASH at 52 followed by a CYX at 52A left a single record saying CYX,
+# restored it, and reported expected 1 / restored 1 / passed while the ASH came
+# out ASP with nothing to say so.
+
+class _FakeChain:
+    def __init__(self, cid):
+        self.id = cid
+
+
+class _FakeResidue:
+    def __init__(self, name, chain, rid, insertion_code=""):
+        self.name, self.chain, self.id = name, chain, rid
+        self.insertionCode = insertion_code
+
+
+class _FakeTopology:
+    def __init__(self, residues):
+        self._residues = residues
+
+    def residues(self):
+        return iter(self._residues)
+
+
+def test_two_variants_at_one_number_are_told_apart_by_the_insertion_code():
+    from mdclaw.amber.openmm_build import _restore_amber_variant_names
+    chain = _FakeChain("A")
+    residues = [_FakeResidue("ASP", chain, "52", ""),
+                _FakeResidue("CYS", chain, "52", "A")]
+    report = _restore_amber_variant_names(_FakeTopology(residues), {
+        ("A", "52", ""): {"variant": "ASH", "base_name": "ASP"},
+        ("A", "52", "A"): {"variant": "CYX", "base_name": "CYS"},
+    })
+    assert report["expected_count"] == 2 and report["restored_count"] == 2
+    assert [r.name for r in residues] == ["ASH", "CYX"]
+
+
+def test_a_variant_the_topology_does_not_carry_is_reported_not_guessed():
+    from mdclaw.amber.openmm_build import _restore_amber_variant_names
+    chain = _FakeChain("A")
+    residues = [_FakeResidue("ASP", chain, "52", "")]
+    report = _restore_amber_variant_names(_FakeTopology(residues), {
+        ("A", "52", ""): {"variant": "ASH", "base_name": "ASP"},
+        ("A", "99", ""): {"variant": "CYX", "base_name": "CYS"},
+    })
+    assert report["expected_count"] == 2 and report["restored_count"] == 1
+
+
+def test_cyx_has_an_atom_contract():
+    """Without one, a CYX carrying HG validated as passed."""
+    from mdclaw.amber.topology_validation import _AMBER_VARIANT_ATOM_CONTRACTS
+    assert _AMBER_VARIANT_ATOM_CONTRACTS["CYX"]["forbidden"] == {"HG"}
+    assert not _AMBER_VARIANT_ATOM_CONTRACTS["CYX"]["required"]
