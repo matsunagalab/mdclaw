@@ -30,7 +30,7 @@ from mdclaw._tool_meta import node_tool
 from mdclaw.solvation.constants import (
     MEMBRANE_BACKENDS,
     MEMBRANE_CACHE_MODES,
-    PATCH_EQUIL_FORCEFIELD,
+    patch_equilibration_forcefield,
     PATCH_SIDE_ANGSTROM,
     PATCH_WATER_RESNAMES,
     _normalize_water_model_name,
@@ -1138,11 +1138,10 @@ def _equilibrate_membrane_patch(
     from mdclaw.amber.build_system import build_amber_system
     from mdclaw.simulation.equilibrate import run_equilibration
     from mdclaw.simulation.minimize import run_minimization
-    from mdclaw.solvation.constants import PATCH_EQUIL_FORCEFIELD
-
     out_dir = Path(out_dir)
     water_model = str(equil_params.get("water_model", "opc"))
-    forcefield = str(equil_params.get("forcefield", PATCH_EQUIL_FORCEFIELD))
+    forcefield = str(equil_params.get("forcefield")
+                     or patch_equilibration_forcefield(water_model))
     temperature = float(equil_params.get("temperature_k", 303.15))
     pressure = float(equil_params.get("pressure_bar", 1.0))
     nvt_ns = float(equil_params.get("nvt_ns", 0.2))
@@ -1241,7 +1240,6 @@ def _compute_membrane_net_charge(
     ``{success, net_charge, warnings, errors}``.
     """
     from mdclaw.amber.build_system import build_amber_system
-    from mdclaw.solvation.constants import PATCH_EQUIL_FORCEFIELD
 
     result: dict = {"success": False, "warnings": [], "errors": []}
     try:
@@ -1253,7 +1251,7 @@ def _compute_membrane_net_charge(
             built = build_amber_system(
                 pdb_file=str(pdb_file),
                 box_dimensions=box_dims,
-                forcefield=PATCH_EQUIL_FORCEFIELD,
+                forcefield=patch_equilibration_forcefield(water_model),
                 water_model=water_model,
                 is_membrane=True,
                 hmr=True,
@@ -2442,10 +2440,12 @@ def embed_in_membrane(
         logger.info(f"Using packmol: {packmol_path}")
 
     if membrane_backend in {"patch-tile", "auto"} and membrane_cache_mode != "off":
+        # The patch holds lipids, water and ions and no protein, so the protein
+        # force field only has to be one the requested water is allowed with.
+        patch_forcefield = patch_equilibration_forcefield(water_model)
         equil_params = {
-            **patch_equilibration_params(),
+            **patch_equilibration_params(water_model),
             "water_model": water_model,
-            "forcefield": PATCH_EQUIL_FORCEFIELD,
         }
         packmol_memgen_version = _packmol_memgen_version()
 
@@ -2481,7 +2481,7 @@ def embed_in_membrane(
             nloop=nloop,
             nloop_all=nloop_all,
             equil_params=equil_params,
-            forcefield=PATCH_EQUIL_FORCEFIELD,
+            forcefield=patch_forcefield,
             cache_dir=membrane_cache_dir,
             packmol_memgen_version=packmol_memgen_version,
         )
@@ -2522,7 +2522,7 @@ def embed_in_membrane(
             nloop=nloop,
             nloop_all=nloop_all,
             equil_params=equil_params,
-            forcefield=PATCH_EQUIL_FORCEFIELD,
+            forcefield=patch_forcefield,
             cache_mode=membrane_cache_mode,
             cache_dir=membrane_cache_dir,
             carve_padding=membrane_carve_padding,

@@ -90,7 +90,7 @@ def main(argv: list[str]) -> int:
     args = _parse_args(argv)
 
     from mdclaw.solvation.constants import (
-        PATCH_EQUIL_FORCEFIELD,
+        patch_equilibration_forcefield,
         PATCH_NLOOP,
         PATCH_NLOOP_ALL,
         PATCH_SIDE_ANGSTROM,
@@ -111,10 +111,13 @@ def main(argv: list[str]) -> int:
     out_root = Path(args.out)
     out_root.mkdir(parents=True, exist_ok=True)
     compositions = _resolve_compositions(args.compositions)
+    # The force field follows the water model, as embed_in_membrane's does: a
+    # patch warmed under ff19SB is keyed under ff19SB, and a TIP3P job then
+    # looks for an ff14SB patch and misses it for good.
+    patch_forcefield = patch_equilibration_forcefield(args.water_model)
     equil_params = {
-        **patch_equilibration_params(),
+        **patch_equilibration_params(args.water_model),
         "water_model": args.water_model,
-        "forcefield": PATCH_EQUIL_FORCEFIELD,
     }
     version = _packmol_memgen_version()
     timeout = _resolve_patch_builder_timeout(None)
@@ -138,7 +141,7 @@ def main(argv: list[str]) -> int:
             nloop=PATCH_NLOOP,
             nloop_all=PATCH_NLOOP_ALL,
             equil_params=equil_params,
-            forcefield=PATCH_EQUIL_FORCEFIELD,
+            forcefield=patch_forcefield,
             cache_mode="refresh" if args.refresh else "auto",
             cache_dir=str(out_root),
             packmol_memgen_runner=_run_packmol_memgen_noninteractive,

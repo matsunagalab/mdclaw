@@ -109,3 +109,35 @@ def test_run_minimization_writes_state_structure_and_report(tmp_path: Path):
     assert report["minimization"]["completed"] is True
     assert report["minimization"]["energy_is_finite"] is True
     assert report["minimization"]["atom_count_preserved"] is True
+
+
+def test_the_shared_exporter_keeps_the_topology_s_ids(tmp_path):
+    """min / eq / prod must not renumber what topology.pdb numbered.
+
+    Without keepIds, PDBFile numbers every residue 1..N inside its chain and
+    labels chains A, B, C... by index, so an export disagreed with the topology
+    it was rendered from -- 5ZK8's protein is 18-458 there and came out 1-273 --
+    and a system with more than 26 chains, which a solvated membrane easily has,
+    reused chain letters.
+    """
+    from openmm.app import PDBFile
+
+    from mdclaw.structure.pdb_utils import render_simulation_pdb_preserving_resnames
+
+    source = tmp_path / "topology.pdb"
+    source.write_text(
+        "ATOM      1  N   ALA X  18      0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  CA  ALA X  18      1.450   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  C   ALA X  18      2.900   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      4  N   GLY X 383      4.230   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      5  CA  GLY X 383      5.680   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      6  C   GLY X 383      7.130   0.000   0.000  1.00  0.00           C\n"
+        "END\n")
+    pdb = PDBFile(str(source))
+    text = render_simulation_pdb_preserving_resnames(
+        pdb.topology, pdb.positions, str(source))
+    rendered = [(line[17:20].strip(), line[22:26].strip(), line[21])
+                for line in text.splitlines() if line.startswith("ATOM")]
+    assert [r[1] for r in rendered] == ["18"] * 3 + ["383"] * 3
+    assert {r[2] for r in rendered} == {"X"}
+    assert [r[0] for r in rendered] == ["ALA"] * 3 + ["GLY"] * 3

@@ -838,6 +838,7 @@ def split_molecules(
 
     # Parse the ranges before anything else touches the file: a malformed range
     # is the caller's to fix and there is nothing to read the structure for.
+    from mdclaw.structure import residue_range as rr
     from mdclaw.structure.residue_range import (
         ResidueRangeError,
         describe_span,
@@ -902,19 +903,36 @@ def split_molecules(
                        if info.get("author_chain") == entry.chain]
         for info in matched:
             if info.get("chain_type") in ("protein", "nucleic", "glycan"):
-                range_by_chain_id[info.get("chain_id")] = entry
+                # A chain may carry several ranges: a GPCR fusion construct is
+                # receptor-half, crystallisation partner, receptor-half on one
+                # deposited chain, and the reference keeps only the halves.
+                chain_id = info.get("chain_id")
+                range_by_chain_id.setdefault(chain_id, []).append(entry)
                 # Published so nothing downstream resolves the ranges a second
                 # time. Two independent resolutions of the same name drift: a
                 # homodimer whose copies are labels C and E under one author
                 # chain C is cropped here on the label (C only) while a
                 # re-resolution on the author name would bound E as well, and
                 # E was never cropped.
-                result["residue_ranges"]["resolved"][info.get("chain_id")] = {
-                    "range": entry.spelled(),
-                    "start": entry.start[0],
-                    "end": entry.end[0],
-                    "author_chain": info.get("author_chain"),
-                }
+                record = result["residue_ranges"]["resolved"].setdefault(
+                    chain_id, {"pieces": [], "author_chain": info.get("author_chain")})
+                record["pieces"].append({"range": entry.spelled(),
+                                         "start": entry.start[0],
+                                         "end": entry.end[0]})
+                record["range"] = rr.spelled(range_by_chain_id[chain_id])
+                # ``start``/``end`` are the single-range spelling and only exist
+                # while there is one range. For a fusion they would be the outer
+                # envelope -- 18 and 458 for pieces 18-214 and 383-458 -- which
+                # is the widened request the ranges exist to refuse, and 23 and
+                # 1196 for a construct whose partner is renumbered into the
+                # 1000s. A reader that has not learned about ``pieces`` should
+                # fail on the missing key rather than be handed that.
+                if len(record["pieces"]) == 1:
+                    record["start"] = record["pieces"][0]["start"]
+                    record["end"] = record["pieces"][0]["end"]
+                else:
+                    record.pop("start", None)
+                    record.pop("end", None)
 
     if include_ligand_ids is not None and "ligand" in include_types:
         requested_ligand_ids = sorted(
@@ -1575,8 +1593,9 @@ def split_molecules(
             # The residue range, if this chain was given one. Matched against
             # both names because a range may be written with either, which is
             # the contract chain selection already follows.
-            chain_range = range_by_chain_id.get(chain_id)
+            chain_ranges = range_by_chain_id.get(chain_id)
             range_kept, range_dropped, range_boundary_icodes = [], [], []
+            kept_by_range = {}
             for residue in subchain:
                 res_name = residue.name.strip()
                 # Skip water residues unless explicitly keeping them
@@ -1584,10 +1603,18 @@ def split_molecules(
                 if res_name in WATER_NAMES and not keep_crystal_waters:
                     waters_skipped += 1
                     continue
-                if chain_range is not None:
+                if chain_ranges:
                     icode = str(residue.seqid.icode or "").strip()
-                    if chain_range.contains(residue.seqid.num, icode):
+                    held = next((entry for entry in chain_ranges
+                                 if entry.contains(residue.seqid.num, icode)), None)
+                    if held is not None:
                         range_kept.append(residue.seqid.num)
+                        # Which range kept it, so a chain given several of them
+                        # can still say that one of them selected nothing --
+                        # the mistake this check exists for, and an easier one
+                        # to make with two ranges than with one.
+                        kept_by_range.setdefault(held.spelled(), []).append(
+                            residue.seqid.num)
                     else:
                         range_dropped.append(residue.seqid.num)
                         # A bound written as a plain number sorts before the
@@ -1596,8 +1623,9 @@ def split_molecules(
                         # obvious one, and nothing downstream can see it: the
                         # coverage check reads the number column, where 100A
                         # reads as 100.
-                        if icode and residue.seqid.num in (chain_range.start[0],
-                                                           chain_range.end[0]):
+                        bounds = {end[0] for entry in chain_ranges
+                                  for end in (entry.start, entry.end)}
+                        if icode and residue.seqid.num in bounds:
                             range_boundary_icodes.append(
                                 f"{residue.name}{residue.seqid.num}{icode}")
                         continue
@@ -1629,17 +1657,26 @@ def split_molecules(
             # Recorded before the chain can be dropped for being empty: a range
             # that selected nothing has to be reported as an empty range, not
             # lost along with the chain it emptied.
-            if chain_range is not None:
+            if chain_ranges:
+                written = rr.spelled(chain_ranges)
                 if range_boundary_icodes:
                     result["warnings"].append(
-                        f"Residue range {chain_range.spelled()} drops "
+                        f"Residue range {written} drops "
                         f"{len(range_boundary_icodes)} residue(s) that share an "
                         f"endpoint number but carry an insertion code "
                         f"({', '.join(range_boundary_icodes[:4])}); write the "
                         "endpoint with the insertion code to include them")
-                key = f"{chain_range.spelled()}@{chain_id}"
+                key = f"{written}@{chain_id}"
                 result["residue_ranges"]["delivered"][key] = {
-                    "range": chain_range.spelled(),
+                    "range": written,
+                    "ranges": {
+                        entry.spelled(): {
+                            "kept": len(kept_by_range.get(entry.spelled(), [])),
+                            "span_delivered": describe_span(
+                                kept_by_range.get(entry.spelled(), [])),
+                        }
+                        for entry in chain_ranges
+                    },
                     "chain_id": chain_id,
                     "author_chain": author_chain,
                     "kept": len(range_kept),
@@ -1750,8 +1787,10 @@ def split_molecules(
         # chain's real span in the message so the corrected range can be written
         # straight from it.
         for entry in parsed_ranges:
+            # Matched on the piece rather than on the record's whole spelling: a
+            # chain given several ranges delivers one record naming all of them.
             records = [record for record in result["residue_ranges"]["delivered"].values()
-                       if record["range"] == entry.spelled()]
+                       if entry.spelled() in record.get("ranges", {})]
             if len(records) > 1:
                 result["warnings"].append(
                     f"Residue range {entry.spelled()} matched "
@@ -1781,7 +1820,8 @@ def split_molecules(
                     "be found here even though the structure contains it.",
                 ]
                 return result
-            if all(record["kept"] == 0 for record in records):
+            if all(record["ranges"][entry.spelled()]["kept"] == 0
+                   for record in records):
                 result["errors"].append(
                     f"Residue range {entry.spelled()} selects no residue; chain "
                     f"{delivered['chain_id']} resolves {delivered['dropped']} "

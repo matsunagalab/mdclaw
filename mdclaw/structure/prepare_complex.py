@@ -676,17 +676,20 @@ def _drop_detections_outside_ranges(result, split_result, disulfide_bonds, metal
     for entry in resolved.values():
         for name in (entry.get("author_chain"),):
             if name:
-                bounds[str(name).strip()] = (entry["start"], entry["end"])
+                bounds[str(name).strip()] = [(piece["start"], piece["end"])
+                                             for piece in _pieces(entry)]
 
     def inside(chain, resnum):
-        window = bounds.get(str(chain).strip())
-        if window is None:
+        windows = bounds.get(str(chain).strip())
+        if not windows:
             return True
         try:
             number = int(str(resnum).strip())
         except (TypeError, ValueError):
             return True
-        return window[0] <= number <= window[1]
+        # Any piece, because a chain given several ranges holds a residue if one
+        # of them does; the gaps between them are what the ranges left out.
+        return any(start <= number <= end for start, end in windows)
 
     kept_bonds = []
     for pair in disulfide_bonds:
@@ -747,7 +750,12 @@ def _residue_range_coverage(split_result, protein_results):
                         continue
         except OSError:
             continue
-        wanted = set(range(entry["start"], entry["end"] + 1))
+        # The union of the chain's pieces, not the span between the first and
+        # the last: a fusion construct asks for 18-214 and 383-458 and never for
+        # the 168 residues of crystallisation partner sitting between them.
+        wanted = set()
+        for piece in _pieces(entry):
+            wanted |= set(range(piece["start"], piece["end"] + 1))
         missing = sorted(wanted - present)
         coverage[protein["chain_id"]] = {
             "range": entry["range"],
@@ -758,8 +766,25 @@ def _residue_range_coverage(split_result, protein_results):
     return coverage
 
 
+def _pieces(entry):
+    """A resolved range record's pieces, for records written before there were any.
+
+    ``resolved`` grew a ``pieces`` list when one chain became able to carry more
+    than one range.  A record without it is a single range whose bounds are its
+    own, and reading it that way keeps a cached or hand-written split result
+    working.
+    """
+    return (entry or {}).get("pieces") or [{"start": entry["start"],
+                                            "end": entry["end"],
+                                            "range": entry.get("range")}]
+
+
 def _window_for_chain(split_result, chain_id):
-    """The (start, end) this chain was cropped to, or None.
+    """The (start, end) windows this chain was cropped to, or None.
+
+    One window per range: a fusion construct is cropped to 18-214 and 383-458,
+    and the missing-residue repair must not read that as 18-458 and build the
+    crystallisation partner back in.
 
     Read from the split's own resolution rather than resolved again here.  The
     two would drift: a homodimer whose copies are labels C and E under one
@@ -772,7 +797,9 @@ def _window_for_chain(split_result, chain_id):
     """
     resolved = ((split_result or {}).get("residue_ranges") or {}).get("resolved") or {}
     entry = resolved.get(chain_id)
-    return (entry["start"], entry["end"]) if entry else None
+    if not entry:
+        return None
+    return [(piece["start"], piece["end"]) for piece in _pieces(entry)]
 
 
 def _states_for_chain(states, author_chain, chain_id):
@@ -1370,13 +1397,14 @@ def prepare_complex(
             parse_residue_ranges,
         )
         try:
-            parsed_residue_ranges = parse_residue_ranges(residue_ranges)
+            parse_residue_ranges(residue_ranges)
         except ResidueRangeError as exc:
             result["errors"].append(str(exc))
             result["code"] = exc.code
             result["hints"] = exc.hints
             result["overall_status"] = "failed"
             return result
+
 
         # Step 2: Split structure
         logger.info("Step 2: Splitting structure...")

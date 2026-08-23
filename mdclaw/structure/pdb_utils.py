@@ -351,7 +351,16 @@ def render_simulation_pdb_preserving_resnames(
         if image:
             positions = _image_positions_for_export(topology, positions)
         buffer = io.StringIO()
-        PDBFile.writeFile(topology, positions, buffer)
+        # keepIds, because without it PDBFile renumbers every residue 1..N within
+        # its chain and relabels chains A, B, C... by index (writeModel lines
+        # 42-55), so min / eq / prod exports disagreed with the topology.pdb they
+        # came from: 5ZK8's protein is 18-458 there and came out 1-273 here, and
+        # a system with more than 26 chains -- a solvated membrane easily has
+        # one -- reuses chain letters. Every other writeFile in this package
+        # already passes it, and export_state_pdb takes it as a documented
+        # parameter defaulting to True; this call was lifted verbatim from min's
+        # old inline block and the flag never came with it.
+        PDBFile.writeFile(topology, positions, buffer, keepIds=True)
     finally:
         # The caller's topology is reused after this call (eq builds the
         # production handoff System from it), so borrow the box, do not keep it.

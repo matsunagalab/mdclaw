@@ -101,6 +101,13 @@ GUARDRAIL_CODES: dict[str, str] = {
     "ligand_resname_chain_auto_included": "A ligand resname's chain was auto-included; confirm intent.",
     "ligand_type_required": "Add ligand to --include-types or remove the ligand selector.",
     "associated_ligand_chain_auto_included": "An associated ligand chain was auto-included; confirm intent.",
+    # Selection: which part of which chain the construct is, and where its
+    # backbone is joined. Both are requests, and a request that cannot be met is
+    # an error rather than a quieter structure.
+    "residue_range_chain_not_found": "The range names a chain that is not in the selection; pass it to select_chains as well.",
+    "residue_range_selects_nothing": "The range lies outside the chain's own numbering; write it inside the span the error reports.",
+    "residue_range_not_delivered": "The prepared chain holds fewer residues than the range asked for; narrow the range or enable missing-residue building.",
+    "invalid_disulfide_pairing": "A sulfur holds one disulfide; drop the duplicate pairing.",
     "associated_ligands_require_selection": "Select ligands explicitly with --include-ligand-resnames or the recommended IDs.",
     "unparametrizable_ligand_selected": "Placeholder residue (UNX/UNL/UNK) has no chemistry; drop it or predict a real ligand.",
     "blocking_ligand_failure": "Ligand chemistry failed but a protein-only artifact exists; follow workflow_recommendation.options (provide SMILES, exclude the ligand, or stop). Do not blindly retry.",

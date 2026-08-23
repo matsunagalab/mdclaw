@@ -104,13 +104,28 @@ PATCH_EQUIL_PRESSURE_BAR = 1.0
 PATCH_EQUIL_FORCEFIELD = "ff19SB"
 
 
-def patch_equilibration_params() -> dict:
+def patch_equilibration_forcefield(water_model: Optional[str] = None) -> str:
+    """The protein force field the patch equilibration is named with.
+
+    A patch holds lipids, water and ions and no protein at all, so the protein
+    force field decides nothing about it -- but the pair still has to pass the
+    force-field/water guardrail, and ff19SB refuses TIP3P.  A membrane system
+    whose reference used TIP3P was therefore blocked at the patch, before any
+    protein was involved: "ff19SB + tip3p is blocked by MDClaw", about a box of
+    lipids and water.  The name follows the water instead.
+    """
+    return "ff14SB" if _normalize_water_model_name(water_model) == "tip3p" else (
+        PATCH_EQUIL_FORCEFIELD)
+
+
+def patch_equilibration_params(water_model: Optional[str] = None) -> dict:
     """Return the canonical patch equilibration parameter dict."""
     return {
         "nvt_ns": PATCH_EQUIL_NVT_NS,
         "npt_ns": PATCH_EQUIL_NPT_NS,
         "temperature_k": PATCH_EQUIL_TEMPERATURE_K,
         "pressure_bar": PATCH_EQUIL_PRESSURE_BAR,
+        "forcefield": patch_equilibration_forcefield(water_model),
     }
 
 

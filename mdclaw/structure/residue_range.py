@@ -13,10 +13,23 @@ The range is a request, and a request that cannot be met is an error rather
 than a smaller answer.  Handing back 4-314 for "4-315" is how the difference
 went unnoticed in the first place.
 
-The spelling is ``CHAIN:START-END``, comma-separated, author residue numbers,
-one contiguous range per chain.  Open ends are refused, with the chain's real
-span in the message so the closed form can be written straight from it: an
-unbounded end reads the same whether it was meant or mistyped.
+The spelling is ``CHAIN:START-END``, comma-separated, author residue numbers.
+Open ends are refused, with the chain's real span in the message so the closed
+form can be written straight from it: an unbounded end reads the same whether it
+was meant or mistyped.
+
+A chain may be given more than one range, because a construct is not always one
+piece of one chain.  Every GPCR in the benchmark cast is a fusion: the flexible
+ICL3 is replaced by BRIL or T4 lysozyme so the receptor will crystallise, and
+the deposited chain runs receptor-half, partner, receptor-half.  5ZK8 chain A is
+18-214, 1001-1106, 383-458 and the reference simulated 18-214 and 383-458.  One
+range per chain could not say that: "A:18-214 A:383-458" was refused outright,
+and the widened "A:18-458" asks for 168 residues the deposit never had.  Ranges
+on one chain must not overlap -- two ranges covering the same residue is a
+mistake with no reading that is not a smaller one written twice.  The overlap
+test compares the chain name as written, so two ranges naming the same chain
+under its label and under its author name are not compared; resolving a name
+needs the structure, which is not read here.
 """
 
 from __future__ import annotations
@@ -97,17 +110,51 @@ def parse_residue_ranges(specs: Optional[Iterable]) -> list:
             )
         chain = match.group("chain")
         for existing in ranges:
-            if existing.chain == chain:
+            if existing.chain == chain and existing.start <= end and start <= existing.end:
                 raise ResidueRangeError(
-                    f"Chain {chain!r} is given two residue ranges "
-                    f"({existing.spelled()} and {spec.strip()}); one contiguous "
-                    "range per chain",
+                    f"Chain {chain!r} is given two overlapping residue ranges "
+                    f"({existing.spelled()} and {spec.strip()})",
                     "invalid_residue_range",
-                    ["Widen the range to cover both, or prepare the pieces "
-                     "separately and merge them."],
+                    ["Two ranges covering the same residue have no reading "
+                     "other than one range written twice; write the union, or "
+                     "move the bound that was meant to separate them."],
                 )
         ranges.append(ResidueRange(chain, start, end))
+    # Sorted by number so a chain's pieces read the same however they were
+    # written. Numeric order is not always construct order -- 6ME3 runs
+    # 23-218, 1001-1196, 228-318, with the fusion partner renumbered into the
+    # 1000s -- so nothing may read the first and last piece as the chain's ends.
+    ranges.sort(key=lambda entry: (entry.chain, entry.start))
     return ranges
+
+
+def by_chain(ranges: Iterable) -> dict:
+    """Group parsed ranges by chain name, in sequence order."""
+    grouped: dict = {}
+    for entry in ranges:
+        grouped.setdefault(entry.chain, []).append(entry)
+    return grouped
+
+
+def contains(ranges: Iterable, number: int, icode: str = "") -> bool:
+    """Whether any of a chain's ranges holds this residue."""
+    return any(entry.contains(number, icode) for entry in ranges)
+
+
+def spelled(ranges: Iterable) -> str:
+    """``18-214 and 383-458`` -- a chain's ranges as an error message says them."""
+    written = [entry.spelled() for entry in ranges]
+    if len(written) < 2:
+        return written[0] if written else "empty"
+    return " and ".join([", ".join(written[:-1]), written[-1]])
+
+
+def wanted_numbers(ranges: Iterable) -> set:
+    """Every residue number the ranges ask for, the deleted middle excluded."""
+    numbers: set = set()
+    for entry in ranges:
+        numbers |= set(range(entry.start[0], entry.end[0] + 1))
+    return numbers
 
 
 def describe_span(numbers: Iterable) -> str:

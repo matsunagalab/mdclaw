@@ -729,6 +729,14 @@ def _missing_residue_regeneration_recommendation(summary: dict) -> dict:
     }
 
 
+def _spell(windows) -> str:
+    """``18-214 and 383-458`` -- the windows as a report says them."""
+    written = [f"{low}-{high}" for low, high in windows]
+    if len(written) < 2:
+        return written[0] if written else "empty"
+    return " and ".join([", ".join(written[:-1]), written[-1]])
+
+
 def _restrict_missing_to_window(fixer, chains, window) -> dict:
     """Drop the parts of each missing-residue segment that fall outside a range.
 
@@ -736,10 +744,25 @@ def _restrict_missing_to_window(fixer, chains, window) -> dict:
     residue i", with no numbers of their own until they are built.  Their numbers
     follow from the chain: the leading segment counts backwards from the first
     resolved residue, a trailing segment counts forwards from the last, and an
-    internal segment lies between two known ones and is never outside a window
-    that contains both of its anchors.  Only the two ends need bounding.
+    internal segment lies between two known ones.
+
+    A chain may be cropped to more than one window -- a GPCR fusion construct is
+    kept as 18-214 and 383-458, with the crystallisation partner between them
+    left out.  An internal segment is then no longer safe by construction: the
+    gap between the two windows has an anchor on each side, and building it back
+    rebuilds exactly what the ranges removed.  Every segment is therefore
+    bounded, and one spanning from one window into another is dropped whole even
+    when its numbers cannot be derived.
     """
-    start, end = window
+    windows = [window] if window and isinstance(window[0], int) else list(window)
+
+    def _held(number):
+        return any(low <= number <= high for low, high in windows)
+
+    def _same_window(left, right):
+        return any(low <= left <= high and low <= right <= high
+                   for low, high in windows)
+
     trimmed = {}
 
     def _number(residue):
@@ -759,6 +782,7 @@ def _restrict_missing_to_window(fixer, chains, window) -> dict:
         if not residues:
             continue
         segment = fixer.missingResidues[key]
+        left = right = None
         if res_idx == 0:
             anchor = _number(residues[0])
             numbers = (None if anchor is None
@@ -770,27 +794,37 @@ def _restrict_missing_to_window(fixer, chains, window) -> dict:
         else:
             # Internal segments are bounded by both of their anchors, so they
             # cannot leave a window that holds the anchors -- but only while
-            # cropping has already removed everything outside it. Trimming them
-            # from the anchors as well means the two do not have to agree.
+            # cropping has already removed everything outside it, and only while
+            # there is one window. Trimming them from the anchors as well means
+            # the two do not have to agree.
             left, right = _number(residues[res_idx - 1]), _number(residues[res_idx])
             numbers = (None if left is None or right is None
                        or right - left - 1 != len(segment)
                        else list(range(left + 1, right)))
         if numbers is None:
+            # Undeducible numbers are left alone -- unless the segment bridges
+            # two windows, where the anchors alone say it is the piece the
+            # ranges deleted and no arithmetic is needed to refuse it.
+            spans = (0 < res_idx < len(residues)
+                     and left is not None and right is not None
+                     and not _same_window(left, right))
             trimmed[f"chain {chain_idx} position {res_idx}"] = {
-                "requested_window": f"{start}-{end}",
+                "requested_window": _spell(windows),
                 "segment_residues": len(segment),
-                "kept": len(segment),
-                "note": "left alone: the anchoring residue numbers are not plain "
-                        "integers, so the segment's numbers cannot be derived",
+                "kept": 0 if spans else len(segment),
+                "note": ("dropped: the segment lies between two requested ranges"
+                         if spans else
+                         "left alone: the anchoring residue numbers are not plain "
+                         "integers, so the segment's numbers cannot be derived"),
             }
+            if spans:
+                del fixer.missingResidues[key]
             continue
-        keep = [name for name, number in zip(segment, numbers)
-                if start <= number <= end]
+        keep = [name for name, number in zip(segment, numbers) if _held(number)]
         if len(keep) == len(segment):
             continue
         trimmed[f"chain {chain_idx} position {res_idx}"] = {
-            "requested_window": f"{start}-{end}",
+            "requested_window": _spell(windows),
             "segment_residues": len(segment),
             "kept": len(keep),
         }
@@ -1122,21 +1156,29 @@ def clean_protein(
         elif reference_sequences:
             result["missing_residue_detection"]["status"] = "detected"
 
+        # The residue range, when one was requested, bounds what may be built:
+        # asking for 4-315 of a chain whose SEQRES runs to 317 must add residue
+        # 315 and not 316 or 317. Without the window the terminal switch rebuilds
+        # the whole overhang -- measured on 6W9C, 1-317 instead of the 4-315 that
+        # was asked for.
+        #
+        # Outside the terminal branch, because a chain cropped to several ranges
+        # has an internal gap that must be refused whatever the terminal switch
+        # says: the space between two ranges is the crystallisation partner the
+        # ranges took out, it has an anchor on each side, and building it back is
+        # what a fusion crop exists to prevent. Inside the branch this ran only
+        # when a terminus was being built, which is off by default.
+        if build_window is not None:
+            _trimmed = _restrict_missing_to_window(fixer, chains, build_window)
+            if _trimmed:
+                result["missing_residue_detection"]["window_trimmed"] = _trimmed
+
         # Step 1a: Handle terminal missing residues
         terminal_caps_requested = bool(resolved_n_terminal_cap or resolved_c_terminal_cap)
         if not (ignore_terminal_missing_residues and not terminal_caps_requested):
             # Building them is the requested branch; say so and say how many.
             # Otherwise "the terminus was rebuilt" would have to be inferred
             # from the absence of the warning that says it was not.
-            # The residue range, when one was requested, bounds what may be
-            # built: asking for 4-315 of a chain whose SEQRES runs to 317 must
-            # add residue 315 and not 316 or 317. Without the window the switch
-            # rebuilds the whole overhang -- measured on 6W9C, 1-317 instead of
-            # the 4-315 that was asked for.
-            if build_window is not None:
-                _trimmed = _restrict_missing_to_window(fixer, chains, build_window)
-                if _trimmed:
-                    result["missing_residue_detection"]["window_trimmed"] = _trimmed
             built = []
             for key in list(fixer.missingResidues.keys()):
                 chain_idx, res_idx = key

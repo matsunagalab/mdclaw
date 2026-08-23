@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from mdclaw.structure import residue_range as rr
 from mdclaw.structure.residue_range import (
     ResidueRangeError,
     describe_span,
@@ -37,7 +38,7 @@ def test_accepted_forms(spec, spelled):
     "A:4",
     "4-315",
     "A:315-4",       # reversed
-    "A:4-10,A:20-30",  # two ranges for one chain
+    "A:4-30,A:20-40",  # overlapping ranges on one chain
     "nonsense",
 ])
 def test_refused_forms(spec):
@@ -71,3 +72,41 @@ def test_an_insertion_code_orders_after_its_number():
 def test_span_is_reported_from_the_chain_itself():
     assert describe_span([4, 7, 314]) == "4-314"
     assert describe_span([]) == "empty"
+
+
+# --- a construct is not always one piece of one chain -------------------------
+# Every GPCR in the benchmark cast is a fusion: ICL3 is replaced by BRIL or T4
+# lysozyme so the receptor crystallises, and the deposited chain runs
+# receptor-half, partner, receptor-half.  The reference simulates the two
+# receptor halves and not the partner, which one range per chain could not say.
+
+def test_a_chain_may_be_given_several_ranges():
+    """5ZK8 chain A: 18-214 and 383-458, with BRIL at 1001-1106 left out."""
+    parsed = parse_residue_ranges("A:18-214,A:383-458")
+    assert [entry.spelled() for entry in parsed] == ["A:18-214", "A:383-458"]
+    assert rr.contains(parsed, 214) and rr.contains(parsed, 383)
+    assert not rr.contains(parsed, 300), "the partner is between the ranges"
+    assert not rr.contains(parsed, 1050), "and so is the rest of it"
+
+
+def test_ranges_are_sorted_however_they_were_written():
+    parsed = parse_residue_ranges("A:383-458,A:18-214")
+    assert [entry.spelled() for entry in parsed] == ["A:18-214", "A:383-458"]
+
+
+def test_ranges_of_different_chains_are_grouped_apart():
+    grouped = rr.by_chain(parse_residue_ranges("A:18-214,B:1-99,A:383-458"))
+    assert sorted(grouped) == ["A", "B"]
+    assert len(grouped["A"]) == 2 and len(grouped["B"]) == 1
+
+
+def test_the_wanted_numbers_exclude_the_deleted_middle():
+    wanted = rr.wanted_numbers(parse_residue_ranges("A:18-214,A:383-458"))
+    assert len(wanted) == 197 + 76
+    assert 214 in wanted and 383 in wanted and 300 not in wanted
+
+
+def test_several_ranges_are_spelled_as_a_sentence():
+    assert rr.spelled(parse_residue_ranges("A:18-214,A:383-458")) == (
+        "A:18-214 and A:383-458")
+    assert rr.spelled(parse_residue_ranges("A:4-315")) == "A:4-315"
