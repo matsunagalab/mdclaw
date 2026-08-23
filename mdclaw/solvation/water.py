@@ -114,9 +114,17 @@ def _solvate_with_openmm(
             negativeIon=salt_a,
         )
 
-        # Write output
+        # Write output. keepIds, because the restore below matches on
+        # (chain, residue number, insertion code): without it PDBFile renumbers
+        # every residue 1..N inside its chain, the keys no longer name the same
+        # residues as the source, and the overlay renames by position. Measured
+        # on a real prepared structure numbered 18-458, it rewrote 3002 of 4428
+        # solute atoms -- PHE to VAL 80 times, TYR to LEU 63 -- and with keepIds
+        # it rewrites none. The other two callers of that overlay already pass
+        # it (terminal_caps.py:369, protonation.py:662).
         with open(output_file, "w") as f:
-            PDBFile.writeFile(modeller.topology, modeller.positions, f)
+            PDBFile.writeFile(modeller.topology, modeller.positions, f,
+                              keepIds=True)
 
         # OpenMM's PDBFile loader normalized Amber/PTM residue names (ASH->ASP,
         # HID->HIS, GLH->GLU, ...) when the input was loaded; restore them from

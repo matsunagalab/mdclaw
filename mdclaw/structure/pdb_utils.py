@@ -252,14 +252,35 @@ def restore_resnames_by_residue_key(
     name_by_key: dict[tuple, str] = {}
     ambiguous: set = set()
     for line in src_lines:
-        if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 27:
+        # Padded rather than length-gated: a record short of 27 columns used to
+        # be skipped here while still being written in the target, so a
+        # truncated line hid the collision it was half of -- a full TYR and a
+        # 26-column PA at one key came through unrefused and the PA was renamed
+        # TYR.
+        line = line.ljust(27)
+        if line.startswith(("ATOM  ", "HETATM")):
             key = (line[21], line[22:26], line[26])
-            name = line[17:21].strip()
+            # Upper-cased, as the same key is read elsewhere: a source spelling
+            # a residue "hie" was refused as a collision with "HIE".
+            name = line[17:21].strip().upper()
             if name_by_key.setdefault(key, name) != name:
                 ambiguous.add(key)
+    # The target's own keys have to be unique too, and found before anything is
+    # rewritten. The source scan cannot see a target that holds two residues at
+    # one key -- an ion sharing a water's number, say -- which would take the
+    # source's single name for both.
+    target_names: dict[tuple, str] = {}
+    for line in pdb_text.splitlines():
+        if line.startswith(("ATOM  ", "HETATM")):
+            padded = line.ljust(27)
+            key = (padded[21], padded[22:26], padded[26])
+            name = padded[17:21].strip().upper()
+            if target_names.setdefault(key, name) != name:
+                ambiguous.add(key)
+
     if ambiguous:
-        # The key is only an identity while the source is one molecule's worth
-        # of residues. An assembled system is not: Lipid21 writes its tails and
+        # The key is only an identity while a file holds one molecule's worth of
+        # residues. An assembled system is not: Lipid21 writes its tails and
         # heads into the same chain letters the protein uses and restarts their
         # numbering, so in a real membrane topology 280 keys name both a lipid
         # and an amino acid. Overlaying on that renames lipids to amino acids --
@@ -267,19 +288,21 @@ def restore_resnames_by_residue_key(
         # records, PA to LEU 552 times. Refuse; the caller keeps the names it
         # has, which are wrong in a way that is at least uniform.
         logger.warning(
-            "Not restoring residue names from %s: %d residue key(s) there name "
-            "more than one residue, so the overlay would rename by collision "
-            "(e.g. %s). This source is an assembled system rather than a single "
-            "molecule's residues.",
+            "Not restoring residue names between %s and the exported text: "
+            "%d residue key(s) name more than one residue, so the overlay would "
+            "rename by collision (e.g. %s). One of the two is an assembled "
+            "system rather than a single molecule's residues.",
             source_pdb, len(ambiguous), sorted(ambiguous)[:3],
         )
         return None
+
     exclude = exclude_keys or set()
     out_lines: list[str] = []
     for line in pdb_text.splitlines():
-        if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 27:
-            key = (line[21], line[22:26], line[26])
-            if key not in exclude:
+        if line.startswith(("ATOM  ", "HETATM")):
+            padded_key = line.ljust(27)
+            key = (padded_key[21], padded_key[22:26], padded_key[26])
+            if key not in exclude and key not in ambiguous:
                 name = name_by_key.get(key)
                 if name:
                     padded = line.ljust(80)

@@ -542,3 +542,49 @@ def test_a_restore_that_cannot_happen_is_reported(tmp_path):
         pdb.topology, pdb.positions, str(tmp_path / "absent.pdb"), warnings=warnings)
     assert warnings and "not restored" in warnings[0]
     assert "HIS" in text, "and the caller can see why its file says HIS"
+
+
+# --- the collision detector's own edges ---------------------------------------
+
+_ATOM = ("ATOM      {0:d}  {1:<3s} {2:<3s} A{3:>4d}       0.000   0.000"
+         "   0.000  1.00  0.00           {4:>2s}")
+
+
+def _collision_rec(serial, atom, resname, resnum, element="N"):
+    return _ATOM.format(serial, atom, resname, resnum, element)
+
+
+def _restore(tmp_path, source_lines, target_lines):
+    from mdclaw.structure.pdb_utils import restore_resnames_by_residue_key
+    source = tmp_path / "source.pdb"
+    source.write_text("\n".join(source_lines) + "\n")
+    out = restore_resnames_by_residue_key("\n".join(target_lines) + "\n", source)
+    if out is None:
+        return None
+    return [line[17:20].strip() for line in out.splitlines() if line.startswith("ATOM")]
+
+
+def test_a_lower_case_residue_name_is_not_read_as_a_collision(tmp_path):
+    """The same field is upper-cased where it is read elsewhere."""
+    assert _restore(tmp_path, [_collision_rec(1, "N", "hie", 18)],
+                    [_collision_rec(1, "N", "HIS", 18)]) == ["HIE"]
+
+
+def test_a_truncated_record_cannot_hide_the_collision_it_is_half_of(tmp_path):
+    """A record short of 27 columns used to be skipped in the source scan."""
+    short = _collision_rec(2, "P", "PA", 18, "P")[:26]
+    assert _restore(tmp_path, [_collision_rec(1, "N", "TYR", 18), short],
+                    [_collision_rec(1, "N", "TYR", 18), _collision_rec(2, "P", "PA", 18, "P")]) is None
+
+
+def test_a_target_that_reuses_a_key_is_refused_too(tmp_path):
+    """The source scan cannot see the target holding two residues at one key."""
+    assert _restore(tmp_path, [_collision_rec(1, "N", "HIE", 18)],
+                    [_collision_rec(1, "N", "HIS", 18), _collision_rec(2, "NA", "NA", 18, "N")]) is None
+
+
+def test_a_single_molecule_on_both_sides_still_restores(tmp_path):
+    assert _restore(tmp_path,
+                    [_collision_rec(1, "N", "HIE", 18), _collision_rec(2, "SG", "CYX", 19, "S")],
+                    [_collision_rec(1, "N", "HIS", 18), _collision_rec(2, "SG", "CYS", 19, "S")]) \
+        == ["HIE", "CYX"]
