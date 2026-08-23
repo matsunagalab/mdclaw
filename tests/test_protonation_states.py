@@ -409,3 +409,78 @@ def test_pdb4amber_fallback_scans_after_user_state_rewrite(tmp_path, monkeypatch
     assert result["success"] is True
     assert len(scanned_text) == 1
     assert " ASH A   1" in scanned_text[0]
+
+
+# --- a variant asked back to its parent ---------------------------------------
+# PDBFile's reader normalises a variant onto its parent, so an ASH loads as an
+# ASP with HD2 still on it. Comparing the requested state against that name made
+# "give me ASP" a no-op on exactly the residues that needed it: the call reported
+# success and already_in_requested_state and left the file protonated. Measured
+# on 5ZK8, where propka had neutralised two aspartates the reference kept
+# charged and the override to put them back did nothing. ASH/GLH/LYN/CYM were
+# all affected; the other direction, ASP -> ASH, always worked.
+
+ASH_PDB = textwrap.dedent("""\
+ATOM      1  N   ASH A  69       0.000   0.000   0.000  1.00  0.00           N
+ATOM      2  CA  ASH A  69       1.450   0.000   0.000  1.00  0.00           C
+ATOM      3  C   ASH A  69       2.000   1.400   0.000  1.00  0.00           C
+ATOM      4  O   ASH A  69       1.300   2.400   0.000  1.00  0.00           O
+ATOM      5  CB  ASH A  69       2.000  -0.800  -1.200  1.00  0.00           C
+ATOM      6  CG  ASH A  69       3.500  -0.800  -1.200  1.00  0.00           C
+ATOM      7  OD1 ASH A  69       4.100   0.200  -1.200  1.00  0.00           O
+ATOM      8  OD2 ASH A  69       4.100  -1.900  -1.200  1.00  0.00           O
+ATOM      9  HD2 ASH A  69       5.060  -1.900  -1.200  1.00  0.00           H
+TER
+END
+""")
+
+
+def _names(path):
+    return {line[22:26].strip(): line[17:20].strip()
+            for line in path.read_text().splitlines() if line.startswith("ATOM")}
+
+
+def _atom_names(path):
+    return {line[12:16].strip() for line in path.read_text().splitlines()
+            if line.startswith("ATOM")}
+
+
+def _atom_list(path):
+    return [line[12:16].strip() for line in path.read_text().splitlines()
+            if line.startswith("ATOM")]
+
+
+def test_asking_a_protonated_aspartate_back_to_asp_deprotonates_it(tmp_path):
+    pdb = tmp_path / "ash.pdb"
+    pdb.write_text(ASH_PDB)
+    assert _names(pdb) == {"69": "ASH"} and "HD2" in _atom_names(pdb)
+
+    result = _apply_protonation_states_with_modeller(
+        pdb, [{"chain": "A", "resnum": "69", "icode": "", "state": "ASP"}], ph=7.4)
+
+    assert result["success"] and not result["errors"]
+    assert _names(pdb) == {"69": "ASP"}
+    assert "HD2" not in _atom_names(pdb)
+    applied, = result["applied_states"]
+    assert not applied.get("already_in_requested_state")
+
+
+def test_asking_for_the_state_a_residue_already_holds_is_still_a_no_op(tmp_path):
+    """The guard the comparison was written for, on the name that is really there."""
+    pdb = tmp_path / "asp.pdb"
+    pdb.write_text(ASP_HEAVY_PDB)
+    before = _atom_names(pdb)
+
+    result = _apply_protonation_states_with_modeller(
+        pdb, [{"chain": "A", "resnum": "25", "icode": "", "state": "ASP"}], ph=7.4)
+
+    assert result["success"]
+    applied, = result["applied_states"]
+    assert applied["already_in_requested_state"] is True
+    assert _names(pdb) == {"25": "ASP"}
+    # The fault the guard was written for: renaming a residue to its own base
+    # and handing it back to addHydrogens re-added the whole set, duplicating
+    # H, HA, HB2 and HB3. Hydrogens the input never had may still be built.
+    names = _atom_list(pdb)
+    assert len(names) == len(set(names)), "no atom duplicated"
+    assert before <= set(names), "no heavy atom lost"

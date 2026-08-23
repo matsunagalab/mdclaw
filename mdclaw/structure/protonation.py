@@ -475,6 +475,21 @@ def _apply_protonation_states_with_modeller(
         modeller = Modeller(pdb.topology, pdb.positions)
         residues = list(modeller.topology.residues())
 
+        # The name on disk, because PDBFile's reader normalises a variant back
+        # onto its parent: an ASH loads as an ASP, HD2 and all. Asking for the
+        # parent state of a residue pdb2pqr had protonated therefore compared
+        # ASP against ASP, reported already_in_requested_state and success, and
+        # left the file untouched -- measured on 5ZK8, where "A:69 -> ASP"
+        # silently did nothing and the built system kept a neutral aspartate.
+        # Every override that returns a variant to its parent was affected:
+        # ASH->ASP, GLH->GLU, LYN->LYS, CYM->CYS.
+        on_disk: dict[tuple[str, str, str], str] = {}
+        for line in open(pdb_file):
+            if line.startswith(("ATOM", "HETATM")):
+                on_disk.setdefault(
+                    (line[21].strip(), line[22:26].strip(), line[26].strip()),
+                    line[17:20].strip().upper())
+
         residue_by_site: dict[tuple[str, str, str], Any] = {}
         for residue in residues:
             site = (
@@ -508,7 +523,10 @@ def _apply_protonation_states_with_modeller(
                 continue
             state = record["state"]
             spec = _PROTONATION_STATE_SPECS[state]
-            current_name = str(residue.name).strip().upper()
+            current_name = on_disk.get(
+                (str(residue.chain.id).strip(), str(residue.id).strip(),
+                 str(getattr(residue, "insertionCode", "") or "").strip()),
+                str(residue.name).strip().upper())
             if current_name not in spec["input_names"]:
                 result["errors"].append(
                     f"State {state} is incompatible with residue {current_name} at "
