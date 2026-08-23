@@ -172,7 +172,7 @@ def restore_residue_numbering_from_reference(
 
 
 def restore_resnames_from_source_pdb(
-    pdb_text: str, source_pdb: str | Path
+    pdb_text: str, source_pdb: str | Path, *, atom_indices: Any = None
 ) -> Optional[str]:
     """Overlay residue names from a source PDB onto an exported PDB, by index.
 
@@ -192,6 +192,12 @@ def restore_resnames_from_source_pdb(
     coordinates, the OpenMM ``System``, the restart ``state.xml``, or anything
     the run side consumes, so it cannot affect the MD result.
 
+    ``atom_indices``, when given, says which of the source's records the export
+    holds, in the order it holds them.  An analysis writes a *subset*: the
+    trajectory was read with the same index array, so the export's record *i* is
+    the source's record ``atom_indices[i]``, and without saying so the counts
+    simply disagree and no restore happens.
+
     Returns the rewritten text, or ``None`` when the source cannot be read or
     its ``ATOM``/``HETATM`` count does not match (caller should then fall back).
     """
@@ -203,6 +209,11 @@ def restore_resnames_from_source_pdb(
         ]
     except OSError:
         return None
+    if atom_indices is not None:
+        try:
+            source_names = [source_names[int(i)] for i in atom_indices]
+        except (IndexError, TypeError, ValueError):
+            return None
     lines = pdb_text.splitlines()
     n_records = sum(1 for ln in lines if ln.startswith(("ATOM  ", "HETATM")))
     if n_records != len(source_names) or n_records == 0:
@@ -219,6 +230,90 @@ def restore_resnames_from_source_pdb(
         out_lines.append(line)
     trailing = "\n" if pdb_text.endswith("\n") else ""
     return "\n".join(out_lines) + trailing
+
+
+def stamp_source_resnames(topology: Any, source_pdb: str | Path) -> Optional[int]:
+    """Put the source file's residue names onto a freshly loaded topology.
+
+    The write-side overlays match a written file against the source, which needs
+    the two to carry the same atoms. That holds for an export and not for a
+    build: ``addExtraParticles`` inserts an M site per water for a four-site
+    model -- measured, 4239 atoms became 5651 -- and the overlay then has
+    nothing to align, so a build with OPC lost every name the reader had
+    normalised. Stamping the topology instead is done while it still corresponds
+    to the file, one atom per record.
+
+    Only safe immediately after the load, and only where nothing downstream
+    reads a residue name: OpenMM's ``Modeller`` keys ``addHydrogens`` on
+    ``residue.name`` and tests for HIS and CYS by name, and ``addSolvent``
+    hardcodes HOH, so a topology stamped before those runs silently loses its
+    hydrogens. ``addExtraParticles`` and ``createSystem`` are template-driven
+    and do not care.
+
+    Returns how many residues were renamed, or ``None`` when the file and the
+    topology do not correspond and nothing was touched.
+    """
+    try:
+        with open(source_pdb) as handle:
+            records = [line for line in handle
+                       if line.startswith(("ATOM  ", "HETATM"))]
+    except OSError:
+        return None
+    atoms = list(topology.atoms())
+    if len(records) != len(atoms):
+        return None
+    name_by_residue: dict = {}
+    for line, atom in zip(records, atoms):
+        on_disk = line[17:21].strip()
+        if not on_disk:
+            continue
+        residue = atom.residue
+        if name_by_residue.setdefault(id(residue), on_disk) != on_disk:
+            # One residue's atoms disagreeing about its name means the two files
+            # are not the same residues in the same order, whatever the counts.
+            return None
+    renamed = 0
+    for residue in topology.residues():
+        wanted = name_by_residue.get(id(residue))
+        if wanted and str(residue.name).strip() != wanted:
+            residue.name = wanted
+            renamed += 1
+    return renamed
+
+
+def overlay_source_resnames(pdb_path, source_pdb, atom_indices=None) -> bool:
+    """Put a source PDB's residue names back on a file mdtraj just wrote.
+
+    mdtraj normalises on load exactly as OpenMM does -- HID, HIE and HIP arrive
+    as HIS, CYX as CYS, WAT as HOH -- so an artifact written from a loaded
+    topology carries the collapsed names whatever the source said. Only the
+    residue-name column is rewritten; the coordinates are the frame's and stay
+    the frame's, which is the point: taking whole records from the source would
+    put build-time geometry into a file that claims to be a trajectory frame,
+    and its CRYST1 would be the build box rather than the run's.
+
+    ``atom_indices`` says which of the source's records this file holds, in the
+    order it holds them, for the subset an analysis selects.
+
+    Returns whether the names were restored; a caller that cannot say so in its
+    own result at least leaves the warning in the log.
+    """
+    if not source_pdb:
+        return False
+    try:
+        text = Path(pdb_path).read_text()
+    except OSError:
+        return False
+    restored = restore_resnames_from_source_pdb(
+        text, source_pdb, atom_indices=atom_indices)
+    if restored is None:
+        logger.warning(
+            "Residue names in %s were not restored from %s; mdtraj collapses "
+            "HID/HIE/HIP to HIS, CYX to CYS and WAT to HOH on load, and this "
+            "file keeps the collapsed names.", pdb_path, source_pdb)
+        return False
+    Path(pdb_path).write_text(restored)
+    return True
 
 
 def restore_resnames_by_residue_key(

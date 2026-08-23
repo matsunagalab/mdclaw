@@ -522,6 +522,7 @@ def run_minimization(
             complete_node(
                 job_dir,
                 node_id,
+                warnings=result.get("warnings") or None,
                 artifacts={
                     "state": _node_artifact_path(result.get("state_file")),
                     "minimized_structure": _node_artifact_path(

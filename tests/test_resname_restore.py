@@ -588,3 +588,66 @@ def test_a_single_molecule_on_both_sides_still_restores(tmp_path):
                     [_collision_rec(1, "N", "HIE", 18), _collision_rec(2, "SG", "CYX", 19, "S")],
                     [_collision_rec(1, "N", "HIS", 18), _collision_rec(2, "SG", "CYS", 19, "S")]) \
         == ["HIE", "CYX"]
+
+
+# --- a subset artifact, and a topology stamped before extra particles ---------
+
+def test_a_subset_export_restores_through_its_atom_indices(tmp_path):
+    """An analysis writes the atoms it selected, in the order it selected them."""
+    from mdclaw.structure.pdb_utils import restore_resnames_from_source_pdb
+
+    source = tmp_path / "topology.pdb"
+    source.write_text("\n".join(
+        _collision_rec(i + 1, "N", name, 10 + i)
+        for i, name in enumerate(("HIE", "GLY", "CYX", "ALA"))) + "\n")
+    written = "\n".join(
+        _collision_rec(i + 1, "N", name, 10 + i)
+        for i, name in enumerate(("HIS", "CYS"))) + "\n"
+
+    assert restore_resnames_from_source_pdb(written, source) is None, "counts differ"
+    restored = restore_resnames_from_source_pdb(written, source, atom_indices=[0, 2])
+    assert [line[17:20].strip() for line in restored.splitlines()
+            if line.startswith("ATOM")] == ["HIE", "CYX"]
+
+
+def test_stamping_survives_atoms_added_afterwards(tmp_path):
+    """A four-site water adds an M site per residue, so no index map can align.
+
+    OPC is a recommended water here, so that is the ordinary case: the names
+    have to go on before the extra particles exist.
+    """
+    from openmm.app import ForceField, Modeller, PDBFile
+
+    from mdclaw.structure.pdb_utils import stamp_source_resnames
+
+    source = tmp_path / "water.pdb"
+    source.write_text("\n".join(
+        f"ATOM  {i * 3 + j + 1:5d}  {a:<3s} WAT A{100 + i:4d}    "
+        f"{i * 4.0 + (0.0 if j == 0 else 0.9):8.3f}"
+        f"{0.0 if j != 2 else 0.8:8.3f}{0.0:8.3f}  1.00  0.00          {e:>2s}"
+        for i in range(3)
+        for j, (a, e) in enumerate((("O", "O"), ("H1", "H"), ("H2", "H")))) + "\nEND\n")
+
+    pdb = PDBFile(str(source))
+    assert {r.name for r in pdb.topology.residues()} == {"HOH"}, "the reader collapsed it"
+    assert stamp_source_resnames(pdb.topology, source) == 3
+    assert {r.name for r in pdb.topology.residues()} == {"WAT"}
+
+    modeller = Modeller(pdb.topology, pdb.positions)
+    before = modeller.topology.getNumAtoms()
+    modeller.addExtraParticles(ForceField("amber/opc_standard.xml"))
+    assert modeller.topology.getNumAtoms() > before, "extra particles were added"
+    assert {r.name for r in modeller.topology.residues()} == {"WAT"}
+
+
+def test_stamping_refuses_when_the_file_does_not_correspond(tmp_path):
+    from openmm.app import PDBFile
+
+    from mdclaw.structure.pdb_utils import stamp_source_resnames
+
+    source = tmp_path / "one.pdb"
+    source.write_text(_collision_rec(1, "N", "HIE", 18) + "\nEND\n")
+    other = tmp_path / "two.pdb"
+    other.write_text("\n".join(
+        _collision_rec(i + 1, "N", "ALA", 18 + i) for i in range(2)) + "\nEND\n")
+    assert stamp_source_resnames(PDBFile(str(other)).topology, source) is None

@@ -17,6 +17,7 @@ import re
 import shutil
 from pathlib import Path
 from typing import Any
+from mdclaw.structure.pdb_utils import overlay_source_resnames  # noqa: E402
 
 SOURCE_BUNDLE_SCHEMA_VERSION = 1
 
@@ -635,6 +636,9 @@ def candidate_paths_from_trajectory(
     for out_idx, frame_idx in enumerate(frame_indices, start=1):
         out_path = candidates_dir / f"candidate_{out_idx:03d}.pdb"
         traj[frame_idx].save_pdb(str(out_path))
+        # These feed preparation, so their residue identity is load-bearing in a
+        # way a report's is not.
+        overlay_source_resnames(out_path, topology_path)
         paths.append(out_path)
     return paths, frame_indices
 

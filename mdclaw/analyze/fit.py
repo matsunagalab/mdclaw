@@ -22,6 +22,8 @@ from mdclaw.analyze.inputs import _rel_to_node_root, _resolve_analyze_branches, 
 
 logger = setup_logger(__name__)
 
+from mdclaw.structure.pdb_utils import overlay_source_resnames  # noqa: E402
+
 
 @node_tool(node_type="analyze")
 def fit_trajectory(
@@ -280,6 +282,11 @@ def fit_trajectory(
         # mean — that's the whole point of the iterative procedure.
         ref_out = out_dir / f"{output_name}.ref.pdb"
         ref.save_pdb(str(ref_out))
+        # The incoming reference_pdb is the record here, and the fit writes the
+        # same atoms in the same order, so no index map is needed. Without this
+        # a fit node republishes a normalised reference_pdb and undoes the
+        # restore concat just did.
+        overlay_source_resnames(ref_out, reference_pdb)
 
         # Metadata JSON
         info = {

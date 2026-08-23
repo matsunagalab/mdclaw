@@ -22,6 +22,8 @@ from mdclaw.analyze.registry import _finalize_concat_node
 
 logger = setup_logger(__name__)
 
+from mdclaw.structure.pdb_utils import overlay_source_resnames  # noqa: E402
+
 
 @node_tool(node_type="analyze")
 def concat_trajectory(
@@ -324,6 +326,7 @@ def concat_trajectory(
             unitcell_angles=ca0[0:1] if ca0 is not None else None,
         )
         first_frame.save_pdb(str(ref_pdb))
+        overlay_source_resnames(ref_pdb, topology_file, atom_indices)
         result["reference_pdb"] = str(ref_pdb)
         logger.info(f"Wrote reference PDB (1 frame): {ref_pdb}")
 
@@ -555,6 +558,7 @@ def _run_multi_branch_concat(
                 unitcell_angles=ca0[0:1] if ca0 is not None else None,
             )
             first.save_pdb(str(ref_pdb))
+            overlay_source_resnames(ref_pdb, topology_file, atom_indices)
             logger.info(f"Wrote shared reference PDB: {ref_pdb}")
             first_frame_written = True
 

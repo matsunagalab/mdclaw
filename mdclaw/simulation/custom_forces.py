@@ -34,6 +34,7 @@ requires the plugin to be installed; missing dependencies surface as a stable
 """
 
 import os
+import re
 import runpy
 import sys
 from pathlib import Path
@@ -72,15 +73,20 @@ class _EvalContext:
     ``openmm-torch`` may hand over as float32/float64 on CPU or GPU).
     """
 
-    __slots__ = ("_positions", "_mdtraj_top", "_reference_np", "params", "box", "_atomic_numbers")
+    __slots__ = ("_positions", "_mdtraj_top", "_reference_np", "params", "box",
+                 "_atomic_numbers", "_collapsed_resnames")
 
-    def __init__(self, *, positions, mdtraj_top, reference_np, params, box=None):
+    def __init__(self, *, positions, mdtraj_top, reference_np, params, box=None,
+                 collapsed_resnames=None):
         self._positions = positions
         self._mdtraj_top = mdtraj_top
         self._reference_np = reference_np
         self.params = dict(params or {})
         self.box = box
         self._atomic_numbers = None
+        # Residue names topology.pdb spells that mdtraj collapsed on load, with
+        # what it collapsed each onto. See ``_collapsed_resnames``.
+        self._collapsed_resnames = dict(collapsed_resnames or {})
 
     def select(self, selection: str):
         """Resolve a mdtraj VMD-style selection string to a ``long`` tensor of
@@ -93,6 +99,7 @@ class _EvalContext:
         import numpy as np
         import torch
 
+        self._refuse_collapsed_resname(selection)
         idx = self._mdtraj_top.select(selection)
         if idx is None or len(idx) == 0:
             raise CustomForceError(
@@ -102,6 +109,35 @@ class _EvalContext:
         return torch.as_tensor(
             np.asarray(idx, dtype=np.int64), device=self._positions.device
         )
+
+    def _refuse_collapsed_resname(self, selection: str) -> None:
+        """Refuse a selection whose residue name mdtraj cannot tell apart.
+
+        mdtraj renames on load -- HID, HIE and HIP all arrive as HIS, CYX as
+        CYS, ASH as ASP, WAT as HOH -- so a selection naming either side of one
+        of those is answered on a topology that no longer distinguishes them.
+        Both answers are wrong and neither is empty, which is why the
+        matched-nothing check below does not catch it: on a real PLpro topology
+        ``resname CYS and name SG`` returns 10 SG atoms including the two
+        disulfide cysteines the file calls CYX, and restraining those is a
+        force applied to the wrong atoms.
+
+        Refused rather than corrected: which of the two the caller meant is not
+        recoverable from the string, and a force is not a thing to guess at.
+        """
+        if not self._collapsed_resnames:
+            return
+        words = set(re.findall(r"[A-Za-z][A-Za-z0-9+-]*", selection or ""))
+        for spelled, collapsed_onto in sorted(self._collapsed_resnames.items()):
+            if spelled in words or collapsed_onto in words:
+                raise CustomForceError(
+                    "custom_force_selection_ambiguous",
+                    f"ctx.select({selection!r}) names a residue mdtraj cannot "
+                    f"tell apart: topology.pdb spells {spelled}, and mdtraj "
+                    f"loads it as {collapsed_onto}, so the selection would "
+                    f"answer for both. Select those atoms another way -- by "
+                    f"index, or by a name or a bond that survives the load.",
+                )
 
     @property
     def reference(self):
@@ -197,6 +233,39 @@ def _reference_positions_to_numpy(reference_positions):
     return np.array([[row[0], row[1], row[2]] for row in plain], dtype=np.float64)
 
 
+def _collapsed_resnames(topology_pdb_file: str, mdtraj_top) -> dict:
+    """Residue names the file spells that mdtraj renamed on load.
+
+    Read from the two sides rather than from a hard-coded alias table: what
+    mdtraj collapses is mdtraj's business and changes with its version, and the
+    only thing that matters here is whether this file lost a distinction. Atom
+    order is shared -- ``topology.pdb`` is the same contract ``system.xml`` is
+    indexed by -- so the comparison is record against atom.
+    """
+    spelled: dict[str, str] = {}
+    residues = list(mdtraj_top.residues)
+    by_index = {}
+    for residue in residues:
+        for atom in residue.atoms:
+            by_index[atom.index] = residue.name
+    n = 0
+    try:
+        with open(topology_pdb_file) as handle:
+            for line in handle:
+                if not line.startswith(("ATOM  ", "HETATM")):
+                    continue
+                loaded = by_index.get(n)
+                n += 1
+                if loaded is None:
+                    continue
+                on_disk = line[17:21].strip().upper()
+                if on_disk and on_disk != str(loaded).strip().upper():
+                    spelled[on_disk] = str(loaded).strip().upper()
+    except OSError:
+        return {}
+    return spelled
+
+
 def _load_mdtraj_topology(topology_pdb_file: str, system):
     """Load the mdtraj topology and assert it matches the System particle
     count (the index-consistency guarantee)."""
@@ -278,6 +347,7 @@ def _build_python_torch_force(
     mdtraj_top,
     reference_np,
     params: dict,
+    collapsed_resnames: dict | None = None,
 ):
     """Wrap a user ``energy(positions, ctx)`` in a PythonTorchForce whose
     compute function returns ``(energy, forces=-dE/dx)`` via autograd.
@@ -298,6 +368,7 @@ def _build_python_torch_force(
             reference_np=reference_np,
             params=params,
             box=box_tensor,
+            collapsed_resnames=collapsed_resnames,
         )
         out = energy_fn(positions_tensor, ctx)
         energy_value, cv_dict = _split_energy_output(out)
@@ -536,6 +607,7 @@ def load_custom_forces(
 
     params = dict(custom_force_parameters or {})
     mdtraj_top = _load_mdtraj_topology(topology_pdb_file, system)
+    collapsed = _collapsed_resnames(topology_pdb_file, mdtraj_top)
     reference_np = _reference_positions_to_numpy(reference_positions)
 
     script_path = Path(custom_force_script)
@@ -550,6 +622,7 @@ def load_custom_forces(
         mdtraj_top=mdtraj_top,
         reference_np=reference_np,
         params=params,
+        collapsed_resnames=collapsed,
     )
 
     signature = custom_force_signature(

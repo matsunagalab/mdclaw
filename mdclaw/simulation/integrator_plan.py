@@ -153,6 +153,10 @@ def _record_production_node_result(
             metadata["custom_force_parameters"] = (
                 (custom_force.get("signature") or {}).get("parameters")
             )
-        complete_node(job_dir, node_id, artifacts=artifacts, metadata=metadata)
+        # Passed on, so a run whose residue names were not restored says so in
+        # node.json. Under SLURM the tool's stdout is only captured on failure,
+        # so a warned-but-successful run left the message nowhere anyone reads.
+        complete_node(job_dir, node_id, artifacts=artifacts, metadata=metadata,
+                      warnings=result.get("warnings") or None,)
     else:
         fail_node(job_dir, node_id, errors=result.get("errors", []))

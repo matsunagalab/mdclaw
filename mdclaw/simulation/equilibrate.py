@@ -1172,6 +1172,7 @@ def run_equilibration(
             if result.get("npt_energy_file"):
                 artifacts["npt_energy"] = _node_artifact_path(result.get("npt_energy_file"))
             complete_node(job_dir, node_id,
+                warnings=result.get("warnings") or None,
                 artifacts=artifacts,
                 metadata={
                     "platform": result.get("platform"),
