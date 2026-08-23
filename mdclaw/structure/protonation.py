@@ -442,6 +442,43 @@ def _normalize_protonation_state_overrides(
     return list(deduped.values())
 
 
+def _residue_names_by_key(pdb_file) -> Dict[tuple, str]:
+    """``(chain, resnum, icode) -> residue name``, from the file's own columns.
+
+    The columns are taken raw, not stripped, because that is how
+    ``restore_resnames_by_residue_key`` in ``pdb_utils`` spells the same key and
+    one file should not have two spellings of a residue.  Four columns of name,
+    because Amber writes four-character residue names and OpenMM reads them.
+    """
+    names: Dict[tuple, str] = {}
+    with open(pdb_file) as handle:
+        for line in handle:
+            if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 27:
+                names.setdefault((line[21], line[22:26], line[26]),
+                                 line[17:21].strip().upper())
+    return names
+
+
+def _name_on_disk(names: Dict[tuple, str], residue) -> str:
+    """The residue's name in the file, or what the reader made of it.
+
+    Falling back is a last resort and not a safe one -- the reader's name is
+    exactly what cannot be trusted here -- so the key is built the way the file
+    writes it, right-justified in four columns, rather than from the stripped
+    values that would miss a zero-padded or hybrid-36 residue number.
+    """
+    number = str(residue.id).strip()
+    icode = str(getattr(residue, "insertionCode", "") or "")
+    key = (str(residue.chain.id)[:1] or " ", f"{number:>4}"[:4], icode[:1] or " ")
+    return names.get(key, str(residue.name).strip().upper())
+
+
+def _atoms_match(spec: Dict[str, Any], atom_names: set) -> bool:
+    """Whether a residue already carries the hydrogen pattern a state asks for."""
+    return (set(spec["present"]) <= atom_names
+            and not set(spec["absent"]) & atom_names)
+
+
 def _apply_protonation_states_with_modeller(
     pdb_file: Path,
     protonation_states: list[dict[str, str]],
@@ -475,20 +512,22 @@ def _apply_protonation_states_with_modeller(
         modeller = Modeller(pdb.topology, pdb.positions)
         residues = list(modeller.topology.residues())
 
-        # The name on disk, because PDBFile's reader normalises a variant back
-        # onto its parent: an ASH loads as an ASP, HD2 and all. Asking for the
-        # parent state of a residue pdb2pqr had protonated therefore compared
-        # ASP against ASP, reported already_in_requested_state and success, and
-        # left the file untouched -- measured on 5ZK8, where "A:69 -> ASP"
-        # silently did nothing and the built system kept a neutral aspartate.
-        # Every override that returns a variant to its parent was affected:
-        # ASH->ASP, GLH->GLU, LYN->LYS, CYM->CYS.
-        on_disk: dict[tuple[str, str, str], str] = {}
-        for line in open(pdb_file):
-            if line.startswith(("ATOM", "HETATM")):
-                on_disk.setdefault(
-                    (line[21].strip(), line[22:26].strip(), line[26].strip()),
-                    line[17:20].strip().upper())
+        # The name on disk, because PDBFile's reader normalises some variants
+        # back onto their parent: an ASH loads as an ASP, HD2 and all, and every
+        # histidine loads as HIS. Measured against the reader: ASH->ASP,
+        # GLH->GLU, CYX->CYS and HID/HIE/HIP->HIS are renamed, while LYN and CYM
+        # come through untouched. Asking for the parent state of a residue
+        # pdb2pqr had protonated therefore compared ASP against ASP, reported
+        # already_in_requested_state and success, and left the file alone --
+        # measured on 5ZK8, where "A:69 -> ASP" silently did nothing.
+        #
+        # Read with the same key the resname restore downstream uses, raw
+        # columns and all, so one file has one spelling of a residue key. Keys
+        # stripped or renumbered do not survive: PDBFile re-encodes a hybrid-36
+        # residue number, so "A000" comes back as "10000" and a stripped key
+        # misses -- which here would mean falling back to the normalised name
+        # and restoring the very bug this guards.
+        on_disk = _residue_names_by_key(pdb_file)
 
         residue_by_site: dict[tuple[str, str, str], Any] = {}
         for residue in residues:
@@ -523,10 +562,9 @@ def _apply_protonation_states_with_modeller(
                 continue
             state = record["state"]
             spec = _PROTONATION_STATE_SPECS[state]
-            current_name = on_disk.get(
-                (str(residue.chain.id).strip(), str(residue.id).strip(),
-                 str(getattr(residue, "insertionCode", "") or "").strip()),
-                str(residue.name).strip().upper())
+            current_name = _name_on_disk(on_disk, residue)
+            atom_names = {str(atom.name).strip().upper()
+                          for atom in residue.atoms()}
             if current_name not in spec["input_names"]:
                 result["errors"].append(
                     f"State {state} is incompatible with residue {current_name} at "
@@ -541,7 +579,14 @@ def _apply_protonation_states_with_modeller(
             # taking the residue from 10 atoms to 14 with H, HA, HB2 and HB3
             # duplicated.  Nothing downstream noticed, because the validation
             # below compares sets of names.
-            if current_name == state:
+            # Both, because either alone is wrong. The name alone calls an ASH
+            # that carries no HD2 -- one written by a tool that did not add
+            # hydrogens -- already an ASH, and skipping leaves it with the
+            # deprotonated hydrogen set under a protonated name, which nothing
+            # downstream validates. The atoms alone cannot tell CYX from CYM:
+            # their signatures are identical, and a metal-ligating cysteine
+            # arriving as CYX would never be stamped.
+            if current_name == state and _atoms_match(spec, atom_names):
                 result["applied_states"].append({
                     "chain": record["chain"],
                     "resnum": record["resnum"],

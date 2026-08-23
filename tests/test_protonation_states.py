@@ -484,3 +484,103 @@ def test_asking_for_the_state_a_residue_already_holds_is_still_a_no_op(tmp_path)
     names = _atom_list(pdb)
     assert len(names) == len(set(names)), "no atom duplicated"
     assert before <= set(names), "no heavy atom lost"
+
+
+# --- the guard needs the name AND the atoms -----------------------------------
+# Either alone is wrong. The name alone calls an ASH that carries no HD2 -- one
+# written by a tool that did not add hydrogens -- already an ASH, and skipping
+# leaves it with the deprotonated hydrogen set under a protonated name, which
+# nothing downstream validates. The atoms alone cannot tell CYX from CYM, whose
+# signatures are identical, so a metal-ligating cysteine arriving as CYX would
+# never be stamped.
+
+ASP_HEAVY = ["N", "CA", "C", "O", "CB", "CG", "OD1", "OD2"]
+CYS_HEAVY = ["N", "CA", "C", "O", "CB", "SG"]
+
+
+def _residue(path, name, atoms, resnum="  69", icode=" "):
+    # Not collinear: OpenMM's addHydrogens divides by a cross product, and a
+    # straight line of atoms fails it with "0.0 cannot be raised to a negative
+    # power" -- a fixture fault that looks exactly like a code fault.
+    rows = [
+        f"ATOM  {i:5d}  {a:<3s} {name:<3s} A{resnum:>4s}{icode}   "
+        f"{i * 1.4:8.3f}{(i % 3) * 0.9:8.3f}{(i % 2) * 0.7:8.3f}"
+        f"  1.00  0.00          {a[0]:>2s}"
+        for i, a in enumerate(atoms, 1)
+    ]
+    path.write_text("\n".join(rows) + "\nTER\nEND\n")
+    return path
+
+
+def _read(path):
+    lines = [row for row in path.read_text().splitlines() if row.startswith("ATOM")]
+    return lines[0][17:20].strip(), [row[12:16].strip() for row in lines]
+
+
+def _apply(path, state, resnum="69", icode=""):
+    return _apply_protonation_states_with_modeller(
+        path, [{"chain": "A", "resnum": resnum, "icode": icode, "state": state}], ph=7.4)
+
+
+def test_a_variant_named_but_not_yet_protonated_is_built(tmp_path):
+    """An ASH with no HD2 asked for ASH must gain one, not be called finished."""
+    pdb = _residue(tmp_path / "bare.pdb", "ASH", ASP_HEAVY)
+    result = _apply(pdb, "ASH")
+    assert result["success"] and not result["errors"]
+    name, atoms = _read(pdb)
+    assert name == "ASH" and "HD2" in atoms
+
+
+def test_a_disulfide_cysteine_asked_for_cym_is_renamed(tmp_path):
+    """CYX and CYM carry the same atoms, so only the name separates them."""
+    pdb = _residue(tmp_path / "cyx.pdb", "CYX", CYS_HEAVY + ["H", "HA", "HB2", "HB3"])
+    result = _apply(pdb, "CYM")
+    assert result["success"]
+    name, atoms = _read(pdb)
+    assert name == "CYM" and "HG" not in atoms
+    assert not result["applied_states"][0].get("already_in_requested_state")
+
+
+def test_a_residue_already_in_the_state_by_name_and_by_atoms_is_left_alone(tmp_path):
+    pdb = _residue(tmp_path / "ash.pdb",
+                   "ASH", ASP_HEAVY + ["H", "HA", "HB2", "HB3", "HD2"])
+    before = set(_read(pdb)[1])
+    result = _apply(pdb, "ASH")
+    assert result["applied_states"][0]["already_in_requested_state"] is True
+    name, atoms = _read(pdb)
+    # Terminal hydrogens are still built -- the fixture is a one-residue chain.
+    # What the guard owes is that nothing is lost and nothing is duplicated,
+    # which is the fault it was written for: handing a residue back to
+    # addHydrogens under its own name once duplicated H, HA, HB2 and HB3.
+    assert name == "ASH" and before <= set(atoms)
+    assert len(atoms) == len(set(atoms))
+
+
+@pytest.mark.parametrize("resnum", ["A000", "0069"])
+def test_a_residue_number_the_reader_re_encodes_fails_loudly(tmp_path, resnum):
+    """Hybrid-36 and zero padding come back from PDBFile as a different string.
+
+    A key miss must be an error, not a fall back to the reader's name -- that is
+    exactly the normalised name this guard cannot trust.
+    """
+    pdb = _residue(tmp_path / f"{resnum}.pdb", "ASH",
+                   ASP_HEAVY + ["H", "HA", "HB2", "HB3", "HD2"], resnum=resnum)
+    result = _apply(pdb, "ASP", resnum=resnum)
+    assert not result["success"]
+    assert any("not found" in e for e in result["errors"])
+    assert _read(pdb)[0] == "ASH", "and the file is left as it was"
+
+
+@pytest.mark.parametrize("variant, parent, hydrogen", [
+    ("ASH", "ASP", "HD2"),
+    ("GLH", "GLU", "HE2"),
+])
+def test_the_variants_the_reader_renames_can_be_returned_to_their_parent(
+        tmp_path, variant, parent, hydrogen):
+    heavy = ASP_HEAVY if variant == "ASH" else [
+        "N", "CA", "C", "O", "CB", "CG", "CD", "OE1", "OE2"]
+    pdb = _residue(tmp_path / f"{variant}.pdb", variant,
+                   heavy + ["H", "HA", "HB2", "HB3", hydrogen])
+    assert _apply(pdb, parent)["success"]
+    name, atoms = _read(pdb)
+    assert name == parent and hydrogen not in atoms
