@@ -51,7 +51,7 @@ from mdclaw._common import (  # noqa: E402
 )
 from mdclaw._lock import file_lock  # noqa: E402
 from mdclaw import forcefield_catalog as _ff_catalog  # noqa: E402
-from mdclaw.chemistry_constants import AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES  # noqa: E402
+from mdclaw.chemistry_constants import AMBER_RESTORED_VARIANT_BASES  # noqa: E402
 from mdclaw.forcefield_templates import (  # noqa: E402
     load_lipid_template_contract,
     load_residue_templates,
@@ -79,7 +79,7 @@ _CHARGE_FIT_TIMEOUT_FLOOR_SECONDS = 1800  # 30 min
 
 
 def _restore_amber_variant_names(topology: Any, amber_variant_resids: dict) -> dict:
-    """Put ASH/GLH/LYN/CYM back on the residues that were renamed for Pablo.
+    """Put ASH/GLH/LYN/CYM/CYX back on the residues that were renamed for Pablo.
 
     ``amber_variant_resids`` maps ``(chain, residue number)`` to the record
     written when the name was substituted. That key is not unique in an
@@ -996,7 +996,7 @@ def _run_openmmforcefields_build(
                     rn = line[17:20].strip()
                     if (_canonical_pablo_ion_resname(rn) is not None
                             or rn in _HIS_AMBER_VARIANTS
-                            or rn in AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES):
+                            or rn in AMBER_RESTORED_VARIANT_BASES):
                         needs_sanitize = True
                         break
     except OSError:
@@ -1017,10 +1017,10 @@ def _run_openmmforcefields_build(
                         resseq = line[22:26]
                         his_amber_resids.add((chain_id, resseq.strip()))
                         line = line[:17] + "HIS" + line[20:]
-                    elif rn_strip in AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES:
+                    elif rn_strip in AMBER_RESTORED_VARIANT_BASES:
                         chain_id = _normalize_pdb_chain_id(line[21:22])
                         resseq = line[22:26]
-                        base_name = AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES[rn_strip]
+                        base_name = AMBER_RESTORED_VARIANT_BASES[rn_strip]
                         amber_variant_resids[(chain_id, resseq.strip())] = {
                             "variant": rn_strip,
                             "base_name": base_name,

@@ -38,6 +38,23 @@ AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES = {
     "CYM": "CYS",   # deprotonated (anionic) cysteine
 }
 
+# Amber residue names that must survive the same round trip without being
+# protonation states.  A disulfide cysteine is CYX, and OpenMM's PDB reader
+# renames it to CYS on load, so it needs restoring exactly as ASH and GLH do --
+# but it is not a titration decision and must not be promoted into an explicit
+# protonation override, which is the disulfide contract's job.  Measured on the
+# shipped artifacts before this was added: system.prepared.pdb carried CYX 40 and
+# system.topology.pdb carried CYX 0, CYS 106.
+AMBER_NONTITRATABLE_VARIANT_BASES = {
+    "CYX": "CYS",   # disulfide-bonded cysteine
+}
+
+# Everything the Pablo sanitizer substitutes and the restore puts back.
+AMBER_RESTORED_VARIANT_BASES = {
+    **AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES,
+    **AMBER_NONTITRATABLE_VARIANT_BASES,
+}
+
 # Terminal residue renaming used by pdb2pqr/propka for internal chain breaks.
 PROTEIN_RESNAMES = set(AMINO_ACIDS) | set(AMBER_PROTEIN_RESIDUES)
 PROTEIN_RESNAMES |= {f"N{aa}" for aa in AMINO_ACIDS} | {f"C{aa}" for aa in AMINO_ACIDS}

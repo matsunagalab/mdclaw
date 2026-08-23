@@ -45,7 +45,10 @@ EXPECTED = {
     "structure/pdb_utils.py": (1, "source"),            # render helper internals
     "amber/openmm_build.py": (1, "restore"),            # topology.pdb contract
     "openmm_system/build.py": (1, "restore"),           # topology.pdb (openmm FF)
-    "simulation/platform.py": (1, "restore"),           # diagnostic state export
+    # simulation/platform.py no longer writes its own: export_state_pdb goes
+    # through the shared render helper, which restores. It used to write
+    # directly and restored nothing, so HIE came out HIS and WAT came out HOH --
+    # from the tool documented as the way to produce a benchmark submission.
     "structure/terminal_caps.py": (1, "restore"),       # cap H completion
     "solvation/water.py": (1, "restore"),               # openmm solvation fallback
     "solvation/membrane.py": (1, "restore"),            # patch-relax PDB export

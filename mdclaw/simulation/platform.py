@@ -110,10 +110,9 @@ def export_state_pdb(
             )
             return result
 
+        box_vectors = None
         try:
             box_vectors = state.getPeriodicBoxVectors()
-            if box_vectors is not None:
-                topology.setPeriodicBoxVectors(box_vectors)
         except Exception as exc:  # noqa: BLE001
             result["warnings"].append(
                 "Could not copy periodic box vectors from state.xml: "
@@ -121,15 +120,20 @@ def export_state_pdb(
             )
 
         ensure_directory(output_path.parent)
-        import io as _io
-
+        # The same export path min / eq / prod use, so this tool cannot drift
+        # from them. Writing through PDBFile alone loses the residue names its
+        # own reader normalised on the way in -- measured on a real topology,
+        # HIE 17 came out HIS 17 and WAT 34401 came out HOH 34401 -- and this
+        # tool is documented as the way to produce a benchmark submission, where
+        # the composition is compared residue by residue.
         from mdclaw.structure.pdb_utils import (
-            preserve_long_resnames_in_pdb_text,
+            render_simulation_pdb_preserving_resnames,
         )
-        pdb_buffer = _io.StringIO()
-        PDBFile.writeFile(topology, positions, pdb_buffer, keepIds=keep_ids)
         output_path.write_text(
-            preserve_long_resnames_in_pdb_text(pdb_buffer.getvalue(), topology)
+            render_simulation_pdb_preserving_resnames(
+                topology, positions, str(topology_path),
+                box_vectors=box_vectors, keep_ids=keep_ids,
+            )
         )
 
         result["success"] = True

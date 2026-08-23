@@ -316,6 +316,7 @@ def render_simulation_pdb_preserving_resnames(
     *,
     box_vectors: Any = None,
     image: bool = False,
+    keep_ids: bool = True,
 ) -> str:
     """Serialize an OpenMM topology+positions to PDB text, preserving the
     Amber/PTM/water residue names that OpenMM's ``PDBFile`` loader normalized
@@ -338,6 +339,11 @@ def render_simulation_pdb_preserving_resnames(
 
     ``image`` whole-molecule images the exported coordinates around the solute;
     see :func:`_image_positions_for_export`.
+
+    ``keep_ids`` is on, and should stay on: without it ``PDBFile`` renumbers
+    every residue 1..N inside its chain and relabels chains by index, so the
+    export disagrees with the ``topology.pdb`` it came from. It is a parameter
+    only because ``export_state_pdb`` offers the choice to its callers.
     """
     import io
 
@@ -360,7 +366,7 @@ def render_simulation_pdb_preserving_resnames(
         # already passes it, and export_state_pdb takes it as a documented
         # parameter defaulting to True; this call was lifted verbatim from min's
         # old inline block and the flag never came with it.
-        PDBFile.writeFile(topology, positions, buffer, keepIds=True)
+        PDBFile.writeFile(topology, positions, buffer, keepIds=keep_ids)
     finally:
         # The caller's topology is reused after this call (eq builds the
         # production handoff System from it), so borrow the box, do not keep it.

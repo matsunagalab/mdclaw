@@ -141,3 +141,45 @@ def test_the_shared_exporter_keeps_the_topology_s_ids(tmp_path):
     assert [r[1] for r in rendered] == ["18"] * 3 + ["383"] * 3
     assert {r[2] for r in rendered} == {"X"}
     assert [r[0] for r in rendered] == ["ALA"] * 3 + ["GLY"] * 3
+
+
+def test_export_state_pdb_keeps_the_names_the_reader_normalised(tmp_path):
+    """The standalone export must not diverge from min / eq / prod.
+
+    Written through PDBFile alone it lost exactly what that reader normalises on
+    the way in -- measured on a real topology, HIE 17 came out HIS 17 and WAT
+    34401 came out HOH 34401. This tool is documented as the way to produce a
+    benchmark submission, where composition is compared residue by residue.
+    """
+    from openmm import Context, System, VerletIntegrator, XmlSerializer, unit
+    from openmm.app import PDBFile
+
+    from mdclaw.simulation.platform import export_state_pdb
+
+    source = tmp_path / "topology.pdb"
+    source.write_text(
+        "ATOM      1  N   HIE X  17      0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  CA  HIE X  17      1.450   0.900   0.000  1.00  0.00           C\n"
+        "ATOM      3  C   HIE X  17      2.900   0.000   0.700  1.00  0.00           C\n"
+        "ATOM      4  SG  CYX X  18      4.300   0.900   0.000  1.00  0.00           S\n"
+        "END\n")
+    pdb = PDBFile(str(source))
+    system = System()
+    for _ in range(pdb.topology.getNumAtoms()):
+        system.addParticle(12.0 * unit.amu)
+    context = Context(system, VerletIntegrator(1.0 * unit.femtosecond))
+    context.setPositions(pdb.positions)
+    state_file = tmp_path / "state.xml"
+    state_file.write_text(
+        XmlSerializer.serialize(context.getState(getPositions=True)))
+
+    out = tmp_path / "exported.pdb"
+    result = export_state_pdb(str(source), str(state_file), str(out))
+
+    assert result["success"], result.get("errors")
+    names = [line[17:20].strip() for line in out.read_text().splitlines()
+             if line.startswith("ATOM")]
+    assert names == ["HIE", "HIE", "HIE", "CYX"]
+    numbers = {line[22:26].strip() for line in out.read_text().splitlines()
+               if line.startswith("ATOM")}
+    assert numbers == {"17", "18"}

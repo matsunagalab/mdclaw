@@ -209,3 +209,38 @@ def test_final_variant_validation_rejects_wrong_hydrogen_identity():
 
     assert report["status"] == "failed"
     assert report["records"][0]["forbidden_atoms_present"] == ["HZ3"]
+
+
+# --- a disulfide cysteine is CYX and must come back as one --------------------
+# OpenMM's PDB reader renames CYX to CYS on load, and the sanitizer's restore
+# table held only the four titratable variants, so nothing put it back. Measured
+# on a real membrane build before this: system.prepared.pdb carried CYX 4 and
+# system.topology.pdb carried CYX 0, CYS 10. The System was never wrong -- its
+# two S-S bonds were there either way -- but every artifact read from that file
+# reported the cysteines as free, and a re-prep from it would let pdb2pqr put HG
+# back on all four.
+
+def test_cyx_is_restored_but_is_not_a_protonation_state():
+    from mdclaw.chemistry_constants import (
+        AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES,
+        AMBER_RESTORED_VARIANT_BASES,
+    )
+    assert AMBER_RESTORED_VARIANT_BASES["CYX"] == "CYS"
+    assert "CYX" not in AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES, (
+        "a disulfide is the disulfide contract's decision, not a titration one")
+    for variant in ("ASH", "GLH", "LYN", "CYM"):
+        assert variant in AMBER_RESTORED_VARIANT_BASES
+
+
+def test_the_protonation_extractor_still_leaves_cyx_alone(tmp_path):
+    """Adding CYX to the restore table must not promote it to an override."""
+    from mdclaw.structure.protonation import (
+        _extract_input_protonation_state_overrides,
+    )
+    pdb = tmp_path / "cyx.pdb"
+    pdb.write_text(
+        "ATOM      1  SG  CYX C 300       0.000   0.000   0.000  1.00  0.00           S\n"
+        "ATOM      2  SG  CYM C 301       4.000   0.000   0.000  1.00  0.00           S\n"
+        "TER\nEND\n")
+    states = _extract_input_protonation_state_overrides(pdb)
+    assert {s["state"] for s in states} == {"CYM"}
