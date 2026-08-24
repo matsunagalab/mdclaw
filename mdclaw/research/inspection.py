@@ -28,6 +28,7 @@ from mdclaw.selection_utils import (  # noqa: E402
     associated_ligands_by_author_chain,
     likely_additive_ligands,
 )
+from mdclaw.structure.residue_range import residue_numbering_summary  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -591,6 +592,17 @@ def inspect_molecules(
                 "resnum": first_resnum,
                 "sequence_length": len(sequence_parts) if has_protein else 0,
             }
+            if chain_type in ("protein", "nucleic", "glycan"):
+                chain_info["residue_numbering"] = residue_numbering_summary(
+                    [
+                        (
+                            residue.seqid.num,
+                            str(residue.seqid.icode or "").strip(),
+                            residue.name,
+                        )
+                        for residue in res_list
+                    ]
+                )
             chains_info.append(chain_info)
 
         result["chains"] = chains_info
@@ -725,6 +737,12 @@ def inspect_molecules(
             "select_chains_scope": "all_component_types",
             "ion_chain_ids_when_selecting_chains": action_chain_ids["ion"],
             "standard_cleanup_tool": "prepare_complex",
+            "residue_identity_fields": [
+                "resnum", "insertion_code", "resname",
+            ],
+            "residue_range_semantics": (
+                "inclusive endpoint identities in deposited chain order"
+            ),
         }
         modified_support = modified_nucleic_support_report(modified_nucleic_residues)
         result["summary"]["modified_nucleic_support_status"] = modified_support["status"]

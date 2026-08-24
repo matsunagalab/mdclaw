@@ -47,6 +47,7 @@ from mdclaw.selection_utils import (  # noqa: E402
     associated_ligands_by_author_chain,
     selected_associated_ligand_candidates,
 )
+from mdclaw.structure.residue_range import residue_numbering_summary  # noqa: E402
 
 # Default working directory for prepare_complex when output_dir is not specified
 WORKING_DIR = Path(".")
@@ -493,6 +494,17 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                 "resnum": first_resnum,
                 "unique_id": unique_id,
             }
+            if chain_type in ("protein", "nucleic", "glycan"):
+                chain_info["residue_numbering"] = residue_numbering_summary(
+                    [
+                        (
+                            residue.seqid.num,
+                            str(residue.seqid.icode or "").strip(),
+                            residue.name,
+                        )
+                        for residue in res_list
+                    ]
+                )
             chains_info.append(chain_info)
         
         result["chains"] = chains_info
@@ -565,6 +577,12 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
             "standard_cleanup_handles": [
                 "altloc", "MSE", "residue_numbering", "missing_sidechains",
             ],
+            "residue_identity_fields": [
+                "resnum", "insertion_code", "resname",
+            ],
+            "residue_range_semantics": (
+                "inclusive endpoint identities in deposited chain order"
+            ),
         }
         modified_support = modified_nucleic_support_report(modified_nucleic_residues)
         result["summary"]["modified_nucleic_support_status"] = modified_support["status"]
@@ -916,9 +934,13 @@ def split_molecules(
                 # E was never cropped.
                 record = result["residue_ranges"]["resolved"].setdefault(
                     chain_id, {"pieces": [], "author_chain": info.get("author_chain")})
-                record["pieces"].append({"range": entry.spelled(),
-                                         "start": entry.start[0],
-                                         "end": entry.end[0]})
+                record["pieces"].append({
+                    "range": entry.spelled(),
+                    "start": entry.start[0],
+                    "start_icode": entry.start[1],
+                    "end": entry.end[0],
+                    "end_icode": entry.end[1],
+                })
                 record["range"] = rr.spelled(range_by_chain_id[chain_id])
                 # ``start``/``end`` are the single-range spelling and only exist
                 # while there is one range. For a fusion they would be the outer
@@ -1596,7 +1618,28 @@ def split_molecules(
             chain_ranges = range_by_chain_id.get(chain_id)
             range_kept, range_dropped, range_boundary_icodes = [], [], []
             kept_by_range = {}
-            for residue in subchain:
+            ordered_range_resolution = {}
+            if chain_ranges:
+                try:
+                    ordered_range_resolution = rr.resolve_ordered_ranges(
+                        chain_ranges,
+                        [
+                            (residue.seqid.num, str(residue.seqid.icode or "").strip())
+                            for residue in subchain
+                        ],
+                    )
+                except ResidueRangeError as exc:
+                    result["errors"].append(str(exc))
+                    result["code"] = exc.code
+                    result["hints"] = exc.hints
+                    return result
+                resolved_record = result["residue_ranges"]["resolved"].get(chain_id, {})
+                for piece in resolved_record.get("pieces", []):
+                    resolution = ordered_range_resolution.get(piece["range"], {})
+                    piece["selection_mode"] = resolution.get("selection_mode")
+                    piece["start_observed"] = resolution.get("start_observed")
+                    piece["end_observed"] = resolution.get("end_observed")
+            for residue_index, residue in enumerate(subchain):
                 res_name = residue.name.strip()
                 # Skip water residues unless explicitly keeping them
                 # This ensures crystal waters are removed regardless of chain type
@@ -1605,8 +1648,15 @@ def split_molecules(
                     continue
                 if chain_ranges:
                     icode = str(residue.seqid.icode or "").strip()
-                    held = next((entry for entry in chain_ranges
-                                 if entry.contains(residue.seqid.num, icode)), None)
+                    held = next(
+                        (
+                            entry
+                            for entry in chain_ranges
+                            if residue_index
+                            in ordered_range_resolution[entry.spelled()]["indices"]
+                        ),
+                        None,
+                    )
                     if held is not None:
                         range_kept.append(residue.seqid.num)
                         # Which range kept it, so a chain given several of them

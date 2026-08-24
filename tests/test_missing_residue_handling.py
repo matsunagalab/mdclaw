@@ -16,6 +16,7 @@ pytest.importorskip("pdbfixer")
 
 from mdclaw.structure.clean_protein import (  # noqa: E402
     MODELLER_REPAIR_RANDOM_SEED,
+    _probe_internal_missing_residue_summary,
     _repair_missing_residues_with_modeller,
     _validate_modeller_repair_model,
     clean_protein,
@@ -104,6 +105,93 @@ def _write_model(path, residues):
     structure.add_model(model)
     structure.write_pdb(str(path))
     return path
+
+
+def _build_insertion_chain_with_terminal_missing(path):
+    """A compact 1CEB-shaped chain: 1A,1,2 plus missing SEQRES termini."""
+    structure = gemmi.Structure()
+    model = gemmi.Model("1")
+    chain = gemmi.Chain("A")
+    observed = [(1, "A", "GLU"), (1, " ", "CYS"), (2, " ", "LYS")]
+    for offset, (seqnum, icode, resname) in enumerate(observed):
+        residue = gemmi.Residue()
+        residue.name = resname
+        residue.seqid = gemmi.SeqId(seqnum, icode)
+        for atom_name, element, dx in (
+            ("N", "N", 0.0), ("CA", "C", 1.5),
+            ("C", "C", 2.5), ("O", "O", 3.0),
+        ):
+            atom = gemmi.Atom()
+            atom.name = atom_name
+            atom.element = gemmi.Element(element)
+            atom.pos = gemmi.Position(offset * 3.8 + dx, 0.0, 0.0)
+            atom.occ, atom.b_iso = 1.0, 20.0
+            residue.add_atom(atom)
+        chain.add_residue(residue)
+    model.add_chain(chain)
+    structure.add_model(model)
+    structure.setup_entities()
+    polymer = next(
+        entity
+        for entity in structure.entities
+        if entity.entity_type == gemmi.EntityType.Polymer
+    )
+    polymer.full_sequence = [
+        "LEU", "SER", "GLU", "CYS", "LYS",
+        "GLU", "GLU", "GLU", "CYS", "MET", "HIS",
+    ]
+    structure.write_pdb(str(path))
+    return path
+
+
+def _build_noncollinear_internal_gap(path):
+    structure = gemmi.Structure()
+    model = gemmi.Model("1")
+    chain = gemmi.Chain("A")
+    for offset, (seqnum, resname) in enumerate([(1, "ALA"), (4, "GLY")]):
+        residue = gemmi.Residue()
+        residue.name = resname
+        residue.seqid = gemmi.SeqId(seqnum, " ")
+        x = offset * 3.8
+        for atom_name, element, position in (
+            ("N", "N", (x, 0.0, 0.0)),
+            ("CA", "C", (x + 1.4, 0.5, 0.2)),
+            ("C", "C", (x + 2.5, -0.1, 0.4)),
+            ("O", "O", (x + 3.0, -1.1, 0.5)),
+        ):
+            atom = gemmi.Atom()
+            atom.name = atom_name
+            atom.element = gemmi.Element(element)
+            atom.pos = gemmi.Position(*position)
+            atom.occ, atom.b_iso = 1.0, 20.0
+            residue.add_atom(atom)
+        chain.add_residue(residue)
+    model.add_chain(chain)
+    structure.add_model(model)
+    structure.setup_entities()
+    polymer = next(
+        entity
+        for entity in structure.entities
+        if entity.entity_type == gemmi.EntityType.Polymer
+    )
+    polymer.full_sequence = ["ALA", "SER", "THR", "GLY"]
+    structure.write_pdb(str(path))
+    return path
+
+
+def test_auto_probe_does_not_call_insertion_shifted_terminal_gap_internal(tmp_path):
+    source = _build_insertion_chain_with_terminal_missing(
+        tmp_path / "insertion_terminal_missing.pdb"
+    )
+
+    summary = _probe_internal_missing_residue_summary(source)
+
+    assert summary == {
+        "segment_count": 0,
+        "total_residues": 0,
+        "max_segment_length": 0,
+        "segments": [],
+    }
 
 
 @pytest.fixture
@@ -228,6 +316,25 @@ def test_invalid_missing_residue_method_is_rejected(tmp_path):
 
     assert result["success"] is False
     assert result["code"] == "invalid_missing_residue_method"
+
+
+def test_none_missing_residue_method_leaves_internal_gap_unbuilt(
+    tmp_path,
+    stub_amber_conversion,
+):
+    source = _build_noncollinear_internal_gap(tmp_path / "internal_gap_none.pdb")
+
+    result = clean_protein(
+        pdb_file=str(source),
+        missing_residue_method="none",
+    )
+
+    assert result["success"] is True, result.get("errors")
+    repair = result["missing_residue_repair"]
+    assert repair["method_used"] == "none"
+    assert repair["status"] == "skipped_by_request"
+    assert repair["total_residues"] == 2
+    assert result["statistics"]["initial_residues"] == 2
 
 
 def test_out_of_scope_recommends_a_new_prep_node(tmp_path):

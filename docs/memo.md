@@ -7,6 +7,31 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-24 — Author insertion codes now survive inspection, selection, and preparation
+
+Task `036_ligand_1ceb` exposed an author-numbering edge case: chain A begins
+with observed residues `1A, 1, 2, ... 79`. Numeric tuple selection treated
+`A:1A-79` as if `1A` and `1` occupied the same position and dropped the plain
+residue 1; missing-residue probing then confused the extra observed insertion
+with a SEQRES gap and unnecessarily escalated to MODELLER.
+
+Range selection now resolves observed endpoints in deposited residue order, so
+`A:1A-79` retains all 80 residues. `inspect_molecules` reports the ordered
+author residue IDs, insertion codes, repeated author numbers, and a suggested
+unambiguous span. Missing-residue classification accounts for observed
+insertions when locating terminal SEQRES gaps, and `missing_residue_method=none`
+is available when a caller deliberately wants to record but not rebuild
+internal gaps. The focused suite passes 66 tests and ruff passes on every
+changed Python file.
+
+The same run validated the existing expected-ligand-charge path. Passing AMH
+`net_charge=0` through `structure_analysis` selected Dimorphite-DL's
+zwitterionic candidate from the CCD SMILES, retained 26 ligand atoms, and
+recorded both the expected and molecular formal charges. The `md-prepare` skill
+now gives this existing path as the concise default when a task supplies an
+expected charge; no new CLI argument was added. End-to-end ff99SB-ILDN/TIP3P
+production completed and MDDataBench passed prep 12/12 and MD 8/8.
+
 ## 2026-08-24 — Curated region boundaries work as analysis policy, not a new client
 
 Shweta Kumari's W535L SMO trajectory reproduced the failure mode behind the

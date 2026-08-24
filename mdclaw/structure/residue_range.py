@@ -141,6 +141,114 @@ def contains(ranges: Iterable, number: int, icode: str = "") -> bool:
     return any(entry.contains(number, icode) for entry in ranges)
 
 
+def resolve_ordered_ranges(
+    ranges: Iterable[ResidueRange],
+    residue_ids: Iterable[tuple[int, str]],
+) -> dict[str, dict]:
+    """Resolve range endpoints against residues in deposited chain order.
+
+    Author residue identifiers are labels, not a reliable number line.  In
+    1CEB the deposited order starts ``1A, 1, 2, ...``; tuple comparison would
+    therefore drop residue ``1`` from ``1A-79`` even though it lies between the
+    two endpoints in the structure.  When both endpoints are observed, select
+    the inclusive slice between their exact identities.  If an endpoint is
+    unobserved, retain the historical numeric fallback so requests such as
+    ``4-315`` can select observed 4-314 and let missing-residue repair build
+    the requested endpoint.
+    """
+    ordered = [
+        (int(number), str(icode or "").strip())
+        for number, icode in residue_ids
+    ]
+    resolved: dict[str, dict] = {}
+    occupied: dict[int, str] = {}
+    for entry in ranges:
+        start_matches = [i for i, identity in enumerate(ordered) if identity == entry.start]
+        end_matches = [i for i, identity in enumerate(ordered) if identity == entry.end]
+        if len(start_matches) > 1 or len(end_matches) > 1:
+            raise ResidueRangeError(
+                f"Residue range {entry.spelled()!r} has a non-unique endpoint "
+                "in the selected chain",
+                "ambiguous_residue_range_endpoint",
+                ["Inspect ordered residue identities and choose endpoints that occur once."],
+            )
+        if start_matches and end_matches:
+            start_index, end_index = start_matches[0], end_matches[0]
+            if start_index > end_index:
+                raise ResidueRangeError(
+                    f"Residue range {entry.spelled()!r} ends before it starts "
+                    "in deposited chain order",
+                    "invalid_residue_range",
+                    ["Use the ordered residue identities returned by inspect_molecules."],
+                )
+            indices = set(range(start_index, end_index + 1))
+            mode = "ordered_observed_endpoints"
+        else:
+            indices = {
+                index
+                for index, (number, icode) in enumerate(ordered)
+                if entry.contains(number, icode)
+            }
+            mode = "numeric_fallback_unobserved_endpoint"
+        for index in indices:
+            previous = occupied.get(index)
+            if previous is not None:
+                raise ResidueRangeError(
+                    f"Residue ranges {previous} and {entry.spelled()} overlap "
+                    "in deposited chain order",
+                    "invalid_residue_range",
+                    ["Move the endpoint that was meant to separate the ranges."],
+                )
+            occupied[index] = entry.spelled()
+        resolved[entry.spelled()] = {
+            "indices": indices,
+            "selection_mode": mode,
+            "start_observed": bool(start_matches),
+            "end_observed": bool(end_matches),
+        }
+    return resolved
+
+
+def residue_numbering_summary(
+    residues: Iterable[tuple[int, str, str]],
+) -> dict:
+    """Expose author residue identities in the order present in the structure."""
+    ordered = []
+    by_number: dict[int, list[str]] = {}
+    for number, icode, resname in residues:
+        number = int(number)
+        icode = str(icode or "").strip()
+        residue_id = f"{number}{icode}"
+        record = {
+            "residue_id": residue_id,
+            "resnum": number,
+            "insertion_code": icode,
+            "resname": str(resname).strip(),
+        }
+        ordered.append(record)
+        by_number.setdefault(number, []).append(residue_id)
+    insertion_coded = [record for record in ordered if record["insertion_code"]]
+    repeated = [
+        {"resnum": number, "ordered_residue_ids": identities}
+        for number, identities in by_number.items()
+        if len(identities) > 1
+    ]
+    return {
+        "count": len(ordered),
+        "first": ordered[0] if ordered else None,
+        "last": ordered[-1] if ordered else None,
+        "ordered_residues": ordered,
+        "has_insertion_codes": bool(insertion_coded),
+        "insertion_code_residues": insertion_coded,
+        "repeated_author_numbers": repeated,
+        "range_semantics": "inclusive endpoints in deposited chain order",
+        "suggested_full_span": (
+            f"{ordered[0]['residue_id']}-{ordered[-1]['residue_id']}"
+            if ordered else None
+        ),
+    }
+
+
 def spelled(ranges: Iterable) -> str:
     """``18-214 and 383-458`` -- a chain's ranges as an error message says them."""
     written = [entry.spelled() for entry in ranges]

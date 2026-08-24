@@ -15,6 +15,7 @@ from mdclaw.structure.residue_range import (
     ResidueRangeError,
     describe_span,
     parse_residue_ranges,
+    resolve_ordered_ranges,
 )
 
 
@@ -67,6 +68,26 @@ def test_an_insertion_code_orders_after_its_number():
         "the boundary number's insertion-coded residues are outside a plain bound"
     wider = parse_residue_ranges("A:1-100B")[0]
     assert wider.contains(100, "A") and wider.contains(100, "B")
+
+
+def test_observed_endpoints_follow_deposited_order_not_tuple_order():
+    entry = parse_residue_ranges("A:1A-79")[0]
+    residue_ids = [(1, "A"), (1, ""), (2, ""), (79, "")]
+
+    resolved = resolve_ordered_ranges([entry], residue_ids)[entry.spelled()]
+
+    assert resolved["selection_mode"] == "ordered_observed_endpoints"
+    assert resolved["indices"] == {0, 1, 2, 3}
+
+
+def test_unobserved_endpoint_keeps_numeric_fallback_for_repair():
+    entry = parse_residue_ranges("A:4-315")[0]
+    residue_ids = [(number, "") for number in range(4, 315)]
+
+    resolved = resolve_ordered_ranges([entry], residue_ids)[entry.spelled()]
+
+    assert resolved["selection_mode"] == "numeric_fallback_unobserved_endpoint"
+    assert len(resolved["indices"]) == 311
 
 
 def test_span_is_reported_from_the_chain_itself():

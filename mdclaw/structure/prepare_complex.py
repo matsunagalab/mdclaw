@@ -912,7 +912,8 @@ def prepare_complex(
         missing_residue_method: How internal missing residues are rebuilt.
             ``"auto"`` (default) uses PDBFixer for short gaps and MODELLER for
             out-of-scope gaps when licensed; ``"pdbfixer"`` never escalates;
-            ``"modeller"`` always uses MODELLER loop modeling.
+            ``"modeller"`` always uses MODELLER loop modeling; ``"none"``
+            records internal gaps but leaves every missing residue unbuilt.
             MODELLER is licensed — export a ``KEY_MODELLER*`` variable.
         residue_ranges: Which residues of a chain to build from, as
             ``CHAIN:START-END`` strings using author residue numbers -- for

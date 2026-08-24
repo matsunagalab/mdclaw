@@ -78,6 +78,36 @@ def _inspect(path: str) -> dict:
     return _inspect_molecules_impl(path)
 
 
+def _write_insertion_ordered_chain(path: Path) -> str:
+    import gemmi
+
+    structure = gemmi.Structure()
+    model = gemmi.Model("1")
+    chain = gemmi.Chain("A")
+    for offset, (number, icode, name) in enumerate(
+        [(1, "A", "GLU"), (1, " ", "CYS"), (2, " ", "LYS")]
+    ):
+        residue = gemmi.Residue()
+        residue.name = name
+        residue.seqid = gemmi.SeqId(number, icode)
+        for atom_name, element, dx in (
+            ("N", "N", 0.0), ("CA", "C", 1.3),
+            ("C", "C", 2.5), ("O", "O", 3.1),
+        ):
+            atom = gemmi.Atom()
+            atom.name = atom_name
+            atom.element = gemmi.Element(element)
+            atom.pos = gemmi.Position(offset * 3.8 + dx, 0.0, 0.0)
+            atom.occ = 1.0
+            residue.add_atom(atom)
+        chain.add_residue(residue)
+    model.add_chain(chain)
+    structure.add_model(model)
+    structure.setup_entities()
+    structure.write_pdb(str(path))
+    return str(path)
+
+
 def test_inspect_molecules_exposes_label_and_author_ids(cif_label_ne_auth):
     """inspect_molecules summary must surface both label IDs and the label->author map."""
     r = _inspect(cif_label_ne_auth)
@@ -125,6 +155,52 @@ def test_public_inspection_places_action_contract_before_large_details(
         "ligand_label_ids"
     ]
     assert contract["standard_cleanup_tool"] == "prepare_complex"
+
+
+def test_inspection_exposes_ordered_insertion_code_residues(tmp_path):
+    from mdclaw.research.inspection import inspect_molecules
+
+    source = _write_insertion_ordered_chain(tmp_path / "insertion_order.pdb")
+    result = inspect_molecules(structure_file=source)
+
+    assert result["success"] is True
+    numbering = result["chains"][0]["residue_numbering"]
+    assert [record["residue_id"] for record in numbering["ordered_residues"]] == [
+        "1A", "1", "2",
+    ]
+    assert numbering["insertion_code_residues"] == [
+        {
+            "residue_id": "1A",
+            "resnum": 1,
+            "insertion_code": "A",
+            "resname": "GLU",
+        }
+    ]
+    assert numbering["repeated_author_numbers"] == [
+        {"resnum": 1, "ordered_residue_ids": ["1A", "1"]}
+    ]
+    assert result["action_contract"]["residue_range_semantics"] == (
+        "inclusive endpoint identities in deposited chain order"
+    )
+
+
+def test_split_range_uses_deposited_order_for_insertion_codes(tmp_path):
+    from mdclaw.structure.split import split_molecules
+
+    source = _write_insertion_ordered_chain(tmp_path / "insertion_range.pdb")
+    result = split_molecules(
+        structure_file=source,
+        output_dir=str(tmp_path / "split"),
+        select_chains=["A"],
+        include_types=["protein"],
+        residue_ranges=["A:1A-2"],
+    )
+
+    assert result["success"] is True, result.get("errors")
+    record = next(iter(result["residue_ranges"]["delivered"].values()))
+    assert record["kept"] == 3
+    piece = result["residue_ranges"]["resolved"]["Axp"]["pieces"][0]
+    assert piece["selection_mode"] == "ordered_observed_endpoints"
 
 
 def test_split_molecules_matches_label_asym_id(cif_label_ne_auth, tmp_path):

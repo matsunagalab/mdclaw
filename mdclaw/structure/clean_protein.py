@@ -255,7 +255,7 @@ def _missing_residue_summary(records: list[dict]) -> dict:
     }
 
 
-MISSING_RESIDUE_METHODS = ("auto", "pdbfixer", "modeller")
+MISSING_RESIDUE_METHODS = ("auto", "pdbfixer", "modeller", "none")
 
 
 # MODELLER loop generation is stochastic. A fixed seed keeps a re-run of the
@@ -265,17 +265,64 @@ MISSING_RESIDUE_METHODS = ("auto", "pdbfixer", "modeller")
 MODELLER_REPAIR_RANDOM_SEED = -8123
 
 
+def _missing_residue_terminal_keys(fixer, chains) -> dict[tuple[int, int], str]:
+    """Classify PDBFixer missing-residue keys at observed chain termini.
+
+    PDBFixer keys are alignment positions, not necessarily topology lengths.
+    When an observed insertion-code residue is absent from SEQRES, a trailing
+    gap can be keyed at ``len(observed)-n_insertions``.  1CEB therefore reports
+    its genuine C-terminal gap at position 79 although its topology contains
+    80 residues.  Account for observed residues unmatched by SEQRES before
+    deciding which key is the trailing terminus.
+    """
+    sequences = list(getattr(fixer, "sequences", None) or [])
+    terminal: dict[tuple[int, int], str] = {}
+    for chain_idx, chain in enumerate(chains):
+        observed_length = len(list(chain.residues()))
+        chain_missing = {
+            key: residues
+            for key, residues in fixer.missingResidues.items()
+            if key[0] == chain_idx
+        }
+        if not chain_missing:
+            continue
+        sequence = next(
+            (
+                item
+                for item in sequences
+                if str(getattr(item, "chainId", "")) == str(chain.id)
+            ),
+            sequences[chain_idx] if chain_idx < len(sequences) else None,
+        )
+        reference_length = (
+            len(list(sequence.residues)) if sequence is not None else None
+        )
+        missing_count = sum(len(residues) for residues in chain_missing.values())
+        unmatched_observed = (
+            max(0, observed_length + missing_count - reference_length)
+            if reference_length is not None
+            else 0
+        )
+        trailing_position = observed_length - unmatched_observed
+        for key in chain_missing:
+            if key[1] == 0:
+                terminal[key] = "N"
+            elif key[1] == trailing_position:
+                terminal[key] = "C"
+    return terminal
+
+
 def _probe_internal_missing_residue_summary(input_path: Path) -> dict:
     """Measure internal gaps without changing the structure."""
     probe = PDBFixer(filename=str(input_path))
     probe.findMissingResidues()
     chains = list(probe.topology.chains())
+    terminal_keys = _missing_residue_terminal_keys(probe, chains)
     internal = {}
     for (chain_idx, res_idx), residues in probe.missingResidues.items():
         if not 0 <= chain_idx < len(chains):
             continue
-        chain_length = len(list(chains[chain_idx].residues()))
-        if res_idx in (0, chain_length):
+        if (chain_idx, res_idx) in terminal_keys:
             continue
         internal[(chain_idx, res_idx)] = residues
     return _missing_residue_summary(
@@ -515,6 +562,7 @@ def _repair_missing_residues_with_modeller(
     probe = PDBFixer(filename=str(input_path))
     probe.findMissingResidues()
     chains = list(probe.topology.chains())
+    terminal_keys = _missing_residue_terminal_keys(probe, chains)
 
     internal: dict = {}
     leading_terminal = 0
@@ -522,11 +570,11 @@ def _repair_missing_residues_with_modeller(
     for (chain_idx, res_idx), residues in probe.missingResidues.items():
         if not 0 <= chain_idx < len(chains):
             continue
-        chain_length = len(list(chains[chain_idx].residues()))
-        if res_idx == 0:
+        terminal_kind = terminal_keys.get((chain_idx, res_idx))
+        if terminal_kind == "N":
             leading_terminal += len(residues)
             continue
-        if res_idx == chain_length:
+        if terminal_kind == "C":
             trailing_terminal += len(residues)
             continue
         internal[(chain_idx, res_idx)] = residues
@@ -876,6 +924,9 @@ def clean_protein(
                                  to ff19SB; pass the planned topology protein
                                  force field when it differs.
         missing_residue_method: How to rebuild internal missing residues.
+            ``"none"`` records but does not rebuild internal gaps;
+            ``"auto"`` routes short gaps to PDBFixer and longer gaps to
+            MODELLER, while ``"pdbfixer"`` and ``"modeller"`` pin one method.
                                 ``"auto"`` (default) uses PDBFixer in scope and
                                 escalates larger gaps to MODELLER when licensed;
                                 ``"pdbfixer"`` never escalates; ``"modeller"``
@@ -984,6 +1035,13 @@ def clean_protein(
         result["errors"].append(
             f"missing_residue_method must be one of {list(MISSING_RESIDUE_METHODS)}, "
             f"got {missing_residue_method!r}"
+        )
+        result["code"] = "invalid_missing_residue_method"
+        return result
+    if method == "none" and build_terminal_missing_residues:
+        result["errors"].append(
+            "missing_residue_method='none' cannot be combined with "
+            "build_terminal_missing_residues=True"
         )
         result["code"] = "invalid_missing_residue_method"
         return result
@@ -1119,6 +1177,7 @@ def clean_protein(
         
         # Get chain information for terminal handling
         chains = list(fixer.topology.chains())
+        terminal_keys = _missing_residue_terminal_keys(fixer, chains)
         
         # Record what the reference sequence made visible. Without SEQRES
         # PDBFixer has nothing to compare coordinates against and reports zero
@@ -1183,11 +1242,12 @@ def clean_protein(
             for key in list(fixer.missingResidues.keys()):
                 chain_idx, res_idx = key
                 chain = chains[chain_idx]
-                if res_idx == 0 or res_idx == len(list(chain.residues())):
+                terminal_kind = terminal_keys.get(key)
+                if terminal_kind:
                     built.append({
                         "chain_index": chain_idx,
                         "chain_id": str(getattr(chain, "id", chain_idx)),
-                        "terminus": "N" if res_idx == 0 else "C",
+                        "terminus": terminal_kind,
                         "residue_count": len(fixer.missingResidues[key]),
                     })
             if built:
@@ -1208,13 +1268,13 @@ def clean_protein(
             for key in list(fixer.missingResidues.keys()):
                 chain_idx, res_idx = key
                 chain = chains[chain_idx]
-                chain_length = len(list(chain.residues()))
-                if res_idx == 0 or res_idx == chain_length:
+                terminal_kind = terminal_keys.get(key)
+                if terminal_kind:
                     keys_to_remove.append(key)
                     terminal_records.append({
                         "chain_index": chain_idx,
                         "chain_id": str(getattr(chain, "id", chain_idx)),
-                        "terminus": "N" if res_idx == 0 else "C",
+                        "terminus": terminal_kind,
                         "residue_count": len(fixer.missingResidues[key]),
                     })
             
@@ -1251,6 +1311,36 @@ def clean_protein(
                     f"{len(terminal_records)} segment(s) unmodeled; an unresolved "
                     "terminus is disorder, not a gap to bridge"
                 )
+
+        if method == "none" and fixer.missingResidues:
+            skipped_records = _internal_missing_residue_records(
+                fixer.missingResidues,
+                chains,
+            )
+            skipped_summary = _missing_residue_summary(skipped_records)
+            fixer.missingResidues.clear()
+            result["missing_residue_repair"] = {
+                "method": "none",
+                "method_requested": "none",
+                "method_used": "none",
+                "escalated": False,
+                "status": "skipped_by_request",
+                **skipped_summary,
+            }
+            result["operations"].append({
+                "step": "missing_residues",
+                "status": "skipped_by_request",
+                "details": (
+                    f"Left {skipped_summary['total_residues']} internal missing "
+                    "residue(s) unbuilt because missing_residue_method='none'"
+                ),
+                **skipped_summary,
+            })
+            result["warnings"].append(
+                f"Left {skipped_summary['total_residues']} internal missing "
+                "residue(s) unbuilt by explicit request; the prepared topology "
+                "may contain separate polymer segments"
+            )
         
         # Step 1b: Add requested terminal caps. ``cap_termini=True`` resolves
         # to the historical ACE+NME pair; explicit one-sided cap arguments

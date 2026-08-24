@@ -18,8 +18,9 @@ Preparation-specific defaults:
   LYS/LYN, and CYS/CYX/CYM.
 - Standard DNA/RNA are preserved as nucleic polymers, not treated as ligands.
 - Glycan residues are preserved and passed to GLYCAM-aware topology generation.
-- Ligands are cleaned into `ligand_chemistry`; charge comes from charged
-  SMILES/SDF, not a detached integer.
+- Ligands are cleaned into `ligand_chemistry`. A charged SMILES/SDF fixes the
+  molecular state; an expected `net_charge` selects a matching protonation
+  candidate but never changes the molecular graph by itself.
 - Ion retention/exclusion by regime, water-model ion coverage, and the
   metal-site XML policy: `skills/common/solvent-regimes.md`.
 
