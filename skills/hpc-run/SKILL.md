@@ -45,6 +45,12 @@ its inputs from the DAG.
 
 ## Critical Rules
 
+- Run SLURM control-plane tools (`submit_job`, `submit_array_job`, `check_job`,
+  monitoring, cancellation, and cluster configuration) through the host-side
+  `mdclaw` launcher (`bin/mdclaw` when working from a repository checkout).
+  Do not invoke those tools with `singularity exec`: the launcher deliberately
+  keeps `sbatch`, `squeue`, and related commands on the host and uses the
+  configured SIF only for the compute payload.
 - Always pass both `--job-dir` and `--node-id` when submitting or running a DAG
   workflow node.
 - Do not pass `--system-xml-file`, `--topology-pdb-file`, `--state-xml-file`, or `--restart-from` in normal

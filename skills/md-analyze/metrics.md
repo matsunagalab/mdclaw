@@ -26,6 +26,31 @@ mdclaw --job-dir <job_dir> --node-id <rmsd_analyze_node_id> analyze_rmsd
 Prefer DAG-resolved artifacts from the analyze node. For ad-hoc external
 trajectories, explicit file paths are acceptable when the user asks for them.
 
+## Named biological regions
+
+For domain-, loop-, or TM-wise analysis, separate the biological annotation
+from the trajectory topology. Prefer, in order: boundaries supplied by the
+user; a reviewed curated entry appropriate to the exact construct (for example
+UniProtKB/Swiss-Prot); then a prediction such as a live PPM run when no suitable
+curated annotation is available. PPM remains appropriate for membrane
+orientation; do not silently treat its live segment calls as curated domain
+boundaries.
+
+Map the annotated sequence to the simulated chain before constructing atom
+selections. Use sequence correspondence and account for unresolved residues,
+engineered insertions/deletions, tags, mutations, and insertion codes. Do not
+assume that a single residue-number offset is valid unless the correspondence
+demonstrates it across the analyzed region. Validate that every requested
+region maps to the intended sequence and selects a nonzero, plausible number
+of residues/atoms.
+
+If curated and predicted boundaries disagree, use the curated boundaries by
+default and report the disagreement rather than silently choosing either one.
+Record the accession/source, source-coordinate boundaries, mapped topology
+boundaries or explicit residue list, unmapped residues, and selection used with
+the analysis result. If the accession or mapping is ambiguous enough to change
+the result, stop and ask instead of guessing.
+
 ## Interpretation hints
 
 - RMSD plateaus usually indicate a stable sampled basin; continuous drift

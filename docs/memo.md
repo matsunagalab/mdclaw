@@ -7,6 +7,35 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-24 — Curated region boundaries work as analysis policy, not a new client
+
+Shweta Kumari's W535L SMO trajectory reproduced the failure mode behind the
+TM-wise RMSD/RMSF feedback. The `md-analyze` guidance now separates biological
+region annotation from membrane orientation: user-supplied boundaries first,
+then an appropriate reviewed curated entry, with live predictors such as PPM as
+a fallback. It requires sequence-based mapping to the actual simulated chain
+and an explicit disagreement report rather than a silent choice.
+
+A forward test did not use the existing `local_to_true_W535L.json`. It fetched
+reviewed UniProtKB Q99835, aligned its 787-residue canonical sequence to all 496
+protein residues in the analysis topology, and mapped all 496 residues. This
+recovered the hand-curated local TM/loop ranges exactly, including TM5 342-363,
+ICL3 364-395, and TM6 396-417. It also retained the W535L mismatch at local
+residue 478 instead of dropping it, surfaced another sequence mismatch
+(canonical V329 vs local F272), and identified local 481-496 as the partial
+observed portion of the curated cytoplasmic C-terminal domain.
+
+Re-running the 200 ns trajectory with the prompt-derived ranges produced 1,000
+sampled frames. All 15 arrays shared with the saved UniProt-domain RMSD result
+were byte-for-byte numerically identical (`max_abs_diff = 0.0`). Relative to
+the PPM-aligned saved RMSF, the curated-TM alignment changed mean RMSF from
+1.827 to 1.717 A; the mean absolute per-residue difference was 0.169 A and the
+maximum was 0.562 A at local residue 382. This supports a skill-only correction
+for source selection and residue mapping; no UniProt-specific runtime client is
+needed yet.
+
+---
+
 ## 2026-08-24 — Final topology PDBs no longer carry CONECT records
 
 Both topology builders now remove `CONECT` records only when serializing the

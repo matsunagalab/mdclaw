@@ -73,6 +73,7 @@ Confirm these fields before running analysis:
 | Validation | require `analysis_data_scope`; comparison is binary/pairwise with two unique subject `label`s |
 | Leaf prod node | requested node or deepest continuation leaf |
 | Atom selection | mdtraj selection, default `"protein"` |
+| Region annotation | source and residue mapping, when comparing named biological regions |
 | Stride | integer, default `1` |
 
 For comparisons between two branches in the same job DAG, create the node with
