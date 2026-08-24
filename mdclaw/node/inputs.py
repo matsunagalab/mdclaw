@@ -58,6 +58,46 @@ def explain_node(
     )
     resolved_inputs = resolve_node_inputs(str(jd), node_id, node_type)
     input_errors = list(resolved_inputs.get("input_resolution_errors", []))
+    source_selection_error = None
+    if (
+        node_type == "prep"
+        and actual_conditions
+        and resolved_inputs.get("source_bundle_file")
+    ):
+        from mdclaw.source_bundle import (
+            load_source_bundle,
+            select_source_structure,
+            source_record_path,
+            source_selection_from_values,
+        )
+
+        selection = source_selection_from_values(
+            source_structure_id=actual_conditions.get("source_structure_id"),
+            source_candidate_id=actual_conditions.get("source_candidate_id"),
+            source_model_index=actual_conditions.get("source_model_index"),
+            source_model_id=actual_conditions.get("source_model_id"),
+        )
+        if selection:
+            try:
+                record = select_source_structure(
+                    load_source_bundle(resolved_inputs["source_bundle_file"]),
+                    selection,
+                )
+                source_node_dir = (
+                    jd / "nodes" /
+                    str(resolved_inputs["source_bundle_resolved_from_node_id"])
+                )
+                structure_file = source_record_path(record, source_node_dir)
+                resolved_inputs.update({
+                    "structure_file": str(structure_file),
+                    "structure_resolved_from_node_id": resolved_inputs[
+                        "source_bundle_resolved_from_node_id"
+                    ],
+                    "source_structure_id": record.get("structure_id"),
+                    "source_structure": record,
+                })
+            except (KeyError, TypeError, ValueError) as exc:
+                source_selection_error = str(exc)
     source_candidates = resolved_inputs.pop("source_candidates", [])
     source_selection_required = (
         node_type == "prep"
@@ -70,10 +110,15 @@ def explain_node(
             for candidate in source_candidates
             if candidate.get("structure_id")
         ]
-        input_errors.append(
-            "Pass --source-structure-id before running this prep node. "
-            f"Options: {candidate_ids}"
-        )
+        if source_selection_error:
+            input_errors.append(
+                f"{source_selection_error}. Options: {candidate_ids}"
+            )
+        else:
+            input_errors.append(
+                "Pass --source-structure-id before running this prep node. "
+                f"Options: {candidate_ids}"
+            )
 
     code = (
         "source_candidate_selection_required"

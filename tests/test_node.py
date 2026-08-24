@@ -3684,6 +3684,32 @@ class TestSourceStudyContext:
         assert created["preflight"]["code"] == "source_candidate_selection_required"
         assert created["preflight"]["ready_to_run"] is False
 
+        selected = explain_node(
+            jd,
+            "prep_001",
+            actual_conditions={"source_structure_id": "candidate_002"},
+        )
+
+        assert selected["code"] == "ok"
+        assert selected["ready_to_run"] is True
+        assert selected["missing_inputs"] == []
+        assert selected["resolved_inputs"]["source_structure_id"] == "candidate_002"
+        assert selected["resolved_inputs"]["structure_file"].endswith(
+            "source_001/artifacts/candidates/candidate_002.pdb"
+        )
+
+        unknown = explain_node(
+            jd,
+            "prep_001",
+            actual_conditions={"source_structure_id": "not_a_candidate"},
+        )
+
+        assert unknown["code"] == "source_candidate_selection_required"
+        assert unknown["ready_to_run"] is False
+        assert "not_a_candidate" in unknown["missing_inputs"][0]
+        assert "candidate_001" in unknown["missing_inputs"][0]
+        assert "candidate_002" in unknown["missing_inputs"][0]
+
     def test_prepare_resolver_selects_explicit_source_candidate(self, job_dir):
         from mdclaw.source_bundle import build_source_bundle, write_source_bundle
         from mdclaw.structure.prepare_complex import _resolve_prepare_node_structure_file

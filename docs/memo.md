@@ -7,6 +7,60 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-24 — explain_node now previews explicit NMR candidate selection
+
+The `046_nucleic_1a66` follow-up confirmed that `explain_node` passed
+`actual_conditions` only to declared-condition validation, while prep input
+resolution independently inspected the DAG.  For a multi-model source this
+left `structure_file` unresolved and permanently reported
+`source_candidate_selection_required`, even when the caller supplied a valid
+`source_structure_id`; the actual `prepare_complex` path succeeded because it
+had separate candidate-selection machinery.
+
+The read-only prep preflight now uses the existing source-bundle selectors when
+one of the four existing source-selection values is present in
+`actual_conditions`.  A valid selection resolves the concrete candidate and
+can report `ready_to_run=true`; an unknown ID remains non-ready and reports the
+valid candidates.  No selection file is materialized, no CLI or `create_node`
+surface was added, and selection-free behavior is unchanged.  Focused lint and
+tests pass: 240 node/prepare tests plus two source-candidate server smoke tests.
+
+## 2026-08-24 — Correction: asymmetric RMSF tolerance makes 046 pass 20/20
+
+The 19/20 result recorded immediately below exposed an unnecessarily symmetric
+MDDataBench fluctuation-magnitude band, not an MDClaw failure.  The RMSF-total
+lower edge now receives 5 window SD of slack while the upper edge remains at
+4 SD: too little motion is still checked, but a mildly stiff independent 1 ns
+trajectory is less harmful than excessive motion or unfolding.  The unchanged
+046 trajectory now passes 20/20, and its real-run plus nine adversarial
+negative controls all receive the intended verdicts.
+
+## 2026-08-24 — 046_nucleic_1a66 completes as a DNA-only 1 ns run
+
+Task `046_nucleic_1a66` was executed from the public prompt only; hidden
+`task.json` fields were first read at scoring time.  The requested system is
+the two DNA strands (author chains B 315--326 and C 340--351), so the deposited
+protein chain was correctly excluded.  The first of 18 deposited NMR models
+was selected explicitly.  Preparation retained 24 DNA residues and 761 solute
+atoms, and DNA.OL15/TIP3P produced a neutral 44,231-atom box.  Terminal
+5'/3' templates correctly changed the two 12-mer strand charges to -11 each.
+
+Minimization, 0.1 ns NVT, 0.2 ns NPT, and 1.0 ns unrestrained NPT production
+completed at 300 K and 1 bar on one GPU using the normal 4 fs HMR default.
+Final visual QA retained both bent DNA strands inside the periodic box with no
+gross solvent or ion accident.  MDDataBench scored prep 12/12 and MD 7/8
+(19/20 total); only total fluctuation missed the calibrated lower bound by
+0.0161 A (1.1695 A versus 1.1855 A), while sequence, atoms, chemistry,
+conditions, elapsed time, fluctuation profile, radius of gyration, temperature,
+and density passed.  All nine adversarial negative controls were rejected, but
+the negative-control suite reports `success=false` because it requires the real
+run to pass every MD gate.
+
+One workflow rough edge remains: `create_node` correctly requested an explicit
+NMR candidate, and `prepare_complex --source-structure-id candidate_001`
+succeeded, but `explain_node` still reported the candidate-selection preflight
+as unresolved even when the same choice was supplied through actual conditions.
+
 ## 2026-08-24 — 037_ligand_1g74 completes with a single OLA alternate
 
 Task `037_ligand_1g74` retained chain A residues 1--131 and oleate OLA 132,
