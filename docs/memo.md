@@ -7,6 +7,26 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-24 — 037_ligand_1g74 completes with a single OLA alternate
+
+Task `037_ligand_1g74` retained chain A residues 1--131 and oleate OLA 132,
+while excluding the crystallization phosphate.  The deposited OLA has two
+complete 20-heavy-atom alternates at occupancy 0.50; preparation selected all
+atoms consistently from alternate A (never a mixed conformer), protonated it
+as oleate with expected net charge -1, and produced the reference-matching
+2,107-atom solute (2,054 protein + 53 OLA atoms).  The neutral 44,984-atom
+ff99SB-ILDN/TIP3P system completed minimization, 0.1 ns NVT, 0.2 ns NPT, and
+1.0 ns NPT production at 298 K and 1 bar on one GPU.  Final system-box and
+ligand-site previews showed an intact beta barrel and OLA retained in its
+binding cavity.
+
+The run used 2 fs because the benchmark reference was inspected during manual
+triage.  That produced a valid conservative trajectory, but it is not the
+normal execution policy: future benchmark runs must derive settings only from
+the public prompt and inputs.  Hidden/reference fields in `task.json` are for
+scoring only; when the prompt omits the timestep, MDClaw's topology-aware
+default applies (normally 4 fs for HMR).
+
 ## 2026-08-24 — Author insertion codes now survive inspection, selection, and preparation
 
 Task `036_ligand_1ceb` exposed an author-numbering edge case: chain A begins
