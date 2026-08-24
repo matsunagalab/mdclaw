@@ -2893,12 +2893,13 @@ def test_block_selection_keeps_the_z_spread_and_is_reproducible():
 
 
 # --- why the solvated write does not keep ids ---------------------------------
-# addSolvent gives every water molecule a chain of its own and calls them all
-# "A". Keeping those ids drops 30000 waters numbered from 1 into the solute's own
-# chain letter, and a residue is addressed downstream by (chain, number): on a
-# three-chain antibody 636 such keys then named both an amino acid and a water,
-# and the topology built from that file carried 49 bonds between protein and
-# water atoms up to 135 A apart, plus 32 between waters of different molecules.
+# Not because the ids collide -- measured on OpenMM 8.5.1, addSolvent makes
+# exactly two solvent chains whose residue ids continue past the solute's, and
+# keeping them collides nothing. Because they are an internal detail of the
+# version in the container, and the comment that used to be here described a
+# one-chain-per-water shape addSolvent does not build. What the solute needs is
+# put back after the write instead, from the input, by prefix -- which is immune
+# to however this version of addSolvent happens to group its water.
 
 def test_the_solvated_write_does_not_keep_openmm_s_water_chain_ids():
     """A regression guard: this was changed to keepIds=True and had to come back."""
@@ -2910,42 +2911,6 @@ def test_the_solvated_write_does_not_keep_openmm_s_water_chain_ids():
     call = next(line for line in source.splitlines()
                 if "PDBFile.writeFile" in line)
     assert "keepIds" not in call, (
-        "addSolvent names every water chain 'A'; keeping those ids collides "
-        "them with the solute, see the comment above the call")
-
-
-def test_keeping_the_water_chain_ids_collides_them_with_the_solute(tmp_path):
-    """The measurement the comment rests on, in miniature."""
-    import io
-
-    from openmm import unit
-    from openmm.app import Element, PDBFile, Topology
-
-    topology = Topology()
-    solute = topology.addChain("A")
-    residue = topology.addResidue("ASP", solute, id="1")
-    topology.addAtom("CA", Element.getBySymbol("C"), residue, id="1")
-    positions = [(0.0, 0.0, 0.0)]
-    for i in range(3):
-        # As addSolvent builds them: one chain each, all called "A", residue 1.
-        chain = topology.addChain("A")
-        water = topology.addResidue("HOH", chain, id="1")
-        topology.addAtom("O", Element.getBySymbol("O"), water, id="1")
-        positions.append((2.0 + i, 0.0, 0.0))
-
-    def keys(keep):
-        buffer = io.StringIO()
-        PDBFile.writeFile(topology, unit.Quantity(positions, unit.nanometer),
-                          buffer, keepIds=keep)
-        seen = {}
-        collisions = 0
-        for line in buffer.getvalue().splitlines():
-            if line.startswith(("ATOM  ", "HETATM")):
-                key = (line[21], line[22:27])
-                name = line[17:20].strip()
-                if seen.setdefault(key, name) != name:
-                    collisions += 1
-        return collisions
-
-    assert keys(True) > 0, "the solute's chain A now also holds water"
-    assert keys(False) == 0, "numbered by index, the keys stay apart"
+        "the solute's identity is restored from the input after the write, not "
+        "carried through it; see the comment above the call"
+    )

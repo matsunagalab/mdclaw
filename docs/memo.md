@@ -7,6 +7,60 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-24 — The solute is a prefix of a solvated file, not a set of keys
+
+Both solvation writers append: packmol-memgen and `Modeller.addSolvent` emit the
+solute as the leading records, in the input's order, and put water and ions after
+it. The identity restore at both hops now matches on that prefix
+(`restore_solute_identity_by_prefix`, `mdclaw/structure/pdb_utils.py`), guarded by
+a per-residue heavy-atom name tuple, and restores residue name + chain + resSeq +
+iCode on the leading residues only.
+
+What it replaced, and why:
+
+- `water.py` (OpenMM fallback) keyed the restore on (chain, resnum, icode). The
+  write renumbers the solute, so the keys line up with the *wrong* residues and
+  the overlay does not refuse — it applies. Ran the real hop on m01-5zk8's
+  merged.pdb: as written 135/4428 solute atom names were wrong (the loader's
+  HID/HIE/CYX collapse); the key overlay made it 3002/4428; the prefix restore
+  makes it 0/4428, with 0/4428 keys wrong and 0 solvent records touched.
+- `_restore_packmol_solute_identity` compared the element column per atom.
+  packmol writes `Z` for zinc, and that one character abandoned the whole
+  ~4900-atom restore in 13 of 16 real runs (`solute_identity_restore_warnings`:
+  `atom 4896: ZN/ZN != ZN/Z`). That is where the deposit numbering was being
+  lost: d02-6w9c merged.pdb says THR A 4, solvated.pdb said THR A 1, and
+  `system.topology.pdb` (written keepIds=True) faithfully inherited it.
+
+Swept all 14 real merged.pdb -> solvated.pdb pairs under `runs/studies2`: the
+restore is accepted on 14/14, residue-name match stays 100%, and numbering goes
+0/N -> N/N on the 11 that packmol had renumbered (a01 and d04/solv_001 already
+had it, being 2 of the 3 runs whose old restore survived the element check).
+Colliding (chain,resnum,icode) keys between solute and solvent are unchanged —
+they are packmol's own, it numbers WAT from 1 inside the solute's chain letters —
+except d03, 317 -> 316. Re-reading d02/solv_004's restored file with
+openmm.app.PDBFile gives the same 91360 bonds, max 2.25 A, 0 solute<->solvent
+bonds, 0 bonds over 3 A as before the restore; only the residue ids moved
+(LYS312 -> LYS315).
+
+Not changed, on measurement: the protonation hop (`protonation.py:660-682`) and
+the terminal-cap hop (`terminal_caps.py:387`) keep `restore_resnames_by_residue_key`.
+Their inputs are one molecule with a 1:1 key (0/34 and 0/30 ambiguous), the key is
+doing real work there (282 residue names put back across 9229 residues), and a
+prefix match is measurably *wrong* at the cap hop once caps exist at more than one
+chain terminus (0/636 correct, offsets +1/+3/+5). Three hops, two correspondences,
+deliberately.
+
+Corrections to earlier notes: addSolvent does not give every water its own chain
+called "A" — on OpenMM 8.5.1 it makes exactly two solvent chains whose residue ids
+continue past the solute's, and keeping their ids collides nothing. The
+`test_keeping_the_water_chain_ids_collides_them_with_the_solute` test built that
+shape by hand and has been removed; the guard that the solvated write does not
+pass keepIds stays. I also could not reproduce "49 protein-water bonds up to
+135 A" by any route through `PDBFile`; long bonds come from chain segmentation
+collapsing, not from colliding keys.
+
+---
+
 ## 2026-08-21 — Membrane ions came out drifting across y, and it was the stride's arithmetic
 
 Spotted from a preview during the 9UWI validation run: ions above the bilayer

@@ -15,6 +15,7 @@ this test fails you either added/moved/removed a ``PDBFile.writeFile`` — updat
 EXPECTED and, for an export that round-trips OpenMM-normalized names, restore
 them after the write (``restore_resnames_from_source_pdb`` /
 ``restore_resnames_by_residue_key`` /
+``restore_solute_identity_by_prefix`` /
 ``render_simulation_pdb_preserving_resnames``) — or you removed a helper a
 ``restore`` site relied on.
 """
@@ -28,6 +29,7 @@ MDCLAW = Path(__file__).resolve().parent.parent / "mdclaw"
 RESTORE_HELPERS = (
     "restore_resnames_from_source_pdb",
     "restore_resnames_by_residue_key",
+    "restore_solute_identity_by_prefix",
     "render_simulation_pdb_preserving_resnames",
     "preserve_long_resnames_in_pdb_text",
     "_restore_reference_resnames",
@@ -50,7 +52,7 @@ EXPECTED = {
     # directly and restored nothing, so HIE came out HIS and WAT came out HOH --
     # from the tool documented as the way to produce a benchmark submission.
     "structure/terminal_caps.py": (1, "restore"),       # cap H completion
-    "solvation/water.py": (1, "restore"),               # openmm solvation fallback
+    "solvation/water.py": (1, "restore"),               # openmm solvation fallback (by prefix)
     "solvation/membrane.py": (1, "restore"),            # patch-relax PDB export
     "sidechain_packer.py": (1, "restore"),              # HPacker mutation output
     "structure/protonation.py": (1, "restore"),         # user-state Modeller path
@@ -99,3 +101,17 @@ def test_restore_sites_reference_a_helper(relpath):
         f"references no restore helper ({', '.join(RESTORE_HELPERS)}). Restore "
         "the residue names after PDBFile.writeFile, or reclassify the site."
     )
+
+
+def test_the_solvation_fallback_restores_by_prefix_not_by_key():
+    """A solvated file's (chain, number, icode) key is not an identity.
+
+    Both writers append their solvent into chain letters and numbers the solute
+    already uses, and the fallback's write renumbers the solute on top of that,
+    so a key overlay there renamed 3002 of 4428 solute atoms rather than
+    refusing. The solute is the leading residues; restore it by that prefix and
+    leave the solvent alone.
+    """
+    text = (MDCLAW / "solvation/water.py").read_text()
+    assert "restore_solute_identity_by_prefix" in text
+    assert "restore_resnames_by_residue_key" not in text

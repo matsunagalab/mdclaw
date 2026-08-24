@@ -651,3 +651,168 @@ def test_stamping_refuses_when_the_file_does_not_correspond(tmp_path):
     other.write_text("\n".join(
         _collision_rec(i + 1, "N", "ALA", 18 + i) for i in range(2)) + "\nEND\n")
     assert stamp_source_resnames(PDBFile(str(other)).topology, source) is None
+
+
+# --- solvation appends, so the solute is a residue PREFIX ---------------------
+# packmol-memgen and Modeller.addSolvent both write the solute first, in the
+# input's order, and the water after it. The (chain, number, icode) key is not an
+# identity in what comes back -- packmol numbers its waters from 1 inside the
+# solute's own chain letters, so on a real antibody box 636 keys name both an
+# amino acid and a water. Matching by prefix and ignoring everything past the
+# solute is what makes the restore possible at all.
+
+def _res(serial, atom, resname, chain, resseq, element="N"):
+    return (f"ATOM  {serial:>5} {atom:<4}{resname:>4} {chain}{resseq:>4}    "
+            f"{0.0:8.3f}{0.0:8.3f}{0.0:8.3f}  1.00  0.00          {element:>2s}")
+
+
+def _solute_source(tmp_path):
+    """Two prepared residues at their deposit numbers, chain C."""
+    source = tmp_path / "merged.pdb"
+    source.write_text("\n".join([
+        _res(1, "N", "CYX", "C", 192), _res(2, "SG", "CYX", "C", 192, "S"),
+        _res(3, "N", "HIE", "C", 224), _res(4, "CA", "HIE", "C", 224, "C"),
+    ]) + "\nEND\n")
+    return source
+
+
+def test_the_prefix_restores_names_and_deposit_numbering(tmp_path):
+    """What the solvation writers take away: the names AND the numbering."""
+    from mdclaw.structure.pdb_utils import restore_solute_identity_by_prefix
+
+    source = _solute_source(tmp_path)
+    # as written back out: names normalized, renumbered from 1, water appended
+    # into the solute's own chain letter -- the collision that refuses a key
+    # overlay is already here, and is left exactly as it was.
+    solvated = "\n".join([
+        _res(1, "N", "CYS", "A", 1), _res(2, "SG", "CYS", "A", 1, "S"),
+        _res(3, "N", "HIS", "A", 2), _res(4, "CA", "HIS", "A", 2, "C"),
+        _res(5, "O", "WAT", "C", 192, "O"),
+        _res(6, "O", "WAT", "C", 224, "O"),
+    ]) + "\nEND\n"
+
+    out = restore_solute_identity_by_prefix(solvated, source)
+
+    assert out is not None
+    got = [(line[17:21].strip(), line[21], line[22:26].strip())
+           for line in out.splitlines() if line.startswith("ATOM  ")]
+    assert got[:4] == [("CYX", "C", "192"), ("CYX", "C", "192"),
+                       ("HIE", "C", "224"), ("HIE", "C", "224")]
+    assert got[4:] == [("WAT", "C", "192"), ("WAT", "C", "224")], \
+        "the water keeps what the writer gave it, collision and all"
+
+
+def test_the_prefix_touches_nothing_but_the_identity_columns(tmp_path):
+    from mdclaw.structure.pdb_utils import restore_solute_identity_by_prefix
+
+    source = _solute_source(tmp_path)
+    solvated = ("CRYST1   80.000   80.000   80.000  90.00  90.00  90.00 P 1\n"
+                + "\n".join([
+                    _res(1, "N", "CYS", "A", 1), _res(2, "SG", "CYS", "A", 1, "S"),
+                    _res(3, "N", "HIS", "A", 2), _res(4, "CA", "HIS", "A", 2, "C"),
+                ]) + "\nEND\n")
+
+    out = restore_solute_identity_by_prefix(solvated, source)
+
+    for before, after in zip(solvated.splitlines(), out.splitlines()):
+        assert before.ljust(80)[:17] == after.ljust(80)[:17]
+        assert before.ljust(80)[27:].rstrip() == after.ljust(80)[27:].rstrip()
+    assert out.splitlines()[0].startswith("CRYST1   80.000"), "the box is the writer's"
+
+
+def test_the_prefix_refuses_when_the_two_are_out_of_step(tmp_path):
+    """The check an ordinal match otherwise lacks: heavy atoms, per residue.
+
+    Without it an inserted leading residue smears every name one place down the
+    chain, silently. Refusing keeps the uniform, visible loss instead.
+    """
+    from mdclaw.structure.pdb_utils import restore_solute_identity_by_prefix
+
+    source = _solute_source(tmp_path)
+    shifted = "\n".join([
+        _res(1, "N", "ACE", "A", 1),                       # a residue the source has not
+        _res(2, "N", "CYS", "A", 2), _res(3, "SG", "CYS", "A", 2, "S"),
+        _res(4, "N", "HIS", "A", 3), _res(5, "CA", "HIS", "A", 3, "C"),
+    ]) + "\nEND\n"
+
+    assert restore_solute_identity_by_prefix(shifted, source) is None
+
+
+def test_the_prefix_ignores_hydrogens_when_it_checks(tmp_path):
+    """A round trip renames the N-terminal H1 to H -- 2 of 9745 atoms, measured.
+
+    An all-atom name check refuses on that. It is the same class of guard that
+    already skipped the packmol restore in 13 of 16 real runs over one character
+    of zinc's element column, so the check is on heavy atoms only.
+    """
+    from mdclaw.structure.pdb_utils import restore_solute_identity_by_prefix
+
+    source = tmp_path / "merged.pdb"
+    source.write_text("\n".join([
+        _res(1, "N", "GLH", "B", 7), _res(2, "H1", "GLH", "B", 7, "H"),
+    ]) + "\nEND\n")
+    written = "\n".join([
+        _res(1, "N", "GLU", "B", 1), _res(2, "H", "GLU", "B", 1, "H"),
+    ]) + "\nEND\n"
+
+    out = restore_solute_identity_by_prefix(written, source)
+
+    assert out is not None
+    assert [line[17:21].strip() for line in out.splitlines()
+            if line.startswith("ATOM  ")] == ["GLH", "GLH"]
+    assert [line[12:16] for line in out.splitlines()
+            if line.startswith("ATOM  ")] == ["N   ", "H   "], "atom names are not ours"
+
+
+def test_the_prefix_can_restore_the_names_without_the_numbering(tmp_path):
+    from mdclaw.structure.pdb_utils import restore_solute_identity_by_prefix
+
+    source = _solute_source(tmp_path)
+    solvated = "\n".join([
+        _res(1, "N", "CYS", "A", 1), _res(2, "SG", "CYS", "A", 1, "S"),
+        _res(3, "N", "HIS", "A", 2), _res(4, "CA", "HIS", "A", 2, "C"),
+    ]) + "\nEND\n"
+
+    out = restore_solute_identity_by_prefix(solvated, source, restore_numbering=False)
+
+    assert [(line[17:21].strip(), line[21], line[22:26].strip())
+            for line in out.splitlines() if line.startswith("ATOM  ")] == [
+        ("CYX", "A", "1"), ("CYX", "A", "1"), ("HIE", "A", "2"), ("HIE", "A", "2")]
+
+
+def test_the_prefix_refuses_a_target_that_is_not_the_solute_plus_solvent(tmp_path):
+    from mdclaw.structure.pdb_utils import restore_solute_identity_by_prefix
+
+    source = _solute_source(tmp_path)
+    assert restore_solute_identity_by_prefix(
+        _res(1, "N", "CYS", "A", 1) + "\nEND\n", source) is None
+    assert restore_solute_identity_by_prefix("X", tmp_path / "nope.pdb") is None
+
+
+def test_the_key_overlay_is_the_wrong_match_for_a_solvated_file(tmp_path):
+    """Why this hop stopped using it: the same input, both ways.
+
+    On the OpenMM fallback's own output the key overlay does not even refuse --
+    the write reset the solute's numbering, so the keys "match" the wrong
+    residues and it renamed 3002 of 4428 solute atoms, PHE to VAL 80 times.
+    """
+    from mdclaw.structure.pdb_utils import (
+        restore_resnames_by_residue_key,
+        restore_solute_identity_by_prefix,
+    )
+
+    source = tmp_path / "merged.pdb"
+    source.write_text("\n".join([
+        _res(1, "CA", "PHE", "A", 1, "C"), _res(2, "CA", "TYR", "A", 2, "C"),
+    ]) + "\nEND\n")
+    written = "\n".join([
+        _res(1, "CA", "PHE", "A", 2, "C"), _res(2, "CA", "TYR", "A", 3, "C"),
+    ]) + "\nEND\n"
+
+    by_key = restore_resnames_by_residue_key(written, source)
+    assert [line[17:21].strip() for line in by_key.splitlines()
+            if line.startswith("ATOM  ")] == ["TYR", "TYR"], "renamed by drift"
+
+    by_prefix = restore_solute_identity_by_prefix(written, source)
+    assert [line[17:21].strip() for line in by_prefix.splitlines()
+            if line.startswith("ATOM  ")] == ["PHE", "TYR"]

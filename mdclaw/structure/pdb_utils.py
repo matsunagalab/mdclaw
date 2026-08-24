@@ -17,6 +17,7 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import setup_logger  # noqa: E402
+from mdclaw.chemistry_constants import WATER_NAMES  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -406,6 +407,139 @@ def restore_resnames_by_residue_key(
     trailing = "\n" if pdb_text.endswith("\n") else ""
     return "\n".join(out_lines) + trailing
 
+
+def _pdb_residue_blocks(lines: list[str]) -> list[list[int]]:
+    """Index every ATOM/HETATM line by the residue it belongs to, in order.
+
+    Segmented the way OpenMM's own reader segments (``pdbstructure``): a new
+    residue starts when the chain, residue number, insertion code *or residue
+    name* changes. Reading the (chain, number, icode) key alone would merge two
+    adjacent residues that a writer happened to number alike -- and a solvated
+    file is full of those.
+    """
+    blocks: list[list[int]] = []
+    marker = None
+    for index, line in enumerate(lines):
+        if not line.startswith(("ATOM  ", "HETATM")):
+            continue
+        padded = line.ljust(27)
+        here = (padded[21], padded[22:26], padded[26], padded[17:21])
+        if here != marker:
+            blocks.append([])
+            marker = here
+        blocks[-1].append(index)
+    return blocks
+
+
+def _heavy_atom_names(lines: list[str], block: list[int]) -> tuple[str, ...]:
+    """A residue's non-hydrogen atom names, in file order.
+
+    Hydrogens are left out deliberately. A round trip through OpenMM renames the
+    N-terminal H1 to H -- 2 of 9745 atoms on a real antibody -- so an all-atom
+    comparison would refuse an overlay that is perfectly aligned, which is how
+    the packmol restore came to be skipped in 13 of 16 real runs over one
+    character of zinc's element column.
+    """
+    names: list[str] = []
+    for index in block:
+        padded = lines[index].ljust(78)
+        name = padded[12:16].strip().upper()
+        element = padded[76:78].strip().upper() or name.lstrip("0123456789")[:1]
+        if element not in ("H", "D"):
+            names.append(name)
+    return tuple(names)
+
+
+def restore_solute_identity_by_prefix(
+    pdb_text: str,
+    source_pdb: str | Path,
+    *,
+    restore_numbering: bool = True,
+) -> Optional[str]:
+    """Put a solute's identity back onto the leading residues of a solvated file.
+
+    Solvation appends. packmol-memgen and ``Modeller.addSolvent`` both emit the
+    solute as the first records of the output, in the input's order, and put the
+    water and ions after it, so the correspondence is a *prefix*: source residue
+    i is target residue i for every i the source has, and the trailing solvent
+    has no source at all. Processing the solute means ignoring the solvent.
+
+    That is what makes this different from :func:`restore_resnames_by_residue_key`,
+    which needs the (chain, number, icode) key to be an identity. In a solvated
+    file it is not: packmol writes its waters into the solute's own chain letters
+    numbered from 1, so the key names both an amino acid and a water 636 times in
+    a real antibody box. The key overlay then refuses -- or, on the OpenMM
+    fallback's output where the write reset the solute's own numbering, does not
+    refuse and renames 3002 of 4428 solute atoms, PHE to VAL 80 times.
+
+    Restores the residue name and, unless ``restore_numbering`` is False, the
+    chain id, residue number and insertion code -- the deposit numbering both
+    writers renumber away, and that the disulfide planner looks its cysteines up
+    by. Columns 18-27 of the leading residues' records and nothing else:
+    coordinates, atom names, elements, CRYST1 and every solvent record are left
+    exactly as the writer wrote them.
+
+    The safety an ordinal match otherwise lacks is per residue: source residue
+    i's heavy-atom name tuple has to equal target residue i's or the whole
+    overlay is refused, because a silent off-by-one smears names down the rest of
+    the chain.
+
+    Returns the rewritten text, or ``None`` when the source cannot be read, the
+    target holds fewer residues than the source, or a residue disagrees.
+    """
+    try:
+        src_lines = Path(source_pdb).read_text(errors="replace").splitlines()
+    except OSError:
+        return None
+    out_lines = pdb_text.splitlines()
+    src_blocks = _pdb_residue_blocks(src_lines)
+    tgt_blocks = _pdb_residue_blocks(out_lines)
+    if not src_blocks or len(tgt_blocks) < len(src_blocks):
+        logger.warning(
+            "Not restoring solute identity from %s: the source holds %d "
+            "residue(s) and the written file %d, so the written file is not "
+            "that solute with solvent appended.",
+            source_pdb, len(src_blocks), len(tgt_blocks))
+        return None
+    for ordinal, (src_block, tgt_block) in enumerate(zip(src_blocks, tgt_blocks), 1):
+        src_names = _heavy_atom_names(src_lines, src_block)
+        tgt_names = _heavy_atom_names(out_lines, tgt_block)
+        # The heavy-atom tuple cannot see a shift inside a run of residues that
+        # share one -- three consecutive glycines, or the water the writer
+        # appended after them -- so the atom COUNT of the block is checked too,
+        # and the target block is refused outright when it is solvent. Without
+        # that a source solute residue could claim an appended water and rename
+        # it, which is the one way this overlay could touch a solvent record.
+        if len(src_block) != len(tgt_block):
+            logger.warning(
+                "Not restoring solute identity from %s: residue %d holds %d "
+                "atom(s) in the source and %d in the written file.",
+                source_pdb, ordinal, len(src_block), len(tgt_block))
+            return None
+        if out_lines[tgt_block[0]].ljust(21)[17:20].strip().upper() in WATER_NAMES:
+            logger.warning(
+                "Not restoring solute identity from %s: residue %d of the "
+                "written file is %s, so the solute prefix has run into the "
+                "appended solvent.",
+                source_pdb, ordinal,
+                out_lines[tgt_block[0]].ljust(21)[17:20].strip())
+            return None
+        if src_names != tgt_names:
+            logger.warning(
+                "Not restoring solute identity from %s: residue %d has heavy "
+                "atoms %s in the source and %s in the written file, so the two "
+                "are out of step and the overlay would rename by drift.",
+                source_pdb, ordinal, src_names, tgt_names)
+            return None
+    for src_block, tgt_block in zip(src_blocks, tgt_blocks):
+        identity = src_lines[src_block[0]].ljust(27)[17:27]
+        for index in tgt_block:
+            padded = out_lines[index].ljust(80)
+            fields = identity if restore_numbering else identity[:4] + padded[21:27]
+            if fields != padded[17:27]:
+                out_lines[index] = (padded[:17] + fields + padded[27:]).rstrip()
+    trailing = "\n" if pdb_text.endswith("\n") else ""
+    return "\n".join(out_lines) + trailing
 
 def _image_positions_for_export(topology: Any, positions: Any) -> Any:
     """Whole-molecule image the coordinates that go into an exported PDB.

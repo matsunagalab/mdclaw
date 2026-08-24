@@ -36,13 +36,6 @@ def _pdb_atom_name(line: str) -> str:
     return line[12:16].strip() if len(line) >= 16 else ""
 
 
-def _pdb_element(line: str) -> str:
-    if len(line) >= 78 and line[76:78].strip():
-        return line[76:78].strip().upper()
-    atom = _pdb_atom_name(line)
-    return "".join(ch for ch in atom if ch.isalpha())[:1].upper()
-
-
 def _pdb_residue_key(line: str) -> tuple[str, str, str, str]:
     chain_id = line[21:22].strip() if len(line) >= 22 else ""
     resseq = line[22:26].strip() if len(line) >= 26 else ""
@@ -654,15 +647,28 @@ def _ligand_chemistry_packmol_charge_pdb_delta(ligand_chemistry: list[dict] | No
 
 
 def _restore_packmol_solute_identity(input_pdb: Path, output_pdb: Path) -> dict:
-    """Restore solute PDB identity columns after packmol-memgen renumbering."""
+    """Restore solute identity columns after packmol-memgen renumbering.
+
+    packmol-memgen writes the solute first and the solvent after it, so the
+    solute is a residue *prefix* of the output and its residue names, chain ids,
+    numbers and insertion codes come back from the input by that prefix.
+
+    The guard is per residue and on heavy-atom names only. It used to be per
+    atom and included the element field, which packmol writes as ``Z`` for zinc:
+    that one character abandoned the whole ~4900-atom restore in 13 of 16 real
+    runs, leaving the solute renumbered from 1 -- which is how a disulfide asked
+    for at chain A 192-224 came to name a GLN and a GLY, and got skipped.
+    """
     report = {
         "solute_identity_restored": False,
         "solute_identity_restored_atom_count": 0,
         "solute_identity_restore_warnings": [],
     }
+    from mdclaw.structure.pdb_utils import restore_solute_identity_by_prefix
+
     try:
         input_atoms = _pdb_atom_lines(input_pdb)
-        output_lines = output_pdb.read_text(encoding="utf-8", errors="ignore").splitlines()
+        output_text = output_pdb.read_text(encoding="utf-8", errors="ignore")
     except OSError as exc:
         report["solute_identity_restore_warnings"].append(f"Could not read PDB for solute identity restore: {exc}")
         return report
@@ -671,50 +677,15 @@ def _restore_packmol_solute_identity(input_pdb: Path, output_pdb: Path) -> dict:
         report["solute_identity_restore_warnings"].append("Input PDB has no ATOM/HETATM records")
         return report
 
-    output_atom_indices = [
-        idx for idx, line in enumerate(output_lines)
-        if line.startswith(("ATOM", "HETATM"))
-    ]
-    if len(output_atom_indices) < len(input_atoms):
+    restored = restore_solute_identity_by_prefix(output_text, input_pdb)
+    if restored is None:
         report["solute_identity_restore_warnings"].append(
-            f"Packmol output has fewer atom records ({len(output_atom_indices)}) than input solute ({len(input_atoms)})"
+            "Skipped solute identity restore because the packmol output does not "
+            "hold the input solute's residues, in order, as its leading records"
         )
         return report
 
-    mismatches: list[str] = []
-    for atom_i, (src, out_idx) in enumerate(zip(input_atoms, output_atom_indices), start=1):
-        dst = output_lines[out_idx]
-        src_name = _pdb_atom_name(src)
-        dst_name = _pdb_atom_name(dst)
-        src_element = _pdb_element(src)
-        dst_element = _pdb_element(dst)
-        if src_name != dst_name or (src_element and dst_element and src_element != dst_element):
-            mismatches.append(
-                f"atom {atom_i}: {src_name}/{src_element} != {dst_name}/{dst_element}"
-            )
-            if len(mismatches) >= 3:
-                break
-    if mismatches:
-        report["solute_identity_restore_warnings"].append(
-            "Skipped solute identity restore because packmol output prefix did not match input solute: "
-            + "; ".join(mismatches)
-        )
-        return report
-
-    restored_lines = list(output_lines)
-    for src, out_idx in zip(input_atoms, output_atom_indices):
-        dst = restored_lines[out_idx].ljust(80)
-        src_padded = src.ljust(80)
-        restored_lines[out_idx] = (
-            src_padded[:6]
-            + dst[6:12]
-            + src_padded[12:27]
-            + dst[27:76]
-            + src_padded[76:78]
-            + dst[78:]
-        ).rstrip()
-
-    output_pdb.write_text("\n".join(restored_lines) + "\n", encoding="utf-8")
+    output_pdb.write_text(restored, encoding="utf-8")
     report["solute_identity_restored"] = True
     report["solute_identity_restored_atom_count"] = len(input_atoms)
     return report

@@ -114,31 +114,24 @@ def _solvate_with_openmm(
             negativeIon=salt_a,
         )
 
-        # Written WITHOUT keepIds, and that is the safe choice here rather than
-        # an oversight. addSolvent gives every water molecule a chain of its own
-        # and calls them all "A", so keeping those ids drops 30000 waters
-        # numbered from 1 into the solute's own chain letter: measured on a
-        # three-chain antibody, 636 (chain, number) keys then named both an
-        # amino acid and a water, and the topology built from that file carried
-        # 49 bonds between protein and water atoms up to 135 A apart plus 32
-        # between waters of different molecules. Letting the writer number
-        # chains and residues by index leaves 3 such keys instead of 636, and
-        # measured on the systems built that way -- a soluble protein and a
-        # membrane receptor -- no spurious bond at all.
-        #
-        # The restore below is keyed on those numbers, so it is refused rather
-        # than applied when they collide; an unrestored solvated artifact is a
-        # cosmetic loss, and a bond between atoms 135 A apart is not.
+        # Written WITHOUT keepIds. addSolvent's solvent chains carry OpenMM's
+        # own ids, and keeping them would drop the water onto chain letters the
+        # solute already uses; letting the writer assign chains and residue
+        # numbers by index costs the solute its own numbering, which the restore
+        # below puts back.
         with open(output_file, "w") as f:
             PDBFile.writeFile(modeller.topology, modeller.positions, f)
 
-        # OpenMM's PDBFile loader normalized Amber/PTM residue names (ASH->ASP,
-        # HID->HIS, GLH->GLU, ...) when the input was loaded; restore them from
-        # the input by residue key so the solvated artifact — and the topology
-        # built from it — keeps the prepared protonation state. Added water/ions
-        # are absent from the source and keep their OpenMM names.
-        from mdclaw.structure.pdb_utils import restore_resnames_by_residue_key
-        _restored = restore_resnames_by_residue_key(
+        # addSolvent appends: the solute comes back as the leading records of the
+        # new topology, in the input's order, with water and ions after it. So
+        # the solute's identity is restored by that prefix -- the residue names
+        # PDBFile's loader normalized (ASH->ASP, HID->HIS, CYX->CYS, ...) and the
+        # deposit chain/number/icode the write reset -- and every solvent record
+        # is left alone. Keyed on (chain, number, icode) instead this renames by
+        # collision: measured on this fallback's own output it rewrote 3002 of
+        # 4428 solute atoms, PHE to VAL 80 times.
+        from mdclaw.structure.pdb_utils import restore_solute_identity_by_prefix
+        _restored = restore_solute_identity_by_prefix(
             output_file.read_text(), str(pdb_path)
         )
         if _restored is not None:
