@@ -114,17 +114,23 @@ def _solvate_with_openmm(
             negativeIon=salt_a,
         )
 
-        # Write output. keepIds, because the restore below matches on
-        # (chain, residue number, insertion code): without it PDBFile renumbers
-        # every residue 1..N inside its chain, the keys no longer name the same
-        # residues as the source, and the overlay renames by position. Measured
-        # on a real prepared structure numbered 18-458, it rewrote 3002 of 4428
-        # solute atoms -- PHE to VAL 80 times, TYR to LEU 63 -- and with keepIds
-        # it rewrites none. The other two callers of that overlay already pass
-        # it (terminal_caps.py:369, protonation.py:662).
+        # Written WITHOUT keepIds, and that is the safe choice here rather than
+        # an oversight. addSolvent gives every water molecule a chain of its own
+        # and calls them all "A", so keeping those ids drops 30000 waters
+        # numbered from 1 into the solute's own chain letter: measured on a
+        # three-chain antibody, 636 (chain, number) keys then named both an
+        # amino acid and a water, and the topology built from that file carried
+        # 49 bonds between protein and water atoms up to 135 A apart plus 32
+        # between waters of different molecules. Letting the writer number
+        # chains and residues by index leaves 3 such keys instead of 636, and
+        # measured on the systems built that way -- a soluble protein and a
+        # membrane receptor -- no spurious bond at all.
+        #
+        # The restore below is keyed on those numbers, so it is refused rather
+        # than applied when they collide; an unrestored solvated artifact is a
+        # cosmetic loss, and a bond between atoms 135 A apart is not.
         with open(output_file, "w") as f:
-            PDBFile.writeFile(modeller.topology, modeller.positions, f,
-                              keepIds=True)
+            PDBFile.writeFile(modeller.topology, modeller.positions, f)
 
         # OpenMM's PDBFile loader normalized Amber/PTM residue names (ASH->ASP,
         # HID->HIS, GLH->GLU, ...) when the input was loaded; restore them from

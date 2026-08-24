@@ -1,0 +1,86 @@
+{
+  "record_type": "study_plan",
+  "plan_id": "active",
+  "status": "active",
+  "created_at": "2026-08-23T17:18:42.016942+00:00",
+  "updated_at": "2026-08-23T17:18:42.016942+00:00",
+  "rationale": null,
+  "metadata": {
+    "created_by": "bootstrap_md_workflow",
+    "canonical_layout": true
+  },
+  "plan": {
+    "plan_schema_version": 2,
+    "question": "Does the 1AHW Fab-tissue factor complex reproduce its deposited reference?",
+    "md_goal": "2.5 ns NPT at 300 K, 1 bar, TIP3P water",
+    "solvent_regime": "explicit",
+    "jobs": [
+      {
+        "job_id": "main",
+        "purpose": "single-system MD workflow"
+      }
+    ],
+    "analysis": [
+      "Run the planned analysis step after production completes."
+    ],
+    "decision": {
+      "support": "The requested MD workflow completes and planned analyses are interpretable.",
+      "against": "Preparation, simulation, or planned analyses fail in a way that invalidates the requested workflow.",
+      "inconclusive": "The workflow completes but the requested question needs more sampling or different observables."
+    },
+    "workflow_steps": [
+      {
+        "step_id": "main_source",
+        "job_id": "main",
+        "node_type": "source",
+        "purpose": "source stage for job main"
+      },
+      {
+        "step_id": "main_prep",
+        "job_id": "main",
+        "node_type": "prep",
+        "purpose": "prep stage for job main"
+      },
+      {
+        "step_id": "main_solv",
+        "job_id": "main",
+        "node_type": "solv",
+        "purpose": "solv stage for job main"
+      },
+      {
+        "step_id": "main_topo",
+        "job_id": "main",
+        "node_type": "topo",
+        "purpose": "topo stage for job main"
+      },
+      {
+        "step_id": "main_min",
+        "job_id": "main",
+        "node_type": "min",
+        "purpose": "min stage for job main"
+      },
+      {
+        "step_id": "main_eq",
+        "job_id": "main",
+        "node_type": "eq",
+        "purpose": "eq stage for job main"
+      },
+      {
+        "step_id": "main_prod",
+        "job_id": "main",
+        "node_type": "prod",
+        "purpose": "prod stage for job main"
+      },
+      {
+        "step_id": "main_analyze",
+        "job_id": "main",
+        "node_type": "analyze",
+        "purpose": "analyze stage for job main"
+      }
+    ],
+    "layout": {
+      "type": "study_jobs",
+      "job_root": "jobs"
+    }
+  }
+}

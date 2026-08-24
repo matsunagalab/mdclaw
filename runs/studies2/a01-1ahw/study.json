@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "title": "MDDataBench 015: 1AHW antibody-antigen",
+  "objective": "2.5 ns NPT at 300 K, 1 bar, TIP3P water",
+  "description": null,
+  "created_at": "2026-08-23T17:18:42.001488+00:00",
+  "updated_at": "2026-08-23T17:18:42.043315+00:00",
+  "jobs": [
+    {
+      "job_id": "main",
+      "job_dir": "jobs/main",
+      "role": "main",
+      "label": null,
+      "description": null,
+      "created_at": "2026-08-23T17:18:42.043306+00:00",
+      "metadata": {
+        "created_by": "bootstrap_md_workflow",
+        "canonical_layout": true
+      }
+    }
+  ],
+  "metadata": {}
+}
