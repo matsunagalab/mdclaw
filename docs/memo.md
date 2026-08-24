@@ -7,6 +7,24 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-24 — Final topology PDBs no longer carry CONECT records
+
+Both topology builders now remove `CONECT` records only when serializing the
+final `system.topology.pdb`. The authoritative force-bearing bond graph remains
+in `system.xml`; source and intermediate PDBs retain `CONECT` so disulfides,
+glycans, covalent ligands, and other prepared connectivity can still inform
+System construction.
+
+This fixes the reproduced MDAnalysis failure on Shweta Kumari's W535L membrane
+system: OpenMM emitted hybrid-36 atom serials such as `A003B` in the solvated
+topology's `CONECT` records, which MDAnalysis attempted to parse as decimal
+integers. Removing those records made the same topology and trajectory readable
+and allowed the domain RMSD/RMSF analysis to complete. Analysis operations that
+need nonstandard make-whole connectivity must continue to obtain that graph
+from the authoritative System rather than infer it from the PDB companion.
+
+---
+
 ## 2026-08-24 — The solute is a prefix of a solvated file, not a set of keys
 
 Both solvation writers append: packmol-memgen and `Modeller.addSolvent` emit the

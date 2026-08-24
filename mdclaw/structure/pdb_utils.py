@@ -102,6 +102,23 @@ def preserve_long_resnames_in_pdb_text(pdb_text: str, topology: Any) -> str:
     return "\n".join(out_lines) + trailing
 
 
+def strip_conect_records_from_pdb_text(pdb_text: str) -> str:
+    """Remove PDB ``CONECT`` records without changing any other bytes.
+
+    The final ``system.topology.pdb`` is an atom identity, order, coordinate,
+    and box companion to ``system.xml``; the XML is the authoritative
+    force-bearing topology.  OpenMM writes large atom serials in hybrid-36
+    notation inside ``CONECT`` records, which MDAnalysis' PDB parser does not
+    accept.  Source and intermediate PDBs must retain their connectivity, so
+    callers apply this helper only at the final topology-contract boundary.
+    """
+    return "".join(
+        line
+        for line in pdb_text.splitlines(keepends=True)
+        if not line.startswith("CONECT")
+    )
+
+
 def _residue_key(line: str) -> tuple[str, str, str]:
     """(chainID, resSeq, iCode) from a PDB ATOM/HETATM record."""
     return (line[21], line[22:26].strip(), line[26])

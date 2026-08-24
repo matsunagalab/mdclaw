@@ -693,9 +693,12 @@ def build_openmm_system(
         # topology.pdb contract keeps full residue identity.
         from mdclaw.structure.pdb_utils import (
             preserve_long_resnames_in_pdb_text,
+            strip_conect_records_from_pdb_text,
         )
-        topology_pdb_text = preserve_long_resnames_in_pdb_text(
-            topology_buffer.getvalue(), modeller.topology
+        topology_pdb_text = strip_conect_records_from_pdb_text(
+            preserve_long_resnames_in_pdb_text(
+                topology_buffer.getvalue(), modeller.topology
+            )
         )
         # The names were stamped onto the topology before the extra particles
         # were added, so what writeFile put down is already right; this only

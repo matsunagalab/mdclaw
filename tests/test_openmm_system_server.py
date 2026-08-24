@@ -67,6 +67,10 @@ def test_build_openmm_system_with_amber14_xml(tmp_path):
     assert Path(result["topology_pdb"]).is_file()
     assert Path(result["state_xml"]).is_file()
     assert Path(result["minimization_report"]).is_file()
+    assert not any(
+        line.startswith("CONECT")
+        for line in Path(result["topology_pdb"]).read_text().splitlines()
+    )
     report = json.loads(Path(result["minimization_report"]).read_text())
     minimization = report["minimization"]
     assert minimization["attempted"] is True

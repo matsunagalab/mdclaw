@@ -1800,9 +1800,12 @@ def _run_openmmforcefields_build(
         )
         from mdclaw.structure.pdb_utils import (
             preserve_long_resnames_in_pdb_text,
+            strip_conect_records_from_pdb_text,
         )
-        topology_pdb_text = preserve_long_resnames_in_pdb_text(
-            topology_buffer.getvalue(), modeller.topology
+        topology_pdb_text = strip_conect_records_from_pdb_text(
+            preserve_long_resnames_in_pdb_text(
+                topology_buffer.getvalue(), modeller.topology
+            )
         )
         atomic_write_text_group([
             (system_xml_file, XmlSerializer.serialize(system)),
