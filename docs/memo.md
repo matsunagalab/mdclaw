@@ -7,6 +7,25 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-24 — 027 complex completed on Slurm and passed MDDataBench 20/20
+
+The public-prompt-only `027_complex_1b6c` workflow prepared the requested
+1B6C A/B heterodimer (107 + 326 residues), built a neutral 194,343-atom
+ff14SB/TIP3P system, and completed 0.1 ns NVT + 0.2 ns NPT equilibration at
+310 K and 1 bar.  Slurm job 41364 then completed a fresh 2.5 ns production as
+`prod_002` on one GPU, yielding 250 frames at 10 ps and passing visual QA.
+
+An earlier interactive `prod_001` was interrupted after 1.47 ns.  Reinvoking
+the same running node restarted from the equilibration state and appended a
+reset time series to its existing artifacts, so that node is deliberately not
+used for evaluation and remains preserved for diagnosis.  Creating a fresh
+production node from completed `eq_001` avoided the ambiguous trajectory.
+The official MDDataBench result for `prod_002` is prep 12/12 and MD 8/8
+(20/20), with all nine adversarial baselines rejected.  Its multimer mapping
+resolved both monomers and all 1299 contract atoms; MDDataBench's current RMSF
+verdict remains one pooled whole-complex profile, so per-subunit fidelity is a
+benchmark follow-up rather than an MDClaw execution failure.
+
 ## 2026-08-24 — explain_node now previews explicit NMR candidate selection
 
 The `046_nucleic_1a66` follow-up confirmed that `explain_node` passed
