@@ -117,14 +117,15 @@ def test_input_pdb_promotes_states_but_leaves_cyx_to_disulfide_contract(tmp_path
 
     assert [(s["state"], s["chain"], s["resnum"], s["icode"]) for s in states] == [
         ("ASH", "A", "97", ""),
+        ("HID", "A", "77", ""),
         ("GLH", "B", "210", ""),
         ("LYN", "B", "211", "A"),
-        ("CYM", "B", "212", ""),
     ]
+    assert not {"CYM", "CYX"} & {s["state"] for s in states}
     assert all(s["source"] == "user_override" for s in states)
     assert all(s["input_state_preserved"] is True for s in states)
     assert "CYX" not in {s["state"] for s in states}
-    assert not {"HID", "HIE", "HIP"} & {s["state"] for s in states}
+    assert {"HID", "ASH"} <= {s["state"] for s in states}
 
 
 def test_input_mmcif_promotes_nondefault_states(tmp_path):
@@ -237,18 +238,19 @@ def test_extract_reports_assigned_states_as_auto_detected(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("pathway", "input_format"),
-    [
-        ("pdb2pqr", "pdb"),
-        ("pdb4amber", "pdb"),
-        ("pdb2pqr", "mmcif"),
-    ],
+    "input_format",
+    ["pdb", "mmcif"],
 )
-def test_input_state_is_reapplied_in_both_protonation_paths(
+@pytest.mark.parametrize("method,baseline", [
+    ("standard", "pdb2pqr_standard_state"),
+    ("propka", "pdb2pqr+propka"),
+])
+def test_input_state_is_reapplied_for_both_structure_formats(
     tmp_path,
     monkeypatch,
-    pathway,
     input_format,
+    method,
+    baseline,
 ):
     clean_module = importlib.import_module("mdclaw.structure.clean_protein")
     source = tmp_path / "input_ash.pdb"
@@ -270,7 +272,7 @@ def test_input_state_is_reapplied_in_both_protonation_paths(
     monkeypatch.setattr(
         clean_module.pdb2pqr_wrapper,
         "is_available",
-        lambda: pathway == "pdb2pqr",
+        lambda: True,
     )
     monkeypatch.setattr(clean_module.pdb2pqr_wrapper, "run", fake_pdb2pqr)
     monkeypatch.setattr(clean_module.pdb4amber_wrapper, "is_available", lambda: True)
@@ -279,6 +281,8 @@ def test_input_state_is_reapplied_in_both_protonation_paths(
     result = clean_module.clean_protein(
         str(source),
         add_missing_atoms=False,
+        protonation_method=method,
+        preserve_input_protonation=True,
     )
 
     assert result["success"], result["errors"]
@@ -292,7 +296,43 @@ def test_input_state_is_reapplied_in_both_protonation_paths(
     assert preserved[0]["source"] == "user_override"
     assert preserved[0]["override_origin"] == "input_structure"
     assert result["input_protonation_states_promoted"][0]["state"] == "ASH"
-    assert "openmm_modeller_user_states" in result["protonation_method"]
+    assert result["protonation_method"] == baseline
+    assert result["protonation_override_method"] == "openmm_modeller_user_states"
+    assert result["provenance"]["protonation_baseline_method"] == baseline
+    assert result["provenance"]["protonation_override_method"] == (
+        "openmm_modeller_user_states")
+
+
+@pytest.mark.parametrize("method,baseline", [
+    ("standard", "pdb2pqr_standard_state"),
+    ("propka", "pdb2pqr+propka"),
+])
+def test_input_state_does_not_override_baseline_unless_requested(
+    tmp_path, monkeypatch, method, baseline,
+):
+    clean_module = importlib.import_module("mdclaw.structure.clean_protein")
+    source = tmp_path / "input_ash.pdb"
+    source.write_text(ASP_HEAVY_PDB.replace(" ASP ", " ASH "))
+
+    def fake_pdb2pqr(args):
+        output = Path(args[args.index("--pdb-output") + 1])
+        output.write_text(Path(args[0]).read_text())
+
+    monkeypatch.setattr(clean_module.pdb2pqr_wrapper, "is_available", lambda: True)
+    monkeypatch.setattr(clean_module.pdb2pqr_wrapper, "run", fake_pdb2pqr)
+
+    result = clean_module.clean_protein(
+        str(source), add_missing_atoms=False, protonation_method=method,
+        preserve_input_protonation=False,
+    )
+
+    assert result["success"], result["errors"]
+    assert result["input_protonation_states_promoted"] == []
+    assert not [state for state in result["protonation_states"]
+                if state.get("override_origin") == "input_structure"]
+    assert result["protonation_method"] == baseline
+    assert result["protonation_baseline_method"] == baseline
+    assert result["protonation_override_method"] is None
 
 
 def test_pdb4amber_fallback_reports_detected_nondefault_states(tmp_path, monkeypatch):
@@ -334,11 +374,8 @@ def test_pdb4amber_fallback_reports_detected_nondefault_states(tmp_path, monkeyp
         "default_state": "ASP",
         "source": "auto_detected",
     }]
-    op = next(
-        item
-        for item in result["operations"]
-        if item.get("method") == "pdb4amber+reduce"
-    )
+    op = next(item for item in result["operations"]
+              if item.get("method") == "disabled")
     assert op["protonation_states"] == result["protonation_states"]
 
 

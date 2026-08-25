@@ -80,6 +80,93 @@ def _normalize_terminal_cap_choice(
     return normalized
 
 
+TERMINAL_CAP_RESNAMES = frozenset({"ACE", "NME"})
+
+
+def detect_input_terminal_caps(structure_file) -> list[dict[str, Any]]:
+    """Terminal caps already present in a structure, before anything is added.
+
+    A deposit can arrive capped - 1DFJ chain I carries an N-terminal ACE - and
+    ACE/NME sit in ``AMBER_PROTEIN_RESIDUES``, so preparation keeps them and
+    counts them as protein residues. Nothing else reports that, which leaves a
+    caller unable to tell a capped input from an uncapped one until the residue
+    count disagrees with whatever it is being compared against.
+
+    Returns one record per cap: chain, residue number, residue name, and which
+    terminus it sits at, judged by whether it is the first or last residue of
+    its chain.
+    """
+    import gemmi
+
+    caps: list[dict[str, Any]] = []
+    try:
+        structure = gemmi.read_structure(str(structure_file))
+    except Exception as exc:                                   # unreadable input
+        logger.warning(f"Could not scan {structure_file} for terminal caps: {exc}")
+        return caps
+    structure.setup_entities()
+    for model in structure:
+        for chain in model:
+            residues = [r for r in chain]
+            if not residues:
+                continue
+            for position, residue in ((0, residues[0]), (-1, residues[-1])):
+                name = residue.name.strip().upper()
+                if name not in TERMINAL_CAP_RESNAMES:
+                    continue
+                caps.append({
+                    "chain": chain.name,
+                    "resnum": str(residue.seqid.num),
+                    "resname": name,
+                    "terminus": "n" if position == 0 else "c",
+                })
+        break                                                  # first model only
+    return caps
+
+
+def strip_input_terminal_caps(structure_file, output_file,
+                              caps: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Write ``structure_file`` without the terminal caps it arrived with.
+
+    The symmetric operation to the add-cap settings: with it, capped-or-not is
+    the caller's choice rather than a property of whichever deposit was
+    fetched. Only removes caps at a chain terminus, which is what
+    :func:`detect_input_terminal_caps` reports; an ACE anywhere else is not a
+    cap and is left alone.
+    """
+    import gemmi
+
+    caps = detect_input_terminal_caps(structure_file) if caps is None else caps
+    # Keyed on the residue NAME as well as chain and number: a deposit numbers
+    # the cap the same as the residue it caps - 1DFJ has both ACE and MET at
+    # I:1 - so matching on the number alone deletes a real residue with it.
+    targets = {(c["chain"], str(c["resnum"]), c["resname"]) for c in caps}
+    if not targets:
+        return {"success": True, "removed": [], "output_file": str(structure_file)}
+
+    structure = gemmi.read_structure(str(structure_file))
+    structure.setup_entities()
+    removed = []
+    for model in structure:
+        for chain in model:
+            # Delete in place, back to front. Emptying the chain and refilling
+            # it from a list of residues held across the clear segfaults gemmi.
+            for index in range(len(chain) - 1, -1, -1):
+                residue = chain[index]
+                key = (chain.name, str(residue.seqid.num),
+                       residue.name.strip().upper())
+                if key not in targets:
+                    continue
+                removed.append({"chain": chain.name,
+                                "resnum": str(residue.seqid.num),
+                                "resname": residue.name.strip().upper()})
+                del chain[index]
+        break
+    structure.setup_entities()
+    structure.write_pdb(str(output_file))
+    return {"success": True, "removed": removed, "output_file": str(output_file)}
+
+
 def _resolve_terminal_cap_settings(
     *,
     cap_termini: bool,

@@ -7,6 +7,68 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-25 — Protonation contract, actionable guardrails, and topology metadata made explicit
+
+Protein preparation now has two independent controls. `protonation_method`
+selects a `standard` or `propka` pdb2pqr baseline, while
+`preserve_input_protonation` optionally overlays deposited ASH/GLH/LYN and
+histidine variants. It defaults false, so standard really is all-standard.
+CYX disulfides and metal-site CYM remain structural chemistry, and explicit
+site overrides are a final overlay whose provenance no longer replaces the
+baseline label. A requested baseline now fails closed when pdb2pqr is missing
+or fails; stale conventional output files are deleted before each attempt so a
+failed retry cannot report an earlier PDB as success.
+
+End-to-end SIF probes established the chemistry rather than only mocking the
+wrapper. BPTI retained all three disulfides as CYX without SG hydrogens. 1AY7
+under the standard baseline had charged Asp/Glu/Lys/Arg hydrogen patterns,
+neutral HID/HIE and free CYS, and no HIP; CYX again had no SG hydrogen.
+An ASH input became charged ASP with preservation off, and remained ASH with
+HD2 plus explicit overlay provenance when preservation was on.
+
+Every structured blocking guardrail now carries a local `suggested_fix`, with
+an AST regression test enforcing that rule. The ff19SB/TIP3P refusal names both
+exits: change water to OPC, or keep TIP3P and change protein force field to
+ff14SB. Failure manifests preserve these local remedies. Topology completion
+now requires a readable `amber_metadata.json` with parameters and force-field
+provenance. Both Amber and custom-OpenMM builders emit and return it; the latter
+uses the historical filename without mislabelling custom XML as Amber.
+
+Validation included 371 focused protonation/guardrail/node/topology tests and
+the two real node-mode production smoke tests. The broad non-pipeline run first
+reported 1630 passed and only those two old hand-built topo fixtures failing;
+after the fixtures copied the builder's metadata, both passed. Changed-file
+ruff and `git diff --check` pass.
+
+## 2026-08-25 — Visual QA turned off by default: unrequested previews were half of all input tokens
+
+Measured during the 300-attempt MDDataBench campaign (`pi` + `rikyu/kimi-k3`,
+`cli_skill_sif`). Across 153 completed attempts, 89% of transcripts contained
+at least one base64 PNG, and those images accounted for **50% of all input
+tokens**: 21.3 M tokens/attempt with them against 10.7 M without.
+
+The cause was not an MDClaw tool returning images. It was `skills/common/visual-qa.md`
+instructing "render a preview after every stage that changes the system", so
+MDClaw wrote 741 preview PNGs (median 954 KB, max 3.2 MB, 656 MB total) and the
+agent then opened them with the harness `read` tool. Every opened image is
+re-sent on every later turn, so one 954 KB preview read early costs roughly
+80x its size over an 80-turn attempt.
+
+`rikyu/kimi-k3` declares `input: ["text"]` — it cannot see images at all. Half
+the input budget was being spent on data the model could not read.
+
+Changed: visual QA is now **off by default and runs only when the user asks**.
+Edited `skills/common/visual-qa.md` (canonical page, plus an explicit "never
+open a preview on a text-only model" rule), and the six referring sites in
+`common/run-loop.md`, `md-prepare`, `md-equilibration`, `md-production`, and
+`md-analyze`. `.agents/skills` and `.claude/skills` are symlinks, so they follow.
+
+Related measurement, same campaign: the rikyu endpoint **does** do automatic
+prefix caching and reports it (`prompt_tokens_details.cached_tokens`, 20992 of
+21030 on a repeat, and the prefix still hits when only the tail changes). Only
+1.2% of an attempt's input is genuinely new, so a cache-capable provider bills
+roughly 9x less than the naive token count suggests — 18x once previews are off.
+
 ## 2026-08-24 — 027 complex completed on Slurm and passed MDDataBench 20/20
 
 The public-prompt-only `027_complex_1b6c` workflow prepared the requested

@@ -76,6 +76,9 @@ def test_prepare_node_context_includes_protonation_overrides(monkeypatch):
         process_ligands=True,
         histidine_states={"A:10": "HIE"},
         protonation_states={"A:11": "GLH"},
+        protonation_method="standard",
+        preserve_input_protonation=True,
+        strip_input_caps=False,
         missing_residue_method=" AUTO ",
         include_types=["protein"],
         include_ligand_ids=None,
@@ -88,6 +91,8 @@ def test_prepare_node_context_includes_protonation_overrides(monkeypatch):
     assert result["success"] is True
     assert captured["histidine_states"] == {"A:10": "HIE"}
     assert captured["protonation_states"] == {"A:11": "GLH"}
+    assert captured["protonation_method"] == "standard"
+    assert captured["preserve_input_protonation"] is True
     assert captured["missing_residue_method"] == "auto"
 
 

@@ -786,6 +786,23 @@ def build_openmm_system(
         "code": "openmm_system_built",
     })
 
+    # ``amber_metadata.json`` is the historical name of the topology metadata
+    # contract consumed by MDDataBench.  Two campaign attempts completed a
+    # research-mode topo node without it and became unscoreable despite having
+    # a valid XML triple.  Every topology builder now emits the same envelope;
+    # custom XML remains identified by provenance rather than being called an
+    # Amber force field.
+    water_names = ("tip3p-fb", "tip4p-fb", "tip4pew", "tip5p", "tip3p",
+                   "opc3", "opc", "spce")
+    xml_text = " ".join(str(item).lower() for item in forcefield_xml)
+    result["parameters"]["water_model"] = next(
+        (name for name in water_names if name in xml_text), None)
+    result["forcefield_provenance"].setdefault(
+        "openmm_xml", list(forcefield_xml))
+    metadata_file = out_dir / "amber_metadata.json"
+    metadata_file.write_text(json.dumps(result, indent=2, default=str))
+    result["amber_metadata"] = str(metadata_file)
+
     if _node_mode:
         from mdclaw._node import complete_node
         artifacts = {
@@ -793,6 +810,7 @@ def build_openmm_system(
             "topology_pdb": f"artifacts/{output_name}.topology.pdb",
             "state_xml": f"artifacts/{output_name}.state.xml",
             "minimization_report": f"artifacts/{output_name}.minimization_report.json",
+            "amber_metadata": "artifacts/amber_metadata.json",
         }
         # The min/eq/prod resolver reads ``metadata.implicit_solvent``,
         # ``metadata.solvent_type``, and ``metadata.hmr`` so the run-side

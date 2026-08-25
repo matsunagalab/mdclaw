@@ -67,6 +67,10 @@ def test_build_openmm_system_with_amber14_xml(tmp_path):
     assert Path(result["topology_pdb"]).is_file()
     assert Path(result["state_xml"]).is_file()
     assert Path(result["minimization_report"]).is_file()
+    assert Path(result["amber_metadata"]).is_file()
+    metadata = json.loads(Path(result["amber_metadata"]).read_text())
+    assert metadata["forcefield_provenance"]["openmm_xml"] == [
+        "amber/protein.ff14SB.xml"]
     assert not any(
         line.startswith("CONECT")
         for line in Path(result["topology_pdb"]).read_text().splitlines()
@@ -291,7 +295,8 @@ class TestBuildOpenmmSystemNodeMode:
         assert result["success"] is True, result.get("errors")
         # Outputs under the node's own artifacts dir, not WORKING_DIR/openmm_system_*
         node_artifacts = job_dir / "nodes" / topo_id / "artifacts"
-        for key in ("system_xml", "topology_pdb", "state_xml", "minimization_report"):
+        for key in ("system_xml", "topology_pdb", "state_xml", "minimization_report",
+                    "amber_metadata"):
             recorded = Path(result[key])
             assert recorded.is_file(), f"{key} not written: {recorded}"
             assert node_artifacts in recorded.parents, (
@@ -301,7 +306,8 @@ class TestBuildOpenmmSystemNodeMode:
         # Node transitioned to completed and the relative artifact paths exist.
         topo_node = read_node(str(job_dir), topo_id)
         assert topo_node["status"] == "completed"
-        for key in ("system_xml", "topology_pdb", "state_xml", "minimization_report"):
+        for key in ("system_xml", "topology_pdb", "state_xml", "minimization_report",
+                    "amber_metadata"):
             rel = topo_node["artifacts"].get(key)
             assert rel and (node_artifacts / Path(rel).name).is_file()
         minimization = topo_node["metadata"]["minimization"]

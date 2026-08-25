@@ -9,12 +9,81 @@ If the user names specific residue protonation states, pass them explicitly
 through `protonation_states`; do not leave them as a free-text note, e.g.
 `{"A:57": "HIP", "A:25": "ASH"}` or a list of `{chain, resnum, state}` records.
 Supported Amber variants: ASP/ASH, GLU/GLH, HID/HIE/HIP, LYS/LYN, CYS/CYX/CYM.
-General pH-aware protonation is otherwise handled by `clean_protein`.
+The selected standard or pH-aware baseline is otherwise handled by
+`clean_protein`; explicit site states are overlaid after it.
+
+This is for a handful of named sites. If what the user wants is every side
+chain in its standard state, do not enumerate them here - see "Standard states
+versus predicted ones" below.
+
+## Disulfide bonds
+
+`prepare_complex` detects disulfides from the geometry and forms them, which is
+what a deposit that declares them wants. Two things are worth knowing because
+neither is visible in the output until it is too late to change cheaply.
+
+The detection is on by default. A pair of cysteines within bonding distance
+becomes a bond and the residues are renamed CYX, whether or not anyone asked.
+The set that was formed is reported after the fact, in the prep node's
+`disulfide_pairs`; there is no preflight that tells you first, so when the
+cysteine chemistry matters, decide before running rather than after.
+
+Suppression exists and is explicit:
+
+| what you want | how |
+|---|---|
+| no disulfides at all | `--disulfide-pairs '[]'` |
+| all but one | list the pairs to keep, or give the unwanted one `"form_bond": false` |
+| the detected set | pass nothing |
+
+The empty list is honoured rather than ignored: preparation gates on the
+argument being present, not on it being non-empty, so `'[]'` means none rather
+than falling back to detection.
+
+Reach for suppression when the request asks for reduced cysteines, or names a
+reference state that has no disulfide. Do not reach for it to make a downstream
+step succeed - a disulfide that the deposit's geometry supports is part of the
+system, and removing it changes what is being simulated. "Neutral cysteine" on
+its own is not an instruction to break a bond: a disulfide-bonded CYX is
+neutral, and so is a free CYS.
+
+## Standard states versus predicted ones
+
+`--ph` alone runs propka, which predicts each titratable side chain's charge
+state from its local environment. At pH 7 that returns neutral ASH, GLH or LYN
+for some residues, which is a prediction, not a default.
+
+When the request asks for standard states - "charged aspartate, glutamate,
+lysine and arginine, neutral histidine and cysteine" is the usual phrasing -
+pass `--protonation-method standard`. It skips the prediction and keeps the
+force field's own states. Do not try to reach the same place by listing every
+residue propka moved in `--protonation-states`: that is one override per
+residue, each addressed by a chain ID whose space is easy to get wrong, and
+each a chance to fail the whole prep.
+
+Input protonation names are a separate choice. By default they do not override
+the selected baseline, so `standard` really means all-standard. Add
+`--preserve-input-protonation` only when deposited ASH/GLH/LYN or histidine
+variants are part of the requested chemical state. This switch never controls
+CYX disulfides or metal-site CYM: those come from the disulfide and metal
+coordination contracts and remain structural chemistry in either mode.
+
+`--protonation-states` still wins where it is given, so the two combine: ask
+for standard states, then name the handful of sites that genuinely differ.
 
 ## Terminal caps
 
 If the user requests terminal caps, use `--n-terminal-cap ACE` and/or
-`--c-terminal-cap NME`; `--cap-termini` is only the shorthand for both.
+`--c-terminal-cap NME`; `--cap-termini` is only the shorthand for both. Each
+side is independent - a C-terminal cap alone is fine.
+
+A deposit can arrive already capped. ACE and NME count as protein, so a cap
+that came in with the structure is kept and counted as a residue, which changes
+the residue count the system is compared against. `prepare_complex` reports the
+caps it found on the input, and warns when it keeps them. Pass
+`--strip-input-caps` to simulate the chain uncapped. Keep them when the deposit
+means them, which is the usual case; strip them when the target system is the
+free terminus.
 Cap-residue hydrogen completion is tool-owned in `prepare_complex`. When the
 user specifies a non-default protein force field for the eventual topology, pass
 the same value as `--terminal-cap-forcefield`; otherwise the ff19SB default

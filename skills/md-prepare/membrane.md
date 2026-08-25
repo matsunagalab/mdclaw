@@ -5,6 +5,40 @@ embedding replaces bulk solvation: use the same `solv` node type but run
 `embed_in_membrane` instead of `solvate_structure`. First complete a `prep` node
 per the `skills/md-prepare/SKILL.md` workflow.
 
+## Force field and water
+
+Decide these before solvating. A pairing MDClaw refuses is reported at the solv
+node, and rebuilding solv to try another combination is the expensive way to
+find out.
+
+Lipid21 was developed and validated in Amber membrane simulations using TIP3P
+water, and `leaprc.lipid21` loads no water model of its own — it is meant to be
+sourced alongside a protein force field, and the choice of water stays open.
+
+When the request fixes the water at TIP3P, ff14SB is the conservative choice:
+its empirical tuning is associated with TIP3P, so lipid, water and protein all
+sit inside the same validation history.
+
+ff19SB is Amber's newer protein force field and Amber recommends it with OPC,
+and recommends against TIP3P for it. MDClaw enforces that as a hard refusal
+(`forcefield_water_blocked`), and the refusal text suggests moving the water to
+OPC. Read that suggestion against who owns each parameter:
+
+| what the request fixes | what to change |
+|---|---|
+| water fixed at TIP3P | keep it; choose ff14SB |
+| protein fixed at ff19SB, water open | move the water to OPC |
+| both fixed | say so and ask, rather than silently changing either |
+
+The failure mode to avoid is taking the refusal text literally when the water
+is not yours to change: swapping to OPC then contradicts the request, and
+rebuilding solv with the same protein force field just hits the same refusal.
+
+Amber recommends against ff19SB with TIP3P; it does not call the combination
+invalid, and published membrane work has used it. The point here is not that
+one pairing is wrong but that MDClaw will not build this one, so pick the
+protein force field with that in mind.
+
 ## Run
 
 ```bash

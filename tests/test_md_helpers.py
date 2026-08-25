@@ -1787,6 +1787,8 @@ class TestRunProductionFailNodeCoverage:
         (topo_artifacts / "system.xml").write_text("<bogus />")
         (topo_artifacts / "topology.pdb").write_text("REMARK fake\nEND\n")
         (topo_artifacts / "state.xml").write_text("<bogus />")
+        (topo_artifacts / "amber_metadata.json").write_text(
+            '{"parameters": {}, "forcefield_provenance": {}}\n')
         complete_node(
             str(job_dir),
             "topo_001",
@@ -1933,6 +1935,8 @@ class TestRunProductionFailNodeCoverage:
         ta.mkdir(parents=True, exist_ok=True)
         (ta / "system.xml").write_bytes(sys_xml.read_bytes())
         (ta / "topology.pdb").write_bytes(topology_pdb.read_bytes())
+        (ta / "amber_metadata.json").write_text(
+            '{"parameters": {}, "forcefield_provenance": {}}\n')
         complete_node(
             str(job_dir),
             "topo_001",
@@ -3027,6 +3031,8 @@ class TestImplicitSolventTopologyMismatchInRunFunctions:
         (topo_artifacts / "system.xml").write_text("<placeholder/>")
         (topo_artifacts / "topology.pdb").write_text("REMARK fake\nEND\n")
         (topo_artifacts / "state.xml").write_text("<placeholder/>")
+        (topo_artifacts / "amber_metadata.json").write_text(
+            '{"parameters": {}, "forcefield_provenance": {}}\n')
         meta = {
             "hmr": True,
             "solvent_type": "implicit" if topo_implicit_solvent else "vacuum",

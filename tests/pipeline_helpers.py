@@ -129,14 +129,28 @@ def complete_node_with_placeholders(job_dir, node_id, artifacts, **kwargs):
     """
     from mdclaw._node import complete_node
 
+    from mdclaw._node import read_node
+
     node_dir = Path(job_dir) / "nodes" / node_id
+    # Topology provenance is now a completion invariant. Lifecycle tests use
+    # empty stand-ins intentionally, so provide the mandatory envelope just as
+    # this helper already does for the caller's other path artifacts.
+    if read_node(str(job_dir), node_id).get("node_type") == "topo":
+        artifacts = {
+            **artifacts,
+            "amber_metadata": "artifacts/amber_metadata.json",
+        }
     for rel_path in artifacts.values():
         if not isinstance(rel_path, str) or not rel_path:
             continue
         full = node_dir / rel_path
         full.parent.mkdir(parents=True, exist_ok=True)
         if not full.exists():
-            full.touch()
+            if full.name == "amber_metadata.json":
+                full.write_text(
+                    '{"parameters": {}, "forcefield_provenance": {}}\n')
+            else:
+                full.touch()
     return complete_node(job_dir, node_id, artifacts, **kwargs)
 
 

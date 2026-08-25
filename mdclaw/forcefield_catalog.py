@@ -430,6 +430,32 @@ _IMPLICIT_ALIASES.update(
 )
 
 
+def protein_forcefields_for_water(water: str) -> tuple[list[str], list[str]]:
+    """Which protein force fields go with a given water model.
+
+    The catalog is written water-first - each protein entry lists the waters it
+    recommends - so a caller told "this pair is blocked" could only ever be
+    offered a different water. When the water is the fixed half of the request
+    and the force field is the free one, that is the wrong half to change.
+    This reads the same table the other way round.
+
+    Returns ``(recommended, acceptable)``, each a list of protein force field
+    names, in catalog order.
+    """
+    canonical = normalize_water(water)
+    if not canonical:
+        return [], []
+    recommended, acceptable = [], []
+    for entry in PROTEIN_FORCEFIELDS.values():
+        if canonical in entry.blocked_waters:
+            continue
+        if canonical in entry.recommended_waters:
+            recommended.append(entry.name)
+        elif canonical in entry.acceptable_waters:
+            acceptable.append(entry.name)
+    return recommended, acceptable
+
+
 def normalize_implicit_solvent(name: Optional[str]) -> Optional[str]:
     """Resolve a user-provided implicit-solvent / GB model name to its catalog key.
 
@@ -541,6 +567,7 @@ def evaluate_protein_water(
                 severity="error",
                 actual=str(protein),
                 expected="ff14SB | ff19SB",
+                suggested_fix="Use forcefield='ff14SB' or forcefield='ff19SB'.",
                 code="forcefield_obsolete_blocked",
             ),
         }
@@ -605,6 +632,21 @@ def evaluate_protein_water(
 
     if canon_w in entry.blocked_waters:
         suggested = entry.recommended_waters[0] if entry.recommended_waters else None
+        # Offer both exits, not just the one that changes the water. Which half
+        # of the pair the caller is free to change is not ours to assume: a
+        # request can fix the water model and leave the force field open, and
+        # then "use a different water" is advice it cannot take.
+        recommended_ff, acceptable_ff = protein_forcefields_for_water(canon_w)
+        alternatives = recommended_ff or acceptable_ff
+        exits = []
+        if suggested:
+            exits.append(f"change the water: water_model={suggested!r}")
+        if alternatives:
+            exits.append(
+                f"or keep water_model={canon_w!r} and change the force field: "
+                f"forcefield={alternatives[0]!r}"
+                + (f" (also {', '.join(alternatives[1:4])})" if len(alternatives) > 1 else "")
+            )
         return {
             "verdict": "blocked",
             "result": create_guardrail_result(
@@ -617,7 +659,7 @@ def evaluate_protein_water(
                 severity="error",
                 actual=str(water),
                 expected=", ".join(entry.recommended_waters) or None,
-                suggested_fix=(f"Use water_model={suggested!r}." if suggested else None),
+                suggested_fix=("; ".join(exits) + "." if exits else None),
                 code="forcefield_water_blocked",
             ),
         }

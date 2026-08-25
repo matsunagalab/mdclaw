@@ -233,6 +233,8 @@
   "preview_structure_format_unsupported",
   "preview_style_unsupported",
   "progress_missing_or_invalid",
+  "protonation_method_failed",
+  "protonation_method_unavailable",
   "protonation_state_override_failed",
   "pymol_not_available",
   "pymol_preview_missing_output",

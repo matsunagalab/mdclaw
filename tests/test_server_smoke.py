@@ -982,7 +982,7 @@ class TestMDSimulationServer:
         topo = create_node(str(job_dir), "topo")
         topo_artifacts = job_dir / "nodes" / topo["node_id"] / "artifacts"
         topo_artifacts.mkdir(parents=True, exist_ok=True)
-        for key in ("system_xml", "topology_pdb", "state_xml"):
+        for key in ("system_xml", "topology_pdb", "state_xml", "amber_metadata"):
             src = Path(amber[key])
             (topo_artifacts / src.name).write_bytes(src.read_bytes())
         complete_node(
@@ -991,6 +991,7 @@ class TestMDSimulationServer:
                 "system_xml": f"artifacts/{Path(amber['system_xml']).name}",
                 "topology_pdb": f"artifacts/{Path(amber['topology_pdb']).name}",
                 "state_xml": f"artifacts/{Path(amber['state_xml']).name}",
+                "amber_metadata": "artifacts/amber_metadata.json",
             },
         )
         eq = create_node(str(job_dir), "eq", parent_node_ids=[topo["node_id"]])
@@ -1368,7 +1369,7 @@ class TestMDSimulationServer:
         topo = create_node(str(job_dir), "topo")
         topo_artifacts = job_dir / "nodes" / topo["node_id"] / "artifacts"
         topo_artifacts.mkdir(parents=True, exist_ok=True)
-        for key in ("system_xml", "topology_pdb", "state_xml"):
+        for key in ("system_xml", "topology_pdb", "state_xml", "amber_metadata"):
             src = Path(amber[key])
             (topo_artifacts / src.name).write_bytes(src.read_bytes())
         complete_node(
@@ -1378,6 +1379,7 @@ class TestMDSimulationServer:
                 "system_xml": f"artifacts/{Path(amber['system_xml']).name}",
                 "topology_pdb": f"artifacts/{Path(amber['topology_pdb']).name}",
                 "state_xml": f"artifacts/{Path(amber['state_xml']).name}",
+                "amber_metadata": "artifacts/amber_metadata.json",
             },
         )
 

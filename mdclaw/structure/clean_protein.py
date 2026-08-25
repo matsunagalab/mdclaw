@@ -84,7 +84,7 @@ _NUCLEIC_5P_TERMINAL_PHOSPHATE_OXYGENS = {
 
 from mdclaw.structure.pdb_utils import _pdb_atom_count, _pdb_hydrogen_count, _pdb_residue_names, _read_pdb_unique_residues, restore_residue_numbering_from_reference  # noqa: E402
 from mdclaw.structure.protonation import _apply_protonation_states_with_modeller, _extract_histidine_states, _extract_input_protonation_state_overrides, _extract_non_default_protonation_states, _merge_input_protonation_state_overrides, _merge_protonation_states, _normalize_protonation_state_overrides  # noqa: E402
-from mdclaw.structure.terminal_caps import _complete_terminal_cap_hydrogens_with_modeller, _resolve_terminal_cap_settings  # noqa: E402
+from mdclaw.structure.terminal_caps import _complete_terminal_cap_hydrogens_with_modeller, _resolve_terminal_cap_settings, detect_input_terminal_caps, strip_input_terminal_caps  # noqa: E402
 
 
 def _pdb_atom_name(line: str) -> str:
@@ -883,6 +883,14 @@ def _restrict_missing_to_window(fixer, chains, window) -> dict:
     return trimmed
 
 
+PROTONATION_METHODS = ("propka", "standard")
+
+
+def _protonation_method_label(standard_state: bool) -> str:
+    """Recorded on the node so the choice is visible after the fact."""
+    return "pdb2pqr_standard_state" if standard_state else "pdb2pqr+propka"
+
+
 def clean_protein(
     pdb_file: str,
     ignore_terminal_missing_residues: bool = True,
@@ -901,6 +909,9 @@ def clean_protein(
     disulfide_pairs: list[dict] | None = None,
     histidine_states: dict[str, str] | None = None,
     protonation_states: Optional[Dict[str, Any]] = None,
+    protonation_method: str = "propka",
+    preserve_input_protonation: bool = False,
+    strip_input_caps: bool = False,
     missing_residue_method: str = "auto",
 ) -> dict:
     """Clean a monomer protein PDB/mmCIF file for MD simulation using PDBFixer.
@@ -935,14 +946,26 @@ def clean_protein(
         remove_heterogens: Remove heteroatoms (ligands, ions, etc.) (default: True)
         keep_water: Keep water molecules when removing heterogens (default: False)
         add_missing_atoms: Add missing heavy atoms (default: True)
-        add_hydrogens: Add hydrogen atoms at specified pH (default: True)
-        ph: pH for protonation state assignment (default: 7.4)
+        add_hydrogens: Add hydrogen atoms using the selected baseline (default: True)
+        ph: pH used by the propka baseline (default: 7.4; ignored by standard)
         disulfide_pairs: Pre-defined disulfide bond pairs from Phase 1 analysis.
                         List of dicts with chain1, resnum1, chain2, resnum2, form_bond.
                         If provided, skips auto-detection and uses these pairs instead.
         histidine_states: Pre-defined histidine protonation states from Phase 1 analysis.
                          Dict mapping "chain:resnum" to state ("HID", "HIE", "HIP").
-                         If provided, skips propka and applies these states directly.
+                         If provided, overlays these states after the selected baseline.
+        protonation_method: How titratable side chains get their charge state.
+                         "propka" (default) predicts each from its environment
+                         at `ph`; "standard" keeps the force field's standard
+                         state - charged Asp/Glu/Lys/Arg, neutral His/Cys.
+        preserve_input_protonation: Overlay explicit input ASH/GLH/LYN and
+                         histidine variants on the selected baseline. False by
+                         default, so ``standard`` means all-standard. CYX and
+                         metal-coordinating CYM are structural chemistry and
+                         are handled independently of this switch.
+        strip_input_caps: Remove ACE/NME caps the structure arrived with. Kept
+                         by default and counted as protein residues, since a
+                         deposit that ships a cap normally means it.
         protonation_states: User-specified residue protonation states. Accepts
                          either a dict mapping "chain:resnum" to Amber variant
                          names, or a list of dicts with chain, resnum, state,
@@ -969,6 +992,13 @@ def clean_protein(
               (CYS residues renamed to CYX for Amber compatibility)
     """
     logger.info(f"Cleaning protein structure: {pdb_file}")
+
+    if protonation_method not in PROTONATION_METHODS:
+        raise ValueError(
+            f"Unsupported protonation_method {protonation_method!r}. "
+            f"Supported: {', '.join(PROTONATION_METHODS)}")
+    standard_state_protonation = protonation_method == "standard"
+    input_terminal_caps = detect_input_terminal_caps(pdb_file)
     
     # Initialize result structure for LLM error handling
     result = {
@@ -979,6 +1009,8 @@ def clean_protein(
         "n_terminal_cap": None,
         "c_terminal_cap": None,
         "terminal_caps": {},
+        "input_terminal_caps": input_terminal_caps,
+        "input_terminal_caps_removed": [],
         "terminal_cap_forcefield": terminal_cap_forcefield or DEFAULT_TERMINAL_CAP_FORCEFIELD,
         "terminal_cap_hydrogen_completion": None,
         "operations": [],
@@ -986,7 +1018,29 @@ def clean_protein(
         "errors": [],
         "statistics": {},
         "disulfide_bonds": [],
+        "protonation_method": None,
+        "protonation_baseline_method": None,
+        "protonation_override_method": None,
+        "preserve_input_protonation": bool(preserve_input_protonation),
     }
+
+    if input_terminal_caps:
+        described = ", ".join(f"{c['chain']}:{c['resnum']} {c['resname']}"
+                              for c in input_terminal_caps)
+        if strip_input_caps:
+            stripped = Path(str(pdb_file)).with_name(
+                Path(str(pdb_file)).stem + ".uncapped.pdb")
+            removal = strip_input_terminal_caps(pdb_file, stripped,
+                                                input_terminal_caps)
+            result["input_terminal_caps_removed"] = removal["removed"]
+            pdb_file = removal["output_file"]
+            logger.info(f"Removed input terminal cap(s): {described}")
+        else:
+            logger.info(f"Structure arrived with terminal cap(s): {described}")
+            result["warnings"].append(
+                f"Input carries terminal cap(s) {described}; they are kept and "
+                "counted as protein residues. Pass strip_input_caps=true to "
+                "simulate the chain uncapped.")
 
     try:
         explicit_protonation_states = _normalize_protonation_state_overrides(
@@ -1099,8 +1153,9 @@ def clean_protein(
         result["missing_residue_method_used"] = effective_method
         result["missing_residue_method_escalated"] = escalated_to_modeller
 
-        input_protonation_states = _extract_input_protonation_state_overrides(
-            original_input_path
+        input_protonation_states = (
+            _extract_input_protonation_state_overrides(original_input_path)
+            if preserve_input_protonation else []
         )
         requested_protonation_states = _merge_input_protonation_state_overrides(
             input_protonation_states,
@@ -1111,6 +1166,7 @@ def clean_protein(
             for state in requested_protonation_states
             if state.get("input_state_preserved")
         ]
+        result["preserve_input_protonation"] = bool(preserve_input_protonation)
 
         # Rebuild internal gaps with MODELLER first when asked, so the rest of
         # the cleaning runs on a chain that no longer has any. Doing it here
@@ -1683,17 +1739,24 @@ def clean_protein(
             logger.warning(f"Disulfide bond detection failed: {e}")
         
         # Step 6: Add hydrogens (protonation)
-        # NOTE: We skip PDBFixer hydrogen addition here and let pdb2pqr + propka
-        # handle it instead (with pdb4amber --reduce as fallback). This prevents
+        # NOTE: We skip PDBFixer hydrogen addition here and let the selected
+        # pdb2pqr baseline handle it instead. This prevents
         # duplicate/conflicting hydrogens, especially at N-termini of internal
         # chain breaks (e.g., NALA, NVAL, NGLN) which can fail Amber residue
         # template matching at openmmforcefields build time.
         if add_hydrogens:
-            logger.info(f"Skipping PDBFixer hydrogen addition (pH {ph}) - pdb2pqr/propka will handle it")
+            logger.info(
+                "Skipping PDBFixer hydrogen addition; %s will handle it",
+                _protonation_method_label(standard_state_protonation),
+            )
             result["operations"].append({
                 "step": "protonation",
                 "status": "deferred",
-                "details": f"Hydrogen addition deferred to pdb2pqr+propka (pH {ph} requested)"
+                "details": (
+                    "Hydrogen addition deferred to "
+                    f"{_protonation_method_label(standard_state_protonation)} "
+                    f"(pH {ph} requested)"
+                )
             })
             # Store pH for potential future use
             result["requested_ph"] = ph
@@ -1727,38 +1790,67 @@ def clean_protein(
             "details": f"Wrote {len(final_atoms)} atoms to {output_file}"
         })
         
-        # Step 9: pH-dependent protonation + Amber naming conversion
-        # Primary: pdb2pqr + propka (pH-aware, proper Amber naming)
-        # Fallback: pdb4amber --reduce (pH ignored, geometry-based)
-        # If site-specific protonation states are provided, pdb2pqr/pdb4amber
-        # first creates an Amber-compatible protein PDB, then OpenMM Modeller
-        # applies the requested residue variants and validates the H pattern.
-        logger.info(f"Applying pH-dependent protonation (pH {ph})")
+        # Step 9: requested protonation baseline + Amber naming conversion.
+        # pdb2pqr is mandatory whenever hydrogens are requested; substituting
+        # pdb4amber+reduce would silently discard standard-versus-propka
+        # semantics. With hydrogen addition disabled, pdb4amber remains a
+        # naming-only path. Explicit residue variants are overlaid last.
+        logger.info(
+            "Applying requested protonation baseline: %s",
+            protonation_method,
+        )
         amber_output_file = input_path.parent / f"{stem}.amber.pdb"
         pdb2pqr_success = False
         user_protonation_applied: list[dict[str, str]] = []
 
         try:
-            # Primary method: pdb2pqr + propka (pH-aware protonation with Amber naming).
-            # We always run propka so that pdb2pqr produces correct Amber
-            # terminal variant naming (NHID/CHIE/etc.) and matching atom
-            # lists. User-supplied histidine_states are applied *on top*
-            # of the propka result by renaming residues after pdb2pqr
-            # finishes — skipping propka leaves terminal HIS residues
-            # without correct N-terminal H1/H2 (or C-terminal OXT) atom
-            # naming, which fails residue template matching when
-            # openmmforcefields applies the Amber HIS variant template.
+            # Primary method: pdb2pqr provides Amber naming and complete atom
+            # lists in both modes. Propka is opt-in through the selected
+            # baseline; leaving the titration flag unset keeps force-field
+            # standard states. User overrides are applied after either baseline.
+            if add_hydrogens and not pdb2pqr_wrapper.is_available():
+                result["code"] = "protonation_method_unavailable"
+                result["errors"].append(
+                    f"Requested protonation_method={protonation_method!r} requires "
+                    "pdb2pqr, but pdb2pqr is unavailable. The method was not "
+                    "applied; MDClaw will not substitute pdb4amber+reduce because "
+                    "that path ignores the requested protonation semantics."
+                )
+                return result
+
             if pdb2pqr_wrapper.is_available() and add_hydrogens:
-                logger.info(f"Using pdb2pqr with propka for pH {ph}")
                 pqr_output = input_path.parent / f"{stem}.pqr"
+                # A failed retry must not validate a PDB left by an earlier
+                # invocation. Success means this invocation produced both
+                # outputs, not merely that the conventional filename exists.
+                pqr_output.unlink(missing_ok=True)
+                amber_output_file.unlink(missing_ok=True)
+
+                # Leaving --titration-state-method unset is pdb2pqr's own
+                # default, and is what standard state means: titratable side
+                # chains keep the force field's charge state rather than one
+                # predicted per residue. With propka on, "charged Asp/Glu/Lys/
+                # Arg, neutral His/Cys" can only be reached by naming every
+                # residue it moved, one at a time, through protonation_states.
+                #
+                # Built in one piece on purpose. Splicing the titration flags
+                # into this list by index put them between --ffout and its
+                # value, which silently changed the output format and left CYX
+                # residues without their hydrogens.
+                if standard_state_protonation:
+                    logger.info("Using pdb2pqr standard states (propka not run)")
+                    titration_args = []
+                else:
+                    logger.info(f"Using pdb2pqr with propka for pH {ph}")
+                    titration_args = ["--titration-state-method", "propka",
+                                      "--with-ph", str(ph)]
 
                 pdb2pqr_args = [
                     str(output_file),
                     str(pqr_output),
                     "--ff", "AMBER",
                     "--ffout", "AMBER",
-                    "--titration-state-method", "propka",
-                    "--with-ph", str(ph),
+                    *titration_args,
                     "--pdb-output", str(amber_output_file),
                     "--keep-chain",
                     "--drop-water",
@@ -1788,15 +1880,24 @@ def clean_protein(
                                 detected_protonation,
                                 user_protonation_applied,
                             )
+                            baseline_method = _protonation_method_label(
+                                standard_state_protonation)
                             result["operations"].append({
                                 "step": "protonation",
                                 "status": "success",
-                                "method": "pdb2pqr+openmm_modeller_user_states",
+                                "method": baseline_method,
+                                "baseline_method": baseline_method,
+                                "override_method": "openmm_modeller_user_states",
                                 "ph": ph,
+                                "preserve_input_protonation": bool(
+                                    preserve_input_protonation),
                                 "histidine_states": his_states,
                                 "protonation_states": reported_protonation,
                             })
-                            result["protonation_method"] = "pdb2pqr+openmm_modeller_user_states"
+                            result["protonation_method"] = baseline_method
+                            result["protonation_baseline_method"] = baseline_method
+                            result["protonation_override_method"] = (
+                                "openmm_modeller_user_states")
                             result["protonation_states"] = reported_protonation
                             logger.info(
                                 f"Applied {len(user_protonation_applied)} user-specified "
@@ -1810,14 +1911,26 @@ def clean_protein(
                             result["operations"].append({
                                 "step": "protonation",
                                 "status": "success",
-                                "method": "pdb2pqr+propka",
+                                "method": _protonation_method_label(standard_state_protonation),
+                                "baseline_method": _protonation_method_label(
+                                    standard_state_protonation),
+                                "override_method": None,
                                 "ph": ph,
+                                "preserve_input_protonation": bool(
+                                    preserve_input_protonation),
                                 "histidine_states": his_states,
                                 "protonation_states": detected_protonation,
                             })
-                            result["protonation_method"] = "pdb2pqr+propka"
+                            result["protonation_method"] = _protonation_method_label(
+                                standard_state_protonation)
+                            result["protonation_baseline_method"] = (
+                                result["protonation_method"])
                             result["protonation_states"] = detected_protonation
-                            logger.info(f"pH-aware protonation complete: {len(his_states)} histidine states determined")
+                            logger.info(
+                                "%s protonation complete: %d histidine states determined",
+                                protonation_method,
+                                len(his_states),
+                            )
 
                         result["output_file"] = str(amber_output_file)
                         result["pdbfixer_output"] = str(output_file)
@@ -1829,19 +1942,21 @@ def clean_protein(
                         raise RuntimeError("pdb2pqr did not create output PDB file")
 
                 except Exception as pdb2pqr_error:
-                    logger.warning(f"pdb2pqr failed: {pdb2pqr_error}, falling back to pdb4amber")
-                    result["warnings"].append(f"pdb2pqr failed: {pdb2pqr_error}")
-
-            # Fallback method: pdb4amber --reduce (pH ignored, geometry-based)
-            if not pdb2pqr_success:
-                if add_hydrogens:
-                    logger.warning(f"Using pdb4amber --reduce (pH {ph} will be ignored)")
-                    result["warnings"].append(
-                        f"pH {ph} protonation not applied: using geometry-based hydrogen assignment"
+                    result["code"] = "protonation_method_failed"
+                    result["errors"].append(
+                        f"Requested protonation_method={protonation_method!r} "
+                        f"failed in pdb2pqr: {pdb2pqr_error}. MDClaw will not "
+                        "substitute pdb4amber+reduce because it ignores the "
+                        "requested protonation semantics."
                     )
-                    reduce_flag = ["--reduce"]
-                else:
-                    reduce_flag = []
+                    return result
+
+            # With hydrogen rebuilding explicitly disabled, pdb4amber is only
+            # an Amber-name converter. A requested protonation method never
+            # reaches this branch: unavailable/failed pdb2pqr returns above
+            # rather than silently substituting geometry-based ``reduce``.
+            if not pdb2pqr_success:
+                reduce_flag = []
 
                 if not pdb4amber_wrapper.is_available():
                     raise RuntimeError("Neither pdb2pqr nor pdb4amber available for Amber conversion")
@@ -1873,8 +1988,10 @@ def clean_protein(
                     op = {
                         "step": "protonation",
                         "status": "success",
-                        "method": "pdb4amber+reduce",
-                        "details": "Geometry-based hydrogen assignment (pH ignored)",
+                        "method": "disabled",
+                        "baseline_method": "disabled",
+                        "override_method": None,
+                        "details": "Hydrogen/protonation assignment was disabled",
                     }
                     if requested_protonation_states:
                         protonation_result = _apply_protonation_states_with_modeller(
@@ -1897,12 +2014,15 @@ def clean_protein(
                             user_protonation_applied,
                         )
                         op.update({
-                            "method": "pdb4amber+openmm_modeller_user_states",
+                            "override_method": "openmm_modeller_user_states",
                             "ph": ph,
                             "histidine_states": his_states,
                             "protonation_states": reported_protonation,
                         })
-                        result["protonation_method"] = "pdb4amber+openmm_modeller_user_states"
+                        result["protonation_method"] = "disabled"
+                        result["protonation_baseline_method"] = "disabled"
+                        result["protonation_override_method"] = (
+                            "openmm_modeller_user_states")
                         result["protonation_states"] = reported_protonation
                         result["histidine_states"] = his_states
                     else:
@@ -1915,7 +2035,8 @@ def clean_protein(
                     result["output_file"] = str(amber_output_file)
                     result["pdbfixer_output"] = str(output_file)
                     if not requested_protonation_states:
-                        result["protonation_method"] = "pdb4amber+reduce"
+                        result["protonation_method"] = "disabled"
+                        result["protonation_baseline_method"] = "disabled"
                     logger.info(f"pdb4amber conversion successful: {amber_output_file}")
                 else:
                     raise RuntimeError("pdb4amber did not create output file")
@@ -1999,6 +2120,12 @@ def clean_protein(
                 provenance["nonstandard_residues_replaced"] = op.get("details", "")
             elif step == "protonation" and op.get("status") == "success":
                 provenance["protonation_method"] = op.get("method", "")
+                provenance["protonation_baseline_method"] = op.get(
+                    "baseline_method", op.get("method", ""))
+                provenance["protonation_override_method"] = op.get(
+                    "override_method")
+                provenance["preserve_input_protonation"] = bool(
+                    op.get("preserve_input_protonation", False))
                 provenance["protonation_ph"] = op.get("ph")
                 if op.get("histidine_states"):
                     provenance["histidine_states"] = op["histidine_states"]

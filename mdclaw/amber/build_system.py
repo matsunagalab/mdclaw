@@ -748,7 +748,7 @@ def build_amber_system(
                     "water_model",
                     compatibility_results,
                     summary=compatibility_results[0]["message"],
-                    expected="ff19SB + opc (recommended) or ff14SB + tip3p (legacy)",
+                    expected="ff19SB + opc or ff14SB + tip3p",
                     actual=f"{forcefield} + {water_model}",
                 ),
             }
@@ -1527,6 +1527,7 @@ def build_amber_system(
 
     # Save metadata
     metadata_file = out_dir / "amber_metadata.json"
+    result["amber_metadata"] = str(metadata_file)
     with open(metadata_file, 'w') as f:
         json.dump(result, f, indent=2, default=str)
 
@@ -1538,6 +1539,7 @@ def build_amber_system(
                 "system_xml": f"artifacts/{output_name}.system.xml",
                 "topology_pdb": f"artifacts/{output_name}.topology.pdb",
                 "state_xml": f"artifacts/{output_name}.state.xml",
+                "amber_metadata": "artifacts/amber_metadata.json",
             }
             if result.get("minimization_report"):
                 artifacts["minimization_report"] = (

@@ -12,6 +12,7 @@ automatically until that module exists).
 """
 
 import json
+import ast
 import sys
 from pathlib import Path
 
@@ -77,3 +78,32 @@ def test_every_registered_code_has_an_action():
 
     empty = sorted(code for code, action in GUARDRAIL_CODES.items() if not str(action).strip())
     assert not empty, "These registered codes have an empty action: " + ", ".join(empty)
+
+
+def test_every_blocking_guardrail_declares_a_concrete_fix():
+    """A registry hint is a fallback, not a substitute for local alternatives.
+
+    In the 2026-08-25 campaign the ff19SB/TIP3P and associated-ligand guards
+    refused correctly but the useful alternative never reached the agent.  A
+    blocking ``create_guardrail_result`` must therefore carry its own
+    ``suggested_fix``; failure manifests now preserve that field verbatim.
+    """
+    missing = []
+    for path in (_REPO_ROOT / "mdclaw").rglob("*.py"):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = (node.func.id if isinstance(node.func, ast.Name) else
+                    node.func.attr if isinstance(node.func, ast.Attribute) else "")
+            if name != "create_guardrail_result":
+                continue
+            keywords = {item.arg: item.value for item in node.keywords if item.arg}
+            severity = keywords.get("severity")
+            if not (isinstance(severity, ast.Constant) and severity.value == "error"):
+                continue
+            if "suggested_fix" not in keywords:
+                code = keywords.get("code")
+                label = code.value if isinstance(code, ast.Constant) else "unknown"
+                missing.append(f"{path.relative_to(_REPO_ROOT)}:{node.lineno} {label}")
+    assert not missing, "Blocking guardrails without suggested_fix:\n" + "\n".join(missing)

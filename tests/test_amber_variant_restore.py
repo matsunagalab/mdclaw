@@ -232,8 +232,8 @@ def test_cyx_is_restored_but_is_not_a_protonation_state():
         assert variant in AMBER_RESTORED_VARIANT_BASES
 
 
-def test_the_protonation_extractor_still_leaves_cyx_alone(tmp_path):
-    """Adding CYX to the restore table must not promote it to an override."""
+def test_the_protonation_extractor_leaves_structural_cysteines_alone(tmp_path):
+    """CYX and metal-site CYM belong to structural chemistry, not titration."""
     from mdclaw.structure.protonation import (
         _extract_input_protonation_state_overrides,
     )
@@ -243,7 +243,7 @@ def test_the_protonation_extractor_still_leaves_cyx_alone(tmp_path):
         "ATOM      2  SG  CYM C 301       4.000   0.000   0.000  1.00  0.00           S\n"
         "TER\nEND\n")
     states = _extract_input_protonation_state_overrides(pdb)
-    assert {s["state"] for s in states} == {"CYM"}
+    assert states == []
 
 
 # --- 52 and 52A are two residues ---------------------------------------------

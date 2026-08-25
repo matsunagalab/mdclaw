@@ -736,7 +736,14 @@ def test_detection_describes_the_structure_before_repair(
             },
         )
 
-    result = clean_protein(pdb_file=chain_a, missing_residue_method=method)
+    # Input-state extraction is now opt-in. Enable it here because this test
+    # specifically verifies that preservation scans the raw source rather than
+    # MODELLER's repaired output.
+    result = clean_protein(
+        pdb_file=chain_a,
+        missing_residue_method=method,
+        preserve_input_protonation=True,
+    )
 
     detection = result["missing_residue_detection"]
     assert detection["status"] == "detected"

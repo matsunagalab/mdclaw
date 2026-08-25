@@ -766,6 +766,32 @@ def complete_node(
     file raises ``ValueError`` so artifact registration mistakes surface
     immediately rather than producing a completed node with broken outputs.
     """
+    # A topology without its parameter/provenance envelope is runnable by the
+    # XML consumers but not auditable or scoreable. Two 2026-08-25 benchmark
+    # attempts reached ``completed`` in exactly that state. Enforce the
+    # invariant here as well as in both current builders so a future topology
+    # path cannot reintroduce it.
+    node = read_node(job_dir, node_id)
+    if node.get("node_type") == "topo":
+        metadata_path = (Path(job_dir) / "nodes" / node_id / "artifacts" /
+                         "amber_metadata.json")
+        if not metadata_path.is_file():
+            raise ValueError(
+                "A topo node cannot complete without artifacts/amber_metadata.json")
+        try:
+            topology_metadata = json.loads(metadata_path.read_text())
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "A topo node cannot complete with an unreadable "
+                f"artifacts/amber_metadata.json: {exc}") from exc
+        required_metadata = {"parameters", "forcefield_provenance"}
+        if (not isinstance(topology_metadata, dict)
+                or not required_metadata.issubset(topology_metadata)):
+            raise ValueError(
+                "A topo node cannot complete unless amber_metadata.json "
+                "contains parameters and forcefield_provenance")
+        artifacts = {**artifacts, "amber_metadata": "artifacts/amber_metadata.json"}
+
     artifacts = normalize_artifact_paths(job_dir, node_id, artifacts)
     payload: dict = {"artifacts": artifacts}
     merged_metadata = dict(metadata or {})

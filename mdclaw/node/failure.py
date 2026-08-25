@@ -125,6 +125,24 @@ def record_node_failure(
         code = str(code)
     errors = _failure_errors(result)
     warnings = _as_string_list(result.get("warnings"))
+    # The remedy has to travel with the failure. Guardrails already compute a
+    # `suggested_fix` - the water/forcefield one names ff14SB as the way to
+    # keep TIP3P - but only `message` was ever written here, so the agent read
+    # "Amber recommends OPC" and nothing about the exit it could actually take.
+    # Measured 2026-08-25: ten attempts rebuilt the same solv node until their
+    # wall clock ran out.
+    remedies = _as_string_list(result.get("hints"))
+    for key in ("suggested_fix", "next_action", "recommendation"):
+        value = result.get(key)
+        if value and str(value) not in remedies:
+            remedies.append(str(value))
+    for entry in result.get("guardrail_results") or []:
+        if not isinstance(entry, dict):
+            continue
+        value = entry.get("suggested_fix")
+        if value and str(value) not in remedies:
+            remedies.append(str(value))
+
     manifest = {
         "schema_version": 1,
         "recorded_at": _now_iso(),
@@ -138,6 +156,8 @@ def record_node_failure(
         "message": result.get("message") or result.get("error"),
         "errors": errors,
         "warnings": warnings,
+        "next_action": remedies[0] if remedies else None,
+        "hints": remedies,
         "files": files,
     }
     manifest_path = failure_dir / "failure_manifest.json"

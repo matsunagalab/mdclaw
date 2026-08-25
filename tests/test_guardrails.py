@@ -98,7 +98,10 @@ def test_build_amber_system_blocks_ff19sb_tip3p():
     assert result["code"] == "forcefield_water_blocked"
     assert result["context"]["guardrail_results"][0]["code"] == "forcefield_water_blocked"
     assert "ff19SB + tip3p" in result["message"]
-    assert any("forcefield='ff14SB' with water_model='tip3p'" in hint for hint in result["hints"])
+    assert any(
+        "keep water_model='tip3p'" in hint and "forcefield='ff14SB'" in hint
+        for hint in result["hints"]
+    )
 
 
 def test_build_amber_system_rejects_unknown_water_model_even_without_box_dimensions():

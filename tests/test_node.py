@@ -924,6 +924,39 @@ class TestCompleteNodeStrictArtifacts:
         node = read_node(str(job_dir), "solv_001")
         assert node["status"] == "pending"
 
+    def test_topology_cannot_complete_without_amber_metadata(self, job_dir):
+        create_node(str(job_dir), "topo")
+        artifact_dir = job_dir / "nodes" / "topo_001" / "artifacts"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / "system.xml").write_text("<System/>\n")
+
+        with pytest.raises(ValueError, match="cannot complete without"):
+            _real_complete_node(
+                str(job_dir),
+                "topo_001",
+                artifacts={"system_xml": "artifacts/system.xml"},
+            )
+
+        assert read_node(str(job_dir), "topo_001")["status"] == "pending"
+
+    @pytest.mark.parametrize("contents", ["not json", "{}"])
+    def test_topology_cannot_complete_with_unusable_amber_metadata(
+        self, job_dir, contents,
+    ):
+        create_node(str(job_dir), "topo")
+        artifact_dir = job_dir / "nodes" / "topo_001" / "artifacts"
+        (artifact_dir / "system.xml").write_text("<System/>\n")
+        (artifact_dir / "amber_metadata.json").write_text(contents)
+
+        with pytest.raises(ValueError, match="cannot complete"):
+            _real_complete_node(
+                str(job_dir),
+                "topo_001",
+                artifacts={"system_xml": "artifacts/system.xml"},
+            )
+
+        assert read_node(str(job_dir), "topo_001")["status"] == "pending"
+
     def test_sync_progress_rereads_node_json_instead_of_stale_caller_data(self, job_dir):
         create_node(str(job_dir), "solv")
         node_id = "solv_001"

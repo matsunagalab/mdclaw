@@ -91,8 +91,32 @@ def _extract_histidine_states(pdb_file: Path) -> dict:
 # for either.
 
 
+_PRESERVABLE_INPUT_PROTONATION_BASES = {
+    # These are genuine titration/tautomer choices encoded by the input.  CYX
+    # is owned by the disulfide contract and CYM by metal-site detection (or an
+    # explicit caller override), so neither is silently promoted here.  That
+    # separation matters when ``standard`` is requested: a deposited ASH may
+    # be reset to ASP without breaking a real S-S bond or reprotonating a
+    # detected zinc-binding thiolate.
+    "ASH": "ASP",
+    "GLH": "GLU",
+    "LYN": "LYS",
+    "HID": "HIS",
+    "HIE": "HIS",
+    "HIP": "HIS",
+    "HSD": "HIS",
+    "HSE": "HIS",
+    "HSP": "HIS",
+}
+
+
 def _extract_input_protonation_state_overrides(structure_file: Path) -> list[dict]:
-    """Read preservable non-default states from the original PDB or mmCIF."""
+    """Read input titration states eligible for optional preservation.
+
+    Structural CYX/CYM are deliberately absent; preparation reconstructs them
+    from the disulfide and metal-site contracts instead of trusting a residue
+    name as a protonation decision.
+    """
     import gemmi
 
     structure = gemmi.read_structure(str(structure_file))
@@ -105,7 +129,7 @@ def _extract_input_protonation_state_overrides(structure_file: Path) -> list[dic
         chain_id = str(chain.name).strip() or "A"
         for residue in chain:
             state = str(residue.name).strip().upper()
-            default = AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES.get(state)
+            default = _PRESERVABLE_INPUT_PROTONATION_BASES.get(state)
             if default is None:
                 continue
             resnum = str(residue.seqid.num)
@@ -555,9 +579,29 @@ def _apply_protonation_states_with_modeller(
                     (str(record["chain"]).strip()[:1], record["resnum"],
                      record.get("icode", "")))
             if residue is None:
+                # Saying only what was missing leaves the caller guessing which
+                # of the several chain-ID spaces in play this argument uses -
+                # the deposit's label ids, its auth ids, or the ids preparation
+                # assigns. Name the chains that do exist, and the residues on
+                # the chain if it was found but the number was not.
+                wanted_chain = str(record["chain"]).strip()
+                chains_present = sorted({site[0] for site in residue_by_site})
+                if wanted_chain in chains_present:
+                    numbers = sorted(
+                        (site[1] for site in residue_by_site if site[0] == wanted_chain),
+                        key=lambda n: (len(str(n)), str(n)))
+                    detail = (f"chain {wanted_chain} has residues "
+                              f"{numbers[0]}..{numbers[-1]}" if numbers else
+                              f"chain {wanted_chain} is empty")
+                else:
+                    detail = (f"this structure is addressed by chain(s) "
+                              f"{', '.join(chains_present) or '(none)'}")
                 result["errors"].append(
                     f"Protonation target not found: {record['chain']}:{record['resnum']}"
                     f"{(':' + record.get('icode', '')) if record.get('icode') else ''}"
+                    f"; {detail}. To put every titratable side chain in its "
+                    f"standard state, prefer protonation_method='standard' over "
+                    f"naming residues."
                 )
                 continue
             state = record["state"]

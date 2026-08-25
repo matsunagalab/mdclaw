@@ -86,13 +86,22 @@ def _evaluate_forcefield_water_guardrails(forcefield: str, water_model: str) -> 
         preferred_pair = f"{forcefield} + {recommended[0]}" if recommended else forcefield
         results.append(create_guardrail_result(
             "water_model",
-            f"{pair} is blocked by MDClaw. Amber strongly recommends OPC with ff19SB and warns against TIP3P for this force field.",
+            f"{pair} is blocked by MDClaw: Amber recommends against this pairing.",
             severity="error",
             actual=pair,
             expected=preferred_pair,
+            # Both exits, and neither of them hedged. Which half of the pair
+            # the caller may change is not ours to assume: a request can fix
+            # the water model and leave the force field open, and then advice
+            # to move the water is advice it cannot take. "for legacy systems"
+            # used to qualify the second exit, which reads as a reason not to
+            # take it.
             suggested_fix=(
-                "Use water_model='opc' with forcefield='ff19SB', "
-                "or explicitly choose forcefield='ff14SB' with water_model='tip3p' for legacy systems."
+                f"Either change the water: water_model='{recommended[0]}'"
+                if recommended else "Either change the water model"
+            ) + (
+                f"; or keep water_model='{water_model}' and change the protein "
+                f"force field to one that lists it, e.g. forcefield='ff14SB'."
             ),
             code="forcefield_water_blocked",
         ))

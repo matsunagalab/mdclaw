@@ -579,6 +579,9 @@ def _validate_prepare_node_context(
     process_ligands: bool,
     histidine_states: Optional[Dict[str, str]],
     protonation_states: Optional[Dict[str, Any]],
+    protonation_method: str,
+    preserve_input_protonation: bool,
+    strip_input_caps: bool,
     missing_residue_method: str,
     include_types: Optional[List[str]],
     include_ligand_ids: Optional[List[str]],
@@ -610,6 +613,9 @@ def _validate_prepare_node_context(
             "process_ligands": process_ligands,
             "histidine_states": histidine_states,
             "protonation_states": protonation_states,
+            "protonation_method": protonation_method,
+            "preserve_input_protonation": bool(preserve_input_protonation),
+            "strip_input_caps": bool(strip_input_caps),
             "missing_residue_method": str(
                 missing_residue_method or "auto"
             ).strip().lower(),
@@ -866,6 +872,9 @@ def prepare_complex(
     disulfide_pairs: Optional[List[Dict[str, Any]]] = None,
     histidine_states: Optional[Dict[str, str]] = None,
     protonation_states: Optional[Dict[str, Any]] = None,
+    protonation_method: str = "propka",
+    preserve_input_protonation: bool = False,
+    strip_input_caps: bool = False,
     keep_crystal_waters: bool = False,
     solvent_type: Optional[str] = "explicit",
     source_structure_id: Optional[str] = None,
@@ -938,7 +947,7 @@ def prepare_complex(
             residue or seventy-seven, and the count is reported either way,
             under ``missing_residue_detection.terminal_excluded`` when they
             are left alone and ``.terminal_built`` when they are made.
-        ph: pH for protonation state (default: 7.4)
+        ph: pH used by the propka baseline (default: 7.4; ignored by standard)
         cap_termini: Backward-compatible shortcut to add ACE at the
                      N terminus and NME at the C terminus (default: False).
         n_terminal_cap: Optional one-sided N-terminal cap. Currently supports
@@ -1012,6 +1021,26 @@ def prepare_complex(
                          / ``"HIP"``. Only the keys present are overridden; the
                          rest keep their propka-derived state. Wins over
                          ``structure_analysis`` when both are provided.
+        protonation_method: How titratable side chains get their charge state.
+                         ``"propka"`` (default) predicts each one from its local
+                         environment at ``ph``. ``"standard"`` leaves that
+                         prediction out and keeps the force field's standard
+                         state: charged Asp/Glu/Lys/Arg, neutral His/Cys. Reach
+                         for it when the request asks for standard states
+                         rather than predicted ones - naming every residue
+                         propka moved through ``protonation_states`` is the
+                         slow way to the same place. Explicit
+                         ``protonation_states`` still win over either mode.
+        preserve_input_protonation: Preserve explicit input ASH/GLH/LYN and
+                         histidine variants as overrides on the selected
+                         baseline. False makes ``standard`` genuinely
+                         all-standard. Structural CYX and metal-site CYM are
+                         derived independently and survive either setting.
+        strip_input_caps: Remove ACE/NME terminal caps the deposit arrived
+                         with. They are kept by default and counted as protein
+                         residues, which is right when the deposit means them;
+                         set this when the target system is uncapped. The cap
+                         set found on the input is reported either way.
         protonation_states: Explicit residue protonation state overrides. Accepts
                          either ``{"A:57": "HIP", "A:25": "ASH"}`` or a list of
                          ``{"chain": "A", "resnum": 57, "state": "HIP"}``
@@ -1158,6 +1187,9 @@ def prepare_complex(
             process_ligands=process_ligands,
             histidine_states=histidine_states,
             protonation_states=protonation_states,
+            protonation_method=protonation_method,
+            preserve_input_protonation=preserve_input_protonation,
+            strip_input_caps=strip_input_caps,
             missing_residue_method=missing_residue_method,
             include_types=include_types,
             include_ligand_ids=include_ligand_ids,
@@ -1810,6 +1842,9 @@ def prepare_complex(
                         build_terminal_missing_residues=build_terminal_missing_residues,
                         build_window=_window_for_chain(split_result, chain_id),
                         disulfide_pairs=sa_disulfide_pairs,
+                        protonation_method=protonation_method,
+                        preserve_input_protonation=preserve_input_protonation,
+                        strip_input_caps=strip_input_caps,
                         histidine_states=sa_histidine_states,
                         protonation_states=_states_for_chain(
                             sa_protonation_states, protein_result["author_chain"],
@@ -1835,6 +1870,17 @@ def prepare_complex(
                         protein_result["n_terminal_cap"] = clean_result.get("n_terminal_cap")
                         protein_result["c_terminal_cap"] = clean_result.get("c_terminal_cap")
                         protein_result["terminal_caps"] = clean_result.get("terminal_caps", {})
+                        # Caps the structure arrived with, as distinct from
+                        # caps we added. Without these two the caller cannot
+                        # tell a capped deposit from an uncapped one until the
+                        # residue count disagrees with whatever it is being
+                        # compared against.
+                        protein_result["input_terminal_caps"] = clean_result.get(
+                            "input_terminal_caps", []
+                        )
+                        protein_result["input_terminal_caps_removed"] = clean_result.get(
+                            "input_terminal_caps_removed", []
+                        )
                         protein_result["terminal_cap_forcefield"] = clean_result.get(
                             "terminal_cap_forcefield"
                         )
@@ -2464,6 +2510,17 @@ def prepare_complex(
             preparation_summary["source_structure_id"] = result["source_structure_id"]
             preparation_summary["source_selection"] = result.get("source_selection") or {}
         preparation_summary["disulfide_pairs"] = result.get("disulfide_bonds", [])
+        # Surface the caps the input arrived with on the node itself, not only
+        # inside the per-chain records, so `inspect_job` shows them.
+        input_caps, caps_removed = [], []
+        for entry in (result.get("proteins") or []):
+            input_caps.extend(entry.get("input_terminal_caps") or [])
+            caps_removed.extend(entry.get("input_terminal_caps_removed") or [])
+        preparation_summary["input_terminal_caps"] = input_caps
+        preparation_summary["input_terminal_caps_removed"] = caps_removed
+        preparation_summary["protonation_method"] = protonation_method
+        preparation_summary["preserve_input_protonation"] = bool(
+            preserve_input_protonation)
         preparation_summary["disulfide_detection_recorded"] = bool(
             result.get("disulfide_source")
         )
