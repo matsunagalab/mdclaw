@@ -492,9 +492,26 @@ def restore_solute_identity_by_prefix(
     Restores the residue name and, unless ``restore_numbering`` is False, the
     chain id, residue number and insertion code -- the deposit numbering both
     writers renumber away, and that the disulfide planner looks its cysteines up
-    by. Columns 18-27 of the leading residues' records and nothing else:
-    coordinates, atom names, elements, CRYST1 and every solvent record are left
+    by -- plus the element of any solute atom whose element the writer got
+    wrong. Coordinates, atom names, CRYST1 and every solvent record are left
     exactly as the writer wrote them.
+
+    The element is restored because packmol-memgen destroys it for every
+    two-letter element written under a three-character atom name. Its
+    ``MembraneParams.pdb_reindex`` right-aligns such a name and then writes
+    ``atomname[0]`` into the element column, so a ligand's ``CL2`` comes back as
+    carbon, ``BR1`` as boron and ``ZN`` as an unknown ``Z``. Measured on
+    041_ligand_4erf, that turned a C25 Cl2 ligand into C27, OpenFF Pablo
+    rejected the residue for "wrong number of atoms", the topology fell back to
+    a graph with no CCD chemistry, and the build died several steps later
+    claiming no force-field template matched. An audit of 102 solvated files
+    found the same corruption on bare ZN and CA; those are repaired downstream
+    by the bare-ion sanitiser, but a metal or halogen inside a ligand is not.
+
+    Restoring it is safe under the same guarantee the rest of this overlay
+    rests on: the atoms are already matched one to one and checked by name. The
+    element is taken per atom and only where the two names agree, so a target
+    atom the source does not have keeps whatever the writer gave it.
 
     The safety an ordinal match otherwise lacks is per residue: source residue
     i's heavy-atom name tuple has to equal target residue i's or the whole
@@ -548,13 +565,29 @@ def restore_solute_identity_by_prefix(
                 "are out of step and the overlay would rename by drift.",
                 source_pdb, ordinal, src_names, tgt_names)
             return None
+    repaired_elements: list[str] = []
     for src_block, tgt_block in zip(src_blocks, tgt_blocks):
         identity = src_lines[src_block[0]].ljust(27)[17:27]
-        for index in tgt_block:
+        for src_index, index in zip(src_block, tgt_block):
             padded = out_lines[index].ljust(80)
+            src_padded = src_lines[src_index].ljust(80)
             fields = identity if restore_numbering else identity[:4] + padded[21:27]
-            if fields != padded[17:27]:
-                out_lines[index] = (padded[:17] + fields + padded[27:]).rstrip()
+            element = padded[76:78]
+            if (src_padded[12:16].strip() == padded[12:16].strip()
+                    and src_padded[76:78].strip()
+                    and src_padded[76:78] != element):
+                repaired_elements.append(
+                    f"{padded[12:16].strip()} {element.strip() or '(blank)'}"
+                    f"->{src_padded[76:78].strip()}")
+                element = src_padded[76:78]
+            if fields != padded[17:27] or element != padded[76:78]:
+                out_lines[index] = (
+                    padded[:17] + fields + padded[27:76] + element
+                    + padded[78:]).rstrip()
+    if repaired_elements:
+        logger.info(
+            "Restored %d solute element field(s) the solvation writer lost: %s",
+            len(repaired_elements), ", ".join(sorted(set(repaired_elements))[:6]))
     trailing = "\n" if pdb_text.endswith("\n") else ""
     return "\n".join(out_lines) + trailing
 

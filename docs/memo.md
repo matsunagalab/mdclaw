@@ -7,6 +7,59 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-25 — Solvation was changing what element an atom is
+
+Campaign task `041_ligand_4erf` lost its first `topo` node in all three
+replicates to `openmmforcefields_build_failed`, "No template found for residue
+92 (0R3)". Every retry succeeded. That looked like nondeterminism and it was
+not: all three agents had edited their completed parent's `solvated.pdb` in
+place before retrying. Artifact mutability masquerading as nondeterminism --
+the node id stayed the same, its bytes did not.
+
+What they edited was two element fields. packmol-memgen's
+`MembraneParams.pdb_reindex` right-aligns any three-character atom name and
+writes `atomname[0]` into the element column:
+
+    line = line[0:6] + "...{:>2}\n".format(..., segid, atomname[0], align=ali)
+
+So `CL2` comes back as carbon. Deterministically, and for every two-letter
+element written under a three-character name: `CL*` to C, `BR*` to B, `ZN` to
+Z, `MG` to M, `FE` to F, `NA` to N. MDClaw's solute restore deliberately left
+atom names and elements as the writer wrote them, so the corruption survived
+solvation and `build_amber_system` copied it into `system.prepared.pdb`.
+
+Diagnosis by experiment, not inference: the identical DAG was cloned twice, the
+two element fields changed in one copy and nothing else -- 2 lines of 71134 --
+and the real `build_amber_system` run on both took the node from `failed`
+(`openmmforcefields_build_failed`) to `completed`, with `system.xml`,
+`topology.pdb`, `state.xml` and a minimisation report. Two earlier diagnoses
+were wrong and are recorded because both were plausible: a transient Pablo CCD
+auto-download failure (contradicted by the failure record, which contains the
+CCD definition and rejects it for "wrong number of atoms"), and a later reader
+inferring the element from PDB columns 13-14 (packmol-memgen writes the wrong
+element itself; nothing downstream infers it).
+
+`restore_solute_identity_by_prefix` now restores the element too, per atom and
+only where the source and target atom names agree. That rides on the check the
+overlay already made -- source residue i's heavy-atom tuple must equal target
+residue i's -- so it adds no new risk, and the appended solvent, which has no
+source atom, is untouched.
+
+Scope: an audit of 102 solvated files found the two 0R3 chlorines plus ZN
+written as Z three times and CA as C three times. Bare monoatomic ions are
+repaired downstream by the ion sanitiser, which is why nothing had noticed; a
+metal or halogen *inside* a ligand or cofactor is not, and topology validation
+checks atom counts, energy, disulfides and protonation but not element
+preservation. So this could have produced a scientifically wrong system that
+built cleanly, rather than one that failed loudly as 041 did.
+
+Not fixed here: agents mutating a completed node's artifacts. This is the
+second instance -- the first rewrote `mdclaw/solvation/water.py` mid-campaign --
+and in both the agent was correct about the underlying bug. Terminal nodes are
+supposed to be immutable evidence.
+
+---
+
 ## 2026-08-25 — A declared condition was a contract nobody could read
 
 `create_node --conditions` declares a JSON dict, and
