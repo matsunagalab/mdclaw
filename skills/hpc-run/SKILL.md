@@ -45,6 +45,14 @@ its inputs from the DAG.
 
 ## Critical Rules
 
+- **Submit `min -> eq -> prod` as one `afterok` chain, then stop.** Pass the
+  upstream job id to `submit_job --dependency afterok:<slurm_id>`; Slurm holds
+  each stage until its parent succeeds. Waiting for one stage before submitting
+  the next pays the queue twice more for nothing: measured on Rikyu, queue time
+  ran to a 2088 s median while each stage ran for minutes, and agents that
+  submitted serially spent their whole wall-clock budget in the queue. Report
+  the submitted job ids and the DAG handoff rather than polling to completion,
+  unless the caller asked you to see the run finish.
 - Run SLURM control-plane tools (`submit_job`, `submit_array_job`, `check_job`,
   monitoring, cancellation, and cluster configuration) through the host-side
   `mdclaw` launcher (`bin/mdclaw` when working from a repository checkout).

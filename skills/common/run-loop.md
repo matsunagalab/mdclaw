@@ -102,6 +102,10 @@ DAG handoff instead of claiming a scientific answer.
    auto-resolve ancestor artifacts (topology XML triple, restart state,
    trajectories); do not wire those paths by hand.
 
+   On a batch cluster, `min`, `eq` and `prod` are *submitted*, not run here:
+   follow `skills/hpc-run/SKILL.md` and use `submit_job`, which owns the sbatch
+   script and the `--dependency` flag. Do not hand-write sbatch files.
+
 5. **Report what ran, before moving on.**
 
    `autonomous` skips confirmations, not reporting. After each stage tool
