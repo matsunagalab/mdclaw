@@ -1,7 +1,8 @@
-# Prep Chemistry Edge Cases
+# Prep Chemistry
 
-Conditional chemistry handling during `prepare_complex`. Read only the section
-that applies. None of this is part of the normal happy path.
+Chemistry decisions taken during `prepare_complex`. Read the sections that
+apply. Every protein preparation needs a protonation baseline; the rest are
+conditional.
 
 ## Site-specific protonation
 

@@ -130,13 +130,14 @@ use the HPacker-based `create_mutated_structure` branch in
    params, repair them with `update_workflow_state --params ...`.
 3. Create, explain, and run the `source` node. Read `acquisition.md` only for a
    remote/generated source, biological assembly, or multi-candidate bundle.
-4. Run `inspect_molecules`, confirm Step 0b, then create, explain, and run the
-   `prep` node with `prepare_complex --solvent-type
-   explicit|implicit|vacuum`. Read `inspection-and-chains.md` or
+4. Run `inspect_molecules` and confirm Step 0b. Before creating `prep`, read
+   `prep-chemistry.md` for the protonation baseline, and for caps, disulfides
+   or a mutation/PTM branch where those apply; `branches.md` covers branching.
+   Then create, explain, and run the `prep` node with `prepare_complex
+   --solvent-type explicit|implicit|vacuum`. Read `inspection-and-chains.md` or
    `prepare-complex.md` when molecule selection is not trivial.
-5. When requested, create an explicit mutation/PTM prep branch using
-   `branches.md` or `prep-chemistry.md`. For ions, act on
-   `inspect_molecules.preparation_guidance.ions` rather than page-hunting.
+5. For ions, act on `inspect_molecules.preparation_guidance.ions` rather than
+   page-hunting.
 6. For explicit solvent, create, explain, and run a `solv` node using
    `explicit-water.md`; for membrane use `membrane.md`. Skip `solv` for
    implicit/vacuum and use `implicit-water.md` or the vacuum section of
