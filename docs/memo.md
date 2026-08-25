@@ -7,6 +7,61 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-25 — `--salt` gated neutralization it does not control
+
+A benchmark agent running `049_nucleic_1iv6` could not get a DNA duplex to come
+out neutral, traced it to `solvate_structure`, and patched one line. The
+diagnosis was right and is now in, with the surrounding semantics corrected.
+
+`auto_charge_delta_applied` was `bool(salt and auto_charge_delta)`. packmol-
+memgen's own source settles what `--salt` means: `main.py:406` warns that
+without the flag "only neutralizing ions will be added", `--nocounter` is the
+documented way to suppress counterions, and the neutralizing count at
+`main.py:1462` divides by `ion_dict[salt_c]` unconditionally. `--salt` asks for
+bulk salt; counterions are added either way, sized from memgen's own -1 per
+nucleotide guess. Gating the curated true-minus-guess correction on `--salt`
+therefore disabled it exactly on the neutralize-only path.
+
+Measured on 049: delta `+2` unapplied gave 26 K+ and a topology at `+2 e`;
+applied gave 24 K+ and `~5e-11 e`, and the scorer's `system_is_neutral` check
+passed. Not a single-system artefact — campaign attempt `051_nucleic_1kx5` r1
+ran `salt=false`, left the correction unapplied, and built a topology at almost
+exactly `+2 e`. Attempts that chose `salt=true` were never affected, which is
+why 049 r1 and r2 passed on the old code.
+
+Three adjacent defects shared the mistake and are fixed with it:
+
+- `neutralization_expected` was `bool(salt)`, so `build_amber_system`'s
+  `neutralization_charge_mismatch` guard switched itself off precisely where it
+  was needed. MDClaw exposes no `--nocounter`, so counterions are always added
+  and the flag is now `True`.
+- `--salt_c`/`--salt_a` were passed only under `if salt:`. memgen defaults
+  `salt_c` to K+ while `solvate_structure` documents Na+, so neutralize-only
+  runs silently ignored the caller's ion choice. The OpenMM fallback already
+  passed `positiveIon`/`negativeIon` unconditionally; the memgen path was the
+  inconsistent one.
+- `embed_in_membrane` repeated the same `if salt:` gate around the charge-delta
+  computation, the applied flags, and the ion-species arguments.
+
+Ion species is not scored by MDDataBench — `composition.py` treats NA and K
+alike as solvent — so the K+ to Na+ change is a correctness fix, not a
+benchmark effect.
+
+Four regression tests cover what the old ones missed: the existing coverage
+only ever exercised `salt=True`. The new DNA and RNA fixtures put O5' but no P
+on the 5' residue, so they model the absent terminal phosphate rather than
+asserting a number against a chemically impossible strand. All three behaviour
+tests fail against the pre-fix code; the protein-only control passes either
+way, as it should.
+
+Provenance note: the original one-line change was authored by a `pi`/kimi-k3
+benchmark agent editing the shared checkout mid-run, not by the campaign
+operator. Only `049_nucleic_1iv6` r3 ran against the modified source — 006 uses
+the membrane path, 021 had `delta=0`, and 049 r1/r2 used `salt=true` — so the
+validation run's conclusions stand.
+
+---
+
 ## 2026-08-25 — Protonation contract, actionable guardrails, and topology metadata made explicit
 
 Protein preparation now has two independent controls. `protonation_method`

@@ -456,7 +456,7 @@ def solvate_structure(
                     metadata={
                         "water_model": water_model,
                         "backend": "openmm_fallback",
-                        "neutralization_expected": bool(salt),
+                        "neutralization_expected": True,
                         "buffer_distance_angstrom": dist,
                         "salt_cation": salt_c,
                         "salt_anion": salt_a,
@@ -595,7 +595,11 @@ def solvate_structure(
         + metal_charge_delta
         + ligand_charge_delta
     )
-    auto_charge_delta_applied = bool(salt and auto_charge_delta)
+    # --salt controls bulk salt, not neutralization: packmol-memgen adds
+    # counterions in both modes (--nocounter is the opt-out) and sizes them from
+    # its own per-residue charge guess. Apply the curated true-minus-guess
+    # correction to either counterion calculation.
+    auto_charge_delta_applied = bool(auto_charge_delta)
     _reasons = [
         r for r in (
             auto_charge_delta_report.get("reason"),
@@ -646,13 +650,13 @@ def solvate_structure(
         if cubic:
             args.append('--cubic')
 
+        # Counterion species applies to neutralization too, so it is passed
+        # whether or not bulk salt is requested; otherwise memgen falls back to
+        # its own K+ default and silently ignores salt_c.
+        args.extend(['--salt_c', salt_c, '--salt_a', salt_a])
+
         if salt:
-            args.extend([
-                '--salt',
-                '--salt_c', salt_c,
-                '--salt_a', salt_a,
-                '--saltcon', str(saltcon)
-            ])
+            args.extend(['--salt', '--saltcon', str(saltcon)])
             if salt_override:
                 _append_salt_override_arg(args)
         
@@ -782,7 +786,7 @@ def solvate_structure(
                 },
                 metadata={
                     "water_model": water_model,
-                    "neutralization_expected": bool(salt),
+                    "neutralization_expected": True,
                     "box_shape": "cubic" if _box.get("is_cubic") else "rectangular",
                     "buffer_distance_angstrom": dist,
                     "salt_concentration_M": saltcon,

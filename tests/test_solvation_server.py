@@ -982,6 +982,165 @@ def test_solvate_structure_passes_auto_nucleic_charge_delta(
     assert result["parameters"]["auto_charge_pdb_delta"] == 2
 
 
+def _install_fake_memgen(monkeypatch):
+    """Capture the packmol-memgen argv and emit a minimal solvated PDB."""
+    calls: list[list[str]] = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(list(args))
+        input_path = Path(args[args.index("--pdb") + 1])
+        output_path = Path(args[args.index("-o") + 1])
+        atom_lines = [
+            line
+            for line in input_path.read_text().splitlines()
+            if line.startswith(("ATOM", "HETATM"))
+        ]
+        output_path.write_text(
+            "CRYST1   40.000   40.000   40.000  90.00  90.00  90.00 P 1           1\n"
+            + "\n".join(atom_lines)
+            + "\nHETATM 9999  O   WAT W   1       9.000   0.000   0.000  1.00  0.00           O\n"
+            + "END\n"
+        )
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation._base.packmol_memgen_wrapper.run",
+        fake_run,
+    )
+    return calls
+
+
+def _nucleic_strand_pdb(path, resnames, chains):
+    """A strand per chain whose 5' residue carries O5' but no phosphate.
+
+    packmol-memgen estimates every standard nucleotide at -1, including the
+    5' terminus that has no phosphate to be negative with, so a linear segment
+    is one unit less negative than the estimate. Writing the terminus without
+    a P is what the deposited structures actually look like.
+    """
+    lines = []
+    serial = 1
+    for chain, start in chains:
+        for offset, resname in enumerate(resnames):
+            atoms = ["O5'"] if offset == 0 else ["P", "O5'"]
+            for atom in atoms:
+                element = "P" if atom == "P" else "O"
+                lines.append(
+                    _pdb_atom(
+                        serial, atom, resname, chain, start + offset, element,
+                        x=serial,
+                    )
+                )
+                serial += 1
+        lines.append("TER\n")
+    path.write_text("".join(lines) + "END\n")
+    return path
+
+
+def test_solvate_structure_applies_dna_charge_delta_without_bulk_salt(
+    tmp_path,
+    monkeypatch,
+):
+    # --salt asks for bulk salt; packmol-memgen adds neutralizing counterions
+    # either way and sizes them from its own charge estimate. Gating the
+    # curated correction on --salt left neutralize-only systems non-neutral.
+    pdb = _nucleic_strand_pdb(
+        tmp_path / "dna.pdb", ["DC", "DG", "DA"], [("A", 1), ("B", 13)]
+    )
+    calls = _install_fake_memgen(monkeypatch)
+
+    result = solv_water.solvate_structure(
+        pdb_file=str(pdb),
+        output_dir=str(tmp_path),
+        output_name="solvated",
+        salt=False,
+        water_model="opc",
+    )
+
+    assert result["success"] is True
+    argv = calls[0]
+    assert "--salt" not in argv
+    assert argv[argv.index("--charge_pdb_delta") + 1] == "2"
+    assert result["auto_charge_pdb_delta"] == 2
+    assert result["auto_charge_pdb_delta_applied"] is True
+
+
+def test_solvate_structure_applies_rna_charge_delta_without_bulk_salt(
+    tmp_path,
+    monkeypatch,
+):
+    pdb = _nucleic_strand_pdb(tmp_path / "rna.pdb", ["C", "G", "A"], [("A", 1)])
+    calls = _install_fake_memgen(monkeypatch)
+
+    result = solv_water.solvate_structure(
+        pdb_file=str(pdb),
+        output_dir=str(tmp_path),
+        output_name="solvated",
+        salt=False,
+        water_model="opc",
+    )
+
+    assert result["success"] is True
+    argv = calls[0]
+    assert "--salt" not in argv
+    assert argv[argv.index("--charge_pdb_delta") + 1] == "1"
+    assert result["auto_charge_pdb_delta_applied"] is True
+
+
+def test_solvate_structure_protein_only_passes_no_charge_delta(
+    tmp_path,
+    monkeypatch,
+):
+    # The control: an ordinary protein needs no correction, and the neutralize-
+    # only path must not start inventing one.
+    pdb = tmp_path / "protein.pdb"
+    pdb.write_text(_pdb_atom(1, "CA", "ALA", "A", 1, "C") + "END\n")
+    calls = _install_fake_memgen(monkeypatch)
+
+    result = solv_water.solvate_structure(
+        pdb_file=str(pdb),
+        output_dir=str(tmp_path),
+        output_name="solvated",
+        salt=False,
+        water_model="opc",
+    )
+
+    assert result["success"] is True
+    assert "--charge_pdb_delta" not in calls[0]
+    assert result["auto_charge_pdb_delta"] == 0
+    assert result["auto_charge_pdb_delta_applied"] is False
+
+
+def test_solvate_structure_passes_counterion_species_without_bulk_salt(
+    tmp_path,
+    monkeypatch,
+):
+    # packmol-memgen sizes neutralizing counterions with salt_c whether or not
+    # --salt is given, and defaults it to K+. Withholding the flag made
+    # solvate_structure's own Na+ default a fiction.
+    pdb = tmp_path / "protein.pdb"
+    pdb.write_text(_pdb_atom(1, "CA", "ALA", "A", 1, "C") + "END\n")
+    calls = _install_fake_memgen(monkeypatch)
+
+    result = solv_water.solvate_structure(
+        pdb_file=str(pdb),
+        output_dir=str(tmp_path),
+        output_name="solvated",
+        salt=False,
+        water_model="opc",
+    )
+
+    assert result["success"] is True
+    argv = calls[0]
+    assert "--salt" not in argv
+    assert argv[argv.index("--salt_c") + 1] == "Na+"
+    assert argv[argv.index("--salt_a") + 1] == "Cl-"
+
+
 def test_solvate_structure_includes_ligand_charge_delta(
     tmp_path,
     monkeypatch,

@@ -2711,38 +2711,37 @@ def embed_in_membrane(
         "lipids": {},
         "ions": {},
     }
-    if salt:
-        try:
-            packmol_charge_report = _membrane_packmol_charge_delta(oriented_input)
-        except Exception as exc:  # noqa: BLE001
-            result["code"] = "forcefield_template_contract_unavailable"
-            result["errors"].append(
-                "Could not evaluate the retained-solute charge required for "
-                "membrane neutralization: "
-                f"{type(exc).__name__}: {exc}"
-            )
-            if _node_mode:
-                from mdclaw._node import fail_node
-                fail_node(job_dir, node_id, errors=result["errors"])
-            return result
-        if not packmol_charge_report.get("success", False):
-            result["code"] = packmol_charge_report.get(
-                "code", "forcefield_template_contract_mismatch"
-            )
-            result["errors"].extend(packmol_charge_report.get("errors", []))
-            result["membrane_charge_delta_report"] = packmol_charge_report
-            if _node_mode:
-                from mdclaw._node import fail_node
-                fail_node(job_dir, node_id, errors=result["errors"])
-            return result
+    try:
+        packmol_charge_report = _membrane_packmol_charge_delta(oriented_input)
+    except Exception as exc:  # noqa: BLE001
+        result["code"] = "forcefield_template_contract_unavailable"
+        result["errors"].append(
+            "Could not evaluate the retained-solute charge required for "
+            "membrane neutralization: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        if _node_mode:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=result["errors"])
+        return result
+    if not packmol_charge_report.get("success", False):
+        result["code"] = packmol_charge_report.get(
+            "code", "forcefield_template_contract_mismatch"
+        )
+        result["errors"].extend(packmol_charge_report.get("errors", []))
+        result["membrane_charge_delta_report"] = packmol_charge_report
+        if _node_mode:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=result["errors"])
+        return result
     packmol_charge_delta = int(packmol_charge_report["charge_pdb_delta"])
     result["auto_charge_pdb_delta"] = packmol_charge_delta
-    result["auto_charge_pdb_delta_applied"] = bool(salt and packmol_charge_delta)
+    result["auto_charge_pdb_delta_applied"] = bool(packmol_charge_delta)
     result["membrane_charge_delta_report"] = packmol_charge_report
-    result["parameters"]["neutralization_expected"] = bool(salt)
+    result["parameters"]["neutralization_expected"] = True
     result["parameters"]["auto_charge_pdb_delta"] = packmol_charge_delta
     result["parameters"]["auto_charge_pdb_delta_applied"] = bool(
-        salt and packmol_charge_delta
+        packmol_charge_delta
     )
     result["parameters"]["forcefield_charge_templates"] = {
         "nucleic": packmol_charge_report.get("nucleic", {}).get("forcefield_xml"),
@@ -2770,16 +2769,14 @@ def embed_in_membrane(
         # MEMEMBED and undo that choice.
         args.append('--preoriented')
 
-        if salt and packmol_charge_delta:
+        if packmol_charge_delta:
             args.extend(["--charge_pdb_delta", str(packmol_charge_delta)])
 
+        # See water.py: counterion species is not a bulk-salt-only setting.
+        args.extend(['--salt_c', salt_c, '--salt_a', salt_a])
+
         if salt:
-            args.extend([
-                '--salt',
-                '--salt_c', salt_c,
-                '--salt_a', salt_a,
-                '--saltcon', str(saltcon)
-            ])
+            args.extend(['--salt', '--saltcon', str(saltcon)])
             if salt_override:
                 _append_salt_override_arg(args)
 
@@ -3157,7 +3154,7 @@ def embed_in_membrane(
                     "water_model": water_model,
                     "lipid_type": lipids,
                     "is_membrane": True,
-                    "neutralization_expected": bool(salt),
+                    "neutralization_expected": True,
                     "salt_concentration_M": saltcon,
                     "salt_override": salt_override,
                     "auto_charge_pdb_delta": result.get(
