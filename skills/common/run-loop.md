@@ -69,6 +69,16 @@ DAG handoff instead of claiming a scientific answer.
    shows an ambiguous frontier. `create_node` returns the new `node_id`; use that
    exact value next. Never copy a literal example node ID into a real command.
 
+   For `prep`, `solv`, `topo`, `min`, `eq` and `prod`, `--conditions` is
+   optional and each key is a contract: the stage tool must report that key
+   back with a concrete value or the node fails and is spent. Which keys a tool
+   reports is narrower than its parameter list and is not visible in
+   `--list-json`, so declare sparingly and keep other intent in `--label` or
+   the study plan; when a node does fail this way the error lists the keys that
+   invocation did cross-check. `analyze` is the exception — it requires
+   `analysis_data_scope` at creation and has no runtime cross-check, so follow
+   `skills/md-analyze/SKILL.md`.
+
 3. **Validate the node before running it.**
 
    ```bash

@@ -154,6 +154,10 @@ def explain_node(
         "parent_statuses": parent_statuses,
         "dependency_statuses": dependency_statuses,
         "conditions": node.get("conditions", {}),
+        # ready_to_run cannot speak for the declared conditions: only the stage
+        # tool knows which of them it reports, and it has not run. Say so
+        # rather than letting ready_to_run imply every guard passed.
+        "conditions_checked": bool(actual_conditions),
         "artifact_keys": sorted((node.get("artifacts") or {}).keys()),
         "metadata_errors": (node.get("metadata") or {}).get("errors", []),
         "warnings": node.get("warnings", []),

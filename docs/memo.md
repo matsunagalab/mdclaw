@@ -7,6 +7,90 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-25 — A declared condition was a contract nobody could read
+
+`create_node --conditions` declares a JSON dict, and
+`validate_node_execution_context` fails the node when the stage tool does not
+report a declared key back in `actual_conditions`. A failed node is terminal.
+Sixteen of 300 campaign attempts lost a node this way -- 12 prep, 5 prod, 1
+solv. The keys were semantically right and lexically wrong: `chains` for
+`select_chains`, `ligands` for `include_ligand_ids`, plus `residue_ranges` and
+`ligand_net_charge`, which have no counterpart at all. One agent recovered by
+recreating the node with `conditions: {}`, throwing the DAG's record of intent
+away to get past a naming problem.
+
+Nothing could have told it otherwise. `skills/md-prepare/` never mentioned
+`--conditions` (grep count: 0) while md-equilibration and md-production both
+show examples, so the habit was taught without the vocabulary. `explain_node`,
+the skill's designated pre-flight, sets `validate_conditions` only when
+`--actual-conditions` is passed, which no skill mentioned -- and it compares
+two caller-authored dictionaries, so echoing the same bad key through it
+green-lights the node that later dies. Measured, not inferred.
+
+Two attempts at a fix were wrong and are recorded because the second was worse
+than the problem.
+
+The first put the rule in `skills/common/run-loop.md`, telling the agent to
+confirm keys with `mdclaw --list-json <tool>`. `prepare_complex` advertises 37
+parameters of which 12 are not conditions, and `residue_ranges`,
+`disulfide_pairs` and `build_terminal_missing_residues` are all among the 12 --
+three of the nine keys the campaign actually got wrong. The text would have
+formalised the bug, and it also presented `--actual-conditions` as a pre-flight
+guarantee it does not provide.
+
+The second tabulated `ACCEPTED_CONDITION_KEYS` per node type from the
+`actual_conditions` literals by AST and had `create_node` reject anything
+outside it. The AST walk missed `build_amber_system`, which passes
+`actual_conditions` through a helper, so the topo vocabulary silently lost
+`forcefield`, `water_model`, `nucleic_forcefield`, `glycan_forcefield` and
+`is_membrane`. `create_node --node-type topo --conditions
+'{"forcefield": "ff19SB", "water_model": "OPC"}'` -- the most ordinary topology
+declaration there is -- was refused, and misdirected to `forcefield_xml`, the
+OpenMM builder's key. The full suite passed throughout: no test covers topo
+conditions. That is the failure this was meant to prevent, pointed the other
+way, and it is why the registry is gone rather than patched. Any table is wrong
+by construction: several tools serve one node type and accept different keys,
+so a per-type table is too strict for one and too loose for another, and a
+hand-written one drifts silently.
+
+What landed is smaller. At the point of failure the executor is known exactly
+and its vocabulary is simply the keys of the `actual_conditions` it just
+reported, so no table is needed. `condition_hints.py` takes that set as an
+argument and knows nothing about node types.
+
+Similarity alone cannot rank the suggestions: `chains` scores 0.632 against
+`select_chains` while `mutations` scores 0.696 against the unrelated
+`max_iterations`, so every cutoff that keeps the good suggestion keeps the bad
+one first. What separates them is whether the noun survives the rename, so a
+candidate qualifies only by containing the key's stem or being a near-spelling
+of the whole key. `chains` now yields `select_chains` alone, `ligands` yields
+all four honest readings, and `residue_ranges`, `ligand_net_charge` and
+`mutations` yield nothing, which is the correct answer for a key with no
+counterpart.
+
+All three condition errors now carry a remedy, not just `condition_missing`,
+and keys reported as `None` are left out of the "cross-checked" list because
+they are rejected as unverifiable -- advertising them would send the caller
+back into the same failure. `explain_node` reports `conditions_checked` so
+`ready_to_run` no longer implies a guard that did not run. The skill paragraph
+is scoped to prep/solv/topo/min/eq/prod: `analyze` requires
+`analysis_data_scope` at creation and has no runtime cross-check at all, so the
+universal phrasing was false for it and contradicted md-analyze's own
+mandatory example.
+
+Open, and deliberately not attempted here. The remaining defect is that none of
+this is learnable before the first failure: a successful run exposes the
+vocabulary nowhere -- not in `node.json`, not in the tool summary -- so
+"declare only keys you have seen a tool report" is circular advice, and on
+first use it amounts to "declare nothing", which is the behaviour that lost the
+intent record in the first place. The sound fix is exact `condition_keys`
+metadata on each `@node_tool`, exposed through `--list-json`, checked by the
+CLI before it invokes the tool it has already selected (so a rejection costs no
+node), and asserted at run time against `set(actual_conditions)` so the
+metadata cannot drift the way the registry above did.
+
+---
+
 ## 2026-08-25 — `--salt` gated neutralization it does not control
 
 A benchmark agent running `049_nucleic_1iv6` could not get a DNA duplex to come

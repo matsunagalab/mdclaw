@@ -13,6 +13,7 @@ from mdclaw._lock import file_lock
 logger = logging.getLogger(__name__)
 
 from mdclaw.node.constants import DAG_GUIDANCE, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPES, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, TERMINAL_NODE_STATUSES, _ALLOWED_PARENT_TYPES, _AUTO_PARENT_PREFERENCE  # noqa: E402
+from mdclaw.node.condition_hints import describe_condition_key  # noqa: E402
 from mdclaw.node.io import _atomic_write_json, _values_match, normalize_artifact_paths  # noqa: E402
 from mdclaw.node.progress import _load_progress_v3, _next_node_id, _node_progress_summary  # noqa: E402
 from mdclaw.node.validation import _node_is_terminal, _normalize_node_status, _terminal_node_sealed_response, _validate_analyze_conditions  # noqa: E402
@@ -1026,6 +1027,16 @@ def validate_node_execution_context(
     actual_conditions = actual_conditions or {}
     declared_conditions = node.get("conditions", {}) or {}
     condition_items = declared_conditions.items() if validate_conditions else ()
+    # Only keys with a concrete value can actually be cross-checked; a key
+    # reported as None is rejected below, so listing it as available would send
+    # the caller straight back into the same failure.
+    verifiable = sorted(k for k, v in actual_conditions.items() if v is not None)
+    branch_advice = (
+        (f" This invocation cross-checked: {', '.join(verifiable)}."
+         if verifiable else "")
+        + " Branch a new node declaring only keys with a concrete value here,"
+          " and record other intent in --label or the study plan."
+    )
     for key, expected in condition_items:
         if key not in actual_conditions:
             # Strict: a declared condition is a contract the tool must
@@ -1033,9 +1044,11 @@ def validate_node_execution_context(
             # actual_conditions defeats the purpose of declaring them.
             add_error(
                 "condition_missing",
-                f"Tool did not include declared condition '{key}' in "
+                f"Tool did not include declared condition "
+                f"{describe_condition_key(verifiable, key)} in "
                 f"actual_conditions; node declared {key}={expected!r} but "
-                f"the runtime call provided no value to cross-check"
+                f"the runtime call provided no value to cross-check."
+                + branch_advice
             )
             continue
         actual = actual_conditions[key]
@@ -1046,14 +1059,16 @@ def validate_node_execution_context(
             add_error(
                 "condition_unverifiable",
                 f"actual_conditions[{key!r}] is None; node declared "
-                f"{key}={expected!r} but the condition cannot be cross-checked"
+                f"{key}={expected!r} but the condition cannot be cross-checked."
+                + branch_advice
             )
             continue
         if not _values_match(expected, actual):
             add_error(
                 "condition_mismatch",
                 f"Node condition mismatch for '{key}': declared {expected!r}, "
-                f"actual {actual!r}"
+                f"actual {actual!r}. Declare the value the tool will actually "
+                f"use, or pass the declared value to the tool."
             )
 
     return {
