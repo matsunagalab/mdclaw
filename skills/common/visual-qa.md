@@ -1,12 +1,23 @@
 # Visual QA
 
-The canonical structure-preview + visual-review procedure for every stage:
+The canonical structure-preview + visual-review procedure for the stages
 `prep`, `solv`, `min`, `eq`, `prod`, and `analyze`. Reference this page instead
 of duplicating the checklist per skill.
 
-Render a preview after every stage that changes the system.
-This applies in `autonomous` mode: autonomous skips confirmations, not reporting.
-Rendering itself is best-effort — a failure to render is not a stage failure.
+**Visual QA is off by default. Run it only when the user asks for a preview or
+a visual check**, or when a stage reports a geometry problem that a picture
+would settle. Do not render after every stage. A preview costs a multi-megabyte
+PNG per node, and once such an image is read into the conversation it is re-sent
+with every later turn: measured 2026-08-25 on a hundred-task benchmark run,
+previews nobody asked for accounted for half of all input tokens.
+
+When the user has asked for it, render it in `autonomous` mode too: autonomous
+skips confirmations, not reporting. Rendering itself is best-effort — a failure
+to render is not a stage failure.
+
+**Never open a preview on a text-only model.** If the model cannot accept image
+input, reading the PNG spends the context window on data it cannot see. Give the
+user the paths and register the review as `not_available` (see below) instead.
 
 What the picture can tell you is limited. It catches obvious visual accidents;
 it does not validate force fields, protonation states, parameters, chemistry,
@@ -48,8 +59,8 @@ not a failure.
 
 ## Inspect the images
 
-Open both `structure_preview_png` and `structure_preview_png_top` and check
-only:
+Only if the model accepts image input. Open both `structure_preview_png` and
+`structure_preview_png_top` and check only:
 
 - The main structure is visible and not cut off.
 - Expected components (protein/nucleic/ligand/lipid/water/ion) are not

@@ -109,6 +109,7 @@ and `--node-id`.
 ## Structure Preview and Visual QA
 
 The structure-preview and visual-review procedure is shared across all stages.
-Follow `skills/common/visual-qa.md` when the user wants a structural snapshot or
-a completed prod/analyze artifact would benefit from a quick obvious-accident
-check.
+Follow `skills/common/visual-qa.md` when the user asks for a structural
+snapshot or a visual check. Do not render one on your own judgement that an
+artifact "would benefit" from it — previews are large images and go unused
+unless someone asked to look at them.

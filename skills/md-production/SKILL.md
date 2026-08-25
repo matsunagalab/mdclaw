@@ -100,7 +100,8 @@ logging bias energy and CV values for analysis.
 ## Handoff
 
 1. Verify the `prod` node is `completed`.
-2. Perform Visual QA per `skills/common/visual-qa.md` (render preview, inspect,
+2. Only if the user asked for a visual check, perform Visual QA per
+   `skills/common/visual-qa.md` (render preview, inspect,
    `register_visual_review`). That page owns the style table; do not pick a
    style from memory. If severity is `high`, ask the user before using the
    production output downstream.

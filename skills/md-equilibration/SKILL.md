@@ -79,9 +79,10 @@ For replicates or alternate conditions, branch a new `eq` node from the same
 ## Handoff
 
 1. Verify the `min` and `eq` nodes are `completed` in `progress.json`.
-2. Perform Visual QA for both nodes per `skills/common/visual-qa.md` (render,
-   inspect, `register_visual_review`). If severity is `high`, ask the user
-   before production.
+2. Only if the user asked for a visual check, perform Visual QA for both
+   nodes per `skills/common/visual-qa.md` (render, inspect,
+   `register_visual_review`). If severity is `high`, ask the user before
+   production.
 3. Follow the stopping rule in `skills/common/run-loop.md`. If the current
    request continues through production or beyond, invoke
    `skills/md-production/SKILL.md` on this `job_dir`. Otherwise tell the user:

@@ -107,7 +107,9 @@ DAG handoff instead of claiming a scientific answer.
    - the system size (atom count, box, net charge) once it exists;
    - any `warnings` the result carries.
 
-   Then render a preview and send it, per `skills/common/visual-qa.md`.
+   Render a preview only if the user asked for one, per
+   `skills/common/visual-qa.md`. Reporting the numbers above is the
+   report; a picture is not part of it unless it was requested.
 
 6. **On failure, follow the structured result.**
 
