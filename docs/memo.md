@@ -7,6 +7,229 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-26 — The cap fix was itself silently wrong, in the way I said I was avoiding
+
+Reviewed the terminal-cap fix with a second agent before committing it, and the
+review found the fix had the same shape of defect as the bug it closed.
+
+Completing the cap hydrogens means loading the structure into OpenMM, and
+OpenMM's PDB loader normalises Amber residue variants on the way in: CYX->CYS,
+ASH->ASP, HID/HIE/HIP->HIS. Writing that back out handed pdb2pqr a structure
+whose cysteines were no longer the CYX this prep had decided on. Measured on
+9UT9 chain A: the file given to pdb2pqr had **CYX 0 / CYS 14** where the input
+had **CYX 14 / CYS 0**.
+
+The campaign's prep still produced all 16 disulfides -- but only because pdb2pqr
+re-derives them from SG-SG geometry on its own. Accidental, not by design. An
+explicit `--disulfide-pairs` choice, or a bond a deposit declares that geometry
+alone would miss, would have been discarded in silence. Exactly the failure mode
+I had cited when rejecting the strip-and-reattach alternative.
+
+The repo already had the guard: `restore_resnames_by_residue_key`
+(`mdclaw/structure/pdb_utils.py`, restores by residue key rather than atom
+index), which the *post*-pdb2pqr cap helper already calls. Only the new
+pre-pdb2pqr helper did not. Fix was one call plus a hard failure when the
+restore cannot be applied.
+
+Two other things settled in the same review:
+
+**Fail-soft was worse than useless.** Passing the original file through on a
+completion failure only reproduces the pdb2pqr abort under
+`protonation_method_failed`, hiding the cause. Now returns
+`terminal_cap_hydrogen_completion_unavailable` (force field XML unresolved) or
+`terminal_cap_hydrogen_completion_failed`, and the call site returns before
+running pdb2pqr at all. The narrow behaviour change: a cap arriving **complete
+and already AMBER-named** would have passed pdb2pqr unaided, so for that input
+plus an unrelated helper failure this is stricter than before. It fails loudly
+with a specific code, which is the right trade.
+
+**The post-pdb2pqr helper is not redundant and must not be replaced.** It looked
+like dead weight once the pre-helper existed -- it adds zero atoms on that path.
+It is in fact the reverse name normalisation: pdb2pqr emits AMBER cap names
+(`CH3`, `HH31`...), and the post-helper's Modeller round-trip is what turns them
+back into the OpenMM-canonical names (`C`, `H1`...) that the published
+`merged.pdb` carries. Verified by tracing ACE atom names through every stage.
+Replacing it with a cheap validator would have leaked `HH31/HH32/HH33`
+downstream.
+
+Cap routes now covered by tests, all measured rather than assumed: cap arriving
+complete (OpenMM names and AMBER names, neither duplicated), cap arriving
+half-finished, cap on one terminus only, and `strip_input_terminal_caps` first
+(helper skips, pdb2pqr gets the original). One exploratory failure -- a one-sided
+ACE cap whose C-terminus lacked OXT -- is a malformed fixture, not a regression:
+PDBFixer emits OXT on a free C-terminus whenever `add_missing_atoms=True`, and
+the same structure with OXT passes.
+
+Worth carrying forward: the first three bugs this session were found by
+comparing two systems that should have matched. This one was found by having
+something else read the fix. Neither would have surfaced from the tests passing.
+
+---
+
+## 2026-08-26 — pymbar 4.2 FES histogram: three edges worth knowing
+
+MDClaw has no MBAR tool, so the TAS1R umbrella analysis went through pymbar
+directly (`scripts/umbrella_mbar.py`). Smoke-tested on ten throwaway pilot
+windows before the real grid finished, which was the point -- all three of
+these fail at `get_fes`, hours after the sampling is already paid for.
+
+1. `generate_fes(fes_type="histogram")` runs `np.shape()` over
+   `histogram_parameters["bin_edges"]`. Two axes with different bin counts make
+   that list ragged and numpy raises "inhomogeneous shape". Both axes need the
+   same bin *count*; the widths may still differ.
+2. `get_fes` looks every query point up in `histogram_data["bin_label"]`, which
+   only holds bins that received samples. A full mesh of bin centres therefore
+   raises `KeyError` on the first empty bin. Query `bin_label`'s own keys and
+   leave the rest NaN.
+3. Binning is `np.digitize(x, edges) - 1`, so a sample sitting exactly on the
+   top edge lands in bin index `nbins` -- one past the end -- and pymbar keeps
+   it, because it only rejects negative indices. Building edges as
+   `linspace(x.min(), x.max(), nbins+1)` guarantees one such sample. Pad the
+   outer edges by a hair.
+
+Also worth recording: the PythonTorchForce bias costs a clean 2.04x on this
+system (109.4 ns/day biased against 222.8 unbiased, 358k particles, one GB200).
+The bias touches 3186 atoms but the force moves all 358k positions into torch
+every step, so the penalty is set by system size rather than by CV group size.
+Budget umbrella campaigns at half the unbiased rate.
+
+---
+
+## 2026-08-26 — SLURM payloads run the container's baked package, not the checkout
+
+The restraint fix above was made, tested, and then had no effect on the rerun:
+holo `eq_002` came back with the same 4041. `bin/mdclaw` deliberately binds
+`PKG_ROOT` and exports `PYTHONPATH` so "the container runs the same mdclaw
+source as the host-side native tools (the image's baked package is only the
+dependency layer)". The sbatch script `submit_job` generates does not:
+
+    singularity exec --nv --bind <repo>,<job_dir>,<out_dir> <sif> mdclaw ...
+
+The repo is bound but nothing puts it on `PYTHONPATH`, so the payload imports
+`/opt/mdclaw/lib/python3.12/site-packages/mdclaw`. Host-side SLURM tools run the
+checkout; the compute-node payload they submit runs the image. That is exactly
+the drift `bin/mdclaw`'s comment says it exists to prevent, and it is invisible
+unless you diff the two.
+
+Checked rather than assumed: `diff -rq` between the baked package and this
+checkout reports only the four files edited this session, so the shared rikyu
+SIF is otherwise HEAD and nothing else silently differed for the SLURM stages.
+
+Not fixed here -- changing sbatch generation mid-campaign, or rebuilding and
+overwriting a SIF shared out of /data1, are both bigger than the problem.
+Sidestepped instead: `--restraint-atoms heavy` reaches the same atoms through a
+code path the bug does not touch. Verified against the baked package on both
+systems: apo `heavy` and `solute_heavy` select the *identical* 7968 atoms
+(so the completed apo min/eq needed no rerun), while holo `heavy` gives the
+correct 8153 against `solute_heavy`'s 4041. holo was rerun a second time as
+`min_003`/`eq_003`/`prod_003`.
+
+The restraints.py fix stays in the tree as the general fix, but it will not run
+on a compute node until the image is rebuilt.
+
+---
+
+## 2026-08-26 — Restraints addressed the wrong chains, and only after prep got better
+
+Same TAS1R2-TAS1R3 campaign, found by comparing the two systems' equilibration
+metadata rather than by anything failing. apo restrained 7968 solute heavy
+atoms; holo restrained 4041 and split them as `{protein: 4039, ligand: 2}` --
+2 restrained atoms for a 23-heavy-atom sucralose is not a plausible number, and
+4041 turns out to be exactly TAS1R2 chain A's heavy-atom count. TAS1R3 chain B
+(4089 heavy) and the ligand were never restrained during either min or eq.
+
+`select_restraint_atoms` addressed prep's solute components by
+`topology_chain_index` into the built topology's chain list. That index is only
+valid if topology generation preserves prep's chain decomposition, and it does
+not: when Pablo identifies every residue it emits each ACE/NME cap as a chain of
+its own, so holo's chains 0/1/2 are ACE, the chain-A body, and NME -- 3 + 4036 +
+2 = 4041, labelled from prep's components as protein/protein/ligand. apo was
+correct only by accident: Pablo could not parse it, the PDBFile fallback kept
+whole chains, and chain index 0/1 really were the two proteins.
+
+The sharp edge is that the same prep gives two different chain layouts
+depending on whether an *unrelated* part of the file parsed. Fixing the
+sucralose residue identity earlier the same day is what let Pablo succeed on
+holo, which is what moved the caps into their own chains, which is what
+misaligned the restraints. A fix in one place silently changed the meaning of an
+index in another.
+
+Fixed by addressing components through their prep atom-index range instead --
+solute atoms keep prep's order and lead the topology, solvent and its virtual
+sites are appended -- with a warning if a component range reaches solvent or
+runs past the end of the topology, so the assumption fails loudly if it ever
+stops holding. After: apo unchanged at 7968, holo 8153 = protein 8130 + ligand
+23. holo min/eq/prod were rerun from `topo_002` as `min_002`/`eq_002`/`prod_002`;
+the first holo production was cancelled rather than kept, because a comparative
+PMF cannot have the two states equilibrated under different protocols.
+
+Worth generalising: all three bugs this session were silent. Nothing raised, no
+guardrail fired, and each returned a plausible-looking number. The counts that
+exposed this one were only visible because two systems that should have matched
+were compared side by side.
+
+---
+
+## 2026-08-26 — Two ways preparation lost a molecule it had already built
+
+TAS1R2-TAS1R3 campaign (9UT9 apo / 9UTC sucralose). Two independent prep
+failures, both of the same shape: preparation did the chemistry correctly and
+then wrote it out in a form the next stage could not read.
+
+**Terminal caps never reached the protonation baseline.** `prepare_complex
+--n-terminal-cap ACE --c-terminal-cap NME` failed with
+`protonation_method_failed` on any capped chain. PDBFixer inserts caps as heavy
+atoms only -- ACE gets C/O/CH3, NME gets N and the methyl carbon under the name
+`C` -- and pdb2pqr has no topology entry for either residue, so it cannot
+complete their hydrogens. It charges the atoms it does match from AMBER.DAT,
+gets ACE -0.3369 and NME -0.4157, finds the total non-integral, and aborts the
+whole structure. The cap-hydrogen completion MDClaw already runs
+(`_complete_terminal_cap_hydrogens_with_modeller`) sits *after* pdb2pqr, so it
+never got the chance. Fix: complete only the cap hydrogens before pdb2pqr and
+write the cap atoms under pdb2pqr's own AMBER.DAT names (`CH3`, `HH31`...).
+Each cap then sums to zero. Measured on 9UT9 chain A: +7 atoms, 7 renamed, zero
+hydrogens added outside the caps, and pdb2pqr correctly leaves ASP A 26 as a
+plain `N, H` amide rather than building an NTER onto a capped terminus. OpenMM's
+PDB loader maps the AMBER cap names back on load, so nothing downstream
+changed.
+
+**A two-residue ligand was written as two residues.** Sucralose is deposited as
+RRY + RRJ joined by a declared covalent bond (RRY O2 - RRJ C1, 1.407 A).
+`clean_ligand` built it correctly as one molecule -- C12H19Cl3O8, 42 atoms, one
+fragment, two rings, pose preserved to 0.0000 A -- then wrote a PDB carrying one
+residue *name* over the two original residue *numbers*, because it set the
+chain and residue number only on atoms that arrived without PDBResidueInfo.
+Everything downstream reads that as separate residues. Pablo matched none of
+them and fell back to PDBFile; the fallback's own repair,
+`_patch_ligand_molecule_internal_bonds`, looks for a single residue whose atom
+count equals the molecule's and found none; so the ligand reached
+`create_system` with no bonds at all and failed as "No template found for
+residue 1030 (RRJ)". Unifying the residue number exposed the second half: both
+sugars name their atoms C1..C6 / O2..O5, and a PDB reader keys atoms by name
+within a residue, so OpenMM silently dropped 9 of the 42 atoms on load. Fix:
+unify chain/residue number across every atom and hand each colliding name a
+name no other atom wants. Verified end to end with CONECT records stripped, the
+state after solvation: 42 atoms in one residue, 43 bonds patched from the
+molecule, `SystemGenerator.create_system` OK.
+
+Worth noting for future ligand work: neither failure was loud. `clean_ligand`
+returned `success: true` in both the broken and the fixed case; the only signal
+in the broken one was a warning that template matching had fallen back, and a
+`smiles_used` field describing a 12-heavy-atom fragment next to a
+`num_heavy_atoms: 23` result. Left to itself the tool had fetched the CCD SMILES
+for RRY alone. Passing the full sucralose SMILES explicitly is what made the
+chemistry match the file.
+
+**Unrelated, recorded for the campaign:** MODELLER is unlicensed in the shared
+rikyu SIF (`KEY_MODELLER10v8` unset), and PDBFixer's repair scope is 10 internal
+missing residues / 5 per segment. 9UT9 has a 25-residue gap, so neither route is
+available and the disordered loops were left unbuilt
+(`--missing-residue-method none`). ff19SB template matching still passes and
+pdb2pqr leaves the break points as neutral nicked backbone -- no artificial
+buried charges -- but the fragments are held together only by the fold.
+
+---
+
 ## 2026-08-25 — Solvation was changing what element an atom is
 
 Campaign task `041_ligand_4erf` lost its first `topo` node in all three
