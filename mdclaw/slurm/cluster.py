@@ -22,7 +22,7 @@ from mdclaw._common import (
 )
 
 from mdclaw.slurm import _base
-from mdclaw.slurm.config import _is_partition_allowed, _load_cluster_config, _save_cluster_config
+from mdclaw.slurm.config import CONTAINER_SOURCE_MODES, _is_partition_allowed, _load_cluster_config, _save_cluster_config
 
 
 def _parse_sinfo_text(stdout: str) -> list[dict]:
@@ -365,6 +365,7 @@ def configure_container(
     image: Optional[str] = None,
     bind_paths: Optional[list[str]] = None,
     extra_flags: Optional[str] = None,
+    source_mode: Optional[str] = None,
     disable: bool = False,
 ) -> dict:
     """Configure Singularity container execution for SLURM jobs.
@@ -380,6 +381,18 @@ def configure_container(
             auto-detected.
         extra_flags: Extra flags for singularity exec (e.g., ``--nv``
             for GPU support).
+        source_mode: Which mdclaw the compute node runs. ``"image"``
+            (default) runs the package baked into the .sif, so a queued job
+            is unaffected by later edits. ``"overlay"`` binds this checkout
+            and puts it on ``PYTHONPATH``, matching what ``bin/mdclaw`` does
+            on the login node -- what you want while developing, since
+            otherwise a fix reaches the login node but not the job. Only the
+            mode is stored; the source root is resolved at each submission, so
+            a config written from one checkout cannot bind that checkout into a
+            job submitted from another. Overlay needs a checkout or plugin
+            install and is refused at submit time where the package lives in
+            site-packages, because binding that would replace the image's
+            dependencies with the host's.
         disable: Set True to disable container execution (removes the
             container section from config).
 
@@ -420,6 +433,21 @@ def configure_container(
         container["bind_paths"] = bind_paths
     if extra_flags is not None:
         container["extra_flags"] = extra_flags
+    if source_mode is not None:
+        mode = str(source_mode).strip().lower()
+        if mode not in CONTAINER_SOURCE_MODES:
+            result["code"] = "container_source_mode_invalid"
+            result["errors"].append(
+                f"source_mode must be one of {list(CONTAINER_SOURCE_MODES)}, "
+                f"got {source_mode!r}"
+            )
+            return result
+        # Only the mode is stored. The source root is resolved per submission:
+        # this config can be written from one checkout and submitted from
+        # another, and a stored root would bind the first while the login-side
+        # tool ran the second.
+        container.pop("source_root", None)
+        container["source_mode"] = mode
 
     if not container.get("image"):
         result["errors"].append(

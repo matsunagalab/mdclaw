@@ -445,6 +445,16 @@ signature, update the relevant section here and the matching skill examples.
 - `list_tracked_jobs(...)`: read `.mdclaw_jobs.jsonl` history and optionally
   sync state.
 - `configure_container(...)`: configure Singularity wrapping for SLURM jobs.
+  `source_mode` chooses which mdclaw the compute node runs. `image` (default)
+  runs the package baked into the `.sif`, so a queued job is unaffected by later
+  edits to a checkout. `overlay` binds the checkout and puts it on `PYTHONPATH`,
+  matching what `bin/mdclaw` already does on the login node -- use it while
+  developing, or a fix reaches the login node but not the job it submits.
+  Overlay needs a checkout or plugin install (a directory holding both
+  `bin/mdclaw` and `mdclaw/`); it is refused with
+  `container_overlay_source_unavailable` where the package lives in
+  site-packages, because binding that would replace the image's dependencies
+  with the host's.
 
 ## `node/`
 

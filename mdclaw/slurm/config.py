@@ -292,6 +292,73 @@ def _extract_bind_paths(command: str) -> list[str]:
     return sorted(paths)
 
 
+CONTAINER_SOURCE_MODES = ("image", "overlay")
+
+
+def resolve_overlay_source_root() -> Optional[str]:
+    """The directory to bind so a compute node runs this checkout's source.
+
+    ``bin/mdclaw`` binds its package root and exports ``PYTHONPATH`` so the
+    container runs the same source as the host, treating the image as a
+    dependency layer. That only makes sense where such a root exists: a
+    checkout or a plugin install, which hold ``bin/mdclaw`` beside ``mdclaw/``.
+
+    A pip or conda install has no such root -- its package sits in
+    ``site-packages``, and binding that over the container would replace the
+    image's dependencies with the host's. Returns None there, and the caller
+    refuses rather than silently running different code than asked for.
+
+    Resolved per submission, never stored: the config can be written from one
+    checkout and submitted from another, and a stored root would then bind the
+    first while the login-side tool ran the second -- the same disagreement
+    overlay exists to remove.
+    """
+    import mdclaw
+
+    package_dir = Path(mdclaw.__file__).resolve().parent
+    root = package_dir.parent
+    # bin/mdclaw is the overlay contract itself, and it is the one marker
+    # present in both layouts: .git is absent from a plugin install and
+    # pyproject.toml is not guaranteed there either.
+    if (root / "bin" / "mdclaw").is_file() and (package_dir / "__init__.py").is_file():
+        return str(root)
+    return None
+
+
+
+def resolve_container_source(container: Optional[dict]) -> Optional[dict]:
+    """Bake the overlay source root into *container* for this submission.
+
+    Returns a structured error when overlay was asked for and this install has
+    no bindable source root. Refusing beats falling back to the image, which
+    would run different code than was requested without saying so.
+
+    Callers gate this on the container actually being used: an explicit
+    ``environment`` takes precedence over container execution, and an overlay
+    setting left in the config should not reject a job that never enters the
+    container.
+    """
+    if not container or container.get("source_mode") != "overlay":
+        return None
+    source_root = resolve_overlay_source_root()
+    if not source_root:
+        return {
+            "success": False,
+            "code": "container_overlay_source_unavailable",
+            "errors": [
+                "container source_mode='overlay' needs a checkout or plugin "
+                "install -- a directory holding both bin/mdclaw and mdclaw/. "
+                "This mdclaw is installed elsewhere (typically site-packages), "
+                "and binding that into the container would replace the image's "
+                "dependencies with the host's. Run "
+                "'mdclaw configure_container --source-mode image', or submit "
+                "from a checkout."
+            ],
+        }
+    container["source_root"] = source_root
+    return None
+
+
 def _build_singularity_command(
     command: str,
     container: dict,
@@ -321,11 +388,30 @@ def _build_singularity_command(
     # Remove empty strings
     bind_set.discard("")
 
+    # In overlay mode the payload runs this checkout instead of the image's
+    # baked package, matching what bin/mdclaw does on the login node. The
+    # default is the image, so a job stays reproducible unless overlay was
+    # asked for, and an install with no bindable source root still works.
+    source_root = None
+    if container.get("source_mode") == "overlay":
+        source_root = container.get("source_root")
+        if not source_root:
+            # resolve_container_source() runs before this on every submission
+            # path. Reaching here means it did not, and quietly emitting an
+            # image-mode command would hide that.
+            raise ValueError(
+                "overlay source root was not resolved for this submission; "
+                "call resolve_container_source() first"
+            )
+        bind_set.add(str(Path(source_root).resolve()))
+
     bind_arg = ",".join(sorted(bind_set))
     parts = ["singularity exec"]
     if extra_flags:
         parts.append(extra_flags)
     parts.append(f"--bind {bind_arg}")
+    if source_root:
+        parts.append(f"--env PYTHONPATH={Path(source_root).resolve()}")
     parts.append(image)
     parts.append(command.strip())
 

@@ -20,6 +20,8 @@
   "boltz_sequence_required",
   "boltz_source_attach_failed",
   "comparison_requires_two_analyze",
+  "container_overlay_source_unavailable",
+  "container_source_mode_invalid",
   "continue_from_invalid_node_type",
   "continue_from_not_prod",
   "continue_from_parents_conflict",

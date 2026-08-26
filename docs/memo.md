@@ -7,6 +7,56 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-26 — Choosing which mdclaw a compute node runs, and two ways I got it wrong first
+
+Closed the last of the four: the sbatch `submit_job` generates bound the repo
+but never put it on `PYTHONPATH`, so host-side SLURM tools ran the checkout while
+the payload they submitted ran `/opt/mdclaw`. Measured on the holo system:
+checkout 8153 restrained atoms, baked package 4041. The restraint fix from
+earlier the same day had never reached a compute node.
+
+The obvious fix -- mirror what `bin/mdclaw` does and always overlay -- is wrong,
+and the repo owner caught why: **a general user has no repo to bind.** A pip or
+conda install keeps its package in `site-packages`, and binding that into the
+container would replace the image's dependency layer with the host's.
+`bin/mdclaw` never hits this because `bin/mdclaw` only exists in a checkout or a
+plugin; its overlay contract was never general.
+
+So: `configure_container --source-mode`, `image` by default (today's behaviour
+exactly, and nobody without a checkout is affected), `overlay` opt-in. Detection
+of a valid overlay root is the directory holding both `bin/mdclaw` and
+`mdclaw/__init__.py` -- not `.git`, which excludes plugin installs, and not
+`pyproject.toml`, which is not guaranteed in one.
+
+Two things I got wrong and had to be told:
+
+**Storing the resolved root in the config recreated the same bug in a new
+shape.** Write the config from checkout A, submit from B: sbatch binds A while
+the login-side tool runs B. The root has to be resolved per submission and only
+the mode stored. `configure_container` also stopped rejecting overlay on local
+ineligibility, because the config may legitimately be written on a machine with
+no checkout and submitted from one that has it.
+
+**Resolution ran even when it could not matter.** An explicit `environment`
+takes precedence over container execution, so a job with `environment="module
+load ..."` never enters the container -- but an overlay setting left in the
+config rejected it anyway. Gated on the same `container and not environment`
+condition the sbatch generator uses.
+
+Also worth recording: my first test for that gate **passed with the gate
+removed**. `submit_job` returns `tool_not_available` before reaching the
+container block when sbatch is absent, which it is inside the container where
+the suite runs, so the assertion was vacuous. Fixed with the mocking pattern
+tests/test_slurm_server.py already uses, plus a positive control asserting
+submit_job actually reaches the resolution.
+
+That is the third time this session a test passed while pinning nothing. The
+only thing that caught any of them was breaking the fix on purpose and checking
+the test noticed. Mutation-check anything whose whole job is to catch a silent
+failure.
+
+---
+
 ## 2026-08-26 — The cap fix was itself silently wrong, in the way I said I was avoiding
 
 Reviewed the terminal-cap fix with a second agent before committing it, and the
