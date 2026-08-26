@@ -198,6 +198,176 @@ def _terminal_cap_forcefield_xml(forcefield_name: str | None) -> tuple[str | Non
     return entry.openmm_xml[0], canonical
 
 
+# pdb2pqr's AMBER.DAT carries ACE/NME charges, but its topology does not
+# define either residue, so it can neither complete their hydrogens nor
+# recognise OpenMM's names for the atoms it did get. It charges the handful of
+# atoms it matches, finds the cap charge non-integral, and aborts the entire
+# run -- so a capped chain never reaches the protonation baseline at all.
+# Completing the cap hydrogens and writing them under pdb2pqr's own names makes
+# each cap sum to zero, which is all pdb2pqr needs to pass the cap through
+# untouched, including leaving the capped residue as a plain amide instead of
+# building an NTER/CTER onto it. OpenMM's PDB loader maps these names back on
+# the way out, so nothing downstream has to know they were ever changed.
+_PDB2PQR_CAP_ATOM_NAMES = {
+    ("ACE", "H1"): "HH31",
+    ("ACE", "H2"): "HH32",
+    ("ACE", "H3"): "HH33",
+    ("NME", "C"): "CH3",
+    ("NME", "H1"): "HH31",
+    ("NME", "H2"): "HH32",
+    ("NME", "H3"): "HH33",
+}
+
+
+def _pdb_atom_name_field(name: str) -> str:
+    """Render an atom name into PDB columns 13-16.
+
+    A four-character name occupies the field outright; shorter ones keep the
+    leading space that the element column alignment depends on.
+    """
+    return name.ljust(4)[:4] if len(name) >= 4 else f" {name}".ljust(4)
+
+
+def _rewrite_cap_atom_names_for_pdb2pqr(pdb_file: Path) -> int:
+    """Rename ACE/NME atoms in place to the names pdb2pqr's AMBER.DAT uses."""
+    renamed = 0
+    lines = []
+    for line in pdb_file.read_text().splitlines(keepends=True):
+        if line.startswith(("ATOM", "HETATM")):
+            key = (line[17:20].strip().upper(), line[12:16].strip())
+            new_name = _PDB2PQR_CAP_ATOM_NAMES.get(key)
+            if new_name:
+                line = line[:12] + _pdb_atom_name_field(new_name) + line[16:]
+                renamed += 1
+        lines.append(line)
+    pdb_file.write_text("".join(lines))
+    return renamed
+
+
+def _prepare_terminal_caps_for_pdb2pqr(
+    pdb_file: str | Path,
+    *,
+    forcefield_name: str | None = None,
+    ph: float = 7.4,
+) -> dict:
+    """Make ACE/NME caps legible to pdb2pqr, without touching anything else.
+
+    PDBFixer inserts caps as heavy atoms only. This completes just their
+    hydrogens -- every hydrogen Modeller adds elsewhere is deleted again, so
+    pdb2pqr still sees the same unprotonated protein it saw before and still
+    owns the protonation baseline.
+
+    Failure is hard, not soft. pdb2pqr cannot complete a cap itself and aborts
+    the whole structure over the non-integral charge that leaves, so handing it
+    the original file would only reproduce that abort under a less informative
+    code.
+    """
+    input_path = Path(pdb_file).resolve()
+    output_file = input_path.with_name(f"{input_path.stem}.cap_pdb2pqr.pdb")
+    result: dict[str, Any] = {
+        "success": False,
+        "input_file": str(input_path),
+        "output_file": None,
+        "cap_hydrogens_added": 0,
+        "cap_atoms_renamed": 0,
+        "resnames_restored": False,
+        "warnings": [],
+        "errors": [],
+    }
+
+    present_caps = _pdb_residue_names(input_path) & TERMINAL_CAP_RESIDUES
+    if not present_caps:
+        result["success"] = True
+        result["skipped"] = True
+        return result
+
+    forcefield_xml, _canonical = _terminal_cap_forcefield_xml(forcefield_name)
+    if not forcefield_xml:
+        result["code"] = "terminal_cap_hydrogen_completion_unavailable"
+        result["errors"].append(
+            "Could not resolve an OpenMM protein force-field XML to complete "
+            f"terminal cap hydrogens before pdb2pqr: {forcefield_name!r}"
+        )
+        return result
+
+    try:
+        from openmm.app import ForceField, Modeller
+
+        pdb = PDBFile(str(input_path))
+        original_atoms = {
+            (
+                atom.residue.chain.id,
+                atom.residue.id,
+                atom.residue.name,
+                atom.name,
+            )
+            for atom in pdb.topology.atoms()
+        }
+        modeller = Modeller(pdb.topology, pdb.positions)
+        modeller.addHydrogens(ForceField(forcefield_xml), pH=ph)
+        added_outside_caps = [
+            atom
+            for atom in modeller.topology.atoms()
+            if atom.residue.name.upper() not in TERMINAL_CAP_RESIDUES
+            and (
+                atom.residue.chain.id,
+                atom.residue.id,
+                atom.residue.name,
+                atom.name,
+            )
+            not in original_atoms
+        ]
+        modeller.delete(added_outside_caps)
+        cap_atoms_after = sum(
+            1
+            for atom in modeller.topology.atoms()
+            if atom.residue.name.upper() in TERMINAL_CAP_RESIDUES
+        )
+        cap_atoms_before = sum(
+            1
+            for key in original_atoms
+            if key[2].upper() in TERMINAL_CAP_RESIDUES
+        )
+        with output_file.open("w") as handle:
+            PDBFile.writeFile(
+                modeller.topology,
+                modeller.positions,
+                handle,
+                keepIds=True,
+            )
+    except Exception as exc:  # noqa: BLE001 - returned as a structured failure
+        result["code"] = "terminal_cap_hydrogen_completion_failed"
+        result["errors"].append(
+            "Could not complete terminal cap hydrogens before pdb2pqr: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return result
+
+    # OpenMM's PDB loader normalises Amber residue variants on load (CYX->CYS,
+    # ASH->ASP, HID/HIE/HIP->HIS). Writing that back out would hand pdb2pqr a
+    # structure whose cysteines are no longer the disulfide-bonded CYX this
+    # prep decided on, and pdb2pqr would only re-derive them from geometry --
+    # silently discarding an explicit --disulfide-pairs choice, or a bond the
+    # deposit declares but geometry alone would miss. Restore by residue key,
+    # exactly as the post-pdb2pqr helper does.
+    restored = restore_resnames_by_residue_key(output_file.read_text(), input_path)
+    if restored is None:
+        result["code"] = "terminal_cap_hydrogen_completion_failed"
+        result["errors"].append(
+            "Could not restore residue names after completing terminal cap "
+            f"hydrogens; refusing to hand pdb2pqr a renamed structure: {output_file}"
+        )
+        return result
+    output_file.write_text(restored)
+    result["resnames_restored"] = True
+
+    result["cap_hydrogens_added"] = cap_atoms_after - cap_atoms_before
+    result["cap_atoms_renamed"] = _rewrite_cap_atom_names_for_pdb2pqr(output_file)
+    result["output_file"] = str(output_file)
+    result["success"] = True
+    return result
+
+
 def _classify_terminal_cap_noncap_hydrogen_changes(
     before: dict[str, tuple[str, ...]],
     after: dict[str, tuple[str, ...]],

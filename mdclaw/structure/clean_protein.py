@@ -84,7 +84,7 @@ _NUCLEIC_5P_TERMINAL_PHOSPHATE_OXYGENS = {
 
 from mdclaw.structure.pdb_utils import _pdb_atom_count, _pdb_hydrogen_count, _pdb_residue_names, _read_pdb_unique_residues, restore_residue_numbering_from_reference  # noqa: E402
 from mdclaw.structure.protonation import _apply_protonation_states_with_modeller, _extract_histidine_states, _extract_input_protonation_state_overrides, _extract_non_default_protonation_states, _merge_input_protonation_state_overrides, _merge_protonation_states, _normalize_protonation_state_overrides  # noqa: E402
-from mdclaw.structure.terminal_caps import _complete_terminal_cap_hydrogens_with_modeller, _resolve_terminal_cap_settings, detect_input_terminal_caps, strip_input_terminal_caps  # noqa: E402
+from mdclaw.structure.terminal_caps import _complete_terminal_cap_hydrogens_with_modeller, _prepare_terminal_caps_for_pdb2pqr, _resolve_terminal_cap_settings, detect_input_terminal_caps, strip_input_terminal_caps  # noqa: E402
 
 
 def _pdb_atom_name(line: str) -> str:
@@ -1845,8 +1845,40 @@ def clean_protein(
                     titration_args = ["--titration-state-method", "propka",
                                       "--with-ph", str(ph)]
 
+                # pdb2pqr cannot complete ACE/NME hydrogens itself and
+                # refuses the whole structure over the non-integral cap charge
+                # that leaves behind. Hand it caps it can charge to zero.
+                pdb2pqr_input_file = output_file
+                cap_prep = _prepare_terminal_caps_for_pdb2pqr(
+                    output_file,
+                    forcefield_name=terminal_cap_forcefield,
+                    ph=ph,
+                )
+                result["warnings"].extend(cap_prep.get("warnings", []))
+                if not cap_prep.get("success"):
+                    # Running pdb2pqr anyway would abort on the cap charge and
+                    # report it as a protonation failure, hiding the real cause.
+                    result["errors"].extend(cap_prep.get("errors", []))
+                    result["code"] = cap_prep.get(
+                        "code", "terminal_cap_hydrogen_completion_failed")
+                    result["operations"].append({
+                        "step": "terminal_cap_pdb2pqr_preparation",
+                        "status": "error",
+                        "details": "; ".join(cap_prep.get("errors", [])),
+                    })
+                    return result
+                if cap_prep.get("output_file"):
+                    pdb2pqr_input_file = Path(cap_prep["output_file"])
+                    result["operations"].append({
+                        "step": "terminal_cap_pdb2pqr_preparation",
+                        "status": "success",
+                        "cap_hydrogens_added": cap_prep["cap_hydrogens_added"],
+                        "cap_atoms_renamed": cap_prep["cap_atoms_renamed"],
+                        "resnames_restored": cap_prep.get("resnames_restored"),
+                    })
+
                 pdb2pqr_args = [
-                    str(output_file),
+                    str(pdb2pqr_input_file),
                     str(pqr_output),
                     "--ff", "AMBER",
                     "--ffout", "AMBER",
