@@ -28,7 +28,6 @@ from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from mdclaw._common import (  # noqa: E402
-    BaseToolWrapper,  # noqa: F401  (kept for parity / future extension)
     setup_logger,
 )
 

@@ -8,7 +8,6 @@ import pytest
 
 pytest.importorskip("openff.pablo")
 pytest.importorskip("openmm")
-pytest.importorskip("openmmforcefields")
 
 from mdclaw.openmm_system.build import build_openmm_system
 
@@ -47,9 +46,23 @@ def _hydrogenated_dipeptide(tmp_path: Path) -> Path:
     return out
 
 
-def test_build_openmm_system_with_amber14_xml(tmp_path):
+def test_build_openmm_system_with_amber14_xml(tmp_path, monkeypatch):
     """Smoke test the happy path: a small protein PDB with amber14 + tip3p
     XMLs produces a valid system.xml + topology.pdb + state.xml."""
+    import mdclaw.openmm_system.build as build_module
+
+    original_load = build_module._topology_pablo.load_topology
+
+    def _load_with_note(*args, **kwargs):
+        loaded = original_load(*args, **kwargs)
+        loaded.warnings.append("loader note for topology metadata")
+        return loaded
+
+    monkeypatch.setattr(
+        build_module._topology_pablo,
+        "load_topology",
+        _load_with_note,
+    )
     pdb = _hydrogenated_dipeptide(tmp_path)
     out_dir = tmp_path / "topo"
 
@@ -67,10 +80,14 @@ def test_build_openmm_system_with_amber14_xml(tmp_path):
     assert Path(result["topology_pdb"]).is_file()
     assert Path(result["state_xml"]).is_file()
     assert Path(result["minimization_report"]).is_file()
+    assert Path(result["topology_validation_file"]).is_file()
     assert Path(result["amber_metadata"]).is_file()
     metadata = json.loads(Path(result["amber_metadata"]).read_text())
     assert metadata["forcefield_provenance"]["openmm_xml"] == [
         "amber/protein.ff14SB.xml"]
+    assert metadata["amber_metadata"] == result["amber_metadata"]
+    assert metadata["solvent_type"] == "vacuum"
+    assert metadata["statistics"] == {"num_atoms": 23, "num_residues": 2}
     assert not any(
         line.startswith("CONECT")
         for line in Path(result["topology_pdb"]).read_text().splitlines()
@@ -86,11 +103,80 @@ def test_build_openmm_system_with_amber14_xml(tmp_path):
     assert minimization["atom_count_preserved"] is True
     assert result["minimization"] == minimization
     assert result["num_atoms"] == 23
+    topology_validation = json.loads(
+        Path(result["topology_validation_file"]).read_text()
+    )
+    assert topology_validation["status"] == "passed"
+    assert topology_validation["core"]["atom_count_preserved"] is True
+    assert topology_validation["non_authoritative_notes"] == [
+        "loader note for topology metadata"
+    ]
+    assert result["topology_validation"] == topology_validation
+    assert result["topology_notes"] == ["loader note for topology metadata"]
+    assert "loader note for topology metadata" not in result["warnings"]
     provenance = result["forcefield_provenance"]
     assert provenance["kind"] == "openmm_xml"
     assert "amber/protein.ff14SB.xml" in provenance["forcefield_xml"]
+    assert provenance["sha256"]["amber/protein.ff14SB.xml"]
+    assert result["system_net_charge_e"] == provenance["system_net_charge_e"]
+    assert abs(result["system_net_charge_e"]) < 1e-6
     assert provenance["method"]["nonbonded"] == "NoCutoff"
     assert provenance["method"]["constraints"] == "HBonds"
+
+
+def test_build_openmm_system_rejects_failed_core_topology_validation(
+    tmp_path, monkeypatch,
+):
+    import mdclaw.openmm_system.build as build_module
+
+    original = build_module._build_topology_validation_report
+
+    def _failed_report(**kwargs):
+        report = original(**kwargs)
+        report["core"]["status"] = "failed"
+        report["status"] = "failed"
+        return report
+
+    monkeypatch.setattr(
+        build_module,
+        "_build_topology_validation_report",
+        _failed_report,
+    )
+    pdb = _hydrogenated_dipeptide(tmp_path)
+    result = build_openmm_system(
+        pdb_file=str(pdb),
+        forcefield_xml=["amber/protein.ff14SB.xml"],
+        nonbonded_method="NoCutoff",
+        output_dir=str(tmp_path / "topo_validation_failed"),
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "topology_validation_failed"
+    assert Path(result["topology_validation_file"]).is_file()
+
+
+def test_build_openmm_system_does_not_require_openmmforcefields_at_runtime(
+    tmp_path, monkeypatch,
+):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _reject_openmmforcefields(name, *args, **kwargs):
+        if name == "openmmforcefields":
+            raise ImportError("blocked by test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _reject_openmmforcefields)
+    pdb = _hydrogenated_dipeptide(tmp_path)
+    result = build_openmm_system(
+        pdb_file=str(pdb),
+        forcefield_xml=["amber14/protein.ff14SB.xml"],
+        nonbonded_method="NoCutoff",
+        output_dir=str(tmp_path / "topo_without_openmmforcefields"),
+    )
+
+    assert result["success"] is True, result.get("errors")
 
 
 def test_build_openmm_system_requires_forcefield_xml(tmp_path):
@@ -296,7 +382,7 @@ class TestBuildOpenmmSystemNodeMode:
         # Outputs under the node's own artifacts dir, not WORKING_DIR/openmm_system_*
         node_artifacts = job_dir / "nodes" / topo_id / "artifacts"
         for key in ("system_xml", "topology_pdb", "state_xml", "minimization_report",
-                    "amber_metadata"):
+                    "topology_validation_file", "amber_metadata"):
             recorded = Path(result[key])
             assert recorded.is_file(), f"{key} not written: {recorded}"
             assert node_artifacts in recorded.parents, (
@@ -306,14 +392,28 @@ class TestBuildOpenmmSystemNodeMode:
         # Node transitioned to completed and the relative artifact paths exist.
         topo_node = read_node(str(job_dir), topo_id)
         assert topo_node["status"] == "completed"
-        for key in ("system_xml", "topology_pdb", "state_xml", "minimization_report",
-                    "amber_metadata"):
-            rel = topo_node["artifacts"].get(key)
+        for artifact_key in (
+            "system_xml",
+            "topology_pdb",
+            "state_xml",
+            "minimization_report",
+            "topology_validation",
+            "amber_metadata",
+        ):
+            rel = topo_node["artifacts"].get(artifact_key)
             assert rel and (node_artifacts / Path(rel).name).is_file()
         minimization = topo_node["metadata"]["minimization"]
         assert minimization["completed"] is True
         assert minimization["scope"] == "topology_initial_relaxation"
         assert minimization["satisfies_min_node_contract"] is False
+        assert topo_node["metadata"]["topology_validation"]["status"] == "passed"
+        assert topo_node["metadata"]["topology_notes"] == []
+        assert topo_node["metadata"]["water_model"] is None
+        assert topo_node["metadata"]["topology_build_stage"] == "completed"
+        assert topo_node["metadata"]["topology_build_stage_history"][-1]["stage"] == "completed"
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert progress["params"]["solvation_type"] == "vacuum"
+        assert progress["params"]["water_model"] is None
 
     def test_node_mode_auto_resolves_pdb_from_prep(self, tmp_path):
         """When pdb_file is omitted, build_openmm_system must look up
@@ -399,7 +499,7 @@ class TestBuildOpenmmSystemNodeMode:
     def test_node_mode_marks_node_failed_on_invalid_input(self, tmp_path):
         """forcefield_xml empty under node mode: node ends up failed, not
         stuck in ``running`` (build_openmm_system must run the failure
-        through fail_node)."""
+        through fail_node_from_result)."""
         from mdclaw._node import read_node
 
         job_dir, topo_id = self._setup_topo_node(tmp_path)
@@ -414,6 +514,9 @@ class TestBuildOpenmmSystemNodeMode:
         assert topo_node["status"] == "failed", (
             f"Node should be failed, got {topo_node['status']!r}"
         )
+        assert topo_node["metadata"]["failure_code"] == "missing_forcefield_xml"
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert progress["nodes"][topo_id]["failure_code"] == "missing_forcefield_xml"
 
 
 # ----------------------------------------------------------------------------

@@ -7,10 +7,8 @@ import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from mdclaw._common import (  # noqa: E402
-    BaseToolWrapper,  # noqa: F401  (kept for parity / future extension)
     atomic_write_text_group,
     create_file_not_found_error,
-    create_tool_not_available_error,
     create_unique_subdir,
     create_validation_error,
     ensure_directory,
@@ -19,6 +17,14 @@ from mdclaw._common import (  # noqa: E402
 )
 from mdclaw import _topology_pablo
 from mdclaw._tool_meta import node_tool
+from mdclaw.amber.openmm_build import (  # noqa: E402
+    _record_topology_build_stage,
+    _system_net_charge_e,
+)
+from mdclaw.amber.topology_validation import (  # noqa: E402
+    _build_topology_validation_report,
+    _unique_messages,
+)
 
 from mdclaw.openmm_system._base import (
     WORKING_DIR,
@@ -202,11 +208,10 @@ def build_openmm_system(
              node's metadata so the run-side topology guard recognises
              the build choice. Multiple shipped GB XMLs trigger
              ``implicit_solvent_xml_ambiguous``. Third-party GB XML
-             (e.g. ``GB99dms.xml``) is *not* inferable — pass
-             ``implicit_solvent`` explicitly only when the corresponding
-             shipped XML is also in ``forcefield_xml``; for purely
-             custom GB XML, leave the metadata as ``None`` and accept
-             that the run-side topology guard cannot match.
+             (e.g. ``GB99dms.xml``) is not identifiable as a named model,
+             but a resulting GB force is detected after the build and recorded
+             as ``implicit_solvent="custom"``. Downstream run tools inherit
+             that metadata value.
         pablo_auto_download: Allow OpenFF Pablo to auto-download missing CCD
             definitions during topology loading. Pass ``False`` for known
             local/offline systems where PDBFile fallback is preferable to a
@@ -226,13 +231,16 @@ def build_openmm_system(
 
     Returns: dict with ``success``, ``errors``, ``warnings``, plus on
     success ``system_xml``, ``topology_pdb``, ``state_xml``,
-    ``minimization_report``, ``num_atoms``, ``num_residues``,
+    ``minimization_report``, ``topology_validation_file``, ``num_atoms``,
+    ``num_residues``, ``system_net_charge_e``, and
     ``forcefield_provenance``.
     """
     result: Dict[str, Any] = {
         "success": False,
         "errors": [],
         "warnings": [],
+        "statistics": {},
+        "topology_notes": [],
         "parameters": {
             "forcefield_xml": list(forcefield_xml or []),
             "nonbonded_method": nonbonded_method,
@@ -252,17 +260,22 @@ def build_openmm_system(
     # marks the node as failed so the DAG never sees a half-built artifact.
     def _emit_failure(payload: Dict[str, Any]) -> Dict[str, Any]:
         if _node_mode:
-            from mdclaw._node import fail_node
-            fail_node(
-                job_dir, node_id,
-                errors=payload.get("errors") or [payload.get("message", "build_openmm_system failed")],
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                payload,
+                default_error="build_openmm_system failed",
             )
         return payload
+
+    def _stage(stage: str) -> None:
+        _record_topology_build_stage(job_dir, node_id, stage)
 
     # In node mode the topo node owns the artifact location; auto-resolve the
     # input PDB from the prep ancestor when the user didn't supply one
     # explicitly. ``begin_node`` flips the node into ``running`` so subsequent
-    # failures can be surfaced via fail_node().
+    # failures can be surfaced via fail_node_from_result().
     if _node_mode:
         from mdclaw._node import (
             begin_node,
@@ -415,14 +428,6 @@ def build_openmm_system(
 
     result["parameters"]["implicit_solvent"] = canonical_implicit
 
-    try:
-        import openmmforcefields  # noqa: F401
-    except ImportError:
-        return _emit_failure(create_tool_not_available_error(
-            "openmmforcefields",
-            "Run `conda env update -f environment.yml` to install the openmmforcefields-unification deps",
-        ))
-
     incompat = _check_gb99_openmm_version_compatible(forcefield_xml)
     if incompat:
         result["errors"].append(incompat)
@@ -435,6 +440,7 @@ def build_openmm_system(
     topology_pdb_file = out_dir / f"{output_name}.topology.pdb"
     state_xml_file = out_dir / f"{output_name}.state.xml"
     minimization_report_file = out_dir / f"{output_name}.minimization_report.json"
+    topology_validation_file = out_dir / f"{output_name}.topology_validation.json"
 
     try:
         from openmm import app, unit, XmlSerializer, LangevinIntegrator
@@ -446,6 +452,7 @@ def build_openmm_system(
         return _emit_failure(result)
 
     extra_smiles_pairs: List[tuple[str, str]] = []
+    demotable_warnings: list[str] = []
     for item in additional_smiles or []:
         if not isinstance(item, (list, tuple)) or len(item) != 2:
             result["warnings"].append(
@@ -455,12 +462,15 @@ def build_openmm_system(
             continue
         extra_smiles_pairs.append((str(item[0]), str(item[1])))
 
+    _stage("pablo_load")
     pablo_result = _topology_pablo.load_topology(
         pdb_path,
         extra_smiles=extra_smiles_pairs,
         auto_download=pablo_auto_download,
     )
     result["warnings"].extend(pablo_result.warnings)
+    demotable_warnings.extend(pablo_result.warnings)
+    result["topology_notes"].extend(pablo_result.warnings)
     omm_topology = pablo_result.topology
     omm_positions = pablo_result.positions
 
@@ -524,10 +534,14 @@ def build_openmm_system(
             "OpenMM normalised on load (HIE and HID as HIS, ASH as ASP, CYX as "
             "CYS, WAT as HOH) remain normalised in topology.pdb")
 
+    _stage("modeller_prepare")
     modeller = Modeller(omm_topology, omm_positions)
+    patch_summary: Dict[str, Any] = {}
     try:
         modeller.addExtraParticles(ff)
+        patch_summary["add_extra_particles_completed"] = True
     except Exception as exc:  # noqa: BLE001
+        patch_summary["add_extra_particles_completed"] = False
         result["warnings"].append(
             f"addExtraParticles failed (continuing without virtual sites): "
             f"{type(exc).__name__}: {exc}"
@@ -546,6 +560,7 @@ def build_openmm_system(
     if hmr:
         create_system_kwargs["hydrogenMass"] = 4.0 * unit.amu
 
+    _stage("system_generator_create_system")
     try:
         system = ff.createSystem(modeller.topology, **create_system_kwargs)
     except Exception as exc:  # noqa: BLE001
@@ -589,6 +604,7 @@ def build_openmm_system(
             "also pass --implicit-solvent custom."
         )
 
+    _stage("initial_minimization")
     try:
         integrator = LangevinIntegrator(
             300 * unit.kelvin, 1.0 / unit.picosecond, 2.0 * unit.femtoseconds
@@ -674,12 +690,53 @@ def build_openmm_system(
         },
     }
 
+    topology_validation = _build_topology_validation_report(
+        topology=modeller.topology,
+        system=system,
+        position_count=position_count,
+        minimization=minimization_report["minimization"],
+        box_dimensions=(
+            {"periodic": True}
+            if nonbonded_method in ("PME", "Ewald", "CutoffPeriodic")
+            else None
+        ),
+        canon_implicit=canonical_implicit,
+        pablo_used=pablo_result.used_pablo,
+        pablo_guardrail_codes=pablo_result.guardrail_codes,
+        patch_summary=patch_summary,
+        disulfide_bonds=None,
+        manual_disulfide_added_count=0,
+        amber_variant_restore=None,
+        non_authoritative_notes=result["topology_notes"],
+    )
+    result["topology_validation"] = topology_validation
+    topology_validation_file.write_text(
+        json.dumps(topology_validation, indent=2, default=str),
+        encoding="utf-8",
+    )
+    result["topology_validation_file"] = str(topology_validation_file)
+    if topology_validation["status"] != "passed":
+        result["code"] = "topology_validation_failed"
+        result["errors"].append(
+            "Final topology validation failed: "
+            f"core={topology_validation['core']['status']}."
+        )
+        return _emit_failure(result)
+    if demotable_warnings:
+        demote_set = set(demotable_warnings)
+        result["warnings"] = [
+            warning for warning in result["warnings"]
+            if warning not in demote_set
+        ]
+    result["topology_notes"] = _unique_messages(result["topology_notes"])
+
     # Coerce Pablo's int residue.id to str so PDBFile.writeFile(keepIds=True)
     # doesn't choke on `len(int_id)`.
     for res in modeller.topology.residues():
         if not isinstance(res.id, str):
             res.id = str(res.id)
 
+    _stage("serialization")
     try:
         topology_buffer = io.StringIO()
         PDBFile.writeFile(
@@ -716,8 +773,21 @@ def build_openmm_system(
         )
         return _emit_failure(result)
 
+    _stage("collect_provenance")
     sha256_table: Dict[str, str] = {}
     for xml_path in forcefield_xml:
+        try:
+            import openmmforcefields
+
+            ff_root = Path(openmmforcefields.__file__).parent / "ffxml"
+            candidate = ff_root / xml_path
+            if candidate.is_file():
+                digest = _hash_file(candidate)
+                if digest:
+                    sha256_table[xml_path] = digest
+                continue
+        except Exception:  # noqa: BLE001
+            pass
         candidate = Path(xml_path)
         if candidate.is_file():
             digest = _hash_file(candidate)
@@ -772,6 +842,7 @@ def build_openmm_system(
 
     num_atoms = modeller.topology.getNumAtoms()
     num_residues = sum(1 for _ in modeller.topology.residues())
+    system_net_charge_e = _system_net_charge_e(system)
 
     result.update({
         "success": True,
@@ -780,11 +851,20 @@ def build_openmm_system(
         "state_xml": str(state_xml_file),
         "minimization_report": str(minimization_report_file),
         "minimization": minimization_report["minimization"],
+        "topology_validation": topology_validation,
+        "topology_notes": result["topology_notes"],
         "num_atoms": num_atoms,
         "num_residues": num_residues,
+        "system_net_charge_e": system_net_charge_e,
         "forcefield_provenance": provenance,
+        "solvent_type": solvent_type,
+        "statistics": {
+            "num_atoms": num_atoms,
+            "num_residues": num_residues,
+        },
         "code": "openmm_system_built",
     })
+    provenance["system_net_charge_e"] = system_net_charge_e
 
     # ``amber_metadata.json`` is the historical name of the topology metadata
     # contract consumed by MDDataBench.  Two campaign attempts completed a
@@ -792,24 +872,22 @@ def build_openmm_system(
     # a valid XML triple.  Every topology builder now emits the same envelope;
     # custom XML remains identified by provenance rather than being called an
     # Amber force field.
-    water_names = ("tip3p-fb", "tip4p-fb", "tip4pew", "tip5p", "tip3p",
-                   "opc3", "opc", "spce")
-    xml_text = " ".join(str(item).lower() for item in forcefield_xml)
-    result["parameters"]["water_model"] = next(
-        (name for name in water_names if name in xml_text), None)
     result["forcefield_provenance"].setdefault(
         "openmm_xml", list(forcefield_xml))
     metadata_file = out_dir / "amber_metadata.json"
-    metadata_file.write_text(json.dumps(result, indent=2, default=str))
     result["amber_metadata"] = str(metadata_file)
+    metadata_file.write_text(json.dumps(result, indent=2, default=str))
+
+    _stage("completed")
 
     if _node_mode:
-        from mdclaw._node import complete_node
+        from mdclaw._node import complete_node, update_job_summaries
         artifacts = {
             "system_xml": f"artifacts/{output_name}.system.xml",
             "topology_pdb": f"artifacts/{output_name}.topology.pdb",
             "state_xml": f"artifacts/{output_name}.state.xml",
             "minimization_report": f"artifacts/{output_name}.minimization_report.json",
+            "topology_validation": f"artifacts/{output_name}.topology_validation.json",
             "amber_metadata": "artifacts/amber_metadata.json",
         }
         # The min/eq/prod resolver reads ``metadata.implicit_solvent``,
@@ -825,10 +903,28 @@ def build_openmm_system(
                 "system_artifact_kind": "openmm_system_xml",
                 "forcefield_provenance": provenance,
                 "forcefield_xml": list(forcefield_xml),
+                "water_model": (
+                    result["parameters"].get("water_model")
+                    if solvent_type == "explicit"
+                    else None
+                ),
                 "implicit_solvent": canonical_implicit,
                 "solvent_type": solvent_type,
                 "hmr": bool(hmr),
                 "minimization": result.get("minimization"),
+                "topology_validation": result.get("topology_validation"),
+                "topology_notes": result.get("topology_notes"),
+            },
+        )
+        update_job_summaries(
+            job_dir,
+            params={
+                "solvation_type": solvent_type,
+                "water_model": (
+                    result["parameters"].get("water_model")
+                    if solvent_type == "explicit"
+                    else None
+                ),
             },
         )
 

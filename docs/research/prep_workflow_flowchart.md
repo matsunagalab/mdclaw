@@ -275,10 +275,11 @@ flowchart TD
   C --> D["Pablo load with optional additional_smiles"]
   D --> E["ForceField.createSystem"]
   E --> F["short minimization unless disabled"]
-  F --> G["same system.xml + topology.pdb + state.xml + minimization_report.json"]
+  F --> G["system.xml + topology.pdb + state.xml + minimization_report.json"]
+  G --> H["final topology_validation.json"]
 ```
 
-`build_openmm_system(...)` starts at `mdclaw/openmm_system_server.py:175`.
+`build_openmm_system(...)` is implemented in `mdclaw/openmm_system/build.py`.
 It is intentionally less opinionated than `build_amber_system`: the user
 brings XMLs that are already trusted, while MDClaw still emits the same atomic
 artifact triple for downstream run tools.

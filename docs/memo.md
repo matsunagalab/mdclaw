@@ -7,6 +7,22 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-27 — Closed the custom-XML topology-builder contract drift
+
+`build_openmm_system` remains the research escape hatch, but now reuses the
+curated builder's final topology validation, system net-charge calculation,
+topology-build stage breadcrumbs, result/metadata shapes, and structured node
+failure path. Its `amber_metadata.json` records its own path before writing,
+and package-relative openmmforcefields XMLs receive the same SHA-256 provenance
+as curated bundles. The existing source-residue-name stamping behavior remains
+unchanged; this work did not transplant Amber-specific variant restoration or
+curated force-field guardrails.
+
+The unconditional runtime import gate for `openmmforcefields` was removed as a
+separate cleanup: arbitrary OpenMM-native or absolute-path XML builds do not
+need that package. Package-relative XMLs supplied by openmmforcefields still
+work when the optional package is installed and are hashed for provenance.
+
 ## 2026-08-26 — Reviewing the terminal route: two wrong measurements
 
 Verification notes for the MODELLER terminal work, kept because both of the

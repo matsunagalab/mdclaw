@@ -331,8 +331,10 @@ signature, update the relevant section here and the matching skill examples.
 
 - `build_openmm_system(...)`: research-mode escape hatch — accepts
   arbitrary OpenMM ForceField XML files plus optional ligand SMILES and
-  emits the same modern artifact triple. Its short topology-time initial
-  relaxation has the same `scope="topology_initial_relaxation"` and
+  emits the same modern artifact triple. It also emits the same final
+  `topology_validation` report used by `build_amber_system`; a failed core
+  artifact check returns `topology_validation_failed`. Its short topology-time
+  initial relaxation has the same `scope="topology_initial_relaxation"` and
   `satisfies_min_node_contract=false` markers as `build_amber_system`; it is
   not a replacement for a `min` node. No FF×water guardrail matrix;
   users supply XML they already trust. Implicit solvent has two
@@ -344,13 +346,16 @@ signature, update the relevant section here and the matching skill examples.
   `implicit_solvent_xml_missing` / `implicit_solvent_xml_ambiguous`.
   (b) **External GB XML** (e.g. the Greener group's `GB99dms.xml`) —
   loadable as arbitrary OpenMM XML, but `forcefield_catalog` cannot
-  canonicalize a non-catalog GB XML. `metadata.implicit_solvent` stays
-  `None` and the run-side topology guard cannot validate the build vs
-  runtime match; the user owns XML correctness, GB-force presence, and
-  build/run consistency. Out-of-version checks (e.g. `GB99dms.xml`
+  canonicalize a non-catalog GB XML to a named model. When the built System
+  carries a GB force, the builder records `metadata.implicit_solvent="custom"`;
+  downstream run tools inherit that value and verify that a GB force is present.
+  The user still owns the external XML's scientific correctness.
+  Out-of-version checks (e.g. `GB99dms.xml`
   needs OpenMM ≥ 8.0) still fire via existing guards. Like
   `build_amber_system`, this builder accepts `pablo_auto_download=False` for
-  known local/offline topology loads.
+  known local/offline topology loads. Successful results and node metadata use
+  the curated-builder key shapes for `statistics`, `system_net_charge_e`,
+  `forcefield_provenance`, `topology_notes`, and topology-build stage history.
 
 ## `simulation/` (registry name `md_simulation`)
 
@@ -512,4 +517,3 @@ signature, update the relevant section here and the matching skill examples.
 ## `evidence/`
 
 - `generate_md_evidence_report(...)`: JSON evidence summary for one job.
-

@@ -31,6 +31,7 @@ a vacuum system.
   / `implicit_solvent_xml_ambiguous`.
 - External GB XML (third-party, e.g. the Greener group's `GB99dms.xml`) is an
   advanced escape hatch through `build_openmm_system`. MDClaw cannot canonicalize
-  a non-catalog GB XML, so `metadata.implicit_solvent` stays `None` and the
-  run-side topology guard cannot validate the build/run match — the user manages
-  XML correctness, GB-force presence, and build/run consistency.
+  a non-catalog GB XML to a named model. If the built System carries a GB force,
+  the builder records `metadata.implicit_solvent="custom"`; `min`, `eq`, and
+  `prod` inherit it and verify that the saved System carries a GB force. The user
+  remains responsible for the external XML's scientific correctness.
