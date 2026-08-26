@@ -141,3 +141,15 @@ scripts/umbrella_build.py
 scripts/umbrella_mbar.py
 scripts/umbrella_compare.py
 scripts/run_step6_analysis.sh
+scripts/run_analysis_dag.sh
+scripts/strip_solvent.py
+scripts/umbrella_equilibration.py
+
+# SLURM submission scripts, their logs, and the local job/cluster state a
+# campaign leaves in the working directory.
+*.sbatch
+*_[0-9]*.out
+*_[0-9]*.err
+/.mdclaw_jobs.jsonl
+/.mdclaw_cluster.json
+/job_metadata.json

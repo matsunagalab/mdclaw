@@ -48,6 +48,25 @@ system, and removing it changes what is being simulated. "Neutral cysteine" on
 its own is not an instruction to break a bond: a disulfide-bonded CYX is
 neutral, and so is a free CYS.
 
+### A disulfide inside a rebuilt gap
+
+Detection reads the structure as deposited, so a disulfide whose cysteines are
+*unresolved* is not found: there is no SSBOND record for it and no distance to
+measure. If those residues are later rebuilt, the bond does not appear on its
+own, and the two systems you are comparing can end up differing by a disulfide
+that has nothing to do with the variable under study.
+
+Measured on TAS1R2-TAS1R3: 9UTC resolves CYS363-CYS366 on chain A at 2.04 A,
+while 9UT9 leaves 341-367 unresolved. Detection found 17 bonds in one and 16 in
+the other, and the apo cysteines came out of the rebuild 11.65 A apart.
+
+When one structure in a comparison resolves a disulfide the other does not,
+pass the full set explicitly to **both** with `--disulfide-pairs`, taking the
+better-resolved deposit as the reference. MODELLER is told about the bonds and
+builds the loop with them restrained, so the geometry is right at the point the
+bond is formed. Declaring the bond without that only hands minimisation a bond
+stretched several angstroms past equilibrium.
+
 ## Standard states versus predicted ones
 
 `--ph` alone runs propka, which predicts each titratable side chain's charge

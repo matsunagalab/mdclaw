@@ -350,22 +350,6 @@ def overlay_source_resnames(pdb_path, source_pdb, atom_indices=None) -> bool:
 # chain terminus when the cause is a residue in the middle. And
 # ``Modeller.addHydrogens`` cannot see which hydrogens are already attached to
 # an unbonded residue, so it adds a second complete set.
-# pdb2pqr writes Amber protonation-state residue names, and openmm.app.PDBFile
-# normalizes most of them back to a parent it knows: HID/HIE/HIP -> HIS,
-# CYX -> CYS, ASH -> ASP, GLH -> GLU. LYN (neutral lysine) and CYM
-# (deprotonated cysteine) have no such alias. PDBFile keeps those names, finds
-# no residue definition for them, and so builds *no* bonds for the residue at
-# all -- not its internal ones, and not the peptide bond to the residue before
-# it. (The bond to the residue after it survives, because that one is declared
-# by the *next* residue's own "-C" definition, which is why the damage looks
-# one-sided.)
-#
-# Two things then go wrong downstream, both quietly. A force field rejects the
-# residue *before* the variant with "the set of externally bonded atoms is
-# missing 1 C atom. Is the chain missing a terminal capping group?", naming the
-# chain terminus when the cause is a residue in the middle. And
-# ``Modeller.addHydrogens`` cannot see which hydrogens are already attached to
-# an unbonded residue, so it adds a second complete set.
 def resolve_residue_site(candidates, chain, resnum, icode):
     """Pick the one residue a disulfide endpoint names, or say why it cannot.
 

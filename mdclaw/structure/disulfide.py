@@ -24,6 +24,8 @@ import re  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import List, Optional, Dict  # noqa: E402
 
+from mdclaw.structure.pdb_utils import resolve_residue_site  # noqa: E402
+
 from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,
 )
@@ -72,17 +74,39 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
     Runs unconditionally after merge; it is a no-op whenever the
     auto-detection path agrees with pdb2pqr (the common case).
     """
+    path = Path(pdb_file)
+    lines = path.read_text().splitlines()
+
+    # Every cysteine in the file, keyed the way a bond names one. Resolving
+    # against this rather than a bare (chain, resnum) is what keeps an
+    # insertion-coded neighbour from being renamed instead: MODELLER can now
+    # patch the right Cys, and renaming a different one here would put the bond
+    # and the CYX label on two different residues.
+    cysteines: dict = {}
+    for line in lines:
+        if len(line) >= 27 and line.startswith(("ATOM", "HETATM")):
+            if line[17:20].strip() in {"CYS", "CYX", "CYM"}:
+                try:
+                    cysteines[(line[21].strip(), int(line[22:26].strip()),
+                               line[26].strip())] = True
+                except ValueError:
+                    continue
+
     target_cyx: set = set()
+    unresolved: list = []
     for bond in disulfide_bonds:
         for key in ("cys1", "cys2"):
             entry = bond.get(key) or {}
             chain = entry.get("chain")
             resnum = entry.get("resnum")
-            if chain is not None and resnum is not None:
-                target_cyx.add((chain, int(resnum)))
-
-    path = Path(pdb_file)
-    lines = path.read_text().splitlines()
+            if chain is None or resnum is None:
+                continue
+            site, problem = resolve_residue_site(
+                cysteines, chain, resnum, entry.get("icode"))
+            if site is None:
+                unresolved.append(problem)
+                continue
+            target_cyx.add(site)
     out: List[str] = []
     renamed_to_cys = 0
     renamed_to_cyx = 0
@@ -97,13 +121,13 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
             except ValueError:
                 out.append(line)
                 continue
-            key = (chain, resnum)
+            key = (chain, resnum, line[26].strip())
             final_resname = resname
             if resname == "CYX" and key not in target_cyx:
                 line = line[:17] + "CYS" + line[20:]
                 final_resname = "CYS"
                 renamed_to_cys += 1
-            elif resname == "CYS" and key in target_cyx:
+            elif resname in {"CYS", "CYM"} and key in target_cyx:
                 line = line[:17] + "CYX" + line[20:]
                 final_resname = "CYX"
                 renamed_to_cyx += 1
@@ -123,6 +147,12 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
         "renamed_to_cys": renamed_to_cys,
         "renamed_to_cyx": renamed_to_cyx,
         "stripped_hg_from_cyx": stripped_hg,
+        # Reported rather than raised: the caller wraps this in a broad
+        # `except Exception` that turns failures into warnings, and an endpoint
+        # that could not be resolved must not be one. Leaving it unreported also
+        # lets an existing CYX be demoted back to CYS on the strength of a bond
+        # nobody could locate.
+        "unresolved_endpoints": unresolved,
     }
 
 
@@ -159,11 +189,18 @@ METAL_SULFUR_ANGSTROM = 3.5
 
 
 def _pair_key(pair: dict) -> frozenset:
-    """A disulfide identified by its two (chain, resnum) ends, unordered."""
-    return frozenset({
-        (pair["cys1"]["chain"], pair["cys1"]["resnum"]),
-        (pair["cys2"]["chain"], pair["cys2"]["resnum"]),
-    })
+    """A disulfide identified by its two ends, unordered.
+
+    The insertion code is part of the end: without it, A270 and A270A read as
+    the same cysteine, and the "one sulfur cannot hold two bonds" check would
+    reject a legitimate pair or accept an impossible one.
+    """
+    def end(entry: dict) -> tuple:
+        icode = entry.get("icode")
+        return (entry["chain"], entry["resnum"],
+                None if icode is None else str(icode).strip())
+
+    return frozenset({end(pair["cys1"]), end(pair["cys2"])})
 
 
 def _bridging_metal(pos1, pos2, metal_atoms) -> Optional[tuple]:
@@ -305,6 +342,10 @@ def _detect_disulfide_candidates(structure_path: Path) -> list[dict]:
                         cys_residues.append({
                             "chain": chain.name,
                             "resnum": res.seqid.num,
+                            # Without it, two cysteines sharing a number become
+                            # indistinguishable downstream and the pair cannot
+                            # be resolved back to the sulfurs it was measured on.
+                            "icode": (res.seqid.icode or "").strip(),
                             "resname": res.name,
                             "sg_pos": sg_atom.pos,
                         })
@@ -337,11 +378,13 @@ def _detect_disulfide_candidates(structure_path: Path) -> list[dict]:
                         "cys1": {
                             "chain": cys1["chain"],
                             "resnum": cys1["resnum"],
+                            "icode": cys1.get("icode", ""),
                             "resname": cys1["resname"],
                         },
                         "cys2": {
                             "chain": cys2["chain"],
                             "resnum": cys2["resnum"],
+                            "icode": cys2.get("icode", ""),
                             "resname": cys2["resname"],
                         },
                         "distance_angstrom": round(distance, 2),
@@ -410,11 +453,13 @@ def _parse_ssbond_records(structure_path: Path) -> list[dict]:
                 "cys1": {
                     "chain": p1.chain_name,
                     "resnum": p1.res_id.seqid.num,
+                    "icode": (p1.res_id.seqid.icode or "").strip(),
                     "resname": p1.res_id.name,
                 },
                 "cys2": {
                     "chain": p2.chain_name,
                     "resnum": p2.res_id.seqid.num,
+                    "icode": (p2.res_id.seqid.icode or "").strip(),
                     "resname": p2.res_id.name,
                 },
                 "distance_angstrom": None,

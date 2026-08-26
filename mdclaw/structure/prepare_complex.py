@@ -58,7 +58,13 @@ pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 
 from mdclaw.structure.clean_ligand import clean_ligand  # noqa: E402
-from mdclaw.structure.clean_protein import _prepare_standard_nucleic, clean_protein  # noqa: E402
+from mdclaw.structure.clean_protein import (  # noqa: E402
+    _disulfide_pair_sites,
+    _prepare_standard_nucleic,
+    _validate_declared_disulfides,
+    clean_protein,
+    repair_complex_missing_residues,
+)
 from mdclaw.structure.disulfide import _merge_disulfide_pairs, _reconcile_cyx_cys_in_pdb  # noqa: E402
 from mdclaw.structure.merge import _build_nucleic_residue_mapping, _build_residue_mapping_for_type, _enrich_chain_identity_map, _index_prepared_component_sources, merge_structures  # noqa: E402
 from mdclaw.structure.pdb_utils import _apply_component_disposition_to_split_result, _component_disposition_payload, _normalize_prepare_solvent_type  # noqa: E402
@@ -128,6 +134,80 @@ def _missing_residue_confirmation_block(
         "detection": detections,
         "terminal_unmodeled": terminal_unmodeled,
     }
+
+
+def flatten_disulfide_pairs(disulfide_pairs) -> list:
+    """The nested public schema in the flat shape ``clean_protein`` consumes.
+
+    One function so the two ends cannot drift: reading only ``cys1``/``cys2``
+    downstream once made every declared bond vanish silently, and a hand-written
+    flat record in a test would not have noticed the shapes disagreeing.
+
+    The insertion code travels with the endpoint. ``None`` means the caller did
+    not state one -- which is not the same as an explicit blank, and only the
+    former is ambiguous where several residues share a number.
+    """
+    flat = []
+    for pair in disulfide_pairs or []:
+        one = pair.get("cys1") or {}
+        two = pair.get("cys2") or {}
+        flat.append({
+            "chain1": one.get("chain"),
+            "resnum1": one.get("resnum"),
+            "icode1": one.get("icode"),
+            "chain2": two.get("chain"),
+            "resnum2": two.get("resnum"),
+            "icode2": two.get("icode"),
+            "form_bond": pair.get("form_bond", True),
+        })
+    return flat
+
+
+def _disulfide_pairs_in_merged_frame(disulfide_pairs, chain_mapping_entries):
+    """Rewrite declared pairs into the merged structure's chain ids.
+
+    The merge may rename chains, and a pair still written in author chains would
+    then match nothing -- every bond quietly "out of scope" and unverified.
+    Returns ``(pairs, unmapped)``; ``unmapped`` names the pairs whose chains the
+    mapping does not cover.
+    """
+    if not disulfide_pairs:
+        return [], []
+    renamed: dict[str, str] = {}
+    for entry in chain_mapping_entries:
+        source = str(entry.get("source_chain_id") or "").strip()
+        target = str(entry.get("md_chain_id") or "").strip()
+        if source and target:
+            renamed.setdefault(source[:1], target[:1])
+
+    pairs, unmapped = [], []
+    for pair in disulfide_pairs:
+        sites = _disulfide_pair_sites(pair)
+        if sites is None:
+            continue
+        moved = []
+        for chain_id, resnum, icode in sites:
+            target = renamed.get(chain_id, chain_id if not renamed else None)
+            if target is None:
+                break
+            moved.append({"chain": target, "resnum": resnum,
+                          "icode": icode if icode is not None else ""})
+        if len(moved) == 2:
+            pairs.append({"cys1": moved[0], "cys2": moved[1]})
+        else:
+            unmapped.append(
+                f"{sites[0][0]}:{sites[0][1]}-{sites[1][0]}:{sites[1][1]}"
+            )
+    return pairs, unmapped
+
+
+def _merged_chain_ids(pdb_file) -> set:
+    """The chain ids a merged PDB actually carries."""
+    ids = set()
+    for line in Path(pdb_file).read_text(errors="ignore").splitlines():
+        if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 22:
+            ids.add(line[21])
+    return ids
 
 
 def _remap_missing_residue_record(
@@ -1368,14 +1448,21 @@ def prepare_complex(
         claimed_by: dict = {}
         for pair in disulfide_bonds:
             for end in ((pair.get("cys1") or {}), (pair.get("cys2") or {})):
-                key = (end.get("chain"), end.get("resnum"))
-                if key == (None, None):
+                icode = end.get("icode")
+                # The insertion code is part of the sulfur's identity: without
+                # it A52 and A52A read as one cysteine, and two legitimate bonds
+                # are refused as one sulfur holding both.
+                key = (end.get("chain"), end.get("resnum"),
+                       None if icode is None else str(icode).strip())
+                if key[0] is None and key[1] is None:
                     continue
                 claimed_by.setdefault(key, []).append(pair)
         overbonded = {key: pairs for key, pairs in claimed_by.items() if len(pairs) > 1}
         if overbonded:
-            named = ", ".join(f"{chain}:{resnum}" for chain, resnum in sorted(
-                overbonded, key=lambda k: (str(k[0]), str(k[1]))))
+            named = ", ".join(f"{chain}:{resnum}{icode or ''}"
+                              for chain, resnum, icode in sorted(
+                                  overbonded,
+                                  key=lambda k: (str(k[0]), str(k[1]), str(k[2] or ""))))
             result["errors"].append(
                 f"Disulfide pairing gives more than one bond to {named}; a cysteine "
                 "holds at most one disulfide")
@@ -1669,6 +1756,10 @@ def prepare_complex(
             )
             result.setdefault("workflow_recommendation", recommendation)
 
+        # Declared before the protein branch: the merge below verifies these
+        # whether or not this structure has any protein at all.
+        sa_disulfide_pairs = None
+
         # Step 3: Process proteins
         if process_proteins and split_result.get("protein_files"):
             logger.info(f"Step 3: Processing {len(split_result['protein_files'])} protein(s)...")
@@ -1676,7 +1767,6 @@ def prepare_complex(
             # Assemble the disulfide + histidine override lists that the
             # per-chain clean_protein step actually consumes. Precedence is
             # direct CLI args > structure_analysis > auto-detect.
-            sa_disulfide_pairs = None
             sa_histidine_states = None
             sa_protonation_states = None
 
@@ -1684,16 +1774,7 @@ def prepare_complex(
                 # Convert user's nested cys1/cys2 schema into the flat shape
                 # clean_protein expects. An empty list intentionally disables
                 # disulfide formation in cleaning too.
-                sa_disulfide_pairs = [
-                    {
-                        "chain1": p.get("cys1", {}).get("chain"),
-                        "resnum1": p.get("cys1", {}).get("resnum"),
-                        "chain2": p.get("cys2", {}).get("chain"),
-                        "resnum2": p.get("cys2", {}).get("resnum"),
-                        "form_bond": True,
-                    }
-                    for p in disulfide_pairs
-                ]
+                sa_disulfide_pairs = flatten_disulfide_pairs(disulfide_pairs)
                 logger.info(f"User override: {len(sa_disulfide_pairs)} disulfide pair(s)")
 
             if histidine_states:
@@ -1805,6 +1886,31 @@ def prepare_complex(
                     )
                     result.setdefault("metal_protonation_applied", []).extend(pending)
 
+            # Rebuild internal gaps for the whole complex before the per-chain
+            # pass. A gap at a chain-chain interface modeled one chain at a time
+            # is built into space the partner chain occupies; the chains about
+            # to be merged are the assembly, so MODELLER gets them together.
+            complex_repair = repair_complex_missing_residues(
+                split_result["protein_files"],
+                method=missing_residue_method,
+                work_dir=Path(split_result["protein_files"][0]).parent,
+                disulfide_pairs=sa_disulfide_pairs,
+            )
+            result["warnings"].extend(complex_repair["warnings"])
+            if not complex_repair["success"]:
+                result["errors"].extend(complex_repair["errors"])
+                result["code"] = complex_repair["code"]
+                result["overall_status"] = "failed"
+                return result
+            repaired_by_file = complex_repair["outputs_by_source"]
+            if complex_repair["applied"]:
+                result["complex_missing_residue_repair"] = {
+                    "applied": True,
+                    "chain_ids": complex_repair["chain_ids"],
+                    "summary": complex_repair["summary"],
+                    "model_file": complex_repair["model_file"],
+                }
+
             for protein_file in split_result["protein_files"]:
                 # Find chain info for this file
                 chain_id = None
@@ -1828,7 +1934,7 @@ def prepare_complex(
 
                 try:
                     clean_result = clean_protein(
-                        pdb_file=protein_file,
+                        pdb_file=repaired_by_file.get(protein_file, protein_file),
                         ph=ph,
                         cap_termini=cap_termini,
                         n_terminal_cap=n_terminal_cap,
@@ -2240,6 +2346,37 @@ def prepare_complex(
                 )
                 
                 if merge_result["success"]:
+                    # The one place every declared disulfide is present at once.
+                    # A repair run chain by chain defers the inter-chain bonds --
+                    # neither run holds both ends -- so without this check a bond
+                    # that never formed reaches the topology unnoticed.
+                    # Defined only on the protein path; a nucleic- or
+                    # glycan-only structure reaches the merge without it.
+                    merged_pairs, unmapped = _disulfide_pairs_in_merged_frame(
+                        sa_disulfide_pairs,
+                        merge_result.get("chain_mapping_entries") or [],
+                    )
+                    merged_disulfides = _validate_declared_disulfides(
+                        Path(merge_result["output_file"]),
+                        merged_pairs,
+                        _merged_chain_ids(merge_result["output_file"]),
+                    )
+                    if unmapped:
+                        # Never "not applicable": a declared bond that cannot be
+                        # located in the merged frame is unverified, and passing
+                        # it silently is the failure this check exists to stop.
+                        merged_disulfides["success"] = False
+                        merged_disulfides["errors"].extend(
+                            f"declared disulfide {entry} could not be located in "
+                            "the merged structure, so it was never verified"
+                            for entry in unmapped
+                        )
+                    result["declared_disulfide_validation"] = merged_disulfides
+                    if not merged_disulfides["success"]:
+                        result["errors"].extend(merged_disulfides["errors"])
+                        result["code"] = "modeller_disulfide_not_formed"
+                        result["overall_status"] = "failed"
+                        return result
                     result["merged_pdb"] = merge_result["output_file"]
                     result["merge_result"] = {
                         "success": True,
@@ -2416,6 +2553,17 @@ def prepare_complex(
                                 f"{reconcile.get('stripped_hg_from_cyx', 0)} HG atoms stripped"
                             )
                             result["cys_cyx_reconciliation"] = reconcile
+                        unresolved = reconcile.get("unresolved_endpoints") or []
+                        if unresolved:
+                            result["cys_cyx_reconciliation"] = reconcile
+                            result["errors"].extend(
+                                f"CYS/CYX reconciliation could not resolve a "
+                                f"declared disulfide endpoint: {problem}"
+                                for problem in unresolved
+                            )
+                            result["code"] = "disulfide_endpoint_unresolvable"
+                            result["overall_status"] = "failed"
+                            return result
                     except Exception as e:
                         result["warnings"].append(
                             f"CYS/CYX reconciliation skipped: {type(e).__name__}: {e}"
@@ -2570,6 +2718,25 @@ def prepare_complex(
             for protein in successful_proteins
             if protein.get("missing_residue_repair")
         ]
+        # A complex-wide repair leaves nothing for the per-chain pass to report:
+        # the chains it hands on have no internal gaps left, so every per-chain
+        # record is empty and 58 rebuilt residues would reach neither the
+        # warnings nor confirmation_needed. Record it here instead, once, in the
+        # shape the rest of this block already understands.
+        complex_repair_record = result.get("complex_missing_residue_repair") or {}
+        if complex_repair_record.get("applied"):
+            summary = complex_repair_record.get("summary") or {}
+            repairs.append({
+                "method": "modeller",
+                "method_requested": missing_residue_method,
+                "method_used": "modeller",
+                "status": "modeled",
+                "scope": "complex",
+                "interface_context": "complex_context",
+                "chain_ids": complex_repair_record.get("chain_ids") or [],
+                **{k: v for k, v in summary.items() if k != "segments"},
+                "segments": summary.get("segments") or [],
+            })
         detections = [
             _remap_missing_residue_record(
                 protein,
@@ -2587,15 +2754,29 @@ def prepare_complex(
             modelled = [r for r in repairs if r.get("method") == "modeller"]
             if modelled:
                 total = sum(int(r.get("total_residues") or 0) for r in modelled)
+                # Count chains, not records: a complex-wide repair is one record
+                # covering several chains, and counting records reported "across
+                # 1 chain(s)" for a two-chain rebuild.
+                repaired_chains = set()
+                for repair in modelled:
+                    ids = repair.get("chain_ids")
+                    if ids:
+                        repaired_chains.update(str(i) for i in ids)
+                    elif repair.get("chain_id") is not None:
+                        repaired_chains.add(str(repair["chain_id"]))
+                    else:
+                        repaired_chains.add(f"_record_{id(repair)}")
                 result.setdefault("warnings", []).append(
                     f"MODELLER rebuilt {total} internal missing residue(s) across "
-                    f"{len(modelled)} chain(s); these coordinates are predicted, "
+                    f"{len(repaired_chains)} chain(s); these coordinates are predicted, "
                     "not experimental"
                 )
-                if len(successful_proteins) > 1:
+                if len(successful_proteins) > 1 and not complex_repair_record.get("applied"):
                     # Each chain is repaired from its own file, so a loop that
                     # packs against a partner chain in the real complex is built
-                    # without ever seeing it.
+                    # without ever seeing it. Only true when the complex-wide
+                    # pass did not run -- saying it after one did would describe
+                    # the opposite of what happened.
                     result.setdefault("warnings", []).append(
                         f"Gaps were rebuilt chain by chain in a {len(successful_proteins)}-chain "
                         "structure: loops near a chain-chain interface were modeled "

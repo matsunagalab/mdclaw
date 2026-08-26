@@ -432,8 +432,12 @@ def test_repair_models_only_the_observed_span(tmp_path, monkeypatch):
 
     assert outcome["applied"] is True
     # ALA GLY SER at the N terminus and TRP MET at the C terminus are excluded;
-    # what is left is the observed span THR..TYR, internal gap included.
-    assert captured["target_sequence"] == "TVLIPFY"
+    # what is left is the observed span THR..TYR, internal gap included. The
+    # span now reaches MODELLER as a written alignment rather than a bare
+    # sequence, so read it back out of the file that was handed over.
+    alignment = Path(captured["alignment_file"]).read_text()
+    target_row = alignment.split(">P1;")[1].splitlines()[2].rstrip("*")
+    assert target_row == "TVLIPFY"
     assert captured["loop_refinement"] is True
     assert captured["template_frame"] is True
     assert captured["random_seed"] == MODELLER_REPAIR_RANDOM_SEED

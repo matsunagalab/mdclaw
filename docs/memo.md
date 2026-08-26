@@ -7,6 +7,414 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-26 — Declaring all disulfides explicitly, and what it exposed
+
+The request was simple: declare every disulfide rather than relying on detection,
+taking 9UTC's 17 as the reference because 9UT9 leaves A363/A366 unresolved. It
+turned into the largest single change of the session, because checking all 17
+found two that were wrong and a third problem underneath them.
+
+### The three findings
+
+| | |
+|---|---|
+| A363-A366 came out **11.65 A** | inside a rebuilt gap, invisible to MODELLER's template-derived restraints |
+| A59-A102 came out **3.53 A** (4.47 A on 9UTC) | observed at 2.03 A in the deposit and moved anyway |
+| observed heavy atoms moved a median **0.28 A**, max **15.37 A** | MODELLER re-optimises the whole model, not just the gaps |
+
+The third explains the second and matters most. Comparative modelling does not
+copy template coordinates; it rebuilds from template-derived restraints, and
+those are weakest beside a gap (A341's TRP side chain: 15.4 A). For apo/holo,
+which leave *different* residues unresolved (58 rebuilt vs 36), that makes the
+model error asymmetric between the two systems being compared.
+
+### What was built
+
+codex's design call, taken: keep the self-template repair and override
+`select_atoms()` as well as `select_loop_atoms()`, so the *base* comparative
+model is restricted to the gaps plus MODELLER's own `insertion_ext=2` anchor.
+Restricting only loop refinement leaves the whole-structure rebuild in place --
+by then it has already happened. A post-hoc splice was rejected (the backbone
+next to a gap moves 1.22 A, so putting it back detaches the loop built against
+it); PDBFixer + loop-refinement-only was right in spirit but loses the alignment
+gaps that say what to refine.
+
+Around that: DISU patches addressed by **model position** (author numbering does
+not exist during modelling), positions resolved by walking the target alignment
+(`resnum - first_observed` is right on 9UT9 and silently wrong with an insertion
+code or a numbering jump), explicit SG-SG restraints (the patch alone was not
+enough), and a postcondition on the output -- every declared pair, 1.8-2.3 A, not
+just the ones near a gap. Insertion codes now travel end to end: detection,
+SSBOND reading, CYX naming, the topology bond, and the "one sulfur, one bond"
+check all key on `(chain, resnum, icode)` through one shared resolver.
+
+### Result
+
+| | apo prep_017 | holo prep_009 |
+|---|---|---|
+| declared disulfides at bonding distance | 17/17 | 17/17 |
+| A363-A366 | 2.05 A (was 11.65) | 2.03 A |
+| observed heavy atoms, rigid motion removed | max 0.0008 A | max 0.0008 A |
+| built loop vs partner chain, <2.5 A | 0 | 0 |
+| built loop vs ligand | — | 8.19 A |
+
+Rebuilding apo with the new code and diffing against the old node atom by atom:
+identical except 19 terminal-cap methyl hydrogens (free rotation, physically
+equivalent) and one HIE tautomer hydrogen. The protein itself did not move.
+
+### Measurement notes worth keeping
+
+Comparing "did the observed atoms move" is harder than it looks, and getting it
+wrong in either direction is easy:
+
+- A naive comparison read **2.19 A**. All of it was symmetry-equivalent atom
+  renaming -- a Glu's OE1/OE2 swapping.
+- After that, **0.033 A** remained. All of it was the template-frame
+  superposition moving the whole molecule (0.024 degrees, 0.016 A), which changes
+  no internal geometry.
+- Removing the best rigid transform: **0.0008 A**, the PDB's own rounding.
+
+So the regression test measures after removing rigid motion, with an absolute
+whole-structure check alongside it -- Kabsch alone would pass a model translated
+fifty angstroms.
+
+### On the tests
+
+Three defects in this round were introduced by the fix for the previous one, and
+two of them were *silent-information-loss paths*, the same class being fixed. The
+schema mismatch that dropped every DISU patch passed 51 tests. The first
+coordinate-preservation test passed with `select_atoms()` deleted.
+
+What caught these was mutation testing, on codex's instruction: delete the
+implementation and confirm the test fails. Now:
+
+- delete `select_atoms()` -> runner contract 2 fail, real MODELLER smoke 2 fail
+  (coordinates move 9.2 A)
+- stringify the patch indices -> runner contract 2 fail
+- read only the nested pair schema -> schema handoff 5 fail
+- stop forwarding pairs on the single-chain path -> 1 fail
+
+Two claims made in this session were wrong and are worth recording as such.
+"Existing studies keep working" did not hold: an artifact naming a lone A52A
+failed, because an insertion code was treated as ambiguous on its own rather than
+only when several residues share a number. And a mutation check reported as
+passing had only exercised `_disulfide_pair_sites`, not the forwarding it claimed
+to cover. Both were found by codex reading the code, not by the tests.
+
+Three pre-existing test failures also surfaced, all from earlier fixes whose
+tests were never updated: the PDB writer inventory (bug #1 added a second write),
+`_reconcile_cyx_cys_in_pdb`'s return shape, and the restraint fixture still using
+`topology_chain_index` after bug #3 moved to atom ranges.
+
+## 2026-08-26 — MODELLER was rebuilding the whole structure, not just the gaps
+
+Asking for all disulfides to be declared explicitly (9UTC's 17 as the reference,
+since 9UT9 leaves A363/A366 unresolved) turned up two failures and then a third,
+larger one behind them.
+
+### What was measured
+
+| bond | before | cause |
+|---|---|---|
+| A363-A366 | **11.65 A** | inside a rebuilt gap, so invisible to MODELLER's template-derived restraints |
+| A59-A102 | **3.53 A** (4.47 A on 9UTC) | observed at 2.03 A in the deposit and pulled open anyway |
+
+The second one did not fit "the loop was rebuilt": both cysteines are observed.
+Comparing every observed atom before and after the repair explained it -- and
+overturned the assumption that a repair only touches the missing residues:
+
+| | median | max | >1 A |
+|---|---|---|---|
+| observed heavy atoms | 0.28 A | **15.37 A** | 559 / 3962 |
+| backbone, away from gaps | 0.18 A | 2.93 A | 15 |
+| backbone, within 3 of a gap | **1.22 A** | 9.65 A | 25 / 48 |
+| side chains | 0.47 A | 15.37 A | 519 |
+
+The worst was A341's TRP side chain at 15.4 A -- the residue immediately before
+the 342-366 gap. MODELLER's comparative modelling does not copy template
+coordinates; it rebuilds the whole model from template-derived restraints, and
+the restraints are weakest next to a gap. So the experimental structure was being
+perturbed everywhere, not only where it was missing.
+
+That matters most for exactly this campaign: apo and holo leave *different*
+residues unresolved (58 rebuilt vs 36), so a whole-structure re-optimisation
+introduces model error that is asymmetric between the two systems being compared.
+
+### What was done
+
+codex's design call, adopted: keep the self-template repair and override
+`select_atoms()` as well as `select_loop_atoms()`, restricting the *base*
+comparative model to the gaps plus MODELLER's own `insertion_ext=2` anchor.
+Restricting only the loop-refinement stage leaves the whole-structure rebuild in
+place, because by then it has already happened. Two alternatives were rejected:
+a post-hoc splice breaks the junction (the backbone there moves 1.22 A, so
+putting it back detaches the loop that was built against it), and PDBFixer +
+loop-refinement-only is right in spirit but loses the alignment gaps that say
+what to refine.
+
+Plus, for the disulfides:
+
+- DISU patches passed to MODELLER, addressed by **model position**. Author
+  numbering does not exist during modelling; it is restored afterwards by the
+  template-frame step. A first attempt passed `"363:A"` as a *string*, which
+  MODELLER reads as a residue identifier rather than an index.
+- Positions resolved by walking the target alignment. `resnum - first_observed`
+  works on 9UT9 and silently addresses the wrong residue as soon as there is an
+  insertion code or a jump in the numbering — for a covalent bond that is worse
+  than no patch, so anything ambiguous now fails closed
+  (`modeller_disulfide_position_unresolvable`).
+- Explicit SG-SG restraints, because the patch alone is not enough: MODELLER had
+  patched A59-A102 itself and still returned it at 3.53 A.
+- A postcondition on the output: every declared pair, 1.8-2.3 A, not just the
+  ones near a gap. A59-A102 went unnoticed precisely because it was far from one.
+
+### Result (9UT9 apo)
+
+| | before | after |
+|---|---|---|
+| declared disulfides at bonding distance | 15/17 | **17/17** |
+| A363-A366 | 11.65 A | **2.05 A** |
+| observed heavy atoms, rigid motion removed | — | **max 0.0008 A, RMSD 0.0005 A** |
+| built loop vs partner chain, <2.5 A | 0 | 0 |
+
+The last measurement needed care. Compared directly, observed atoms still looked
+0.03 A out — and a first pass read 2.19 A, which turned out to be entirely
+symmetry-equivalent atom renaming (a Glu's OE1/OE2 swapping). Removing the best
+rigid transform brought the residual to 0.0008 A, the PDB's own rounding: the
+0.03 A was the template-frame superposition moving the whole molecule (0.024
+degrees, 0.016 A), which changes no internal geometry at all. The regression test
+(`internal_geometry_deviation`) therefore measures after removing rigid motion;
+an absolute threshold would fail a structure whose geometry is untouched.
+
+### Note
+
+Three of the defects fixed in this round were introduced by the fix for the
+previous one, and one -- the schema mismatch that silently dropped every DISU
+patch — passed 51 tests. The postcondition above exists because of that: a
+declared bond that quietly fails to form is the same class of failure as
+everything else fixed today.
+
+## 2026-08-26 — Complex-context repair: codex review found four real defects, and holo's gap sits 6.6 A from the ligand
+
+Four defects codex found reading the implementation (not the plan -- the plan
+review had passed). Two of them were holes my own fix had opened.
+
+- **`preserve_input_protonation` broke.** The pre-pass substitutes the repaired
+  PDB as `clean_protein`'s input, so input protonation states were read off
+  MODELLER's output. MODELLER builds from a one-letter sequence, so every
+  ASH/GLH/LYN/HID was already gone. Fixed by restoring the source file's residue
+  names into the repaired chains by residue key at split time; rebuilt residues
+  keep MODELLER's standard name.
+- **The complex repair vanished from `confirmation_needed`.** `repairs` is built
+  from each chain's own `missing_residue_repair`, and after a complex pass those
+  are empty -- 58 predicted residues reached neither the warnings nor the HITL
+  block. Fixed by recording the complex repair into `repairs` directly. Fixing it
+  surfaced a second problem: the "gaps were rebuilt chain by chain ... without
+  the partner chain present" warning was still being emitted **after a
+  complex-context run**, i.e. the record said the opposite of what happened.
+- **Preflight failures were hard errors.** `modeller_repair_reference_sequence_unavailable`
+  is raised *before* MODELLER runs (a partner chain with no SEQRES); the
+  per-chain path could still have repaired the well-described chains. Now
+  deferred, with the "MODELLER ran and failed" case still hard.
+- **The variant key did not match the codebase's.** Restoration rebuilt the key
+  from OpenMM's interpreted residue id while the map was built from raw columns;
+  a hybrid-36 `A000` returns as `10000`, so a valid structure would have been
+  *rejected*. Now restored by residue **order** -- the parse happens on text
+  written in the same function, so position is exact and the two-spellings
+  problem disappears entirely.
+
+Also fixed before review: the first version of the loader **failed open**. When a
+name could not be restored it left the parent name in place, which hands the
+force field a charged lysine wearing a LYN label. It raises now.
+
+Worth naming the pattern: the LYN/CYM bond loss turned out to affect **three**
+call sites, and the third (`protonation.py`) was surfaced only by *working around*
+the bug -- pinning `A:46` with `--protonation-states` made `addHydrogens` duplicate
+every hydrogen but HZ1, because an unbonded residue hides its own hydrogens. And
+of the six defects in this round, three were silent-information-loss paths that
+**the fix itself introduced**. Fixing this failure mode reproduces it.
+
+### apo result (prep_010, before the review fixes)
+
+| | per-chain | complex |
+|---|---|---|
+| B built loop -> chain A, closest | 0.42 A | 3.31 A |
+| pairs < 2.5 A | 27 | 0 |
+| A:46 / A:50 | LYN / HID | LYS / HIE (pinned) |
+| LYN or CYM left | — | 0 |
+
+Closest interface contact is VAL56 CG1 - ASN130 ND2 at 2.98 A, about 0.27 A
+inside the C/N van der Waals sum -- a mild contact minimisation resolves, not the
+0.42 A overlap it replaced.
+
+### holo: the gap is next to the binding site
+
+The complex pass fuses **protein** chains only, so sucralose is absent while loops
+are built. Measured on 9UTC, distance from each gap's flanking observed residues
+to the ligand's heavy atoms:
+
+| gap | missing | to ligand |
+|---|---|---|
+| chain A 44->58 | 13 | **6.6 A** |
+| chain A 342->357 | 14 | 21.8 A |
+| chain B 356->366 | 9 | 39.1 A |
+
+So the chain-chain problem has a ligand-shaped twin here, and it lands on the one
+place this campaign cannot afford to distort: the sucralose site. Note apo and
+holo do not share gap positions (apo rebuilds 58 residues, holo about 30), so the
+two systems' modelled regions are not the same set.
+
+Plan: build holo, then **measure the built loop against the ligand** rather than
+pre-emptively restructuring. `modeller_from_alignment` already exposes `hetatm`,
+so including the ligand in the template is available if the measurement calls for
+it.
+
+## 2026-08-26 — pdb2pqr's LYN/CYM silently lose every bond, and PROPKA reads modelled coordinates
+
+Two findings from the same failure, worth keeping apart.
+
+### LYN/CYM lose their bonds (MDClaw defect, fixed)
+
+`openmm.app.PDBFile` aliases most Amber protonation-state names back to a parent
+it knows -- `HID`/`HIE`/`HIP` -> `HIS`, `CYX` -> `CYS`, `ASH` -> `ASP`,
+`GLH` -> `GLU`. **`LYN` and `CYM` have no alias.** PDBFile keeps the name, finds
+no residue definition, and builds *no bonds at all* for the residue: not the
+peptide bond to the residue before it, and not its internal ones. The bond to the
+*next* residue survives, because that one is declared by the next residue's own
+`-C` entry -- which is why the damage looks one-sided. Measured on a 3-residue
+ALA-X-ALA probe:
+
+| pdb2pqr name | name after load | bonded to previous |
+|---|---|---|
+| HID/HIE/HIP | HIS | yes |
+| CYX | CYS | yes |
+| ASH / GLH | ASP / GLU | yes |
+| **LYN** | **LYN** | **no** |
+| **CYM** | **CYM** | **no** |
+
+The force field then rejects the residue *before* the variant with "the set of
+externally bonded atoms is missing 1 C atom. Is the chain missing a terminal
+capping group?" -- pointing at the chain terminus when the cause is residue 46 in
+the middle of it. Code `terminal_cap_hydrogen_completion_failed`.
+
+`pdb_utils.py:190-200` already stated the alias fact correctly. What was never
+followed through is the consequence.
+
+**Fix** (`terminal_caps.py:_load_pdb_with_variant_bonds`, used at both PDBFile
+read sites): parse under the parent name so every standard bond is built, then
+restore the variant name on the Topology *before the force field sees it*. The
+ordering is the whole point, and the obvious version is wrong -- measured:
+
+| approach | bonds | protonation |
+|---|---|---|
+| as-is | internal 0, peptide 1 of 2 | — (fails) |
+| rename, restore name *after* output | correct | **HZ1 added: neutral Lys becomes charged** |
+| add the peptide bond only, keep name | internal still 0 | — (fails) |
+| **rename -> load -> restore name -> force field** | internal 20, peptide 2 of 2 | **unchanged** |
+
+ff19SB carries real `LYN`/`CYM` templates, so once the name is back the match is
+exact and no hydrogen moves. `Topology.loadBondDefinitions` was rejected: it
+mutates process-wide class state and would need every internal bond redeclared.
+Confirmed independently by codex on the same file, same numbers.
+
+### PROPKA is reading MODELLER's coordinates (open, not a code defect)
+
+pdb2pqr runs *after* the missing-residue repair, so PROPKA assigns pKa using
+predicted loop geometry. This is measurable. Of the 38 residues MODELLER built in
+9UT9 chain A, exactly two carried non-standard protonation, and **both flipped**
+when the loop was rebuilt in complex context instead of chain by chain:
+
+| residue | per-chain repair | complex repair |
+|---|---|---|
+| 46 | LYS (+1) | LYN (0) |
+| 50 | HIE | HID |
+
+A formal charge moved by 1 on a residue whose coordinates are entirely predicted,
+which propagates to the neutralising ion count. PROPKA is not measuring the
+protein there; it is measuring the model. Lys pKa is ~10.5 -- a neutral lysine at
+pH 7 needs an extreme environment, and this one sits in a freshly built loop.
+
+Running PROPKA *before* the repair was considered and rejected: it does not remove
+the bias, it inverts it -- observed residues flanking a gap are then evaluated as
+far more solvent-exposed than they are. pdb2pqr also places hydrogens, not just
+predicts pKa, so splitting the two is real surgery.
+
+Taken instead: pin the variant calls that sit on predicted coordinates to standard
+states with the existing `--protonation-states`, recorded in the node label and
+conditions. No pipeline change, and the override is visible in provenance. For
+apo that is `{"A:46": "LYS", "A:50": "HIE"}`. Holo needs the same check against
+its own gap positions.
+
+Note `--conditions` will not carry a free-text rationale: the node contract checks
+that every declared condition was actually applied by the tool, and rejected
+`protonation_pin_rationale` with `node_execution_context_invalid`. Correct
+behaviour; the rationale belongs here and in the label.
+
+## 2026-08-26 — Missing loops at a chain-chain interface were built through the partner chain
+
+Fixing bug #5 (MODELLER repair rejecting its own model) made the apo TAS1R2-TAS1R3
+prep succeed: 58 internal residues rebuilt, 16 disulfides kept, both chains gap-free
+and correctly author-numbered. Each chain was right on its own. The merged complex
+was not.
+
+`prepare_complex` repairs chain by chain (`prepare_complex.py:1808` loops over
+`split_result["protein_files"]` and calls `clean_protein` inside the loop), so
+MODELLER never sees the partner chain. Chain B's rebuilt 48-52 loop was modeled
+straight into chain A:
+
+- B LEU51 CD1 -> A LEU156 CB: **0.42 A** (CD2 0.57, CG 1.06)
+- B LEU51 O -> A LEU156 CA: 2.25 A -- backbone, so side-chain repacking would not
+  have fixed it
+- 27 heavy-atom pairs under 2.5 A, 130 under 4.0 A
+
+Nothing caught it. `merge.py` and `prepare_complex.py` contain no clash check at
+all; the only signal was a warning saying loops "were modeled without the partner
+chain present", which is true whether or not a clash resulted. Note this is a
+missing feature, not the silent-wrong-value family of bugs #1-#4.
+
+**Fix: repair the whole complex in one MODELLER pass.** The assembly is not
+inferred -- it is the caller's own `--select-chains`, i.e. the chains about to be
+merged. Measured on 9UT9 apo, per-chain vs complex-context:
+
+| | per chain | complex |
+|---|---|---|
+| B built loop -> chain A, closest | 0.42 A | 4.48 A |
+| pairs < 2.5 A | 27 | 0 |
+| pairs < 4.0 A | 130 | 0 |
+| A built loop -> chain B, closest | 6.31 A | 4.34 A |
+
+Author numbering still restored exactly (A 26-553, B 23-556).
+
+Most of the lower stack was already multi-chain ready and this was not obvious:
+`genesis/modeller.py:124` already skips `/` chain separators when mapping model
+residues back to template numbering, and `_validate_modeller_repair_model`
+already keys on `(chain, resnum, icode)` across all chains. What actually blocked
+it was small and specific:
+
+- `structure:...:FIRST:@:LAST:@` does **not** span chains. `@` stops at the first
+  chain break, so MODELLER read 490 residues against a 1004-residue alignment and
+  rejected it. A multi-chain repair must name the chains: `FIRST:A:LAST:B`.
+- `_template_alignment_row` accumulated a global residue offset across chains but
+  emitted no `/` separators.
+- `clean_protein` hard-failed on `len(sequences) != 1`.
+
+Deliberate choices worth recording:
+
+- The PDBFixer-vs-MODELLER threshold is still applied **per chain**; the complex
+  pass runs when any one chain resolves to MODELLER. Counting gaps over the fused
+  complex would have changed which structures escalate.
+- The pre-pass **defers** to the old per-chain path when it cannot probe or fuse
+  (unreadable coordinates, duplicate chain ids) rather than failing the run. It
+  runs before any per-chain error handling exists, and a first attempt turned a
+  per-chain failure into a whole-run crash -- caught by
+  `test_failed_protein_chain_blocks_overall_success_and_partial_merge`.
+- A MODELLER repair that ran and *failed* is a hard error, never a silent
+  fallback.
+
+Caveat: this is correct when the selected chains are the biological unit. Select
+a crystal-contact neighbour and MODELLER will now respect that contact when
+building loops. Still strictly better than building through it, but not free.
+
 ## 2026-08-26 — Choosing which mdclaw a compute node runs, and two ways I got it wrong first
 
 Closed the last of the four: the sbatch `submit_job` generates bound the repo

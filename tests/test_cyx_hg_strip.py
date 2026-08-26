@@ -120,5 +120,8 @@ END
         "renamed_to_cys": 0,
         "renamed_to_cyx": 0,
         "stripped_hg_from_cyx": 0,
+        # Reported so the caller can fail on it: a declared endpoint that could
+        # not be identified must not pass as a warning.
+        "unresolved_endpoints": [],
     }
     assert p.read_text() == before

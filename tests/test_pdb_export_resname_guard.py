@@ -51,7 +51,8 @@ EXPECTED = {
     # through the shared render helper, which restores. It used to write
     # directly and restored nothing, so HIE came out HIS and WAT came out HOH --
     # from the tool documented as the way to produce a benchmark submission.
-    "structure/terminal_caps.py": (1, "restore"),       # cap H completion
+    # Two: the pre-pdb2pqr cap preparation and the cap-hydrogen completion.
+    "structure/terminal_caps.py": (2, "restore"),       # cap H completion
     "solvation/water.py": (1, "restore"),               # openmm solvation fallback (by prefix)
     "solvation/membrane.py": (1, "restore"),            # patch-relax PDB export
     "sidechain_packer.py": (1, "restore"),              # HPacker mutation output

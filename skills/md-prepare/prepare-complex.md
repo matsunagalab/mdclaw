@@ -80,8 +80,46 @@ Important outputs:
   method, how many residues in how many segments, and for MODELLER the random
   seed and the template's checksum. Rebuilt residues are predicted coordinates;
   report them to the user rather than treating them as measured.
+- `complex_missing_residue_repair`: present when the gaps of every selected
+  protein chain were rebuilt in one MODELLER pass over the whole complex
+  instead of chain by chain. Carries `chain_ids`, the segment list, and the
+  total rebuilt. See "What the rebuild can and cannot see" below.
 - `residue_mapping`: source-to-merged nucleic residue mapping.
 - `glycan_metadata` and `glycan_linkages`: GLYCAM topology inputs.
+
+## What the rebuild can and cannot see
+
+A rebuilt loop is placed by what surrounds it, so what is *present* while it is
+built decides where it goes. Three things follow.
+
+**Chains.** Gaps are rebuilt for all selected protein chains together, so a loop
+at a chain-chain interface is modeled with its neighbours there. This is not an
+inference about the biological unit: it is exactly the chains `--select-chains`
+named. Select the biological assembly, not whatever the asymmetric unit happens
+to hold. Measured on 9UT9: rebuilt chain by chain, chain B's 48-52 loop landed
+0.42 A from chain A -- backbone included -- and nothing checked; rebuilt in
+complex context the same loop sits 3.3 A away.
+
+The corollary is a real caveat. Select two chains that only touch as a crystal
+contact and MODELLER will now respect that contact while building. Better than
+building straight through it, but not free, so the chain selection is a
+scientific choice worth stating rather than defaulting.
+
+**Ligands.** Only protein chains are fused for the rebuild; ligands, glycans and
+ions are not present while loops are built. A gap beside a binding site can
+therefore be modeled into it. Check rather than assume: measure the rebuilt
+residues against the ligand afterwards, and treat anything under about 3 A as a
+rebuild to redo with the ligand in the template. On 9UTC, chain A's 44-58 gap
+flanks the sucralose site at 6.6 A and the loop happened to build away from it,
+ending 8.8 A clear -- a measurement, not a guarantee.
+
+**Comparisons.** Two deposits of the same system rarely leave the same residues
+unresolved, so the rebuilt regions differ between them. Report which residues
+are predicted in each, and keep predicted coordinates out of any collective
+variable or observable the comparison rests on. Protonation is decided on those
+coordinates too, so a pKa call inside a rebuilt loop is a property of the model,
+not of the protein -- pin it with `--protonation-states` rather than letting the
+two systems diverge.
 
 `prepare_complex` records ligand chemistry. `build_amber_system` handles
 topology and ligand partial charges.

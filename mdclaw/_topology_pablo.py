@@ -204,8 +204,11 @@ def add_disulfide_bonds(
     if not disulfide_pairs:
         return 0
 
-    # Build a lookup keyed by (chain_id, residue_number) → SG atom.
-    sg_index: dict[tuple[str, int], Any] = {}
+    # Keyed the way a bond names a residue, insertion code included. A bare
+    # (chain, number) picks whichever insertion-coded neighbour came first, so
+    # the bond could land on a different cysteine than the one MODELLER patched
+    # and the CYX naming marked.
+    sg_index: dict[tuple[str, int, str], Any] = {}
     for residue in topology.residues():
         if (residue.name or "").upper() not in {"CYS", "CYX"}:
             continue
@@ -214,9 +217,10 @@ def add_disulfide_bonds(
             resnum = int(residue.id)
         except (TypeError, ValueError):
             continue
+        icode = str(getattr(residue, "insertionCode", "") or "").strip()
         for atom in residue.atoms():
             if (atom.name or "").upper() == "SG":
-                sg_index[(chain_id, resnum)] = atom
+                sg_index[(chain_id, resnum, icode)] = atom
                 break
 
     existing_bonds = {
@@ -224,7 +228,7 @@ def add_disulfide_bonds(
         for atom1, atom2 in topology.bonds()
     }
 
-    def _pair_endpoint(pair: dict[str, Any], current_key: str, legacy_key: str) -> tuple[str, int] | None:
+    def _pair_endpoint(pair: dict[str, Any], current_key: str, legacy_key: str) -> tuple | None:
         current = pair.get(current_key)
         if isinstance(current, dict):
             chain = current.get("chain")
@@ -235,8 +239,10 @@ def add_disulfide_bonds(
                 return None
             chain = current.get("chain_id")
             resnum = current.get("residue_number")
+        icode = current.get("icode") if isinstance(current, dict) else None
         try:
-            return (chain or "", int(resnum))
+            return (chain or "", int(resnum),
+                    None if icode is None else str(icode).strip())
         except (TypeError, ValueError):
             return None
 
@@ -246,8 +252,12 @@ def add_disulfide_bonds(
         key_b = _pair_endpoint(pair, "cys2", "residue_b")
         if key_a is None or key_b is None:
             continue
-        sg_a = sg_index.get(key_a)
-        sg_b = sg_index.get(key_b)
+        from mdclaw.structure.pdb_utils import resolve_residue_site
+
+        site_a, _ = resolve_residue_site(sg_index, key_a[0], key_a[1], key_a[2])
+        site_b, _ = resolve_residue_site(sg_index, key_b[0], key_b[1], key_b[2])
+        sg_a = sg_index.get(site_a) if site_a else None
+        sg_b = sg_index.get(site_b) if site_b else None
         if sg_a is None or sg_b is None:
             continue
         bond_key = frozenset({

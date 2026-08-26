@@ -55,17 +55,28 @@ def test_solute_heavy_uses_prep_components_and_excludes_added_environment(tmp_pa
     _add_component(topology, "POPC", [("C1", element.carbon)])
     _add_component(topology, "VS", [("EP", None)])
 
+    # Components are addressed by atom range, not by chain index: a chain index
+    # is a position in whichever topology is being read, and solvation inserts
+    # chains ahead of the solute, so the same index later names water.
     chain_map = tmp_path / "chain_identity_map.json"
+    sizes = [2, 2, 1, 2, 1, 1]          # atoms per prepared component, in order
+    starts, cursor = [], 0
+    for size in sizes:
+        starts.append((cursor, cursor + size))
+        cursor += size
+    identities = [
+        {"source_chain_type": "protein"},
+        {"source_chain_type": "nucleic", "source_nucleic_subtype": "RNA"},
+        {"source_chain_type": "nucleic", "source_nucleic_subtype": "DNA"},
+        {"prepared_fragment_role": "ligand"},
+        {"source_chain_type": "glycan"},
+        {"source_chain_type": "ion"},
+    ]
     chain_map.write_text(json.dumps({
         "components": [
-            {"topology_chain_index": 0, "source_chain_type": "protein"},
-            {"topology_chain_index": 1, "source_chain_type": "nucleic",
-             "source_nucleic_subtype": "RNA"},
-            {"topology_chain_index": 2, "source_chain_type": "nucleic",
-             "source_nucleic_subtype": "DNA"},
-            {"topology_chain_index": 3, "prepared_fragment_role": "ligand"},
-            {"topology_chain_index": 4, "source_chain_type": "glycan"},
-            {"topology_chain_index": 5, "source_chain_type": "ion"},
+            {**identity, "topology_chain_index": index,
+             "atom_index_start": start, "atom_index_end_exclusive": end}
+            for index, (identity, (start, end)) in enumerate(zip(identities, starts))
         ]
     }))
 

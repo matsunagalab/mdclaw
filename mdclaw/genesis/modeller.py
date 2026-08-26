@@ -51,6 +51,49 @@ def _effective_alignment_path(alignment_path) -> Path:
     return aligned if aligned.exists() else path
 
 
+def internal_geometry_deviation(reference, candidate, keys) -> dict:
+    """How far ``candidate`` moved from ``reference``, ignoring rigid motion.
+
+    A repaired model is superposed back onto its template, and that fit is a
+    compromise once the gaps differ: measured on 9UT9, it left every observed
+    atom apparently 0.03 A out while the structure's internal geometry was
+    untouched. Removing the best rigid transform first is what makes "did these
+    atoms actually move" answerable -- after it, the same comparison came back
+    at 0.0008 A, which is the PDB's own rounding.
+
+    ``keys`` selects which atoms to compare, as ``(chain, resnum, icode, name)``.
+    Returns ``{"count", "max_angstrom", "rmsd_angstrom", "rotation_degrees",
+    "translation_angstrom"}``.
+    """
+    import numpy as np
+
+    left = np.array([reference[key] for key in keys], dtype=float)
+    right = np.array([candidate[key] for key in keys], dtype=float)
+    if len(left) < 3:
+        raise ValueError(
+            f"need at least 3 atoms to separate rigid motion, got {len(left)}"
+        )
+    left_centre, right_centre = left.mean(axis=0), right.mean(axis=0)
+    centred_left, centred_right = left - left_centre, right - right_centre
+    u, _, vt = np.linalg.svd(centred_right.T @ centred_left)
+    rotation = u @ np.diag([1.0, 1.0, float(np.sign(np.linalg.det(u @ vt)))]) @ vt
+    fitted = centred_right @ rotation + left_centre
+    deviation = np.linalg.norm(left - fitted, axis=1)
+    angle = np.degrees(np.arccos(np.clip((np.trace(rotation) - 1.0) / 2.0, -1.0, 1.0)))
+    return {
+        "count": int(len(keys)),
+        "max_angstrom": float(deviation.max()),
+        "rmsd_angstrom": float(np.sqrt((deviation ** 2).mean())),
+        "rotation_degrees": float(angle),
+        # The transform's own translation, not the difference of centroids:
+        # the candidate is rotated about its centroid first, so the shift that
+        # actually maps one onto the other is left_centre - R(right_centre).
+        "translation_angstrom": float(
+            np.linalg.norm(left_centre - (right_centre @ rotation))
+        ),
+    }
+
+
 def _pdb_residue_order(path: Path):
     """Ordered residue keys per chain plus CA coordinates, in file order.
 
@@ -402,6 +445,7 @@ if license_key:
 
 from modeller import Alignment, Environ, Model, Selection, log
 from modeller.automodel import AutoModel, LoopModel, assess
+from modeller import features, forms, physical
 
 
 class _MissingResidueLoopModel(LoopModel):
@@ -413,7 +457,76 @@ class _MissingResidueLoopModel(LoopModel):
     from the config.
     """
 
-    def select_loop_atoms(self):
+    def special_patches(self, aln):
+        """Declare the disulfides the caller knows about, by model position.
+
+        MODELLER derives disulfide restraints from the template, so a bond whose
+        cysteines are *inside* a gap is invisible to it: nothing holds the two
+        SG atoms together and the loop is built with them wherever the backbone
+        lands. Measured on 9UT9 chain A, CYS363-CYS366 -- a bond 9UTC resolves at
+        2.04 A -- came out 11.65 A apart. Declaring it downstream cannot repair
+        that; it only hands minimisation a bond nine angstroms past equilibrium.
+
+        Positions, not residue numbers: while modelling, residues are numbered
+        over the target sequence and the deposit's numbering is restored only
+        afterwards.
+        """
+        for first, second in getattr(self, "mdclaw_disulfide_patches", ()):
+            try:
+                self.patch(
+                    residue_type="DISU",
+                    residues=(self.residues[first], self.residues[second]),
+                )
+            except Exception as exc:                       # noqa: BLE001
+                raise RuntimeError(
+                    f"could not apply the DISU patch at model positions "
+                    f"{first} - {second}: {exc}"
+                ) from exc
+
+    def special_restraints(self, aln):
+        """Hold every declared disulfide at bonding distance.
+
+        The DISU patch alone does not survive loop refinement. Loop selection
+        extends a couple of residues past each gap, so a cysteine just outside
+        the gap is refined as part of the loop while its partner stays fixed:
+        measured on 9UT9, CYS59-CYS102 went in at the deposit's 2.03 A and came
+        out at 3.53 A (4.47 A on 9UTC), with the patch applied. An explicit
+        SG-SG restraint is what actually keeps observed disulfide geometry.
+        """
+        patches = getattr(self, "mdclaw_disulfide_patches", ())
+        if not patches:
+            return
+        rsr = self.restraints
+        for first, second in patches:
+            try:
+                one = self.residues[first].atoms["SG"]
+                two = self.residues[second].atoms["SG"]
+            except Exception as exc:                       # noqa: BLE001
+                raise RuntimeError(
+                    f"could not find SG atoms for the disulfide at model "
+                    f"positions {first} - {second}: {exc}"
+                ) from exc
+            rsr.add(forms.Gaussian(
+                group=physical.xy_distance,
+                feature=features.Distance(one, two),
+                mean=2.05,
+                stdev=0.05,
+            ))
+
+    def _mdclaw_gap_selection(self):
+        """The gap loops plus a short anchor, and nothing else.
+
+        MODELLER optimizes every atom by default, so filling a few loops
+        rewrites the whole structure: measured on 9UT9, observed heavy atoms
+        moved a median 0.28 A, and 15.4 A at the residue next to a gap. For
+        adding missing loops to an experimental structure that is the wrong
+        default -- and for comparing two deposits that leave *different*
+        residues unresolved, it makes the model error asymmetric between them.
+
+        The anchor is MODELLER's own `insertion_ext=2`: two residues each side,
+        enough for the loop to close against real geometry and few enough that
+        almost nothing observed is touched.
+        """
         aln = self.read_alignment()
         loops = self.loops(
             aln,
@@ -428,6 +541,17 @@ class _MissingResidueLoopModel(LoopModel):
                 "No gap loops detected for refinement; nothing to model"
             )
         return sel
+
+    def select_atoms(self):
+        """Restrict the *base* comparative model to the gaps as well.
+
+        Limiting only the loop-refinement stage leaves the whole-structure
+        rebuild in place, because that has already happened by then.
+        """
+        return self._mdclaw_gap_selection()
+
+    def select_loop_atoms(self):
+        return self._mdclaw_gap_selection()
 
 
 def _jsonable(value):
@@ -478,6 +602,13 @@ if config.get("multichain"):
 if config.get("loop_refinement"):
     # Build the base comparative model, then run dedicated loop refinement
     # over every gap loop (the missing residues).
+    # Integers, deliberately: ``model.residues[337]`` is the 338th residue,
+    # while ``model.residues["337"]`` looks up a residue *named* 337. The
+    # numbering during modelling runs over the target sequence, so only the
+    # positional form means what the caller computed.
+    _MissingResidueLoopModel.mdclaw_disulfide_patches = tuple(
+        (int(a), int(b)) for a, b in (config.get("disulfide_patches") or [])
+    )
     model = _MissingResidueLoopModel(
         env,
         alnfile=config["alignment_file"],
@@ -563,6 +694,7 @@ def modeller_from_alignment(
     loop_min_length: int = 1,
     loop_max_length: int = 30,
     template_frame: bool = False,
+    disulfide_patches: Optional[list] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
@@ -793,6 +925,12 @@ def modeller_from_alignment(
         "loop_models": loop_models,
         "loop_min_length": loop_min_length,
         "loop_max_length": loop_max_length,
+        # Integers all the way to the runner: MODELLER's ResidueList treats an
+        # int as a 0-based position and a string as a PDB-style identifier like
+        # "8:A", so a stringified 337 is not position 337.
+        "disulfide_patches": [
+            [int(a), int(b)] for a, b in (disulfide_patches or [])
+        ],
     }
     config_path.write_text(json.dumps(config, indent=2))
 

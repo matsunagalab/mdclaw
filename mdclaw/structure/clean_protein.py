@@ -82,7 +82,7 @@ _NUCLEIC_5P_TERMINAL_PHOSPHATE_OXYGENS = {
     "O3P",
 }
 
-from mdclaw.structure.pdb_utils import _pdb_atom_count, _pdb_hydrogen_count, _pdb_residue_names, _read_pdb_unique_residues, restore_residue_numbering_from_reference  # noqa: E402
+from mdclaw.structure.pdb_utils import _pdb_atom_count, _pdb_hydrogen_count, _pdb_residue_names, _read_pdb_unique_residues, resolve_residue_site, restore_residue_numbering_from_reference  # noqa: E402
 from mdclaw.structure.protonation import _apply_protonation_states_with_modeller, _extract_histidine_states, _extract_input_protonation_state_overrides, _extract_non_default_protonation_states, _merge_input_protonation_state_overrides, _merge_protonation_states, _normalize_protonation_state_overrides  # noqa: E402
 from mdclaw.structure.terminal_caps import _complete_terminal_cap_hydrogens_with_modeller, _prepare_terminal_caps_for_pdb2pqr, _resolve_terminal_cap_settings, detect_input_terminal_caps, strip_input_terminal_caps  # noqa: E402
 
@@ -521,9 +521,649 @@ def _validate_modeller_repair_model(
     return result
 
 
+def _template_alignment_row(target_sequences, internal, chains) -> str:
+    """The template row of a repair alignment: observed residues, gaps as dashes.
+
+    ``internal`` is PDBFixer's ``missingResidues`` restricted to internal gaps,
+    keyed by ``(chain_index, residue_index)`` where the residue index counts
+    *observed* residues in that chain and says where the missing run is
+    inserted. Walking the observed residues and emitting one dash per missing
+    residue at each insertion point reproduces the template row exactly, with no
+    inference about where a gap boundary falls.
+
+    ``target_sequences`` is one target span per chain, in ``chains`` order. The
+    row is built per chain and joined with ``/``, which is MODELLER's chain
+    break; a single-chain repair therefore yields a row with no separator.
+    """
+    rows = []
+    for chain_index, chain in enumerate(chains):
+        observed = len(list(chain.residues()))
+        target = target_sequences[chain_index]
+        inserts = {
+            int(res_index): len(residues)
+            for (ci, res_index), residues in internal.items()
+            if ci == chain_index
+        }
+        skeleton = []
+        for position in range(observed + 1):
+            skeleton.append("-" * inserts.get(position, 0))
+            if position < observed:
+                skeleton.append("?")  # placeholder; filled from target below
+        skeleton = "".join(skeleton)
+
+        # Overlay this chain's own letters on the non-dash columns. Its target
+        # span is the complete one, so letters at dash columns belong to the gap
+        # and are dropped here by construction.
+        out, ti = [], 0
+        for ch in skeleton:
+            if ch == "-":
+                out.append("-")
+            else:
+                out.append(target[ti] if ti < len(target) else "X")
+            ti += 1
+        rows.append("".join(out))
+    return "/".join(rows)
+
+
+def _write_repair_alignment(
+    path,
+    *,
+    target_code: str,
+    target_sequence: str,
+    template_code: str,
+    template_row: str,
+    first_chain: str = "@",
+    last_chain: str = "@",
+) -> None:
+    """Write a fully specified PIR alignment for a self-template repair.
+
+    ``first_chain`` / ``last_chain`` name the span MODELLER reads out of the
+    template. ``@`` means "wherever it starts/ends", which is right for a single
+    chain but stops at the first chain break: given a two-chain template it
+    reads only the first chain and then rejects the alignment for having more
+    residues than the structure. A multi-chain repair must name the chains.
+    """
+    if len(template_row) != len(target_sequence):
+        raise ValueError(
+            "repair alignment rows differ in length: "
+            f"template {len(template_row)} vs target {len(target_sequence)}"
+        )
+    from mdclaw.genesis.modeller import _wrap_modeller_sequence
+
+    path.write_text(
+        "\n".join([
+            f">P1;{target_code}",
+            f"sequence:{target_code}:::::target:synthetic:-1.00:-1.00",
+            f"{_wrap_modeller_sequence(target_sequence)}*",
+            f">P1;{template_code}",
+            f"structureX:{template_code}:FIRST:{first_chain}:LAST:{last_chain}"
+            ":template:synthetic:-1.00:-1.00",
+            f"{_wrap_modeller_sequence(template_row)}*",
+            "",
+        ])
+    )
+
+
+# Failures raised before MODELLER is ever invoked. They say the fused complex
+# could not be described, not that the modelling went wrong, and the per-chain
+# path can still repair the chains that are well described.
+_COMPLEX_REPAIR_PREFLIGHT_CODES = frozenset({
+    "modeller_repair_reference_sequence_unavailable",
+})
+
+
+def repair_complex_missing_residues(
+    protein_files,
+    method: str = "auto",
+    work_dir=None,
+    disulfide_pairs: list | None = None,
+) -> dict:
+    """Rebuild every chain's internal gaps in one MODELLER pass over the complex.
+
+    Repairing chain by chain models each loop as if it were alone: a gap at a
+    chain-chain interface then gets built straight through space the partner
+    chain occupies, and nothing downstream looks. Given the chains that are
+    about to be merged, the assembly is not a guess -- it is the caller's own
+    chain selection -- so the whole complex goes to MODELLER together and each
+    loop is built with its neighbours present.
+
+    The per-chain PDBFixer/MODELLER thresholds are applied per chain, exactly as
+    the single-chain path applies them, and the complex pass runs when any one
+    chain resolves to MODELLER. Returns ``{"applied", "success", "outputs",
+    "chain_ids", "summary", "errors", "warnings", "code"}``; ``applied`` is
+    False when no chain needs MODELLER, which leaves the normal per-chain path
+    in charge.
+    """
+    outcome = {
+        "applied": False,
+        "success": True,
+        "outputs": {},
+        "outputs_by_source": {},
+        "chain_ids": [],
+        "summary": None,
+        "model_file": None,
+        "errors": [],
+        "warnings": [],
+        "code": None,
+    }
+    paths = [Path(path) for path in protein_files]
+    if len(paths) < 2:
+        return outcome
+
+    # Deciding and fusing happen before any per-chain error handling exists, so
+    # a structure that cannot even be read here must not take the whole
+    # preparation down: defer, and let the per-chain pass report it the way it
+    # always has, one chain at a time.
+    try:
+        per_chain = [_resolve_missing_residue_method(method, path) for path in paths]
+    except Exception as exc:  # noqa: BLE001 - deferring, not swallowing
+        outcome["warnings"].append(
+            "Could not decide the missing-residue method for the complex "
+            f"({type(exc).__name__}: {exc}); falling back to per-chain repair"
+        )
+        return outcome
+    if not any(decision["method"] == "modeller" for decision in per_chain):
+        return outcome
+
+    work = Path(work_dir) if work_dir else paths[0].parent
+    try:
+        work.mkdir(parents=True, exist_ok=True)
+        combined = work / "complex_repair_input.pdb"
+        fused = _combine_chains_for_repair(paths, combined)
+    except Exception as exc:  # noqa: BLE001 - deferring, not swallowing
+        outcome["warnings"].append(
+            f"Could not fuse the chains for a complex repair ({type(exc).__name__}: "
+            f"{exc}); falling back to per-chain repair"
+        )
+        return outcome
+    if not fused["success"]:
+        outcome["warnings"].append(
+            "Chains could not be fused for a complex-wide repair "
+            f"({'; '.join(fused['errors'])}); falling back to per-chain repair"
+        )
+        return outcome
+
+    repair = _repair_missing_residues_with_modeller(
+        combined, disulfide_pairs=disulfide_pairs)
+    outcome["warnings"].extend(repair["warnings"])
+    if not repair["success"]:
+        if repair["code"] in _COMPLEX_REPAIR_PREFLIGHT_CODES:
+            # Nothing was modeled: the fused complex simply did not describe
+            # itself well enough to try, typically because a partner chain
+            # carries no SEQRES. Chain by chain, the chains that *do* have a
+            # reference sequence are still repairable, so this is a reason to
+            # step aside rather than to fail the node. A MODELLER run that
+            # started and failed is a different thing and stays hard below.
+            outcome["warnings"].append(
+                "Complex-wide missing-residue repair could not start "
+                f"({'; '.join(repair['errors'])}); falling back to per-chain repair"
+            )
+            return outcome
+        outcome["success"] = False
+        outcome["code"] = repair["code"] or "complex_missing_residue_repair_failed"
+        outcome["errors"].extend(repair["errors"])
+        return outcome
+    if not repair["applied"]:
+        # Every gap turned out to be terminal; leave the per-chain path alone.
+        return outcome
+
+    chain_to_source = dict(zip(fused["chain_ids"], (str(path) for path in paths)))
+    split = _split_repaired_complex(repair["model_file"], chain_to_source)
+    if not split["success"]:
+        outcome["success"] = False
+        outcome["code"] = "complex_missing_residue_repair_failed"
+        outcome["errors"].extend(split["errors"])
+        return outcome
+
+    outcome["applied"] = True
+    outcome["input_residue_names_restored"] = split.get("input_residue_names_restored", 0)
+    outcome["outputs"] = split["outputs"]
+    # Keyed by the caller's own input path so it never has to re-derive which
+    # chain came from which file.
+    outcome["outputs_by_source"] = {
+        chain_to_source[chain_id]: output
+        for chain_id, output in split["outputs"].items()
+    }
+    outcome["chain_ids"] = fused["chain_ids"]
+    outcome["summary"] = repair["summary"]
+    outcome["model_file"] = repair["model_file"]
+    outcome["operation"] = repair["operation"]
+    outcome["validation"] = repair["validation"]
+    outcome["warnings"].append(
+        f"Internal missing residues were rebuilt for all {len(paths)} chain(s) in a "
+        "single MODELLER pass over the complex, so each loop was modeled with the "
+        "other chains present"
+    )
+    return outcome
+
+
+def _combine_chains_for_repair(input_paths, out_path) -> dict:
+    """Fuse per-chain split files into one multi-chain PDB for a complex repair.
+
+    SEQRES is carried over from every input because that is what tells PDBFixer
+    a residue is missing at all; the ATOM records follow in input order, one TER
+    per chain. Returns ``{"success", "chain_ids", "errors"}``. Chain ids must be
+    distinct across the inputs -- the fused file addresses chains by that single
+    column, so a reused id would silently merge two chains into one.
+    """
+    seqres: list[str] = []
+    atoms: list[str] = []
+    chain_ids: list[str] = []
+    errors: list[str] = []
+    for path in input_paths:
+        lines = Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
+        chain_atoms = [line for line in lines if line.startswith(("ATOM", "HETATM"))]
+        if not chain_atoms:
+            errors.append(f"{Path(path).name} has no ATOM records")
+            continue
+        ids = sorted({line[21] for line in chain_atoms})
+        if len(ids) != 1:
+            errors.append(f"{Path(path).name} holds {len(ids)} chain ids {ids}, expected 1")
+            continue
+        if ids[0] in chain_ids:
+            errors.append(f"chain id {ids[0]!r} appears in more than one input file")
+            continue
+        chain_ids.append(ids[0])
+        seqres.extend(line for line in lines if line.startswith("SEQRES"))
+        atoms.extend(chain_atoms)
+        atoms.append("TER")
+    if errors:
+        return {"success": False, "chain_ids": chain_ids, "errors": errors}
+    Path(out_path).write_text("\n".join(seqres + atoms + ["END", ""]))
+    return {"success": True, "chain_ids": chain_ids, "errors": []}
+
+
+def _split_repaired_complex(model_path, chain_to_source: dict) -> dict:
+    """Cut a repaired complex back into per-chain files.
+
+    Each output keeps its source file's SEQRES so the later per-chain pass still
+    sees the reference sequence -- without it the terminal handling downstream
+    would read the repaired chain as having no unresolved residues at all.
+    Returns ``{"success", "outputs": {chain_id: path}, "errors"}``.
+    """
+    model_lines = Path(model_path).read_text(encoding="utf-8", errors="ignore").splitlines()
+    by_chain: dict[str, list[str]] = {}
+    for line in model_lines:
+        if line.startswith(("ATOM", "HETATM")):
+            by_chain.setdefault(line[21], []).append(line)
+    outputs: dict[str, str] = {}
+    errors: list[str] = []
+    restored_names = 0
+    for chain_id, source in chain_to_source.items():
+        chain_atoms = by_chain.get(chain_id)
+        if not chain_atoms:
+            errors.append(f"repaired complex has no atoms for chain {chain_id!r}")
+            continue
+        source_path = Path(source)
+        source_lines = source_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        seqres = [line for line in source_lines if line.startswith("SEQRES")]
+
+        # MODELLER builds its model from a one-letter sequence, so every residue
+        # comes back with a standard name: an ASH is an ASP again, a LYN a LYS, a
+        # HID a HIS. The observed residues' own names are in the input, and
+        # dropping them here would silently undo an explicit protonation choice
+        # the deposit or an earlier tool had already made -- which is exactly
+        # what `preserve_input_protonation` exists to keep. Restored by residue
+        # key, so only residues the input actually held are touched; the rebuilt
+        # ones keep the standard name MODELLER gave them.
+        source_names = {
+            (line[21], line[22:26], line[26]): line[17:21]
+            for line in source_lines
+            if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 27
+        }
+        rewritten = []
+        for line in chain_atoms:
+            if len(line) >= 27:
+                name = source_names.get((line[21], line[22:26], line[26]))
+                if name is not None and name != line[17:21]:
+                    line = line[:17] + name + line[21:]
+                    restored_names += 1
+            rewritten.append(line)
+
+        out_path = source_path.with_suffix(".complex_repaired.pdb")
+        out_path.write_text("\n".join(seqres + rewritten + ["TER", "END", ""]))
+        outputs[chain_id] = str(out_path)
+    return {
+        "success": not errors,
+        "outputs": outputs,
+        "errors": errors,
+        "input_residue_names_restored": restored_names,
+    }
+
+
+def _resolve_missing_residue_method(method: str, input_path: Path) -> dict:
+    """Decide whether one structure's internal gaps go to PDBFixer or MODELLER.
+
+    Split out of ``clean_protein`` so a complex-wide repair can ask the same
+    question about each chain without restating the thresholds. Returns the
+    resolved ``method``, whether that was an escalation from ``auto``, and the
+    ``summary``/``usability`` the caller needs to explain a refusal. An
+    ``out_of_scope`` result with method ``pdbfixer`` means the gaps exceed what
+    PDBFixer can do and MODELLER is not available -- the caller decides whether
+    that is an error.
+    """
+    if method != "auto":
+        return {
+            "method": method,
+            "escalated": False,
+            "out_of_scope": False,
+            "summary": None,
+            "usability": None,
+        }
+    summary = _probe_internal_missing_residue_summary(input_path)
+    out_of_scope = (
+        summary["total_residues"] > PDBFIXER_MAX_INTERNAL_MISSING_RESIDUES
+        or summary["max_segment_length"] > PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH
+    )
+    if not out_of_scope:
+        return {
+            "method": "pdbfixer",
+            "escalated": False,
+            "out_of_scope": False,
+            "summary": summary,
+            "usability": None,
+        }
+    usability = _modeller_repair_usability()
+    if not usability["usable"]:
+        return {
+            "method": "pdbfixer",
+            "escalated": False,
+            "out_of_scope": True,
+            "summary": summary,
+            "usability": usability,
+        }
+    return {
+        "method": "modeller",
+        "escalated": True,
+        "out_of_scope": True,
+        "summary": summary,
+        "usability": usability,
+    }
+
+
+def _disulfide_pair_sites(pair) -> list | None:
+    """``[(chain, resnum, icode), ...]`` from either disulfide pair shape.
+
+    The public ``disulfide_pairs`` argument is nested (``cys1``/``cys2``);
+    ``prepare_complex`` flattens it to ``chain1``/``resnum1``/``chain2``/
+    ``resnum2`` for the cleaning path. Returns None when the record is neither.
+    """
+    if not isinstance(pair, dict):
+        return None
+    if pair.get("form_bond") is False:
+        return None
+
+    def site(chain, resnum, icode):
+        # str(None)[:1] is "N", which is a real chain id -- a missing chain must
+        # not silently become one. An icode key of None means "not stated";
+        # an explicit blank stays "" and addresses the residue with no code.
+        if chain is None:
+            raise KeyError("chain")
+        text = str(chain).strip()
+        if not text:
+            raise KeyError("chain")
+        return (text[:1], int(resnum),
+                None if icode is None else str(icode).strip())
+
+    try:
+        if "cys1" in pair and "cys2" in pair:
+            one, two = pair["cys1"], pair["cys2"]
+            return [site(one["chain"], one["resnum"], one.get("icode")),
+                    site(two["chain"], two["resnum"], two.get("icode"))]
+        if "chain1" in pair and "chain2" in pair:
+            return [site(pair["chain1"], pair["resnum1"], pair.get("icode1")),
+                    site(pair["chain2"], pair["resnum2"], pair.get("icode2"))]
+    except (KeyError, TypeError, ValueError):
+        return None
+    return None
+
+
+# A disulfide is 2.05 A; the window is wide enough for a strained but real bond
+# and narrow enough to catch the two failures actually measured -- a bond built
+# without its restraint (11.65 A) and one pulled open by refinement (3.53 A).
+DISULFIDE_BOND_MIN_ANGSTROM = 1.8
+DISULFIDE_BOND_MAX_ANGSTROM = 2.3
+
+
+def _validate_declared_disulfides(model_path, disulfide_pairs, present_chains) -> dict:
+    """Check that every declared disulfide is actually bonded in the model.
+
+    Declaring a bond and getting one are different things: MODELLER applied its
+    own DISU patch to CYS59-CYS102 on 9UT9 and still returned it 3.53 A apart,
+    and the schema defect that dropped every patch passed 51 tests without this.
+    Every declared pair whose chains are here is checked -- a pair quietly
+    treated as out of scope is the failure mode this exists to stop.
+    """
+    import math
+
+    result = {"success": True, "checked": 0, "errors": [], "distances": []}
+    if not disulfide_pairs:
+        return result
+
+    sg: dict[tuple[str, int, str], tuple[float, float, float]] = {}
+    for line in Path(model_path).read_text(errors="ignore").splitlines():
+        if line.startswith(("ATOM  ", "HETATM")) and line[12:16].strip() == "SG":
+            try:
+                key = (line[21], int(line[22:26]), line[26].strip())
+            except ValueError:
+                continue
+            sg[key] = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+
+    for pair in disulfide_pairs:
+        sites = _disulfide_pair_sites(pair)
+        if sites is None:
+            continue
+        if any(chain_id not in present_chains for chain_id, _, _ in sites):
+            continue                      # another run's bond; checked when merged
+        result["checked"] += 1
+        sites = [(c, n, i if i is not None else "") for c, n, i in sites]
+        missing = [f"{c}:{n}{i}" for c, n, i in sites if (c, n, i) not in sg]
+        if missing:
+            result["errors"].append(
+                f"declared disulfide {sites[0][0]}:{sites[0][1]}-"
+                f"{sites[1][0]}:{sites[1][1]} has no SG atom for {', '.join(missing)}"
+            )
+            continue
+        one, two = (sg[site] for site in sites)
+        distance = math.dist(one, two)
+        result["distances"].append({
+            "chain1": sites[0][0], "resnum1": sites[0][1],
+            "chain2": sites[1][0], "resnum2": sites[1][1],
+            "sg_sg_angstrom": round(distance, 3),
+        })
+        if not DISULFIDE_BOND_MIN_ANGSTROM <= distance <= DISULFIDE_BOND_MAX_ANGSTROM:
+            result["errors"].append(
+                f"declared disulfide {sites[0][0]}:{sites[0][1]}-"
+                f"{sites[1][0]}:{sites[1][1]} came back at {distance:.2f} A, "
+                f"outside {DISULFIDE_BOND_MIN_ANGSTROM}-"
+                f"{DISULFIDE_BOND_MAX_ANGSTROM} A"
+            )
+    result["success"] = not result["errors"]
+    return result
+
+
+def _target_index_by_author_key(chains, chain_spans, internal) -> tuple[dict, list]:
+    """Map each residue's author key to its position in the model being built.
+
+    Walking the alignment is the only way to get this right in general.
+    ``resnum - first_observed`` happens to work on a deposit whose numbering runs
+    straight through, and silently addresses the *wrong* residue as soon as it
+    does not: an insertion code, a jump in the author numbering, a residue the
+    reference sequence does not carry. For a covalent bond a wrong index is
+    worse than no index, so anything ambiguous is left out here and refused by
+    the caller rather than guessed at.
+
+    Returns ``(index_by_key, errors)``. Keys are ``(chain, resnum, icode)``;
+    observed residues are exact, and residues inside a gap are included only
+    where the flanking anchors make their numbering unambiguous.
+    """
+    index_by_key: dict[tuple[str, int, str], int] = {}
+    # A number that several residues answer to. Naming the insertion code still
+    # resolves; asking by number alone must not pick one of them.
+    ambiguous: set[tuple[str, int]] = set()
+    duplicated: set[tuple[str, int, str]] = set()
+    # Every key a number answers to. A number is ambiguous only when more than
+    # one residue carries it -- an insertion code by itself is not ambiguous, and
+    # treating it as such rejected artifacts written before codes were carried,
+    # where a lone A52A is the only residue numbered 52.
+    by_number: dict[tuple[str, int], list] = {}
+    errors: list[str] = []
+    base = 0
+
+    for chain_index, (chain, span) in enumerate(zip(chains, chain_spans)):
+        chain_id = str(chain.id)[:1]
+        observed = list(chain.residues())
+        inserts = {
+            int(res_index): len(residues)
+            for (ci, res_index), residues in internal.items()
+            if ci == chain_index
+        }
+        position = base
+        # Ordered list of (target position, author key or None) for this chain.
+        walk: list[tuple[int, tuple | None]] = []
+        for observed_index, residue in enumerate(observed):
+            for _ in range(inserts.get(observed_index, 0)):
+                walk.append((position, None))
+                position += 1
+            try:
+                resnum = int(str(residue.id).strip())
+            except (TypeError, ValueError):
+                errors.append(
+                    f"chain {chain_id} residue {residue.id!r} has no integer "
+                    "number; disulfide positions cannot be resolved"
+                )
+                walk.append((position, None))
+                position += 1
+                continue
+            icode = str(getattr(residue, "insertionCode", "") or "").strip()
+            key = (chain_id, resnum, icode)
+            if key in index_by_key:
+                duplicated.add(key)          # the file itself is contradictory
+            index_by_key[key] = position
+            by_number.setdefault((chain_id, resnum), []).append(key)
+            walk.append((position, key))
+            position += 1
+        for _ in range(inserts.get(len(observed), 0)):
+            walk.append((position, None))
+            position += 1
+
+        if position - base != len(span):
+            errors.append(
+                f"chain {chain_id}: {len(observed)} observed + "
+                f"{sum(inserts.values())} rebuilt residue(s) do not fill the "
+                f"{len(span)}-residue target span"
+            )
+            base += len(span)
+            continue
+
+        # Number the rebuilt residues only where the flanking observed anchors
+        # say so without ambiguity: both present, neither carrying an insertion
+        # code, and the numbering gap exactly the length of the run.
+        run_start = None
+        for offset, (pos, key) in enumerate(walk):
+            if key is None:
+                if run_start is None:
+                    run_start = offset
+                continue
+            if run_start is not None:
+                _number_rebuilt_run(walk, run_start, offset, chain_id,
+                                    index_by_key, ambiguous)
+                run_start = None
+        base += len(span)
+
+    for key in duplicated:
+        index_by_key.pop(key, None)
+    for (chain_id, resnum), keys in by_number.items():
+        if len(keys) > 1:
+            ambiguous.add((chain_id, resnum))
+    for chain_id, resnum in ambiguous:
+        index_by_key[(chain_id, resnum, "*ambiguous*")] = -1
+    return index_by_key, errors
+
+
+def _number_rebuilt_run(walk, run_start, run_end, chain_id, index_by_key, ambiguous):
+    """Give a rebuilt run author numbers when its anchors leave no choice."""
+    left = walk[run_start - 1][1] if run_start > 0 else None
+    right = walk[run_end][1] if run_end < len(walk) else None
+    if left is None or right is None:
+        return                                   # a terminal run: nothing to anchor to
+    if left[2] or right[2]:
+        return                                   # insertion codes: numbering is not linear
+    length = run_end - run_start
+    if right[1] - left[1] - 1 != length:
+        return                                   # the numbering gap is not the run
+    for step in range(length):
+        key = (chain_id, left[1] + 1 + step, "")
+        if key in index_by_key:
+            ambiguous.add((chain_id, key[1]))
+            continue                          # the anchors disagree with an observed residue
+        index_by_key[key] = walk[run_start + step][0]
+
+
+def _disulfide_patch_positions(chains, chain_spans, internal, disulfide_pairs) -> dict:
+    """Declared disulfides as 0-based positions in the model MODELLER will build.
+
+    Positions, not author numbers: while modelling, residues are numbered over
+    the target sequence and the deposit's numbering is restored only afterwards.
+
+    The endpoints are looked up in the *target* span, not the template. Screening
+    against the observed residues drops exactly the bonds that need declaring --
+    a disulfide whose cysteines sit inside a gap is the case MODELLER cannot work
+    out for itself.
+
+    Returns ``{"positions", "errors"}``. An endpoint that cannot be resolved is
+    an error, never a silent omission: a missing patch is a missing covalent
+    bond, and the run should stop rather than quietly produce a different
+    molecule.
+    """
+    if not disulfide_pairs:
+        return {"positions": [], "errors": []}
+
+    index_by_key, errors = _target_index_by_author_key(chains, chain_spans, internal)
+    if errors:
+        return {"positions": [], "errors": errors}
+
+    modelled_chains = {str(chain.id)[:1] for chain in chains}
+    positions, problems = [], []
+    for pair in disulfide_pairs:
+        sites = _disulfide_pair_sites(pair)
+        if sites is None:
+            continue
+        # A bond reaching a chain this run does not hold belongs to another
+        # chain's run, or to the check on the recombined complex. Skipping is
+        # right there; refusing would break the per-chain path on any complex
+        # with an inter-chain disulfide.
+        if any(chain_id not in modelled_chains for chain_id, _, _ in sites):
+            continue
+        resolved = []
+        for chain_id, resnum, icode in sites:
+            # icode None means the caller did not say; "" means they said the
+            # residue with no insertion code. Only the first is ambiguous where
+            # several codes share a number.
+            if icode is None and (chain_id, resnum, "*ambiguous*") in index_by_key:
+                problems.append(
+                    f"{chain_id}:{resnum} matches more than one residue "
+                    "(insertion codes present); name the insertion code"
+                )
+                break
+            index = index_by_key.get((chain_id, resnum, icode if icode is not None else ""))
+            if index is None:
+                problems.append(
+                    f"{chain_id}:{resnum}{icode or ''} is not a residue of the "
+                    "modelled span, or its position inside a rebuilt gap is not "
+                    "determined by the flanking residues"
+                )
+                break
+            resolved.append(index)
+        if len(resolved) == 2:
+            positions.append(tuple(resolved))
+    return {"positions": positions, "errors": problems}
+
+
 def _repair_missing_residues_with_modeller(
     input_path: Path,
     random_seed: int = MODELLER_REPAIR_RANDOM_SEED,
+    disulfide_pairs: list | None = None,
 ) -> dict:
     """Rebuild a chain's internal missing residues with MODELLER loop modeling.
 
@@ -565,19 +1205,24 @@ def _repair_missing_residues_with_modeller(
     terminal_keys = _missing_residue_terminal_keys(probe, chains)
 
     internal: dict = {}
-    leading_terminal = 0
-    trailing_terminal = 0
+    # Terminal tails are counted per chain: each chain's reference sequence is
+    # trimmed by its own unresolved head and tail, so a shared counter would
+    # crop the wrong span as soon as there is more than one chain.
+    lead_by_chain = dict.fromkeys(range(len(chains)), 0)
+    trail_by_chain = dict.fromkeys(range(len(chains)), 0)
     for (chain_idx, res_idx), residues in probe.missingResidues.items():
         if not 0 <= chain_idx < len(chains):
             continue
         terminal_kind = terminal_keys.get((chain_idx, res_idx))
         if terminal_kind == "N":
-            leading_terminal += len(residues)
+            lead_by_chain[chain_idx] += len(residues)
             continue
         if terminal_kind == "C":
-            trailing_terminal += len(residues)
+            trail_by_chain[chain_idx] += len(residues)
             continue
         internal[(chain_idx, res_idx)] = residues
+    leading_terminal = sum(lead_by_chain.values())
+    trailing_terminal = sum(trail_by_chain.values())
 
     records = _internal_missing_residue_records(internal, chains)
     if not records:
@@ -600,25 +1245,47 @@ def _repair_missing_residues_with_modeller(
     }
 
     sequences = list(getattr(probe, "sequences", None) or [])
-    if len(sequences) != 1:
+    # One reference sequence per chain, matched by chain id. A complex is
+    # repaired in one pass so that every rebuilt loop is built with the other
+    # chains present; done chain by chain, a loop at an interface is modeled
+    # into space the partner chain actually occupies.
+    sequence_by_chain: dict[str, object] = {}
+    for sequence in sequences:
+        chain_id = getattr(sequence, "chainId", None)
+        if chain_id is not None:
+            sequence_by_chain[str(chain_id)] = sequence
+    missing_reference = [
+        chain.id for chain in chains if str(chain.id) not in sequence_by_chain
+    ]
+    if missing_reference or len(sequences) != len(chains):
         outcome["success"] = False
         outcome["code"] = "modeller_repair_reference_sequence_unavailable"
         outcome["errors"].append(
-            "MODELLER missing-residue repair needs exactly one reference "
-            f"sequence for {input_path.name}, found {len(sequences)}"
+            "MODELLER missing-residue repair needs one reference sequence per "
+            f"chain for {input_path.name}: {len(chains)} chain(s), "
+            f"{len(sequences)} sequence(s)"
+            + (f", no sequence for chain(s) {missing_reference}" if missing_reference else "")
         )
         return outcome
 
     import gemmi
 
-    # Model only the span between the first and last observed residue. The
-    # reference sequence covers the unresolved termini too, and handing it over
-    # whole would have MODELLER grow long de-novo tails that nothing measured
-    # -- the same disorder the terminal filter just decided to leave alone.
-    reference_residues = list(sequences[0].residues)
-    span = reference_residues[
-        leading_terminal : len(reference_residues) - trailing_terminal or None
-    ]
+    # Model only the span between the first and last observed residue of each
+    # chain. The reference sequence covers the unresolved termini too, and
+    # handing it over whole would have MODELLER grow long de-novo tails that
+    # nothing measured -- the same disorder the terminal filter just decided to
+    # leave alone.
+    chain_spans = []
+    reference_length_total = 0
+    for chain_index, chain in enumerate(chains):
+        reference_residues = list(sequence_by_chain[str(chain.id)].residues)
+        reference_length_total += len(reference_residues)
+        lead = lead_by_chain[chain_index]
+        trail = trail_by_chain[chain_index]
+        chain_spans.append(
+            reference_residues[lead : len(reference_residues) - trail or None]
+        )
+    span = [residue for chain_span in chain_spans for residue in chain_span]
     if leading_terminal or trailing_terminal:
         outcome["warnings"].append(
             f"Left {leading_terminal + trailing_terminal} unresolved terminal "
@@ -626,8 +1293,14 @@ def _repair_missing_residues_with_modeller(
             f"{trailing_terminal} C); only the {len(span)}-residue observed span "
             "was rebuilt"
         )
-    outcome["detection"]["reference_sequence_length"] = len(reference_residues)
-    target_sequence = gemmi.one_letter_code(span).upper()
+    outcome["detection"]["reference_sequence_length"] = reference_length_total
+    # Per chain for the alignment rows; concatenated for validation, which
+    # compares against the model's residues in chain order and so must not see
+    # the chain-break separator.
+    target_sequences = [
+        gemmi.one_letter_code(chain_span).upper() for chain_span in chain_spans
+    ]
+    target_sequence = "".join(target_sequences)
     if "X" in target_sequence:
         outcome["warnings"].append(
             f"{target_sequence.count('X')} residue(s) in the reference sequence "
@@ -637,9 +1310,53 @@ def _repair_missing_residues_with_modeller(
     from mdclaw.genesis.modeller import modeller_from_alignment
 
     out_dir = input_path.parent / f"{input_path.stem}.modeller_repair"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write the alignment instead of letting auto_align infer it. For a repair
+    # the correspondence is not a guess: PDBFixer already located every gap, so
+    # the template row is the observed residues with a dash per missing one, at
+    # exactly those positions.
+    #
+    # auto_align gets this wrong where a gap boundary is ambiguous. On 9UT9
+    # chain A the observed sequence runs ...S L H A N | gap | M C K E Y...,
+    # and auto_align placed that M *before* the gap, which is an equally good
+    # sequence alignment and the wrong structural one. Every gap-filled residue
+    # then inherited a number one past where it belongs, colliding with the
+    # observed residues after the gap, and the collision check -- correctly --
+    # refused to renumber anything at all.
+    # Resolve the declared disulfides to model positions before modelling.
+    # A patch that cannot be placed is a covalent bond that would go missing, so
+    # this refuses rather than building a different molecule quietly.
+    patch_resolution = _disulfide_patch_positions(
+        chains, chain_spans, internal, disulfide_pairs)
+    if patch_resolution["errors"]:
+        outcome["success"] = False
+        outcome["code"] = "modeller_disulfide_position_unresolvable"
+        outcome["errors"].extend(
+            f"Cannot place a declared disulfide for MODELLER: {problem}"
+            for problem in patch_resolution["errors"]
+        )
+        return outcome
+
+    template_row = _template_alignment_row(target_sequences, internal, chains)
+    alignment_path = out_dir / f"{input_path.stem}_repair.ali"
+    # The row carries one '/' per chain break; the target row needs them at the
+    # same columns or MODELLER reads the two rows as different lengths.
+    target_row = "/".join(target_sequences)
+    _write_repair_alignment(
+        alignment_path,
+        target_code=f"{input_path.stem}_filled",
+        target_sequence=target_row,
+        template_code=input_path.stem,
+        template_row=template_row,
+        first_chain=str(chains[0].id),
+        last_chain=str(chains[-1].id),
+    )
+    outcome["alignment_file"] = str(alignment_path)
+
     model_result = modeller_from_alignment(
         template_pdb=str(input_path),
-        target_sequence=target_sequence,
+        alignment_file=str(alignment_path),
         template_code=input_path.stem,
         target_code=f"{input_path.stem}_filled",
         num_models=1,
@@ -652,6 +1369,13 @@ def _repair_missing_residues_with_modeller(
         # from, or a membrane orientation or partner chain kept from the
         # original lands in the wrong place.
         template_frame=True,
+        # A disulfide whose cysteines fall inside a gap is invisible to MODELLER:
+        # it reads its restraints off the template, where those residues are not
+        # there at all. On 9UT9 chain A that left CYS363 and CYS366 -- bonded at
+        # 2.04 A where 9UTC resolves them -- 11.65 A apart. Declaring the bond
+        # downstream cannot undo that; it only hands minimisation a bond nine
+        # angstroms past equilibrium.
+        disulfide_patches=patch_resolution["positions"],
         random_seed=random_seed,
         output_dir=str(out_dir),
     )
@@ -685,6 +1409,17 @@ def _repair_missing_residues_with_modeller(
         outcome["success"] = False
         outcome["code"] = "modeller_missing_residue_repair_validation_failed"
         outcome["errors"].extend(validation["errors"])
+        return outcome
+
+    disulfide_check = _validate_declared_disulfides(
+        Path(model_file), disulfide_pairs,
+        {str(chain.id)[:1] for chain in chains},
+    )
+    outcome["disulfide_validation"] = disulfide_check
+    if not disulfide_check["success"]:
+        outcome["success"] = False
+        outcome["code"] = "modeller_disulfide_not_formed"
+        outcome["errors"].extend(disulfide_check["errors"])
         return outcome
 
     outcome["applied"] = True
@@ -1103,18 +1838,13 @@ def clean_protein(
     result["missing_residue_method_requested"] = method
 
     try:
-        effective_method = "pdbfixer" if method == "auto" else method
-        escalated_to_modeller = False
+        decision = _resolve_missing_residue_method(method, input_path)
+        effective_method = decision["method"]
+        escalated_to_modeller = decision["escalated"]
         if method == "auto":
-            auto_summary = _probe_internal_missing_residue_summary(input_path)
-            auto_out_of_scope = (
-                auto_summary["total_residues"]
-                > PDBFIXER_MAX_INTERNAL_MISSING_RESIDUES
-                or auto_summary["max_segment_length"]
-                > PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH
-            )
-            if auto_out_of_scope:
-                usability = _modeller_repair_usability()
+            auto_summary = decision["summary"]
+            if decision["out_of_scope"]:
+                usability = decision["usability"]
                 if not usability["usable"]:
                     recommendation = _missing_residue_auto_recommendation(
                         auto_summary,
@@ -1148,8 +1878,6 @@ def clean_protein(
                         "then create a new prep node with the same completed parent."
                     )
                     return result
-                effective_method = "modeller"
-                escalated_to_modeller = True
         result["missing_residue_method_used"] = effective_method
         result["missing_residue_method_escalated"] = escalated_to_modeller
 
@@ -1173,7 +1901,13 @@ def clean_protein(
         # rather than mid-flow keeps the terminal-cap bookkeeping below working
         # on a single, final PDBFixer instance.
         if effective_method == "modeller":
-            repair = _repair_missing_residues_with_modeller(input_path)
+            # Not only genuinely single-chain inputs reach here: a complex whose
+            # pre-pass could not probe or fuse falls back to this path chain by
+            # chain, and the declared bonds have to come with it. CYX naming and
+            # the MODELLER restraints are the same chemical contract, not two
+            # different intents.
+            repair = _repair_missing_residues_with_modeller(
+                input_path, disulfide_pairs=disulfide_pairs)
             result["warnings"].extend(repair["warnings"])
             if not repair["success"]:
                 result["errors"].extend(repair["errors"])
@@ -1608,7 +2342,10 @@ def clean_protein(
         try:
             # Collect CYS residues before creating disulfide bonds
             cys_residues = set()
-            cys_by_chain_resnum = {}  # Map (chain, resnum) -> residue for pre-defined pairs
+            # Keyed with the insertion code: a bare (chain, resnum) makes A52 and
+            # A52A one entry, so the second overwrites the first and a declared
+            # bond can be formed on -- and CYX-named -- the wrong cysteine.
+            cys_by_chain_resnum = {}
             for residue in fixer.topology.residues():
                 if residue.name == 'CYS':
                     cys_residues.add(residue)
@@ -1616,7 +2353,8 @@ def clean_protein(
                         residue_number = int(residue.id)
                     except (TypeError, ValueError):
                         residue_number = residue.index
-                    cys_by_chain_resnum[(residue.chain.id, residue_number)] = residue
+                    icode = str(getattr(residue, "insertionCode", "") or "").strip()
+                    cys_by_chain_resnum[(residue.chain.id, residue_number, icode)] = residue
 
             disulfide_info = []
             cyx_residues = set()  # Track residues to rename
@@ -1635,9 +2373,20 @@ def clean_protein(
                     chain2 = pair.get("chain2")
                     resnum2 = pair.get("resnum2")
 
-                    # Find the residues by chain and resnum
-                    res1 = cys_by_chain_resnum.get((chain1, resnum1))
-                    res2 = cys_by_chain_resnum.get((chain2, resnum2))
+                    # Shared resolver, so an artifact written without insertion
+                    # codes still resolves wherever only one residue answers to
+                    # the number, and an ambiguous one is refused rather than
+                    # guessed at.
+                    site1, why1 = resolve_residue_site(
+                        cys_by_chain_resnum, chain1, resnum1, pair.get("icode1"))
+                    site2, why2 = resolve_residue_site(
+                        cys_by_chain_resnum, chain2, resnum2, pair.get("icode2"))
+                    for problem in (why1, why2):
+                        if problem:
+                            result["warnings"].append(
+                                f"Declared disulfide endpoint unresolved: {problem}")
+                    res1 = cys_by_chain_resnum.get(site1) if site1 else None
+                    res2 = cys_by_chain_resnum.get(site2) if site2 else None
 
                     if res1 and res2:
                         bond_info = {
