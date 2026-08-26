@@ -28,6 +28,7 @@ from openmm.app import PDBFile  # noqa: E402
 from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,
 )
+from mdclaw.structure.pdb_utils import _load_pdb_with_variant_bonds  # noqa: E402
 from mdclaw.chemistry_constants import (  # noqa: E402
     AMBER_NONDEFAULT_PROTONATION_VARIANT_BASES,
 )
@@ -532,7 +533,12 @@ def _apply_protonation_states_with_modeller(
         return result
 
     try:
-        pdb = PDBFile(str(pdb_file))
+        # Not a plain PDBFile: LYN and CYM arrive from pdb2pqr with no bonds at
+        # all, and addHydrogens cannot see which hydrogens an unbonded residue
+        # already carries -- it adds a second complete set. Measured on 9UT9
+        # apo, overriding a pdb2pqr LYN back to LYS came back with every
+        # hydrogen but HZ1 duplicated.
+        pdb = _load_pdb_with_variant_bonds(pdb_file)
         modeller = Modeller(pdb.topology, pdb.positions)
         residues = list(modeller.topology.residues())
 

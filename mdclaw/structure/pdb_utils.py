@@ -334,6 +334,140 @@ def overlay_source_resnames(pdb_path, source_pdb, atom_indices=None) -> bool:
     return True
 
 
+# pdb2pqr writes Amber protonation-state residue names, and openmm.app.PDBFile
+# normalizes most of them back to a parent it knows: HID/HIE/HIP -> HIS,
+# CYX -> CYS, ASH -> ASP, GLH -> GLU. LYN (neutral lysine) and CYM
+# (deprotonated cysteine) have no such alias. PDBFile keeps those names, finds
+# no residue definition for them, and so builds *no* bonds for the residue at
+# all -- not its internal ones, and not the peptide bond to the residue before
+# it. (The bond to the residue after it survives, because that one is declared
+# by the *next* residue's own "-C" definition, which is why the damage looks
+# one-sided.)
+#
+# Two things then go wrong downstream, both quietly. A force field rejects the
+# residue *before* the variant with "the set of externally bonded atoms is
+# missing 1 C atom. Is the chain missing a terminal capping group?", naming the
+# chain terminus when the cause is a residue in the middle. And
+# ``Modeller.addHydrogens`` cannot see which hydrogens are already attached to
+# an unbonded residue, so it adds a second complete set.
+# pdb2pqr writes Amber protonation-state residue names, and openmm.app.PDBFile
+# normalizes most of them back to a parent it knows: HID/HIE/HIP -> HIS,
+# CYX -> CYS, ASH -> ASP, GLH -> GLU. LYN (neutral lysine) and CYM
+# (deprotonated cysteine) have no such alias. PDBFile keeps those names, finds
+# no residue definition for them, and so builds *no* bonds for the residue at
+# all -- not its internal ones, and not the peptide bond to the residue before
+# it. (The bond to the residue after it survives, because that one is declared
+# by the *next* residue's own "-C" definition, which is why the damage looks
+# one-sided.)
+#
+# Two things then go wrong downstream, both quietly. A force field rejects the
+# residue *before* the variant with "the set of externally bonded atoms is
+# missing 1 C atom. Is the chain missing a terminal capping group?", naming the
+# chain terminus when the cause is a residue in the middle. And
+# ``Modeller.addHydrogens`` cannot see which hydrogens are already attached to
+# an unbonded residue, so it adds a second complete set.
+def resolve_residue_site(candidates, chain, resnum, icode):
+    """Pick the one residue a disulfide endpoint names, or say why it cannot.
+
+    ``candidates`` is a mapping keyed ``(chain, resnum, icode)``. ``icode`` of
+    ``None`` means the caller did not state one -- which is what every artifact
+    written before insertion codes were carried says, so it must keep resolving
+    wherever only one residue answers to the number. An explicit ``""`` names the
+    residue that has no code.
+
+    Returns ``(key, error)``. A covalent bond addressed to the wrong residue is
+    worse than one that is refused, so an ambiguous number is an error rather
+    than a pick.
+    """
+    chain = str(chain)[:1]
+    resnum = int(resnum)
+    if icode is not None:
+        key = (chain, resnum, str(icode).strip())
+        if key in candidates:
+            return key, None
+        return None, f"{chain}:{resnum}{str(icode).strip()} is not present"
+
+    matches = [key for key in candidates if key[0] == chain and key[1] == resnum]
+    if not matches:
+        return None, f"{chain}:{resnum} is not present"
+    if len(matches) > 1:
+        codes = sorted(key[2] or "(blank)" for key in matches)
+        return None, (
+            f"{chain}:{resnum} matches {len(matches)} residues "
+            f"(insertion codes {', '.join(codes)}); name the insertion code"
+        )
+    return matches[0], None
+
+
+_PDB2PQR_UNALIASED_VARIANTS = {"LYN": "LYS", "CYM": "CYS"}
+
+
+def _load_pdb_with_variant_bonds(input_path):
+    """Read a pdb2pqr Amber PDB so LYN/CYM keep their names *and* get bonded.
+
+    Parses under the parent residue name so PDBFile builds every standard bond,
+    then puts the variant name back on the Topology before anything else sees
+    it. The order matters: handing ``LYS`` to ``Modeller.addHydrogens`` grows the
+    third NZ hydrogen and silently turns a neutral lysine into a charged one
+    (likewise ``HG`` on a CYM), and renaming the residue back afterwards would
+    keep the name while the chemistry had already changed. ff19SB carries real
+    ``LYN``/``CYM`` templates, so once the name is restored the match is exact
+    and no hydrogen is added or removed.
+
+    The name goes back by residue *order*, not by residue key. The parse happens
+    here, on text written here, so the two agree position by position -- whereas
+    a key has two spellings that do not always meet: PDBFile re-encodes a
+    hybrid-36 residue number, so a file's ``A000`` comes back as ``10000`` and a
+    reconstructed key would miss a perfectly valid structure. Each restore is
+    still checked against the parent name it was rewritten to, and a mismatch
+    raises: failing open would hand the residue to the force field under its
+    parent name and re-protonate it.
+    """
+    import io
+
+    from openmm.app import PDBFile
+
+    input_path = Path(input_path)
+    # Ordinal of each residue in file order -> the variant name it was written
+    # with. Residue boundaries are the raw columns, which is what makes the
+    # ordinals line up with the reader's own residue order.
+    renamed: dict[int, str] = {}
+    rewritten: list[str] = []
+    ordinal = -1
+    previous_key: tuple | None = None
+    for line in input_path.read_text().splitlines(True):
+        if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 27:
+            key = (line[21], line[22:26], line[26])
+            if key != previous_key:
+                ordinal += 1
+                previous_key = key
+            name = line[17:20].strip()
+            parent = _PDB2PQR_UNALIASED_VARIANTS.get(name)
+            if parent is not None:
+                renamed[ordinal] = name
+                line = line[:17] + f"{parent:>3}" + line[20:]
+        rewritten.append(line)
+
+    if not renamed:
+        return PDBFile(str(input_path))
+
+    pdb = PDBFile(io.StringIO("".join(rewritten)))
+    residues = list(pdb.topology.residues())
+    for index, name in renamed.items():
+        parent = _PDB2PQR_UNALIASED_VARIANTS[name]
+        residue = residues[index] if index < len(residues) else None
+        if residue is None or str(residue.name).strip().upper() != parent:
+            raise ValueError(
+                f"could not restore the pdb2pqr protonation variant {name} at "
+                f"residue {index + 1} of {input_path.name}: the reader returned "
+                f"{'nothing' if residue is None else residue.name} where "
+                f"{parent} was written. Refusing to hand it to the force field "
+                "under the parent name, which would re-protonate it"
+            )
+        residue.name = name
+    return pdb
+
+
 def restore_resnames_by_residue_key(
     pdb_text: str,
     source_pdb: str | Path,

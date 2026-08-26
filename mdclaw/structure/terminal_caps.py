@@ -48,7 +48,7 @@ _CYX_ALLOWED_HYDROGEN_NAMES = frozenset({"H", "HA", "HB2", "HB3"})
 pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 
-from mdclaw.structure.pdb_utils import _pdb_hydrogen_count, _pdb_hydrogen_counts_by_resname, _pdb_noncap_protein_hydrogen_signature, _pdb_residue_names, _read_pdb_unique_residues, restore_resnames_by_residue_key  # noqa: E402
+from mdclaw.structure.pdb_utils import _load_pdb_with_variant_bonds, _pdb_hydrogen_count, _pdb_hydrogen_counts_by_resname, _pdb_noncap_protein_hydrogen_signature, _pdb_residue_names, _read_pdb_unique_residues, restore_resnames_by_residue_key  # noqa: E402
 
 
 def _normalize_terminal_cap_choice(
@@ -293,7 +293,7 @@ def _prepare_terminal_caps_for_pdb2pqr(
     try:
         from openmm.app import ForceField, Modeller
 
-        pdb = PDBFile(str(input_path))
+        pdb = _load_pdb_with_variant_bonds(input_path)
         original_atoms = {
             (
                 atom.residue.chain.id,
@@ -618,7 +618,7 @@ def _complete_terminal_cap_hydrogens_with_modeller(
     try:
         from openmm.app import ForceField, Modeller
 
-        pdb = PDBFile(str(input_path))
+        pdb = _load_pdb_with_variant_bonds(input_path)
         forcefield = ForceField(forcefield_xml)
         modeller = Modeller(pdb.topology, pdb.positions)
         modeller.addHydrogens(forcefield, pH=ph)
