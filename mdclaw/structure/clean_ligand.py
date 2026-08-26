@@ -388,17 +388,58 @@ def clean_ligand(
                 break
         chain_id = first_info.GetChainId().strip() if first_info else ""
         residue_number = first_info.GetResidueNumber() if first_info else 1
+        if not isinstance(residue_number, int):
+            residue_number = 1
         residue_name = ligand_id[:3].upper()
+        # One prepared ligand is one molecule: one SDF, one GAFF template, one
+        # residue_name. A ligand that arrived as several CCD residues -- a
+        # disaccharide such as sucralose comes in as two, linked by a covalent
+        # bond the deposit declares -- keeps a residue number per input residue
+        # unless they are unified here. Renaming alone leaves one name spread
+        # over several residue numbers, and everything downstream reads that as
+        # separate residues: Pablo matches none of them and falls back, and
+        # topology's ligand bond patcher looks for a single residue whose atom
+        # count equals the molecule's and finds no such residue, so the ligand
+        # reaches create_system with no bonds at all.
+        # Collapsing several input residues into one also collapses their atom
+        # name spaces, and the two halves of a disaccharide both name their
+        # atoms C1..C6 / O2..O5. PDB readers key atoms by name within a
+        # residue, so a duplicate name is not an inconvenience -- it is nine
+        # atoms silently dropped on load. Reserve every preferred name first,
+        # then hand each collision a name no other atom wants.
+        preferred_names: list[str] = []
         for idx, atom in enumerate(mol_with_h.GetAtoms(), start=1):
             info = atom.GetPDBResidueInfo()
+            name = info.GetName().strip() if info is not None else ""
+            if not name:
+                name = f"{atom.GetSymbol().upper()}{idx % 1000:>3}".strip()
+            preferred_names.append(name[:4])
+        reserved = set(preferred_names)
+        taken: set[str] = set()
+
+        def _free_atom_name(element: str) -> str:
+            base = (element or "X").upper()[:2]
+            counter = 1
+            while True:
+                candidate = f"{base}{counter}"
+                if len(candidate) <= 4 and candidate not in reserved and candidate not in taken:
+                    return candidate
+                counter += 1
+
+        for atom, preferred in zip(mol_with_h.GetAtoms(), preferred_names):
+            info = atom.GetPDBResidueInfo()
             if info is None:
-                symbol = atom.GetSymbol().upper()
-                atom_name = f"{symbol}{idx % 1000:>3}"[-4:]
                 info = Chem.AtomPDBResidueInfo()
-                info.SetName(atom_name)
-                info.SetChainId(chain_id or " ")
-                info.SetResidueNumber(int(residue_number) if isinstance(residue_number, int) else 1)
+            if preferred in taken:
+                atom_name = _free_atom_name(atom.GetSymbol())
+            else:
+                atom_name = preferred
+            taken.add(atom_name)
+            info.SetName(atom_name.ljust(4)[:4] if len(atom_name) >= 4 else f" {atom_name}".ljust(4))
             info.SetResidueName(residue_name)
+            info.SetChainId(chain_id or " ")
+            info.SetResidueNumber(residue_number)
+            info.SetInsertionCode(" ")
             atom.SetMonomerInfo(info)
         Chem.MolToPDBFile(mol_with_h, str(output_pdb))
         
