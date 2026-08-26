@@ -145,6 +145,39 @@ def test_applying_the_fit_restores_frame_and_numbering(case):
         assert coords[num] == pytest.approx(expected, abs=1e-3)
 
 
+def test_exact_target_map_numbers_an_n_terminal_insertion(tmp_path):
+    """A leading insertion has no previous template residue to extrapolate from."""
+    template = tmp_path / "n_terminal_template.pdb"
+    model = tmp_path / "n_terminal_model.pdb"
+    alignment = tmp_path / "n_terminal.ali"
+    template_residues = [(53, "ALA"), (54, "ALA"), (55, "ALA")]
+    model_residues = [(index, "ALA") for index in range(1, 10)]
+    template_xyz = [np.array([i * 3.8, 0.3 * i, 0.1 * i]) for i in range(3)]
+    model_xyz = [
+        np.array([(i - 6) * 3.8, 0.3 * (i - 6), 0.1 * (i - 6)])
+        for i in range(9)
+    ]
+    _write_pdb(template, template_residues, template_xyz, "A", np.zeros(3))
+    _write_pdb(model, model_residues, model_xyz, " ", np.array([20.0, 7.0, -4.0]))
+    alignment.write_text(
+        ">P1;tgt\nsequence:tgt:::::::0.00: 0.00\nAAAAAAAAA*\n"
+        ">P1;tpl\nstructureX:tpl:::::::0.00: 0.00\n------AAA*\n"
+    )
+    sites = [("A", number, "") for number in range(47, 56)]
+
+    info = _restore_template_frame(
+        model, template, alignment, "tgt", "tpl", apply_transform=True,
+        target_residue_sites=sites,
+    )
+    identities = [
+        (line[21], int(line[22:26]), line[26])
+        for line in model.read_text().splitlines() if line.startswith("ATOM")
+    ]
+
+    assert info["numbering_source"] == "exact_target_residue_sites"
+    assert identities == [("A", number, " ") for number in range(47, 56)]
+
+
 def test_applying_the_fit_preserves_template_insertion_codes(tmp_path):
     template = tmp_path / "insertion_template.pdb"
     model = tmp_path / "insertion_model.pdb"

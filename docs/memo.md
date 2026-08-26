@@ -7,6 +7,179 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-26 — Reviewing the terminal route: two wrong measurements
+
+Verification notes for the MODELLER terminal work, kept because both of the
+review's own measurements were wrong before they were right.
+
+All six MDDataBench tasks whose reference builds at a terminus now build it,
+with the author numbering the deposit's own REMARK 465 gives:
+
+    1CTF  N  A:47-52   ALA ALA GLU GLU LYS THR
+    1EZ3  N  B:24-26   VAL ASP ARG
+    1AIL  C  A:71-73   GLU GLU ASP
+    1A62  C  A:126-130 ASN ALA ARG ASN LYS
+    1E3U  C  B:265-266 GLY GLY
+    6W9C  internal C:225-226 plus C-terminal C:315, in one complex pass
+
+Two claims made during review and withdrawn:
+
+The solvent-chain failure was blamed on this work. It predates it. Running
+3RVW on `adfbbdc` gives `modeller_repair_reference_sequence_unavailable`,
+"8 chain(s), 3 sequence(s)": the per-chain reference-sequence requirement was
+applied to non-polymer chains, so the MODELLER route could not run on any
+deposit carrying waters or ions. This patch repairs that as well as adding the
+terminal route, which means the internal-gap path was reachable in tests and
+not in practice.
+
+Observed atoms were reported as moving up to 6.27 A far from any gap, on
+3RVW chain A, which has no unresolved residues at all. That was a comparison
+artefact: 3RVW carries A/B alternate conformers, the reader took the last one
+seen, and MODELLER had been given A. Selecting A explicitly, the same residue
+moves 0.0030 A and only four residues exceed 0.5 A -- D:133, D:134, D:139 and
+D:140, every one of them beside a gap. MODELLER's own log settles it
+independently: 48 of 5127 atoms selected, for both base optimisation and loop
+refinement.
+
+So a coordinate comparison against a deposit has to resolve three things
+before it means anything: alternate conformers, symmetric side-chain naming
+(Asp OD1/OD2 and friends read as 2 A of movement that is really 0.02), and
+rigid motion. Correcting only the second, as the first pass here did, produces
+confident numbers that are wrong.
+
+The terminal case's own figure, with symmetry corrected: median 0.0377 A, and
+outside the insertion_ext=2 anchors nothing exceeds 0.2 A. The anchors reach
+4.4 A, which is the selection doing what it says.
+
+## 2026-08-26 — MODELLER can build requested terminal residues, as predictions
+
+Terminal missing residues now have a MODELLER route instead of falling through
+the PDBFixer internal-gap guard. The policies are separate: PDBFixer accepts a
+requested terminal segment through 5 residues, MODELLER through 10, and the
+default remains to leave unresolved termini alone. The MODELLER ceiling is a
+conservative policy for a one-anchor prediction, not an accuracy guarantee.
+
+The repair stays in the whole-complex, gap-local design introduced in
+`adfbbdc`: MODELLER selects each gap plus its two-residue anchor on the available
+side, while partner chains remain fixed context. Output numbering is restored
+from one shared exact target-site map, because previous-residue extrapolation
+cannot number an N-terminal insertion.
+
+Measured through the real PDBFixer-to-MODELLER route on 1CTF chain A, whose
+deposit resolves 53-120 and requested range is 47-120:
+
+- 74 residues returned, numbered A47-A120; all six requested N-terminal sites
+  were present and the exact target-site validation passed.
+- The A52 C to A53 N peptide junction was 1.361 A.
+- The result is marked as a one-anchor deterministic prediction, not evidence
+  that residues 47-52 are ordered experimentally.
+
+The six benchmark terminal cases were then run against their cached deposits.
+All returned the declared sites: 1E3U B265-266, 6W9C C225-226 plus C315,
+1A62 A126-130, 1AIL A71-73, 1CTF A47-52, and 1EZ3 B24-26. Their terminal C-N
+distances were 1.347, 1.350, 1.354, 1.350, 1.361, and 1.357 A respectively.
+The four internal-only controls (1AHW, 3EOA, 3RVW, 3WD5) retained exactly their
+declared internal build sites.
+
+Caps remain independent in the public path. On 1CTF, building A47-52 and asking
+for an N-terminal cap produced ACE46, ALA47, ALA48; asking for ACE without the
+terminal-build switch left residues 47-52 unresolved and produced ACE52, GLU53,
+PHE54. The latter carried no predicted-terminal marker.
+
+1A62 exposed an ordering prerequisite: its three observed MSE residues reach
+MODELLER as HETATM before the later PDBFixer non-standard-residue step. Passing
+an `X` target made MODELLER reject the alignment. The repair now uses
+PDBFixer's own MSE-to-MET decision in the target sequence and keeps HETATM
+enabled for the template coordinates. If non-standard replacement is disabled,
+the repair fails closed instead of silently changing the polymer chemistry.
+
+Postconditions now check exact residue identities and order, retention of every
+observed residue, finite coordinates, a 1.1-1.6 A terminal C-N junction, gross
+heavy-atom overlap against the fixed template, and the existing declared
+disulfide bounds. Segment provenance names N-terminal, C-terminal, or internal
+location and records the exact sites built.
+
+## 2026-08-26 — CV review: the definition holds, the sampling does not
+
+Rebuilding the missing loops changed the premise behind one CV choice, so the
+definitions were re-examined against the finished systems (apo prep_018, holo
+prep_010) and reviewed by codex.
+
+### The definitions are sound
+
+`LB2_B` excludes B249-252. The original reason -- disordered in 9UT9, so the two
+systems would not share the same atoms -- is gone now that the loop is built. The
+exclusion still stands, on a different reason: those coordinates are *predicted*
+in apo and observed in holo.
+
+| CV | predicted residues, apo | predicted residues, holo |
+|---|---|---|
+| CV1 as defined | 0 | 0 |
+| CV1 including 249-252 | **4** | 0 |
+| CV2 (CRD loop) | 0 | 0 |
+
+Including them would put a difference in modelling provenance inside the
+observable meant to isolate a difference in ligand binding. Both CV groups hold
+identical atom counts across the systems (LB2_A 1579, LB2_B 1525, loop 82 heavy).
+
+### A worry that measurement dismissed
+
+CV2 is a distance from a reference built out of the same lobes as CV1, so the two
+could be geometrically entangled -- an apparent coupling that is really one CV
+reading the other. Measured by moving the lobes and holding the loop fixed:
+
+| CV1 change | symmetric opening | one-sided opening |
+|---|---|---|
+| +0.1 nm | 0.0000 nm | +0.0013 nm |
+| +0.5 nm | 0.0000 nm | +0.0222 nm |
+
+Exactly zero for symmetric motion, and under 5% of the CV1 change even when only
+one lobe moves. The CRD loop sits almost perpendicular to the LB2_A-LB2_B axis
+(axis-parallel component -0.05 nm of a 1.53 nm distance), which separates "depth"
+from "opening" geometrically.
+
+Two corrections from codex on this. `cv_compute.py` uses the mass centre of
+`lb2_a + lb2_b` together, **not** the midpoint of their two COMs -- the two differ
+by 0.316 A here. Redone with the reference the code actually uses, the numbers
+above are if anything smaller. And switching CV2 to an axis projection, which was
+considered, would be worse: the axis-parallel component is only ~0.5 A, so the
+projection measures a different and much smaller motion than "insertion depth".
+
+### The real problem is sampling, not the CVs
+
+From the earlier partial apo umbrella set (39 windows, 3 ns discarded):
+
+    rms_half_difference_kcal    8.96      criterion 1.0
+    max_abs_half_difference     32.99
+    neighbour overlap           min 0.086, median 0.19, none below 0.03
+
+Window overlap is healthy and the halves still disagree by nine kcal/mol. That
+combination rules out window placement and rules in unconverged sampling *within*
+windows: umbrella sampling accelerates the CVs only, and orthogonal degrees of
+freedom -- a rebuilt loop finding a different rotamer or backbone basin -- are not
+biased and need not relax on the same timescale (Zhu & Hummer 2012). Adding
+windows does not fix this.
+
+Distances from the modelled regions to the CV groups, measured on the final prep,
+say where that bites: apo's B249-252 is 4.93 A from LB2_A and A342-366 is 3.04 A,
+while LOOP_B is 16.86 A from any modelled atom. So the exposure is on the CV1
+side, and it is asymmetric between the systems (58 rebuilt residues vs 36).
+
+### Open, not yet decided
+
+- A seed sensitivity test: rebuild each system from a second MODELLER seed and
+  re-run a few representative windows (inserted, barrier, withdrawn). If the
+  spread is well below the apo-holo difference, record it as a limitation; if not,
+  the whole PMF comparison is model-dependent and has to be reported that way.
+- A matched-coordinate control: 9UTC with sucralose deleted, run as a third
+  system. 9UT9 and 9UTC are separate reconstructions (3.18 and 3.33 A) with
+  different disordered regions, so apo-vs-holo alone does not separate the ligand
+  effect from the difference between two cryo-EM models.
+- Window grid: the design values carry over, but the *trajectories* from the old
+  structures must not. Rebuilt apo starts at CV1 3.628 nm against a current upper
+  edge of 3.66 nm, so a short unbiased run should confirm the distribution does
+  not press against the boundary before the grid is reused.
+
 ## 2026-08-26 — Declaring all disulfides explicitly, and what it exposed
 
 The request was simple: declare every disulfide rather than relying on detection,

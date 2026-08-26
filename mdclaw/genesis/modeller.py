@@ -193,6 +193,7 @@ def _restore_template_frame(
     target_code,
     template_code,
     apply_transform: bool,
+    target_residue_sites=None,
 ) -> dict:
     """Measure, and optionally undo, a model's drift from its template.
 
@@ -250,20 +251,43 @@ def _restore_template_frame(
     if not apply_transform:
         return info
 
-    # Template numbering for paired residues; gap-filled residues continue from
-    # the previous paired number. Refuse to renumber if that would collide.
+    # A repair caller can supply every target residue's exact author identity.
+    # This is required for N-terminal gaps: there is no preceding template
+    # residue from which the old forward-only fallback could recover 47..52, so
+    # it silently left MODELLER's synthetic 1..6 numbering in place.
     renumber: dict[tuple, tuple[str, int, str]] = {}
-    prev_chain, prev_num = None, None
-    for key in model_order:
-        if key in pairs:
-            tpl_chain, tpl_num, tpl_icode = pairs[key]
-            renumber[key] = (tpl_chain, tpl_num, tpl_icode)
-            prev_chain, prev_num = tpl_chain, tpl_num
-        elif prev_num is not None:
-            prev_num += 1
-            renumber[key] = (prev_chain, prev_num, " ")
-        else:
-            renumber[key] = key
+    if target_residue_sites is not None:
+        normalized = [
+            (str(chain)[:1], int(number), str(icode or " ")[:1])
+            for chain, number, icode in target_residue_sites
+        ]
+        if len(normalized) != len(model_order):
+            info["warnings"].append(
+                "exact target residue map has "
+                f"{len(normalized)} entries for {len(model_order)} model residues"
+            )
+            return info
+        if len(set(normalized)) != len(normalized):
+            info["warnings"].append(
+                "exact target residue map contains duplicate author identifiers"
+            )
+            return info
+        renumber = dict(zip(model_order, normalized))
+        info["numbering_source"] = "exact_target_residue_sites"
+    else:
+        # General comparative-model callers do not have a repair map. Preserve
+        # their historical best-effort numbering behavior.
+        prev_chain, prev_num = None, None
+        for key in model_order:
+            if key in pairs:
+                tpl_chain, tpl_num, tpl_icode = pairs[key]
+                renumber[key] = (tpl_chain, tpl_num, tpl_icode)
+                prev_chain, prev_num = tpl_chain, tpl_num
+            elif prev_num is not None:
+                prev_num += 1
+                renumber[key] = (prev_chain, prev_num, " ")
+            else:
+                renumber[key] = key
     taken = list(renumber.values())
     if len(set(taken)) != len(taken):
         info["warnings"].append(
@@ -534,6 +558,9 @@ class _MissingResidueLoopModel(LoopModel):
             maxlength=self.mdclaw_loop_max_length,
             insertion_ext=2,
             deletion_ext=1,
+            # Explicit rather than MODELLER's implicit default: requested
+            # one-anchor N/C terminal segments are valid repair selections too.
+            include_termini=True,
         )
         sel = Selection(loops).only_std_residues()
         if len(sel) == 0:
@@ -695,6 +722,7 @@ def modeller_from_alignment(
     loop_max_length: int = 30,
     template_frame: bool = False,
     disulfide_patches: Optional[list] = None,
+    target_residue_sites: Optional[list] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
@@ -1040,6 +1068,7 @@ def modeller_from_alignment(
             target_code_clean,
             template_code_clean,
             apply_transform=template_frame,
+            target_residue_sites=target_residue_sites,
         )
         model["template_frame"] = frame
         if model_path == selected_path:
@@ -1089,6 +1118,7 @@ def modeller_from_alignment(
                 "selected_model": result["selected_model"],
                 "hetatm": hetatm,
                 "random_seed": random_seed,
+                "target_residue_sites": target_residue_sites,
             }
             _complete_source_node(
                 job_dir,
@@ -1110,4 +1140,3 @@ def modeller_from_alignment(
     result["success"] = True
     logger.info("MODELLER job %s finished successfully", job_id)
     return result
-

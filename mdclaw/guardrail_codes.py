@@ -78,6 +78,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "missing_uniprot_id": "Provide a valid UniProt accession.",
     "source_candidate_selection_required": "Choose one listed source candidate and pass --source-structure-id to the prep tool.",
     "pdbfixer_missing_residues_out_of_scope": "Create a new prep node with the failed node's same completed parent, then run prepare_complex with --missing-residue-method modeller.",
+    "pdbfixer_terminal_missing_residues_out_of_scope": "Keep --build-terminal-missing-residues only if the tail is required, then create a new prep node with --missing-residue-method modeller; otherwise leave the unresolved terminus out or narrow --residue-ranges.",
     "missing_residues_require_modeller_license": "Run 'export KEY_MODELLER10v8=<your license key>', then create a new prep node with the failed node's same completed parent and run prepare_complex again.",
 
     # --- prep / cleaning / selection ---
@@ -87,6 +88,10 @@ GUARDRAIL_CODES: dict[str, str] = {
     "invalid_protonation_state": "Use a valid protonation state specification.",
     "invalid_missing_residue_method": "Use --missing-residue-method auto, pdbfixer, or modeller.",
     "modeller_missing_residue_repair_failed": "MODELLER gap repair failed; read its errors, or fall back to --missing-residue-method pdbfixer.",
+    "modeller_nonstandard_residue_preservation_unsupported": "Enable non-standard residue replacement, or provide a separately prepared template whose modified polymer residues MODELLER can represent explicitly.",
+    "modeller_repair_numbering_unresolvable": "MODELLER repair could not assign exact author residue identifiers from the observed anchors; correct the residue mapping or provide an unambiguous source before creating a new prep node.",
+    "modeller_terminal_missing_residues_out_of_scope": "Do not model this long one-anchor tail as a routine gap repair; leave it unresolved, narrow the requested residue range, or provide a separately justified structural model.",
+    "modeller_terminal_numbering_unresolvable": "MODELLER terminal repair could not assign exact author residue identifiers from the one available anchor; provide an unambiguous residue range or a source carrying explicit residue mapping.",
     "complex_missing_residue_repair_failed": "The complex-wide missing-residue repair could not complete; inspect the errors, then either fix the inputs or fall back to per-chain repair by branching a new prep node.",
     "disulfide_endpoint_unresolvable": "A declared disulfide names a residue that could not be identified in the merged structure; name the insertion code or correct the residue numbers — renaming a different cysteine would put the bond and the CYX label on separate residues.",
     "modeller_disulfide_position_unresolvable": "A declared disulfide endpoint could not be placed in the model MODELLER was about to build; name the insertion code, correct the residue numbers, or drop the pair — a silently missing patch is a missing covalent bond.",

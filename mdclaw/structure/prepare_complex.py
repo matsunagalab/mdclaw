@@ -998,11 +998,14 @@ def prepare_complex(
                        gemmi's internal ``chain_id`` is an auto-generated
                        subchain label like ``Axp`` / ``Ax1`` / ``Axw`` and
                        is not user-facing. None = all chains.
-        missing_residue_method: How internal missing residues are rebuilt.
+        missing_residue_method: How requested missing residues are rebuilt.
             ``"auto"`` (default) uses PDBFixer for short gaps and MODELLER for
             out-of-scope gaps when licensed; ``"pdbfixer"`` never escalates;
             ``"modeller"`` always uses MODELLER loop modeling; ``"none"``
             records internal gaps but leaves every missing residue unbuilt.
+            Terminal segments are considered only when
+            ``build_terminal_missing_residues`` is true; PDBFixer is limited
+            to 5 residues per terminal segment and MODELLER to 10.
             MODELLER is licensed — export a ``KEY_MODELLER*`` variable.
         residue_ranges: Which residues of a chain to build from, as
             ``CHAIN:START-END`` strings using author residue numbers -- for
@@ -1890,11 +1893,23 @@ def prepare_complex(
             # pass. A gap at a chain-chain interface modeled one chain at a time
             # is built into space the partner chain occupies; the chains about
             # to be merged are the assembly, so MODELLER gets them together.
+            build_windows_by_source = {
+                str(cinfo["file"]): _window_for_chain(split_result, chain_id)
+                for chain_id, cinfo in chain_info_map.items()
+                if cinfo.get("file") in split_result["protein_files"]
+                and _window_for_chain(split_result, chain_id) is not None
+            }
             complex_repair = repair_complex_missing_residues(
                 split_result["protein_files"],
                 method=missing_residue_method,
                 work_dir=Path(split_result["protein_files"][0]).parent,
                 disulfide_pairs=sa_disulfide_pairs,
+                build_terminal_missing_residues=build_terminal_missing_residues,
+                build_windows_by_source=build_windows_by_source,
+                # prepare_complex has always normalized non-standard protein
+                # residues in its per-chain clean step; the complex MODELLER
+                # pre-pass must make the same choice before it builds gaps.
+                replace_nonstandard_residues=True,
             )
             result["warnings"].extend(complex_repair["warnings"])
             if not complex_repair["success"]:
@@ -1909,6 +1924,8 @@ def prepare_complex(
                     "chain_ids": complex_repair["chain_ids"],
                     "summary": complex_repair["summary"],
                     "model_file": complex_repair["model_file"],
+                    "validation": complex_repair.get("validation"),
+                    "operation": complex_repair.get("operation"),
                 }
 
             for protein_file in split_result["protein_files"]:
@@ -2751,9 +2768,23 @@ def prepare_complex(
             preparation_summary["missing_residue_detection"] = detections
         if repairs:
             preparation_summary["missing_residue_repair"] = repairs
+            preparation_summary["contains_predicted_terminal_residues"] = any(
+                repair.get("contains_predicted_terminal_residues")
+                or any(
+                    segment.get("location") in {"n_terminal", "c_terminal"}
+                    for segment in (repair.get("segments") or [])
+                )
+                for repair in repairs
+            )
             modelled = [r for r in repairs if r.get("method") == "modeller"]
             if modelled:
                 total = sum(int(r.get("total_residues") or 0) for r in modelled)
+                terminal_total = sum(
+                    int(segment.get("residue_count") or 0)
+                    for repair in modelled
+                    for segment in (repair.get("segments") or [])
+                    if segment.get("location") in {"n_terminal", "c_terminal"}
+                )
                 # Count chains, not records: a complex-wide repair is one record
                 # covering several chains, and counting records reported "across
                 # 1 chain(s)" for a two-chain rebuild.
@@ -2767,7 +2798,8 @@ def prepare_complex(
                     else:
                         repaired_chains.add(f"_record_{id(repair)}")
                 result.setdefault("warnings", []).append(
-                    f"MODELLER rebuilt {total} internal missing residue(s) across "
+                    f"MODELLER rebuilt {total} missing residue(s) "
+                    f"({terminal_total} terminal one-anchor prediction(s)) across "
                     f"{len(repaired_chains)} chain(s); these coordinates are predicted, "
                     "not experimental"
                 )

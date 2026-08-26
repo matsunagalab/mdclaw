@@ -15,9 +15,13 @@ gemmi = pytest.importorskip("gemmi")
 pytest.importorskip("pdbfixer")
 
 from mdclaw.structure.clean_protein import (  # noqa: E402
+    MODELLER_MAX_TERMINAL_MISSING_RESIDUE_SEGMENT_LENGTH,
     MODELLER_REPAIR_RANDOM_SEED,
+    _probe_missing_residue_summaries,
     _probe_internal_missing_residue_summary,
     _repair_missing_residues_with_modeller,
+    _resolve_missing_residue_method,
+    _validate_terminal_repair_geometry,
     _validate_modeller_repair_model,
     clean_protein,
 )
@@ -179,6 +183,115 @@ def _build_noncollinear_internal_gap(path):
     return path
 
 
+def _build_n_terminal_tail(path, first_observed=53, missing=6, observed_count=4):
+    """A 1CTF-shaped chain with a numbered one-anchor N-terminal segment."""
+    structure = gemmi.Structure()
+    model = gemmi.Model("1")
+    chain = gemmi.Chain("A")
+    observed_names = ["ALA", "CYS", "ASP", "GLU"][:observed_count]
+    missing_names = [
+        "GLY", "SER", "THR", "VAL", "LEU", "ILE",
+        "PRO", "PHE", "TYR", "TRP", "MET",
+    ][:missing]
+    for offset, (number, residue_name) in enumerate(zip(
+        range(first_observed, first_observed + observed_count), observed_names,
+    )):
+        residue = gemmi.Residue()
+        residue.name = residue_name
+        residue.seqid = gemmi.SeqId(number, " ")
+        for atom_name, element, dx, dy, dz in (
+            ("N", "N", 0.0, 0.0, 0.0),
+            ("CA", "C", 1.45, 0.5, 0.2),
+            ("C", "C", 2.50, -0.1, 0.4),
+            ("O", "O", 3.05, -1.1, 0.5),
+            ("CB", "C", 1.85, 1.4, -0.9),
+        ):
+            atom = gemmi.Atom()
+            atom.name = atom_name
+            atom.element = gemmi.Element(element)
+            atom.pos = gemmi.Position(offset * 3.8 + dx, dy, dz)
+            atom.occ, atom.b_iso = 1.0, 20.0
+            residue.add_atom(atom)
+        chain.add_residue(residue)
+    model.add_chain(chain)
+    structure.add_model(model)
+    structure.setup_entities()
+    next(entity for entity in structure.entities
+         if entity.entity_type == gemmi.EntityType.Polymer).full_sequence = (
+        missing_names + observed_names
+    )
+    structure.write_pdb(str(path))
+    return path
+
+
+def _write_n_terminal_model(path, first=47, last=56, anchor=53):
+    residues = []
+    names = ["GLY", "SER", "THR", "VAL", "LEU", "ILE",
+             "ALA", "CYS", "ASP", "GLU"]
+    for number in range(first, last + 1):
+        offset = number - anchor
+        residues.append((number, " ", names[number - first], offset * 3.8))
+    structure = gemmi.Structure()
+    model = gemmi.Model("1")
+    chain = gemmi.Chain("A")
+    for number, icode, name, x in residues:
+        residue = gemmi.Residue()
+        residue.name = name
+        residue.seqid = gemmi.SeqId(number, icode)
+        for atom_name, element, dx, dy, dz in (
+            ("N", "N", 0.0, 0.0, 0.0),
+            ("CA", "C", 1.45, 0.5, 0.2),
+            ("C", "C", 2.50, -0.1, 0.4),
+            ("O", "O", 3.05, -1.1, 0.5),
+            ("CB", "C", 1.85, 1.4, -0.9),
+        ):
+            atom = gemmi.Atom()
+            atom.name, atom.element = atom_name, gemmi.Element(element)
+            atom.pos = gemmi.Position(x + dx, dy, dz)
+            atom.occ, atom.b_iso = 1.0, 20.0
+            residue.add_atom(atom)
+        chain.add_residue(residue)
+    model.add_chain(chain)
+    structure.add_model(model)
+    structure.write_pdb(str(path))
+    return path
+
+
+def _add_water_chain(path, count=2):
+    lines = [
+        line for line in path.read_text().splitlines()
+        if not line.startswith("END")
+    ]
+    if not lines or not lines[-1].startswith("TER"):
+        lines.append("TER")
+    for offset in range(count):
+        serial = 9000 + offset
+        resnum = 201 + offset
+        lines.append(
+            f"HETATM{serial:5d}  O   HOH A{resnum:4d}    "
+            f"{20.0 + offset:8.3f}{20.0:8.3f}{20.0:8.3f}"
+            "  1.00 20.00           O"
+        )
+    lines.extend(["TER", "END"])
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def _make_first_observed_mse(path):
+    lines = []
+    for line in path.read_text().splitlines():
+        if line.startswith("SEQRES"):
+            fields = line[19:].split()
+            fields[6] = "MSE"
+            line = line[:19] + " ".join(fields)
+        elif line.startswith(("ATOM  ", "HETATM")) \
+                and int(line[22:26]) == 53:
+            line = "HETATM" + line[6:17] + "MSE " + line[21:]
+        lines.append(line)
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
 def test_auto_probe_does_not_call_insertion_shifted_terminal_gap_internal(tmp_path):
     source = _build_insertion_chain_with_terminal_missing(
         tmp_path / "insertion_terminal_missing.pdb"
@@ -192,6 +305,245 @@ def test_auto_probe_does_not_call_insertion_shifted_terminal_gap_internal(tmp_pa
         "max_segment_length": 0,
         "segments": [],
     }
+
+
+def test_terminal_probe_is_separate_from_internal_scope(tmp_path):
+    source = _build_n_terminal_tail(tmp_path / "tail.pdb")
+    summaries = _probe_missing_residue_summaries(source, build_window=(47, 56))
+
+    assert summaries["internal"]["total_residues"] == 0
+    assert summaries["n_terminal"]["total_residues"] == 6
+    assert summaries["c_terminal"]["total_residues"] == 0
+
+
+def test_auto_escalates_a_six_residue_terminal_tail(tmp_path, monkeypatch):
+    source = _build_n_terminal_tail(tmp_path / "tail.pdb")
+    import importlib
+    clean_module = importlib.import_module("mdclaw.structure.clean_protein")
+    monkeypatch.setattr(
+        clean_module,
+        "_modeller_repair_usability",
+        lambda: {"usable": True},
+    )
+
+    decision = _resolve_missing_residue_method(
+        "auto", source, build_terminal_missing_residues=True,
+        build_window=(47, 56),
+    )
+
+    assert decision["method"] == "modeller"
+    assert decision["escalated"] is True
+    assert decision["terminal_summary"]["max_segment_length"] == 6
+
+
+def test_modeller_refuses_an_eleven_residue_terminal_tail(tmp_path):
+    source = _build_n_terminal_tail(
+        tmp_path / "long_tail.pdb",
+        first_observed=58,
+        missing=MODELLER_MAX_TERMINAL_MISSING_RESIDUE_SEGMENT_LENGTH + 1,
+    )
+
+    outcome = _repair_missing_residues_with_modeller(
+        source,
+        build_terminal_missing_residues=True,
+        build_window=(47, 61),
+    )
+
+    assert outcome["success"] is False
+    assert outcome["code"] == "modeller_terminal_missing_residues_out_of_scope"
+
+
+def test_pinned_pdbfixer_keeps_its_own_terminal_scope_code(tmp_path):
+    source = _build_n_terminal_tail(tmp_path / "tail.pdb")
+
+    decision = _resolve_missing_residue_method(
+        "pdbfixer", source, build_terminal_missing_residues=True,
+        build_window=(47, 56),
+    )
+
+    assert decision["method"] == "pdbfixer"
+    assert decision["terminal_out_of_scope"] is False
+    assert decision["terminal_summary"]["max_segment_length"] == 6
+
+
+def test_terminal_geometry_checks_the_single_peptide_junction(tmp_path):
+    template = _build_n_terminal_tail(tmp_path / "template.pdb")
+    model = _write_n_terminal_model(tmp_path / "model.pdb")
+    sites = [("A", number, "") for number in range(47, 57)]
+    segment = {
+        "chain_id": "A", "location": "n_terminal",
+        "sites": [{"chain": "A", "resnum": number, "icode": ""}
+                  for number in range(47, 53)],
+    }
+
+    validation = _validate_terminal_repair_geometry(
+        template, model, [segment], sites)
+
+    assert validation["success"] is True, validation["errors"]
+    assert validation["junctions"][0]["c_n_distance_angstrom"] == pytest.approx(1.364)
+    assert validation["finite_coordinates"] is True
+
+
+def test_terminal_only_repair_invokes_modeller_with_exact_author_sites(
+    tmp_path, monkeypatch,
+):
+    source = _build_n_terminal_tail(tmp_path / "tail.pdb")
+    model = _write_n_terminal_model(tmp_path / "model.pdb")
+    captured = {}
+
+    def fake_modeller(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True, "warnings": [], "errors": [],
+            "selected_model": {
+                "path": str(model),
+                "template_frame": {"applied": True, "residues_renumbered": 10},
+            },
+        }
+
+    monkeypatch.setattr(
+        "mdclaw.genesis.modeller.modeller_from_alignment", fake_modeller)
+    outcome = _repair_missing_residues_with_modeller(
+        source,
+        build_terminal_missing_residues=True,
+        build_window=(47, 56),
+    )
+
+    assert outcome["success"] is True, outcome["errors"]
+    assert outcome["applied"] is True
+    assert captured["target_residue_sites"] == [
+        ("A", number, "") for number in range(47, 57)
+    ]
+    assert captured["hetatm"] is True
+    segment = outcome["summary"]["segments"][0]
+    assert segment["location"] == "n_terminal"
+    assert segment["anchor_count"] == 1
+    assert segment["method"] == "modeller"
+    assert [site["resnum"] for site in segment["sites"]] == list(range(47, 53))
+    assert outcome["detection"]["terminal_built"]["method"] == "modeller"
+    assert outcome["operation"]["contains_predicted_terminal_residues"] is True
+
+
+def test_modeller_repair_ignores_nonpolymer_chains_without_losing_them(
+    tmp_path, monkeypatch,
+):
+    """A solvated deposit has one SEQRES row, not one per topology chain."""
+    source = _add_water_chain(
+        _build_n_terminal_tail(tmp_path / "tail_with_waters.pdb")
+    )
+    from pdbfixer import PDBFixer
+
+    probe = PDBFixer(filename=str(source))
+    assert len(list(probe.topology.chains())) == 2
+    assert len(probe.sequences) == 1
+
+    model = _write_n_terminal_model(tmp_path / "model.pdb")
+    captured = {}
+
+    def fake_modeller(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True, "warnings": [], "errors": [],
+            "selected_model": {
+                "path": str(model),
+                "template_frame": {"applied": True, "residues_renumbered": 10},
+            },
+        }
+
+    monkeypatch.setattr(
+        "mdclaw.genesis.modeller.modeller_from_alignment", fake_modeller)
+    outcome = _repair_missing_residues_with_modeller(
+        source,
+        build_terminal_missing_residues=True,
+        build_window=(47, 56),
+    )
+
+    assert outcome["success"] is True, outcome["errors"]
+    template = Path(captured["template_pdb"]).read_text()
+    assert "HOH" not in template
+    repaired = Path(outcome["model_file"]).read_text().splitlines()
+    assert sum(line.startswith("HETATM") and "HOH" in line for line in repaired) == 2
+
+
+def test_modeller_repair_fails_closed_when_nonstandard_residues_must_be_kept(
+    tmp_path,
+):
+    source = _make_first_observed_mse(
+        _build_n_terminal_tail(tmp_path / "mse_tail.pdb"))
+
+    outcome = _repair_missing_residues_with_modeller(
+        source,
+        build_terminal_missing_residues=True,
+        build_window=(47, 56),
+        replace_nonstandard_residues=False,
+    )
+
+    assert outcome["success"] is False
+    assert outcome["code"] == "modeller_nonstandard_residue_preservation_unsupported"
+
+
+def test_direct_clean_build_switch_reports_a_short_pdbfixer_tail(
+    tmp_path, stub_amber_conversion,
+):
+    source = _build_n_terminal_tail(
+        tmp_path / "short_tail.pdb", first_observed=52, missing=5)
+
+    result = clean_protein(
+        pdb_file=str(source),
+        missing_residue_method="pdbfixer",
+        build_terminal_missing_residues=True,
+        # Leave the legacy negative flag at its default: the positive switch is
+        # sufficient by itself.
+        build_window=(47, 55),
+        add_hydrogens=True,
+    )
+
+    assert result["success"] is True, result["errors"]
+    repair = result["missing_residue_repair"]
+    assert repair["contains_predicted_terminal_residues"] is True
+    assert repair["total_residues"] == 5
+    assert [site["resnum"] for site in repair["segments"][0]["sites"]] == [47, 48, 49, 50, 51]
+    assert result["missing_residue_detection"]["terminal_built"]["method"] == "pdbfixer"
+
+
+def test_pinned_pdbfixer_refuses_a_six_residue_tail_with_terminal_code(tmp_path):
+    source = _build_n_terminal_tail(tmp_path / "tail.pdb")
+
+    result = clean_protein(
+        pdb_file=str(source),
+        missing_residue_method="pdbfixer",
+        build_terminal_missing_residues=True,
+        build_window=(47, 56),
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "pdbfixer_terminal_missing_residues_out_of_scope"
+    assert result["missing_residue_repair"]["max_segment_length"] == 6
+
+
+def test_terminal_geometry_rejects_a_disconnected_junction(tmp_path):
+    template = _build_n_terminal_tail(tmp_path / "template.pdb")
+    model = _write_n_terminal_model(tmp_path / "model.pdb")
+    lines = model.read_text().splitlines()
+    rewritten = []
+    for line in lines:
+        if line.startswith("ATOM") and line[21] == "A" and int(line[22:26]) == 52 \
+                and line[12:16].strip() == "C":
+            line = line[:30] + f"{-20.0:8.3f}" + line[38:]
+        rewritten.append(line)
+    model.write_text("\n".join(rewritten) + "\n")
+    sites = [("A", number, "") for number in range(47, 57)]
+    segment = {
+        "chain_id": "A", "location": "n_terminal",
+        "sites": [{"chain": "A", "resnum": number, "icode": ""}
+                  for number in range(47, 53)],
+    }
+
+    validation = _validate_terminal_repair_geometry(
+        template, model, [segment], sites)
+
+    assert validation["success"] is False
+    assert any("peptide junction" in error for error in validation["errors"])
 
 
 @pytest.fixture
@@ -582,9 +934,13 @@ def test_repair_preserves_insertion_coded_protonation_site(tmp_path, monkeypatch
             self.topology = probe.topology
             self.sequences = probe.sequences
             self.missingResidues = {}
+            self.nonstandardResidues = []
 
         def findMissingResidues(self):
             self.missingResidues = {(0, 2): ["GLY"]}
+
+        def findNonstandardResidues(self):
+            self.nonstandardResidues = []
 
     monkeypatch.setattr("pdbfixer.PDBFixer", GapAwareFixer)
 

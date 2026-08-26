@@ -57,7 +57,9 @@ EXPECTED = {
     "solvation/membrane.py": (1, "restore"),            # patch-relax PDB export
     "sidechain_packer.py": (1, "restore"),              # HPacker mutation output
     "structure/protonation.py": (1, "restore"),         # user-state Modeller path
-    "structure/clean_protein.py": (2, "source"),        # transient + nucleic_h
+    # Two existing transient/source exports plus the polymer-only MODELLER
+    # template and its repaired complex; the latter two restore from the input.
+    "structure/clean_protein.py": (4, "restore"),
 }
 
 

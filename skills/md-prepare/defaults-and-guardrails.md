@@ -28,6 +28,10 @@ Guardrail handling:
 
 - Branch on structured `code` values.
 - Missing-residue repair defaults to `auto`: PDBFixer handles short gaps and MODELLER handles larger gaps when its package and license key are present.
+- Missing terminal residues remain unresolved unless
+  `--build-terminal-missing-residues` is explicit. Requested tails use PDBFixer
+  through 5 residues and MODELLER through 10; longer one-anchor predictions are
+  refused with a terminal-specific remedy.
 - For `missing_residues_require_modeller_license`, export the key, then create a
   sibling prep node with the failed node's same completed parent:
   ```bash

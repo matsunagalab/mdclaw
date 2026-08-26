@@ -22,6 +22,7 @@ from mdclaw._common import setup_logger  # noqa: E402
 logger = setup_logger(__name__)
 
 import re  # noqa: E402
+import math  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Optional, Dict, Any  # noqa: E402
 
@@ -32,6 +33,7 @@ from mdclaw._common import (  # noqa: E402
     sha256_file,
 )
 from mdclaw.forcefield_templates import nucleic_residue_name_map  # noqa: E402
+from mdclaw.chemistry_constants import PROTEIN_RESNAMES  # noqa: E402
 from mdclaw.research.nucleic import (  # noqa: E402
     MODIFIED_NUCLEIC_UNSUPPORTED_MESSAGE,
     classify_nucleic_residues,
@@ -52,6 +54,11 @@ TERMINAL_CAP_RESIDUES = SUPPORTED_N_TERMINAL_CAPS | SUPPORTED_C_TERMINAL_CAPS
 SUPPORTED_PREP_SOLVENT_TYPES = {"explicit", "implicit", "vacuum"}
 PDBFIXER_MAX_INTERNAL_MISSING_RESIDUES = 10
 PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH = 5
+# Terminal segments have only one structural anchor. Keep their policy separate
+# from internal loops: the first 1CTF validation exposed that a six-residue
+# N-terminal tail was being reported as an over-limit *internal* PDBFixer gap.
+PDBFIXER_MAX_TERMINAL_MISSING_RESIDUE_SEGMENT_LENGTH = 5
+MODELLER_MAX_TERMINAL_MISSING_RESIDUE_SEGMENT_LENGTH = 10
 
 # Initialize tool wrappers
 pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
@@ -82,7 +89,7 @@ _NUCLEIC_5P_TERMINAL_PHOSPHATE_OXYGENS = {
     "O3P",
 }
 
-from mdclaw.structure.pdb_utils import _pdb_atom_count, _pdb_hydrogen_count, _pdb_residue_names, _read_pdb_unique_residues, resolve_residue_site, restore_residue_numbering_from_reference  # noqa: E402
+from mdclaw.structure.pdb_utils import _pdb_atom_count, _pdb_hydrogen_count, _pdb_residue_names, _read_pdb_unique_residues, resolve_residue_site, restore_residue_numbering_from_reference, restore_resnames_by_residue_key  # noqa: E402
 from mdclaw.structure.protonation import _apply_protonation_states_with_modeller, _extract_histidine_states, _extract_input_protonation_state_overrides, _extract_non_default_protonation_states, _merge_input_protonation_state_overrides, _merge_protonation_states, _normalize_protonation_state_overrides  # noqa: E402
 from mdclaw.structure.terminal_caps import _complete_terminal_cap_hydrogens_with_modeller, _prepare_terminal_caps_for_pdb2pqr, _resolve_terminal_cap_settings, detect_input_terminal_caps, strip_input_terminal_caps  # noqa: E402
 
@@ -241,6 +248,43 @@ def _internal_missing_residue_records(
     return records
 
 
+def _classified_missing_residue_records(
+    missing_residues: dict,
+    chains: list,
+    terminal_keys: dict,
+) -> dict[str, list[dict]]:
+    """Missing segments split by structural constraint, never by name.
+
+    Internal gaps have two anchors; terminal segments have one. Keeping that
+    distinction in the record prevents the PDBFixer internal guard from
+    accidentally refusing a requested terminus and gives downstream provenance
+    enough information to refuse one-anchor predicted coordinates.
+    """
+    grouped = {"internal": [], "n_terminal": [], "c_terminal": []}
+    for (chain_idx, res_idx), residues in sorted(missing_residues.items()):
+        residue_names = [str(residue) for residue in residues]
+        if residue_names in (["ACE"], ["NME"]):
+            continue
+        chain = chains[chain_idx] if 0 <= chain_idx < len(chains) else None
+        terminal_kind = terminal_keys.get((chain_idx, res_idx))
+        location = (
+            "n_terminal" if terminal_kind == "N"
+            else "c_terminal" if terminal_kind == "C"
+            else "internal"
+        )
+        grouped[location].append({
+            "chain_index": chain_idx,
+            "chain_id": str(getattr(chain, "id", chain_idx)),
+            "position": res_idx,
+            "residues": residue_names,
+            "residue_count": len(residue_names),
+            "location": location,
+            "anchor_count": 1 if terminal_kind else 2,
+            "coordinate_provenance": "predicted",
+        })
+    return grouped
+
+
 def _missing_residue_summary(records: list[dict]) -> dict:
     total_residues = sum(int(record.get("residue_count") or 0) for record in records)
     max_segment_length = max(
@@ -314,20 +358,29 @@ def _missing_residue_terminal_keys(fixer, chains) -> dict[tuple[int, int], str]:
 
 def _probe_internal_missing_residue_summary(input_path: Path) -> dict:
     """Measure internal gaps without changing the structure."""
+    return _probe_missing_residue_summaries(input_path)["internal"]
+
+
+def _probe_missing_residue_summaries(
+    input_path: Path,
+    build_window=None,
+) -> dict:
+    """Measure internal and terminal gaps after applying the requested window."""
     probe = PDBFixer(filename=str(input_path))
     probe.findMissingResidues()
     chains = list(probe.topology.chains())
+    if build_window is not None:
+        _restrict_missing_to_window(probe, chains, build_window)
     terminal_keys = _missing_residue_terminal_keys(probe, chains)
-    internal = {}
-    for (chain_idx, res_idx), residues in probe.missingResidues.items():
-        if not 0 <= chain_idx < len(chains):
-            continue
-        if (chain_idx, res_idx) in terminal_keys:
-            continue
-        internal[(chain_idx, res_idx)] = residues
-    return _missing_residue_summary(
-        _internal_missing_residue_records(internal, chains)
-    )
+    grouped = _classified_missing_residue_records(
+        probe.missingResidues, chains, terminal_keys)
+    terminal_records = grouped["n_terminal"] + grouped["c_terminal"]
+    return {
+        "internal": _missing_residue_summary(grouped["internal"]),
+        "terminal": _missing_residue_summary(terminal_records),
+        "n_terminal": _missing_residue_summary(grouped["n_terminal"]),
+        "c_terminal": _missing_residue_summary(grouped["c_terminal"]),
+    }
 
 
 def _modeller_repair_usability() -> dict:
@@ -441,6 +494,8 @@ def _validate_modeller_repair_model(
     model_path: Path,
     target_sequence: str,
     template_frame: dict | None,
+    target_residue_sites: list | None = None,
+    terminal_segments: list[dict] | None = None,
 ) -> dict:
     """Verify that an in-place MODELLER repair is a complete drop-in replacement."""
     import gemmi
@@ -482,6 +537,19 @@ def _validate_modeller_repair_model(
         for chain in model_chains
         for resnum, icode in model_residues[chain]
     ]
+    expected_order = (
+        [(str(chain)[:1], int(number), str(icode or " ")[:1])
+         for chain, number, icode in target_residue_sites]
+        if target_residue_sites is not None else None
+    )
+    result["target_residue_sites_match"] = (
+        expected_order is None or model_order == expected_order
+    )
+    if expected_order is not None and model_order != expected_order:
+        result["errors"].append(
+            "MODELLER output author residue identities do not match the exact "
+            f"target map: expected {expected_order}, observed {model_order}"
+        )
     model_keys = set(model_order)
     missing_observed = sorted(template_keys - model_keys)
     result["missing_observed_residues"] = [
@@ -517,14 +585,183 @@ def _validate_modeller_repair_model(
             f"expected {target_sequence}, observed {model_sequence}"
         )
 
+    terminal_geometry = _validate_terminal_repair_geometry(
+        template_path,
+        model_path,
+        terminal_segments or [],
+        expected_order or model_order,
+    )
+    result["terminal_geometry"] = terminal_geometry
+    result["errors"].extend(terminal_geometry["errors"])
+
     result["success"] = not result["errors"]
     return result
 
 
-def _template_alignment_row(target_sequences, internal, chains) -> str:
+def _pdb_heavy_atom_coordinates(path: Path) -> dict:
+    """Read one coordinate per named heavy atom from a MODELLER PDB."""
+    atoms = {}
+    for line in Path(path).read_text(encoding="utf-8", errors="ignore").splitlines():
+        if not line.startswith(("ATOM  ", "HETATM")) or len(line) < 54:
+            continue
+        altloc = line[16]
+        if altloc not in (" ", "A"):
+            continue
+        element = line[76:78].strip().upper() if len(line) >= 78 else ""
+        if not element:
+            element = re.sub(r"[^A-Za-z]", "", line[12:16]).upper()[:1]
+        if element in {"H", "D"}:
+            continue
+        try:
+            site = (line[21], int(line[22:26]), line[26])
+            xyz = tuple(float(line[start:start + 8]) for start in (30, 38, 46))
+        except (TypeError, ValueError):
+            continue
+        atoms[(site, line[12:16].strip())] = xyz
+    return atoms
+
+
+def _validate_terminal_repair_geometry(
+    template_path: Path,
+    model_path: Path,
+    terminal_segments: list[dict],
+    target_residue_sites: list[tuple[str, int, str]],
+) -> dict:
+    """Validate attachment, finite coordinates, and gross fixed-atom clashes.
+
+    A one-anchor tail has no experimental target conformation to compare with.
+    The defensible postconditions are therefore deliberately narrow: the exact
+    requested sites exist, the peptide junction is covalent, and the new heavy
+    atoms do not sit essentially on top of atoms retained from the template.
+    """
+    result = {
+        "success": True,
+        "errors": [],
+        "junctions": [],
+        "minimum_fixed_heavy_atom_distance_angstrom": None,
+        "finite_coordinates": True,
+    }
+    if not terminal_segments:
+        return result
+
+    model_atoms = _pdb_heavy_atom_coordinates(model_path)
+    template_atoms = _pdb_heavy_atom_coordinates(template_path)
+    nonfinite = [key for key, xyz in model_atoms.items()
+                 if not all(math.isfinite(value) for value in xyz)]
+    if nonfinite:
+        result["finite_coordinates"] = False
+        result["errors"].append(
+            f"MODELLER terminal repair contains non-finite coordinates: {nonfinite[:5]}"
+        )
+
+    ordered_sites = [
+        (str(chain)[:1], int(number), str(icode or " ")[:1])
+        for chain, number, icode in target_residue_sites
+    ]
+    position = {site: index for index, site in enumerate(ordered_sites)}
+    template_sites = {site for site, _atom_name in template_atoms}
+    terminal_sites: set[tuple[str, int, str]] = set()
+
+    for segment in terminal_segments:
+        sites = [
+            (str(site["chain"])[:1], int(site["resnum"]),
+             str(site.get("icode") or " ")[:1])
+            for site in segment.get("sites", [])
+        ]
+        terminal_sites.update(sites)
+        if not sites:
+            result["errors"].append(
+                f"terminal segment {segment.get('chain_id')} has no exact residue sites"
+            )
+            continue
+        location = segment.get("location")
+        edge = position.get(sites[-1] if location == "n_terminal" else sites[0])
+        neighbor_index = (
+            edge + 1 if location == "n_terminal" and edge is not None
+            else edge - 1 if location == "c_terminal" and edge is not None
+            else None
+        )
+        if neighbor_index is None or not 0 <= neighbor_index < len(ordered_sites):
+            result["errors"].append(
+                f"terminal segment {segment.get('chain_id')} has no observed peptide anchor"
+            )
+            continue
+        neighbor = ordered_sites[neighbor_index]
+        if neighbor not in template_sites:
+            result["errors"].append(
+                f"terminal segment {segment.get('chain_id')} is not adjacent to an "
+                "observed template residue"
+            )
+            continue
+        if location == "n_terminal":
+            first_key, second_key = (sites[-1], "C"), (neighbor, "N")
+        else:
+            first_key, second_key = (neighbor, "C"), (sites[0], "N")
+        if first_key not in model_atoms or second_key not in model_atoms:
+            result["errors"].append(
+                f"terminal peptide junction lacks C/N atoms at {first_key[0]} and "
+                f"{second_key[0]}"
+            )
+            continue
+        distance = math.dist(model_atoms[first_key], model_atoms[second_key])
+        result["junctions"].append({
+            "location": location,
+            "tail_site": {
+                "chain": (sites[-1] if location == "n_terminal" else sites[0])[0],
+                "resnum": (sites[-1] if location == "n_terminal" else sites[0])[1],
+                "icode": (sites[-1] if location == "n_terminal" else sites[0])[2].strip(),
+            },
+            "anchor_site": {
+                "chain": neighbor[0], "resnum": neighbor[1],
+                "icode": neighbor[2].strip(),
+            },
+            "c_n_distance_angstrom": round(distance, 3),
+        })
+        if not 1.1 <= distance <= 1.6:
+            result["errors"].append(
+                f"MODELLER terminal peptide junction is {distance:.2f} A; expected "
+                "a covalent C-N distance of 1.1-1.6 A"
+            )
+
+    # This is intentionally a gross-overlap test, not a force-field energy
+    # judgment. Exclude the directly bonded anchor residue; a sub-0.75 A heavy
+    # atom distance anywhere else means two atoms are effectively coincident.
+    minimum = None
+    clashes = []
+    for (tail_site, tail_atom), tail_xyz in model_atoms.items():
+        if tail_site not in terminal_sites:
+            continue
+        tail_index = position.get(tail_site)
+        for (fixed_site, fixed_atom), fixed_xyz in template_atoms.items():
+            fixed_index = position.get(fixed_site)
+            if (
+                tail_index is not None
+                and fixed_index is not None
+                and tail_site[0] == fixed_site[0]
+                and abs(tail_index - fixed_index) == 1
+            ):
+                continue
+            distance = math.dist(tail_xyz, fixed_xyz)
+            minimum = distance if minimum is None else min(minimum, distance)
+            if distance < 0.75:
+                clashes.append((tail_site, tail_atom, fixed_site, fixed_atom, distance))
+    result["minimum_fixed_heavy_atom_distance_angstrom"] = (
+        round(minimum, 3) if minimum is not None else None
+    )
+    if clashes:
+        result["errors"].append(
+            "MODELLER terminal repair introduced gross heavy-atom overlaps "
+            f"(<0.75 A) against the fixed template: {clashes[:5]}"
+        )
+    result["success"] = not result["errors"]
+    return result
+
+
+def _template_alignment_row(target_sequences, gaps, chains) -> str:
     """The template row of a repair alignment: observed residues, gaps as dashes.
 
-    ``internal`` is PDBFixer's ``missingResidues`` restricted to internal gaps,
+    ``gaps`` is PDBFixer's ``missingResidues`` restricted to the segments the
+    caller requested, including terminal segments only when explicitly enabled,
     keyed by ``(chain_index, residue_index)`` where the residue index counts
     *observed* residues in that chain and says where the missing run is
     inserted. Walking the observed residues and emitting one dash per missing
@@ -541,7 +778,7 @@ def _template_alignment_row(target_sequences, internal, chains) -> str:
         target = target_sequences[chain_index]
         inserts = {
             int(res_index): len(residues)
-            for (ci, res_index), residues in internal.items()
+            for (ci, res_index), residues in gaps.items()
             if ci == chain_index
         }
         skeleton = []
@@ -617,8 +854,11 @@ def repair_complex_missing_residues(
     method: str = "auto",
     work_dir=None,
     disulfide_pairs: list | None = None,
+    build_terminal_missing_residues: bool = False,
+    build_windows_by_source: dict | None = None,
+    replace_nonstandard_residues: bool = True,
 ) -> dict:
-    """Rebuild every chain's internal gaps in one MODELLER pass over the complex.
+    """Rebuild every chain's requested gaps in one MODELLER pass over the complex.
 
     Repairing chain by chain models each loop as if it were alone: a gap at a
     chain-chain interface then gets built straight through space the partner
@@ -655,7 +895,22 @@ def repair_complex_missing_residues(
     # preparation down: defer, and let the per-chain pass report it the way it
     # always has, one chain at a time.
     try:
-        per_chain = [_resolve_missing_residue_method(method, path) for path in paths]
+        per_chain = []
+        for path in paths:
+            window = (build_windows_by_source or {}).get(str(path))
+            if build_terminal_missing_residues or window is not None:
+                decision = _resolve_missing_residue_method(
+                    method,
+                    path,
+                    build_terminal_missing_residues=(
+                        build_terminal_missing_residues),
+                    build_window=window,
+                )
+            else:
+                # Preserve the established private-call contract for callers
+                # and tests that replace the resolver with a two-argument probe.
+                decision = _resolve_missing_residue_method(method, path)
+            per_chain.append(decision)
     except Exception as exc:  # noqa: BLE001 - deferring, not swallowing
         outcome["warnings"].append(
             "Could not decide the missing-residue method for the complex "
@@ -683,8 +938,35 @@ def repair_complex_missing_residues(
         )
         return outcome
 
+    terminal_refusal = next(
+        (decision for decision in per_chain
+         if decision.get("terminal_out_of_scope")),
+        None,
+    )
+    if terminal_refusal:
+        outcome["success"] = False
+        outcome["code"] = "modeller_terminal_missing_residues_out_of_scope"
+        summary = terminal_refusal["terminal_summary"]
+        outcome["errors"].append(
+            "Requested terminal segment exceeds the MODELLER repair scope: "
+            f"max segment length {summary['max_segment_length']}, limit "
+            f"{MODELLER_MAX_TERMINAL_MISSING_RESIDUE_SEGMENT_LENGTH}."
+        )
+        return outcome
+
+    windows_by_chain = {
+        chain_id: (build_windows_by_source or {}).get(str(path))
+        for chain_id, path in zip(fused["chain_ids"], paths)
+        if (build_windows_by_source or {}).get(str(path))
+    }
+
     repair = _repair_missing_residues_with_modeller(
-        combined, disulfide_pairs=disulfide_pairs)
+        combined,
+        disulfide_pairs=disulfide_pairs,
+        build_terminal_missing_residues=build_terminal_missing_residues,
+        build_windows_by_chain=windows_by_chain,
+        replace_nonstandard_residues=replace_nonstandard_residues,
+    )
     outcome["warnings"].extend(repair["warnings"])
     if not repair["success"]:
         if repair["code"] in _COMPLEX_REPAIR_PREFLIGHT_CODES:
@@ -704,7 +986,8 @@ def repair_complex_missing_residues(
         outcome["errors"].extend(repair["errors"])
         return outcome
     if not repair["applied"]:
-        # Every gap turned out to be terminal; leave the per-chain path alone.
+        # Window restriction can leave no requested gap in the fused input;
+        # leave the established per-chain path in charge in that case.
         return outcome
 
     chain_to_source = dict(zip(fused["chain_ids"], (str(path) for path in paths)))
@@ -805,11 +1088,19 @@ def _split_repaired_complex(model_path, chain_to_source: dict) -> dict:
         # the deposit or an earlier tool had already made -- which is exactly
         # what `preserve_input_protonation` exists to keep. Restored by residue
         # key, so only residues the input actually held are touched; the rebuilt
-        # ones keep the standard name MODELLER gave them.
+        # ones keep the standard name MODELLER gave them. Do not restore general
+        # modified residues such as MSE: the target sequence deliberately uses
+        # PDBFixer's requested standard replacement (MET), and changing only
+        # the residue name back would pair MSE with MODELLER's MET atom graph.
+        preservable_names = {
+            "ASH", "GLH", "LYN", "HID", "HIE", "HIP", "CYM", "CYX",
+        }
         source_names = {
             (line[21], line[22:26], line[26]): line[17:21]
             for line in source_lines
-            if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 27
+            if line.startswith(("ATOM  ", "HETATM"))
+            and len(line) >= 27
+            and line[17:21].strip() in preservable_names
         }
         rewritten = []
         for line in chain_atoms:
@@ -831,8 +1122,14 @@ def _split_repaired_complex(model_path, chain_to_source: dict) -> dict:
     }
 
 
-def _resolve_missing_residue_method(method: str, input_path: Path) -> dict:
-    """Decide whether one structure's internal gaps go to PDBFixer or MODELLER.
+def _resolve_missing_residue_method(
+    method: str,
+    input_path: Path,
+    *,
+    build_terminal_missing_residues: bool = False,
+    build_window=None,
+) -> dict:
+    """Decide whether requested gaps go to PDBFixer or MODELLER.
 
     Split out of ``clean_protein`` so a complex-wide repair can ask the same
     question about each chain without restating the thresholds. Returns the
@@ -842,25 +1139,59 @@ def _resolve_missing_residue_method(method: str, input_path: Path) -> dict:
     PDBFixer can do and MODELLER is not available -- the caller decides whether
     that is an error.
     """
+    summaries = None
+    if method == "auto" or build_terminal_missing_residues:
+        summaries = _probe_missing_residue_summaries(input_path, build_window)
+    terminal_summary = (
+        summaries["terminal"] if build_terminal_missing_residues and summaries
+        else _missing_residue_summary([])
+    )
+    terminal_too_long_for_modeller = (
+        terminal_summary["max_segment_length"]
+        > MODELLER_MAX_TERMINAL_MISSING_RESIDUE_SEGMENT_LENGTH
+    )
     if method != "auto":
         return {
             "method": method,
             "escalated": False,
             "out_of_scope": False,
-            "summary": None,
+            "summary": summaries["internal"] if summaries else None,
+            "terminal_summary": terminal_summary,
+            # A caller that pinned PDBFixer gets its own five-residue policy
+            # and remedy below. The MODELLER ceiling is not its failure code.
+            "terminal_out_of_scope": (
+                method == "modeller" and terminal_too_long_for_modeller),
             "usability": None,
         }
-    summary = _probe_internal_missing_residue_summary(input_path)
-    out_of_scope = (
+    summary = summaries["internal"]
+    internal_out_of_scope = (
         summary["total_residues"] > PDBFIXER_MAX_INTERNAL_MISSING_RESIDUES
-        or summary["max_segment_length"] > PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH
+        or summary["max_segment_length"]
+        > PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH
     )
+    terminal_out_of_pdbfixer_scope = (
+        terminal_summary["max_segment_length"]
+        > PDBFIXER_MAX_TERMINAL_MISSING_RESIDUE_SEGMENT_LENGTH
+    )
+    out_of_scope = internal_out_of_scope or terminal_out_of_pdbfixer_scope
+    if terminal_too_long_for_modeller:
+        return {
+            "method": "modeller",
+            "escalated": True,
+            "out_of_scope": True,
+            "summary": summary,
+            "terminal_summary": terminal_summary,
+            "terminal_out_of_scope": True,
+            "usability": None,
+        }
     if not out_of_scope:
         return {
             "method": "pdbfixer",
             "escalated": False,
             "out_of_scope": False,
             "summary": summary,
+            "terminal_summary": terminal_summary,
+            "terminal_out_of_scope": False,
             "usability": None,
         }
     usability = _modeller_repair_usability()
@@ -870,6 +1201,8 @@ def _resolve_missing_residue_method(method: str, input_path: Path) -> dict:
             "escalated": False,
             "out_of_scope": True,
             "summary": summary,
+            "terminal_summary": terminal_summary,
+            "terminal_out_of_scope": False,
             "usability": usability,
         }
     return {
@@ -877,6 +1210,8 @@ def _resolve_missing_residue_method(method: str, input_path: Path) -> dict:
         "escalated": True,
         "out_of_scope": True,
         "summary": summary,
+        "terminal_summary": terminal_summary,
+        "terminal_out_of_scope": False,
         "usability": usability,
     }
 
@@ -982,8 +1317,13 @@ def _validate_declared_disulfides(model_path, disulfide_pairs, present_chains) -
     return result
 
 
-def _target_index_by_author_key(chains, chain_spans, internal) -> tuple[dict, list]:
-    """Map each residue's author key to its position in the model being built.
+def _resolve_target_residue_sites(
+    chains,
+    chain_spans,
+    gaps,
+    build_windows_by_chain: dict | None = None,
+) -> dict:
+    """Resolve every target position to one exact author residue identifier.
 
     Walking the alignment is the only way to get this right in general.
     ``resnum - first_observed`` happens to work on a deposit whose numbering runs
@@ -993,114 +1333,169 @@ def _target_index_by_author_key(chains, chain_spans, internal) -> tuple[dict, li
     worse than no index, so anything ambiguous is left out here and refused by
     the caller rather than guessed at.
 
-    Returns ``(index_by_key, errors)``. Keys are ``(chain, resnum, icode)``;
-    observed residues are exact, and residues inside a gap are included only
-    where the flanking anchors make their numbering unambiguous.
+    Terminal runs use their one observed anchor and, when present, the caller's
+    requested build window. They fail closed at insertion-coded anchors or on a
+    collision rather than leaving MODELLER's synthetic 1..N numbering in the
+    output. Returns ordered ``sites`` plus the inverse ``index_by_key``.
     """
-    index_by_key: dict[tuple[str, int, str], int] = {}
-    # A number that several residues answer to. Naming the insertion code still
-    # resolves; asking by number alone must not pick one of them.
-    ambiguous: set[tuple[str, int]] = set()
-    duplicated: set[tuple[str, int, str]] = set()
-    # Every key a number answers to. A number is ambiguous only when more than
-    # one residue carries it -- an insertion code by itself is not ambiguous, and
-    # treating it as such rejected artifacts written before codes were carried,
-    # where a lone A52A is the only residue numbered 52.
-    by_number: dict[tuple[str, int], list] = {}
+    build_windows_by_chain = build_windows_by_chain or {}
+    all_sites: list[tuple[str, int, str]] = []
+    gap_sites: dict[tuple[int, int], list[tuple[str, int, str]]] = {}
     errors: list[str] = []
-    base = 0
+    sources: set[str] = set()
 
     for chain_index, (chain, span) in enumerate(zip(chains, chain_spans)):
         chain_id = str(chain.id)[:1]
         observed = list(chain.residues())
         inserts = {
             int(res_index): len(residues)
-            for (ci, res_index), residues in internal.items()
+            for (ci, res_index), residues in gaps.items()
             if ci == chain_index
         }
-        position = base
-        # Ordered list of (target position, author key or None) for this chain.
-        walk: list[tuple[int, tuple | None]] = []
+        walk: list[tuple[str, int, str] | None] = []
+        gap_slices: dict[tuple[int, int], tuple[int, int]] = {}
         for observed_index, residue in enumerate(observed):
-            for _ in range(inserts.get(observed_index, 0)):
-                walk.append((position, None))
-                position += 1
+            count = inserts.get(observed_index, 0)
+            start = len(walk)
+            for _ in range(count):
+                walk.append(None)
+            if count:
+                gap_slices[(chain_index, observed_index)] = (start, len(walk))
             try:
                 resnum = int(str(residue.id).strip())
             except (TypeError, ValueError):
                 errors.append(
                     f"chain {chain_id} residue {residue.id!r} has no integer "
-                    "number; disulfide positions cannot be resolved"
+                    "number; MODELLER target positions cannot be restored"
                 )
-                walk.append((position, None))
-                position += 1
+                walk.append(None)
                 continue
             icode = str(getattr(residue, "insertionCode", "") or "").strip()
-            key = (chain_id, resnum, icode)
-            if key in index_by_key:
-                duplicated.add(key)          # the file itself is contradictory
-            index_by_key[key] = position
-            by_number.setdefault((chain_id, resnum), []).append(key)
-            walk.append((position, key))
-            position += 1
-        for _ in range(inserts.get(len(observed), 0)):
-            walk.append((position, None))
-            position += 1
+            walk.append((chain_id, resnum, icode))
+        count = inserts.get(len(observed), 0)
+        start = len(walk)
+        for _ in range(count):
+            walk.append(None)
+        if count:
+            gap_slices[(chain_index, len(observed))] = (start, len(walk))
 
-        if position - base != len(span):
+        if len(walk) != len(span):
             errors.append(
                 f"chain {chain_id}: {len(observed)} observed + "
                 f"{sum(inserts.values())} rebuilt residue(s) do not fill the "
                 f"{len(span)}-residue target span"
             )
-            base += len(span)
             continue
 
-        # Number the rebuilt residues only where the flanking observed anchors
-        # say so without ambiguity: both present, neither carrying an insertion
-        # code, and the numbering gap exactly the length of the run.
-        run_start = None
-        for offset, (pos, key) in enumerate(walk):
-            if key is None:
-                if run_start is None:
-                    run_start = offset
+        windows = build_windows_by_chain.get(chain_id)
+        windows = [windows] if windows and isinstance(windows[0], int) else windows
+
+        offset = 0
+        while offset < len(walk):
+            if walk[offset] is not None:
+                offset += 1
                 continue
-            if run_start is not None:
-                _number_rebuilt_run(walk, run_start, offset, chain_id,
-                                    index_by_key, ambiguous)
-                run_start = None
-        base += len(span)
+            run_start = offset
+            while offset < len(walk) and walk[offset] is None:
+                offset += 1
+            run_end = offset
+            left = walk[run_start - 1] if run_start else None
+            right = walk[run_end] if run_end < len(walk) else None
+            length = run_end - run_start
+            if left is not None and right is not None:
+                if right[1] - left[1] - 1 != length:
+                    errors.append(
+                        f"chain {chain_id}: positions in the {length}-residue "
+                        "internal gap are not determined by the flanking "
+                        f"residues {left[1]}{left[2]} and {right[1]}{right[2]}"
+                    )
+                    continue
+                numbers = list(range(left[1] + 1, right[1]))
+                source = "two_anchor"
+            elif right is not None:
+                if right[2]:
+                    errors.append(
+                        f"chain {chain_id}: N-terminal gap is anchored at "
+                        f"{right[1]}{right[2]}; insertion-coded one-anchor "
+                        "numbering is ambiguous"
+                    )
+                    continue
+                numbers = list(range(right[1] - length, right[1]))
+                source = "requested_window" if windows else "one_anchor_inference"
+            elif left is not None:
+                if left[2]:
+                    errors.append(
+                        f"chain {chain_id}: C-terminal gap is anchored at "
+                        f"{left[1]}{left[2]}; insertion-coded one-anchor "
+                        "numbering is ambiguous"
+                    )
+                    continue
+                numbers = list(range(left[1] + 1, left[1] + 1 + length))
+                source = "requested_window" if windows else "one_anchor_inference"
+            else:
+                errors.append(
+                    f"chain {chain_id}: missing run has no observed anchor"
+                )
+                continue
+            if windows and not all(
+                any(min(low, high) <= number <= max(low, high)
+                    for low, high in windows)
+                for number in numbers
+            ):
+                errors.append(
+                    f"chain {chain_id}: inferred terminal sites {numbers} lie "
+                    f"outside requested window(s) {windows}"
+                )
+                continue
+            for index, number in enumerate(numbers, start=run_start):
+                walk[index] = (chain_id, number, "")
+            sources.add(source)
 
-    for key in duplicated:
-        index_by_key.pop(key, None)
-    for (chain_id, resnum), keys in by_number.items():
-        if len(keys) > 1:
-            ambiguous.add((chain_id, resnum))
-    for chain_id, resnum in ambiguous:
-        index_by_key[(chain_id, resnum, "*ambiguous*")] = -1
-    return index_by_key, errors
+        unresolved = [index for index, site in enumerate(walk) if site is None]
+        if unresolved:
+            errors.append(
+                f"chain {chain_id}: target positions {unresolved} have no exact "
+                "author residue identifier"
+            )
+            continue
+        if len(set(walk)) != len(walk):
+            errors.append(
+                f"chain {chain_id}: restored target residue identifiers collide"
+            )
+            continue
+        for key, (start, end) in gap_slices.items():
+            gap_sites[key] = list(walk[start:end])
+        all_sites.extend(walk)
+
+    index_by_key = {site: index for index, site in enumerate(all_sites)}
+    by_number: dict[tuple[str, int], list] = {}
+    for site in all_sites:
+        by_number.setdefault((site[0], site[1]), []).append(site)
+    for (chain_id, resnum), sites in by_number.items():
+        if len(sites) > 1:
+            index_by_key[(chain_id, resnum, "*ambiguous*")] = -1
+    return {
+        "sites": all_sites,
+        "index_by_key": index_by_key,
+        "gap_sites": gap_sites,
+        "errors": errors,
+        "numbering_source": "+".join(sorted(sources)) if sources else "template",
+    }
 
 
-def _number_rebuilt_run(walk, run_start, run_end, chain_id, index_by_key, ambiguous):
-    """Give a rebuilt run author numbers when its anchors leave no choice."""
-    left = walk[run_start - 1][1] if run_start > 0 else None
-    right = walk[run_end][1] if run_end < len(walk) else None
-    if left is None or right is None:
-        return                                   # a terminal run: nothing to anchor to
-    if left[2] or right[2]:
-        return                                   # insertion codes: numbering is not linear
-    length = run_end - run_start
-    if right[1] - left[1] - 1 != length:
-        return                                   # the numbering gap is not the run
-    for step in range(length):
-        key = (chain_id, left[1] + 1 + step, "")
-        if key in index_by_key:
-            ambiguous.add((chain_id, key[1]))
-            continue                          # the anchors disagree with an observed residue
-        index_by_key[key] = walk[run_start + step][0]
+def _target_index_by_author_key(chains, chain_spans, gaps) -> tuple[dict, list]:
+    """Compatibility view used by focused callers and older tests."""
+    resolved = _resolve_target_residue_sites(chains, chain_spans, gaps)
+    return resolved["index_by_key"], resolved["errors"]
 
 
-def _disulfide_patch_positions(chains, chain_spans, internal, disulfide_pairs) -> dict:
+def _disulfide_patch_positions(
+    chains,
+    chain_spans,
+    gaps,
+    disulfide_pairs,
+    target_resolution: dict | None = None,
+) -> dict:
     """Declared disulfides as 0-based positions in the model MODELLER will build.
 
     Positions, not author numbers: while modelling, residues are numbered over
@@ -1119,7 +1514,10 @@ def _disulfide_patch_positions(chains, chain_spans, internal, disulfide_pairs) -
     if not disulfide_pairs:
         return {"positions": [], "errors": []}
 
-    index_by_key, errors = _target_index_by_author_key(chains, chain_spans, internal)
+    target_resolution = target_resolution or _resolve_target_residue_sites(
+        chains, chain_spans, gaps)
+    index_by_key = target_resolution["index_by_key"]
+    errors = target_resolution["errors"]
     if errors:
         return {"positions": [], "errors": errors}
 
@@ -1164,8 +1562,12 @@ def _repair_missing_residues_with_modeller(
     input_path: Path,
     random_seed: int = MODELLER_REPAIR_RANDOM_SEED,
     disulfide_pairs: list | None = None,
+    build_terminal_missing_residues: bool = False,
+    build_window=None,
+    build_windows_by_chain: dict | None = None,
+    replace_nonstandard_residues: bool = True,
 ) -> dict:
-    """Rebuild a chain's internal missing residues with MODELLER loop modeling.
+    """Rebuild requested missing residues with MODELLER loop modeling.
 
     PDBFixer builds missing residues geometrically and is reliable only for
     short gaps; the caller asked for MODELLER instead. Everything MODELLER
@@ -1173,11 +1575,12 @@ def _repair_missing_residues_with_modeller(
     sequence is its own SEQRES, which is also what told PDBFixer the residues
     were missing in the first place.
 
-    Terminal tails are left alone, matching ``ignore_terminal_missing_residues``
-    -- an unresolved terminus is disorder, not a gap to bridge.
+    Terminal tails remain excluded unless explicitly requested. When requested,
+    MODELLER treats them as terminal insertions with one observed anchor; those
+    coordinates are a deterministic prediction, not experimental evidence.
 
     Returns ``{applied, success, model_file, summary, operation, errors,
-    warnings, code}``. ``applied`` is False when there is nothing internal to
+    warnings, code}``. ``applied`` is False when there is no requested gap to
     fill, including when the structure carries no reference sequence: that is
     not an error, it just leaves the normal PDBFixer path in charge.
     """
@@ -1201,10 +1604,93 @@ def _repair_missing_residues_with_modeller(
 
     probe = PDBFixer(filename=str(input_path))
     probe.findMissingResidues()
-    chains = list(probe.topology.chains())
+    probe.findNonstandardResidues()
+    nonstandard_replacements = [
+        {
+            "chain": str(residue.chain.id),
+            "resnum": int(residue.id),
+            "icode": str(getattr(residue, "insertionCode", "") or "").strip(),
+            "input_resname": str(residue.name),
+            "replacement_resname": str(replacement),
+            "residue_index": int(residue.index),
+        }
+        for residue, replacement in probe.nonstandardResidues
+    ]
+    standard_name_by_residue_index = {
+        record["residue_index"]: record["replacement_resname"]
+        for record in nonstandard_replacements
+    }
+    if standard_name_by_residue_index and not replace_nonstandard_residues:
+        outcome["success"] = False
+        outcome["code"] = "modeller_nonstandard_residue_preservation_unsupported"
+        outcome["errors"].append(
+            "MODELLER missing-residue repair cannot preserve observed "
+            "non-standard polymer residues while constructing a standard "
+            "one-letter target sequence. Enable non-standard residue replacement "
+            "or provide a separately prepared template."
+        )
+        return outcome
+    all_chains = list(probe.topology.chains())
+    polymer_chain_indices = [
+        index
+        for index, chain in enumerate(all_chains)
+        if any(
+            str(residue.name).strip().upper() in PROTEIN_RESNAMES
+            for residue in chain.residues()
+        )
+    ]
+    # PDBFixer creates separate topology chains for deposit solvent and ions.
+    # Those chains have no SEQRES row and are not MODELLER alignment targets.
+    old_to_polymer = {
+        old_index: new_index
+        for new_index, old_index in enumerate(polymer_chain_indices)
+    }
+    probe.missingResidues = {
+        (old_to_polymer[chain_index], residue_index): residues
+        for (chain_index, residue_index), residues in probe.missingResidues.items()
+        if chain_index in old_to_polymer
+    }
+    chains = [all_chains[index] for index in polymer_chain_indices]
+    modeller_template_path = input_path
+    nonpolymer_context = None
+    if len(chains) != len(all_chains):
+        from openmm import app as _app
+
+        nonpolymer_chains = [
+            chain
+            for index, chain in enumerate(all_chains)
+            if index not in old_to_polymer
+        ]
+        polymer_template = _app.Modeller(probe.topology, probe.positions)
+        polymer_template.delete(nonpolymer_chains)
+        modeller_template_path = input_path.with_name(
+            f"{input_path.stem}.modeller_polymer.pdb"
+        )
+        with modeller_template_path.open("w") as handle:
+            PDBFile.writeFile(
+                polymer_template.topology,
+                polymer_template.positions,
+                handle,
+                keepIds=True,
+            )
+        restored = restore_resnames_by_residue_key(
+            modeller_template_path.read_text(), input_path
+        )
+        if restored is not None:
+            modeller_template_path.write_text(restored)
+
+        nonpolymer_context = _app.Modeller(probe.topology, probe.positions)
+        nonpolymer_context.delete(chains)
+    if build_windows_by_chain is None and build_window is not None:
+        build_windows_by_chain = {
+            str(chain.id)[:1]: build_window for chain in chains
+        }
+    if build_windows_by_chain:
+        _restrict_missing_to_window(probe, chains, build_windows_by_chain)
     terminal_keys = _missing_residue_terminal_keys(probe, chains)
 
     internal: dict = {}
+    terminal: dict = {}
     # Terminal tails are counted per chain: each chain's reference sequence is
     # trimmed by its own unresolved head and tail, so a shared counter would
     # crop the wrong span as soon as there is more than one chain.
@@ -1216,18 +1702,40 @@ def _repair_missing_residues_with_modeller(
         terminal_kind = terminal_keys.get((chain_idx, res_idx))
         if terminal_kind == "N":
             lead_by_chain[chain_idx] += len(residues)
+            if build_terminal_missing_residues:
+                terminal[(chain_idx, res_idx)] = residues
             continue
         if terminal_kind == "C":
             trail_by_chain[chain_idx] += len(residues)
+            if build_terminal_missing_residues:
+                terminal[(chain_idx, res_idx)] = residues
             continue
         internal[(chain_idx, res_idx)] = residues
     leading_terminal = sum(lead_by_chain.values())
     trailing_terminal = sum(trail_by_chain.values())
 
-    records = _internal_missing_residue_records(internal, chains)
+    grouped = _classified_missing_residue_records(
+        {**internal, **terminal}, chains, terminal_keys)
+    records = grouped["internal"] + grouped["n_terminal"] + grouped["c_terminal"]
     if not records:
         return outcome
     summary = _missing_residue_summary(records)
+    terminal_summary = _missing_residue_summary(
+        grouped["n_terminal"] + grouped["c_terminal"])
+    gaps_to_model = {**internal, **terminal}
+    if (
+        terminal_summary["max_segment_length"]
+        > MODELLER_MAX_TERMINAL_MISSING_RESIDUE_SEGMENT_LENGTH
+    ):
+        outcome["success"] = False
+        outcome["code"] = "modeller_terminal_missing_residues_out_of_scope"
+        outcome["errors"].append(
+            "Requested terminal segment exceeds the MODELLER repair scope: "
+            f"max segment length {terminal_summary['max_segment_length']}, "
+            "limit "
+            f"{MODELLER_MAX_TERMINAL_MISSING_RESIDUE_SEGMENT_LENGTH}."
+        )
+        return outcome
     outcome["summary"] = summary
     # Describe the structure as it was BEFORE repair. The model MODELLER writes
     # carries no SEQRES, so detection run on it afterwards would report
@@ -1235,16 +1743,24 @@ def _repair_missing_residues_with_modeller(
     outcome["detection"] = {
         "reference_sequence_available": True,
         "reference_sequence_chains": len(getattr(probe, "sequences", None) or []),
-        "modeled_residues": len(list(probe.topology.residues())),
+        "modeled_residues": sum(len(list(chain.residues())) for chain in chains),
         "status": "detected",
-        "terminal_excluded": {
+        "terminal_excluded": ({
             "total_residues": leading_terminal + trailing_terminal,
             "n_terminal_residues": leading_terminal,
             "c_terminal_residues": trailing_terminal,
-        },
+        } if not build_terminal_missing_residues else {
+            "total_residues": 0,
+            "n_terminal_residues": 0,
+            "c_terminal_residues": 0,
+        }),
     }
-
-    sequences = list(getattr(probe, "sequences", None) or [])
+    polymer_chain_ids = {str(chain.id) for chain in chains}
+    sequences = [
+        sequence
+        for sequence in (getattr(probe, "sequences", None) or [])
+        if str(getattr(sequence, "chainId", "")) in polymer_chain_ids
+    ]
     # One reference sequence per chain, matched by chain id. A complex is
     # repaired in one pass so that every rebuilt loop is built with the other
     # chains present; done chain by chain, a loop at an interface is modeled
@@ -1270,23 +1786,26 @@ def _repair_missing_residues_with_modeller(
 
     import gemmi
 
-    # Model only the span between the first and last observed residue of each
-    # chain. The reference sequence covers the unresolved termini too, and
-    # handing it over whole would have MODELLER grow long de-novo tails that
-    # nothing measured -- the same disorder the terminal filter just decided to
-    # leave alone.
+    # Build each target span from the observed residues plus exactly the gap
+    # records left after window restriction. Slicing SEQRES itself is wrong for
+    # a cropped range: it still describes residues outside the requested window.
     chain_spans = []
     reference_length_total = 0
     for chain_index, chain in enumerate(chains):
         reference_residues = list(sequence_by_chain[str(chain.id)].residues)
         reference_length_total += len(reference_residues)
-        lead = lead_by_chain[chain_index]
-        trail = trail_by_chain[chain_index]
-        chain_spans.append(
-            reference_residues[lead : len(reference_residues) - trail or None]
-        )
+        observed = list(chain.residues())
+        span = []
+        for position in range(len(observed) + 1):
+            span.extend(gaps_to_model.get((chain_index, position), []))
+            if position < len(observed):
+                span.append(
+                    standard_name_by_residue_index.get(
+                        int(observed[position].index), observed[position].name)
+                )
+        chain_spans.append(span)
     span = [residue for chain_span in chain_spans for residue in chain_span]
-    if leading_terminal or trailing_terminal:
+    if (leading_terminal or trailing_terminal) and not build_terminal_missing_residues:
         outcome["warnings"].append(
             f"Left {leading_terminal + trailing_terminal} unresolved terminal "
             f"residue(s) out of the MODELLER repair ({leading_terminal} N, "
@@ -1327,8 +1846,32 @@ def _repair_missing_residues_with_modeller(
     # Resolve the declared disulfides to model positions before modelling.
     # A patch that cannot be placed is a covalent bond that would go missing, so
     # this refuses rather than building a different molecule quietly.
+    target_resolution = _resolve_target_residue_sites(
+        chains,
+        chain_spans,
+        gaps_to_model,
+        build_windows_by_chain=build_windows_by_chain,
+    )
+    if target_resolution["errors"]:
+        outcome["success"] = False
+        outcome["code"] = (
+            "modeller_terminal_numbering_unresolvable"
+            if terminal_summary["total_residues"]
+            else "modeller_repair_numbering_unresolvable"
+        )
+        outcome["errors"].extend(target_resolution["errors"])
+        return outcome
+    for record in records:
+        exact_sites = target_resolution["gap_sites"].get(
+            (record["chain_index"], record["position"]), [])
+        record["method"] = "modeller"
+        record["sites"] = [
+            {"chain": chain, "resnum": number, "icode": icode}
+            for chain, number, icode in exact_sites
+        ]
     patch_resolution = _disulfide_patch_positions(
-        chains, chain_spans, internal, disulfide_pairs)
+        chains, chain_spans, gaps_to_model, disulfide_pairs,
+        target_resolution=target_resolution)
     if patch_resolution["errors"]:
         outcome["success"] = False
         outcome["code"] = "modeller_disulfide_position_unresolvable"
@@ -1338,7 +1881,7 @@ def _repair_missing_residues_with_modeller(
         )
         return outcome
 
-    template_row = _template_alignment_row(target_sequences, internal, chains)
+    template_row = _template_alignment_row(target_sequences, gaps_to_model, chains)
     alignment_path = out_dir / f"{input_path.stem}_repair.ali"
     # The row carries one '/' per chain break; the target row needs them at the
     # same columns or MODELLER reads the two rows as different lengths.
@@ -1355,13 +1898,18 @@ def _repair_missing_residues_with_modeller(
     outcome["alignment_file"] = str(alignment_path)
 
     model_result = modeller_from_alignment(
-        template_pdb=str(input_path),
+        template_pdb=str(modeller_template_path),
         alignment_file=str(alignment_path),
         template_code=input_path.stem,
         target_code=f"{input_path.stem}_filled",
         num_models=1,
         loop_refinement=True,
         loop_models=2,
+        # The split protein file can carry polymer modifications as HETATM
+        # (1A62 has three observed MSE residues). Excluding HETATM makes
+        # MODELLER drop those template positions and reject its otherwise
+        # identical alignment before the later PDBFixer MSE->MET conversion.
+        hetatm=True,
         # The default ceiling is 30; raise it so the largest gap present is
         # actually refined rather than silently left as built.
         loop_max_length=max(30, int(summary["max_segment_length"])),
@@ -1376,6 +1924,7 @@ def _repair_missing_residues_with_modeller(
         # downstream cannot undo that; it only hands minimisation a bond nine
         # angstroms past equilibrium.
         disulfide_patches=patch_resolution["positions"],
+        target_residue_sites=target_resolution["sites"],
         random_seed=random_seed,
         output_dir=str(out_dir),
     )
@@ -1399,10 +1948,12 @@ def _repair_missing_residues_with_modeller(
         return outcome
 
     validation = _validate_modeller_repair_model(
-        input_path,
+        modeller_template_path,
         Path(model_file),
         target_sequence,
         (model_result.get("selected_model") or {}).get("template_frame"),
+        target_residue_sites=target_resolution["sites"],
+        terminal_segments=(grouped["n_terminal"] + grouped["c_terminal"]),
     )
     outcome["validation"] = validation
     if not validation["success"]:
@@ -1422,14 +1973,37 @@ def _repair_missing_residues_with_modeller(
         outcome["errors"].extend(disulfide_check["errors"])
         return outcome
 
+    if nonpolymer_context is not None:
+        from openmm import app as _app
+
+        repaired = PDBFile(str(model_file))
+        combined = _app.Modeller(repaired.topology, repaired.positions)
+        combined.add(nonpolymer_context.topology, nonpolymer_context.positions)
+        combined_path = Path(model_file).with_name(
+            f"{Path(model_file).stem}.with_nonpolymer.pdb"
+        )
+        with combined_path.open("w") as handle:
+            PDBFile.writeFile(
+                combined.topology,
+                combined.positions,
+                handle,
+                keepIds=True,
+            )
+        restored = restore_resnames_by_residue_key(
+            combined_path.read_text(), input_path
+        )
+        if restored is not None:
+            combined_path.write_text(restored)
+        model_file = str(combined_path)
+
     outcome["applied"] = True
     outcome["model_file"] = model_file
     outcome["template"] = {
         # For a repair the template is the input structure itself, and that is
         # part of the scientific record of the model: it says which coordinates
         # the rebuilt loops were grown from.
-        "file": str(input_path),
-        "sha256": sha256_file(input_path),
+        "file": str(modeller_template_path),
+        "sha256": sha256_file(modeller_template_path),
         "role": "self_template_repair",
     }
     outcome["operation"] = {
@@ -1446,11 +2020,28 @@ def _repair_missing_residues_with_modeller(
         "template": outcome["template"],
         "reference_sequence_length": len(target_sequence),
         "validation": validation,
+        "contains_predicted_terminal_residues": bool(
+            terminal_summary["total_residues"]),
+        "numbering_source": target_resolution["numbering_source"],
+        "nonstandard_residue_replacements": nonstandard_replacements,
         "details": (
-            f"Rebuilt {summary['total_residues']} internal missing residue(s) in "
-            f"{summary['segment_count']} segment(s) with MODELLER loop modeling"
+            f"Rebuilt {summary['total_residues']} missing residue(s) in "
+            f"{summary['segment_count']} segment(s) with MODELLER loop modeling; "
+            f"{terminal_summary['total_residues']} were terminal one-anchor "
+            "predictions"
         ),
     }
+    if terminal_summary["total_residues"]:
+        outcome["detection"]["terminal_built"] = {
+            "method": "modeller",
+            **terminal_summary,
+        }
+        outcome["warnings"].append(
+            f"MODELLER rebuilt {terminal_summary['total_residues']} terminal "
+            f"residue(s) in {terminal_summary['segment_count']} one-anchor "
+            "segment(s); these deterministic coordinates are predicted, not "
+            "experimental evidence that the terminus is ordered"
+        )
     return outcome
 
 
@@ -1537,14 +2128,12 @@ def _restrict_missing_to_window(fixer, chains, window) -> dict:
     bounded, and one spanning from one window into another is dropped whole even
     when its numbers cannot be derived.
     """
-    windows = [window] if window and isinstance(window[0], int) else list(window)
-
-    def _held(number):
-        return any(low <= number <= high for low, high in windows)
-
-    def _same_window(left, right):
-        return any(low <= left <= high and low <= right <= high
-                   for low, high in windows)
+    windows_by_chain = window if isinstance(window, dict) else None
+    shared_windows = None
+    if windows_by_chain is None:
+        shared_windows = (
+            [window] if window and isinstance(window[0], int) else list(window)
+        )
 
     trimmed = {}
 
@@ -1561,6 +2150,24 @@ def _restrict_missing_to_window(fixer, chains, window) -> dict:
 
     for key in list(fixer.missingResidues.keys()):
         chain_idx, res_idx = key
+        chain_id = str(getattr(chains[chain_idx], "id", chain_idx))
+        windows = (
+            windows_by_chain.get(chain_id) if windows_by_chain is not None
+            else shared_windows
+        )
+        if not windows:
+            continue
+        windows = [windows] if isinstance(windows[0], int) else list(windows)
+
+        def _held(number):
+            return any(min(low, high) <= number <= max(low, high)
+                       for low, high in windows)
+
+        def _same_window(left, right):
+            return any(min(low, high) <= left <= max(low, high)
+                       and min(low, high) <= right <= max(low, high)
+                       for low, high in windows)
+
         residues = list(chains[chain_idx].residues())
         if not residues:
             continue
@@ -1659,6 +2266,10 @@ def clean_protein(
         pdb_file: Input protein PDB or mmCIF file path (single chain from split_molecules)
         ignore_terminal_missing_residues: Ignore missing residues at chain termini
                                           instead of modeling them (default: True)
+        build_terminal_missing_residues: Explicitly build requested terminal
+                                          segments. This positive switch overrides
+                                          ``ignore_terminal_missing_residues``.
+        build_window: Author-number range, or ranges, that bound what may be built.
         cap_termini: Backward-compatible shortcut for adding ACE at the
                      N terminus and NME at the C terminus (default: False).
         n_terminal_cap: Optional one-sided N-terminal cap. Currently supports
@@ -1669,14 +2280,13 @@ def clean_protein(
                                  Modeller cap-hydrogen completion. Defaults
                                  to ff19SB; pass the planned topology protein
                                  force field when it differs.
-        missing_residue_method: How to rebuild internal missing residues.
+        missing_residue_method: How to rebuild requested missing residues.
             ``"none"`` records but does not rebuild internal gaps;
             ``"auto"`` routes short gaps to PDBFixer and longer gaps to
             MODELLER, while ``"pdbfixer"`` and ``"modeller"`` pin one method.
-                                ``"auto"`` (default) uses PDBFixer in scope and
-                                escalates larger gaps to MODELLER when licensed;
-                                ``"pdbfixer"`` never escalates; ``"modeller"``
-                                always uses MODELLER.
+            Terminal gaps participate only when
+            ``build_terminal_missing_residues`` is true; PDBFixer accepts at
+            most 5 and MODELLER at most 10 residues per terminal segment.
         replace_nonstandard_residues: Replace non-standard residues with standard ones (default: True)
         remove_heterogens: Remove heteroatoms (ligands, ions, etc.) (default: True)
         keep_water: Keep water molecules when removing heterogens (default: False)
@@ -1834,20 +2444,57 @@ def clean_protein(
         )
         result["code"] = "invalid_missing_residue_method"
         return result
+    # The positive request is authoritative. Keeping the legacy negative flag
+    # true at the same time previously made direct clean_protein callers ask for
+    # a tail and then silently delete it; prepare_complex already normalizes the
+    # pair this way.
+    if build_terminal_missing_residues:
+        ignore_terminal_missing_residues = False
     result["missing_residue_method"] = method
     result["missing_residue_method_requested"] = method
 
     try:
-        decision = _resolve_missing_residue_method(method, input_path)
+        decision = _resolve_missing_residue_method(
+            method,
+            input_path,
+            build_terminal_missing_residues=build_terminal_missing_residues,
+            build_window=build_window,
+        )
         effective_method = decision["method"]
         escalated_to_modeller = decision["escalated"]
+        if decision.get("terminal_out_of_scope"):
+            terminal_summary = decision["terminal_summary"]
+            result["missing_residue_method_used"] = effective_method
+            result["code"] = "modeller_terminal_missing_residues_out_of_scope"
+            result["missing_residue_repair"] = {
+                "method": "modeller",
+                "method_requested": method,
+                "method_used": "modeller",
+                "status": "out_of_scope",
+                **terminal_summary,
+            }
+            result["errors"].append(
+                "Requested terminal segment exceeds the MODELLER repair scope: "
+                f"max segment length {terminal_summary['max_segment_length']}, "
+                "limit "
+                f"{MODELLER_MAX_TERMINAL_MISSING_RESIDUE_SEGMENT_LENGTH}. "
+                "Leave the terminus unresolved, narrow the requested range, or "
+                "provide a separately justified structural model."
+            )
+            return result
         if method == "auto":
             auto_summary = decision["summary"]
             if decision["out_of_scope"]:
                 usability = decision["usability"]
                 if not usability["usable"]:
+                    reason_summary = (
+                        decision.get("terminal_summary")
+                        if (decision.get("terminal_summary") or {}).get(
+                            "total_residues")
+                        else auto_summary
+                    )
                     recommendation = _missing_residue_auto_recommendation(
-                        auto_summary,
+                        reason_summary,
                         usability,
                     )
                     result["missing_residue_method_used"] = "pdbfixer"
@@ -1858,7 +2505,7 @@ def clean_protein(
                         "method_used": "pdbfixer",
                         "escalated": False,
                         "status": "out_of_scope",
-                        **auto_summary,
+                        **reason_summary,
                     }
                     result["workflow_recommendation"] = recommendation
                     result["recommended_next_action"] = recommendation[
@@ -1869,9 +2516,9 @@ def clean_protein(
                     ]
                     result["code"] = "missing_residues_require_modeller_license"
                     result["errors"].append(
-                        "Internal missing residues exceed the PDBFixer repair "
-                        f"scope ({auto_summary['total_residues']} residue(s), "
-                        f"max segment {auto_summary['max_segment_length']}). "
+                        "Requested missing residues exceed the PDBFixer repair "
+                        f"scope ({reason_summary['total_residues']} residue(s), "
+                        f"max segment {reason_summary['max_segment_length']}). "
                         "Automatic MODELLER escalation is unavailable; run "
                         "'export KEY_MODELLER10v8=<your license key>' in an "
                         "MDClaw runtime with the modeller package installed, "
@@ -1907,7 +2554,12 @@ def clean_protein(
             # the MODELLER restraints are the same chemical contract, not two
             # different intents.
             repair = _repair_missing_residues_with_modeller(
-                input_path, disulfide_pairs=disulfide_pairs)
+                input_path,
+                disulfide_pairs=disulfide_pairs,
+                build_terminal_missing_residues=build_terminal_missing_residues,
+                build_window=build_window,
+                replace_nonstandard_residues=replace_nonstandard_residues,
+            )
             result["warnings"].extend(repair["warnings"])
             if not repair["success"]:
                 result["errors"].extend(repair["errors"])
@@ -1939,6 +2591,9 @@ def clean_protein(
                     "random_seed": repair["random_seed"],
                     "template": repair["template"],
                     "validation": repair["validation"],
+                    "contains_predicted_terminal_residues": bool(
+                        repair["operation"].get(
+                            "contains_predicted_terminal_residues")),
                     **repair["summary"],
                 }
                 input_path = Path(repair["model_file"])
@@ -2024,33 +2679,30 @@ def clean_protein(
 
         # Step 1a: Handle terminal missing residues
         terminal_caps_requested = bool(resolved_n_terminal_cap or resolved_c_terminal_cap)
+        terminal_build_records = []
         if not (ignore_terminal_missing_residues and not terminal_caps_requested):
             # Building them is the requested branch; say so and say how many.
             # Otherwise "the terminus was rebuilt" would have to be inferred
             # from the absence of the warning that says it was not.
-            built = []
             for key in list(fixer.missingResidues.keys()):
                 chain_idx, res_idx = key
                 chain = chains[chain_idx]
                 terminal_kind = terminal_keys.get(key)
-                if terminal_kind:
-                    built.append({
+                if terminal_kind and build_terminal_missing_residues:
+                    terminal_build_records.append({
                         "chain_index": chain_idx,
                         "chain_id": str(getattr(chain, "id", chain_idx)),
-                        "terminus": terminal_kind,
+                        "position": res_idx,
+                        "location": (
+                            "n_terminal" if terminal_kind == "N"
+                            else "c_terminal"
+                        ),
+                        "anchor_count": 1,
+                        "coordinate_provenance": "predicted",
+                        "method": "pdbfixer",
+                        "residues": [str(name) for name in fixer.missingResidues[key]],
                         "residue_count": len(fixer.missingResidues[key]),
                     })
-            if built:
-                total = sum(record["residue_count"] for record in built)
-                result["missing_residue_detection"]["terminal_built"] = {
-                    "segment_count": len(built),
-                    "total_residues": total,
-                    "segments": built,
-                }
-                result["warnings"].append(
-                    f"Rebuilt {total} terminal residue(s) in {len(built)} "
-                    "segment(s); a terminus has an anchor on one side only, so "
-                    "these coordinates are predicted rather than measured")
         if ignore_terminal_missing_residues and not terminal_caps_requested:
             # Remove terminal missing residues from the dictionary
             keys_to_remove = []
@@ -2175,16 +2827,44 @@ def clean_protein(
             )
         
         # Report remaining missing residues (excluding caps)
-        internal_missing_records = _internal_missing_residue_records(
-            fixer.missingResidues,
-            chains,
+        remaining_grouped = _classified_missing_residue_records(
+            fixer.missingResidues, chains, terminal_keys)
+        internal_missing_records = remaining_grouped["internal"]
+        terminal_missing_records = (
+            remaining_grouped["n_terminal"]
+            + remaining_grouped["c_terminal"]
         )
         missing_summary = _missing_residue_summary(internal_missing_records)
+        terminal_missing_summary = _missing_residue_summary(
+            terminal_missing_records)
         internal_missing = [
             f"Chain {record['chain_index']}, position {record['position']}: {record['residues']}"
             for record in internal_missing_records
         ]
         
+        if (
+            effective_method == "pdbfixer"
+            and terminal_missing_summary["max_segment_length"]
+            > PDBFIXER_MAX_TERMINAL_MISSING_RESIDUE_SEGMENT_LENGTH
+        ):
+            result["missing_residue_repair"] = {
+                "method": "pdbfixer",
+                "method_requested": method,
+                "method_used": "pdbfixer",
+                "status": "out_of_scope",
+                "max_terminal_missing_residue_segment_length": (
+                    PDBFIXER_MAX_TERMINAL_MISSING_RESIDUE_SEGMENT_LENGTH),
+                **terminal_missing_summary,
+            }
+            result["code"] = "pdbfixer_terminal_missing_residues_out_of_scope"
+            result["errors"].append(
+                "Terminal missing residues exceed the PDBFixer repair scope: "
+                f"max segment length {terminal_missing_summary['max_segment_length']}, "
+                "limit "
+                f"{PDBFIXER_MAX_TERMINAL_MISSING_RESIDUE_SEGMENT_LENGTH}."
+            )
+            return result
+
         if internal_missing:
             result["operations"].append({
                 "step": "missing_residues",
@@ -2323,6 +3003,55 @@ def clean_protein(
                     "details": f"Added {', '.join(details_parts)}"
                 })
                 logger.info(f"Added missing atoms/residues: {', '.join(details_parts)}")
+
+                if terminal_build_records:
+                    built_chains = {chain.id: list(chain.residues())
+                                    for chain in fixer.topology.chains()}
+                    for record in terminal_build_records:
+                        residues = [
+                            residue for residue in built_chains.get(record["chain_id"], [])
+                            if residue.name not in TERMINAL_CAP_RESIDUES
+                        ]
+                        count = record["residue_count"]
+                        selected = (
+                            residues[:count]
+                            if record["location"] == "n_terminal"
+                            else residues[-count:]
+                        )
+                        record["sites"] = [
+                            {
+                                "chain": record["chain_id"],
+                                "resnum": int(residue.id),
+                                "icode": str(
+                                    getattr(residue, "insertionCode", "") or ""
+                                ).strip(),
+                            }
+                            for residue in selected
+                        ]
+                    terminal_summary = _missing_residue_summary(
+                        terminal_build_records)
+                    result["missing_residue_detection"]["terminal_built"] = {
+                        "method": "pdbfixer",
+                        **terminal_summary,
+                    }
+                    combined_records = (
+                        internal_missing_records + terminal_build_records)
+                    combined_summary = _missing_residue_summary(combined_records)
+                    result.setdefault("missing_residue_repair", {}).update({
+                        "method": "pdbfixer",
+                        "method_requested": method,
+                        "method_used": "pdbfixer",
+                        "escalated": False,
+                        "status": "modeled",
+                        "contains_predicted_terminal_residues": True,
+                        **combined_summary,
+                    })
+                    result["warnings"].append(
+                        f"PDBFixer rebuilt {terminal_summary['total_residues']} "
+                        "terminal residue(s) in "
+                        f"{terminal_summary['segment_count']} one-anchor segment(s); "
+                        "these coordinates are predicted rather than measured"
+                    )
             else:
                 result["operations"].append({
                     "step": "missing_atoms",

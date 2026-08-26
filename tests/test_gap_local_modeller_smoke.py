@@ -152,3 +152,81 @@ def test_the_frame_was_kept_too(repaired):
     assert keys
     squared = sum(math.dist(template[k], model[k]) ** 2 for k in keys) / len(keys)
     assert math.sqrt(squared) <= FRAME_RMSD_ANGSTROM
+
+
+def _write_terminal_template(path, observed):
+    lines, serial = [], 1
+    for index in observed:
+        x = 3.8 * index
+        for name, element, dx, dy, dz in BACKBONE:
+            lines.append(
+                "ATOM  " + f"{serial:>5}" + " " + f"{name:<4}" + " " + "ALA"
+                + " " + "A" + f"{100 + index:>4}" + " " + "   "
+                + f"{x + dx:8.3f}{dy + 0.4 * (index % 3):8.3f}{dz:8.3f}"
+                + "  1.00  0.00          " + f"{element:>2}"
+            )
+            serial += 1
+    path.write_text("\n".join(lines) + "\nTER\nEND\n")
+    return path
+
+
+@pytest.fixture(scope="module")
+def terminal_repairs(tmp_path_factory):
+    from pathlib import Path
+
+    work = tmp_path_factory.mktemp("terminal_smoke")
+    repaired = {}
+    for location, observed, template_row in (
+        ("n_terminal", range(4, 13), "---AAAAAAAAA"),
+        ("c_terminal", range(1, 10), "AAAAAAAAA---"),
+    ):
+        case = work / location
+        case.mkdir()
+        template = _write_terminal_template(case / "template.pdb", observed)
+        alignment = case / "repair.ali"
+        alignment.write_text("\n".join([
+            ">P1;target", "sequence:target:::::target:synthetic:-1.00:-1.00",
+            "AAAAAAAAAAAA*", ">P1;template",
+            "structureX:template:FIRST:A:LAST:A:template:synthetic:-1.00:-1.00",
+            template_row + "*", "",
+        ]))
+        sites = [("A", number, "") for number in range(101, 113)]
+        result = gm.modeller_from_alignment(
+            template_pdb=str(template), alignment_file=str(alignment),
+            template_code="template", target_code="target", num_models=1,
+            loop_refinement=True, loop_models=1, loop_max_length=30,
+            template_frame=True, target_residue_sites=sites,
+            random_seed=1, output_dir=str(case / "out"),
+        )
+        assert result.get("success"), result.get("errors")
+        model = Path((result.get("selected_model") or {})["path"])
+        repaired[location] = (_atoms(template), _atoms(model))
+    return repaired
+
+
+@pytest.mark.parametrize(
+    ("location", "tail_numbers", "junction"),
+    [
+        ("n_terminal", {101, 102, 103}, (("A", 103, "", "C"), ("A", 104, "", "N"))),
+        ("c_terminal", {110, 111, 112}, (("A", 109, "", "C"), ("A", 110, "", "N"))),
+    ],
+)
+def test_terminal_insertions_are_numbered_and_covalently_attached(
+    terminal_repairs, location, tail_numbers, junction,
+):
+    import math
+
+    template, model = terminal_repairs[location]
+    assert tail_numbers <= {key[1] for key in model}
+    assert 1.1 <= math.dist(model[junction[0]], model[junction[1]]) <= 1.6
+    # The one-sided two-residue anchor may move; everything farther away keeps
+    # the same local geometry contract as an internal repair.
+    template_numbers = sorted({key[1] for key in template})
+    protected = (
+        set(template_numbers[2:]) if location == "n_terminal"
+        else set(template_numbers[:-2])
+    )
+    keys = [key for key in template if key in model and key[1] in protected]
+    got = gm.internal_geometry_deviation(template, model, keys)
+    assert got["max_angstrom"] <= MAX_ANGSTROM, got
+    assert got["rmsd_angstrom"] <= RMSD_ANGSTROM, got

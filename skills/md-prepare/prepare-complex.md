@@ -76,7 +76,7 @@ Important outputs:
   `status="not_detectable"` — there zero gaps means "not checked", not "none
   present". Also lists the unresolved terminal residues that were deliberately
   left unmodeled, which are excluded from the repair on purpose.
-- `missing_residue_repair`: per chain, how internal gaps were rebuilt, by which
+- `missing_residue_repair`: per chain, how requested gaps were rebuilt, by which
   method, how many residues in how many segments, and for MODELLER the random
   seed and the template's checksum. Rebuilt residues are predicted coordinates;
   report them to the user rather than treating them as measured.
@@ -88,6 +88,13 @@ Important outputs:
 - `glycan_metadata` and `glycan_linkages`: GLYCAM topology inputs.
 
 ## What the rebuild can and cannot see
+
+Unresolved termini stay unmodeled by default. Build them only when the request
+explicitly includes them, with `--build-terminal-missing-residues`. A terminal
+segment has one structural anchor rather than an internal loop's two; MDClaw
+records it as a deterministic predicted tail and requires confirmation. The
+MODELLER route refuses terminal segments longer than 10 residues rather than
+presenting a poorly constrained tail as recovered structure.
 
 A rebuilt loop is placed by what surrounds it, so what is *present* while it is
 built decides where it goes. Three things follow.

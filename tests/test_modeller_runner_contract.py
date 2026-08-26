@@ -50,6 +50,13 @@ def test_the_selection_is_the_gap_plus_two_residues(runner_source):
     assert "insertion_ext=2" in selection.split("def ", 1)[0]
 
 
+def test_the_selection_explicitly_includes_terminal_insertions(runner_source):
+    """MODELLER defaults to this today; the terminal repair contract must not."""
+    selection = runner_source.split("def _mdclaw_gap_selection(self):", 1)[1]
+    selection = selection.split("def ", 1)[0]
+    assert "include_termini=True" in selection
+
+
 def test_patch_indices_stay_integers_in_the_runner(runner_source):
     """`residues["337"]` is a residue identifier, not position 337."""
     assert "(int(a), int(b))" in runner_source

@@ -189,6 +189,30 @@ def test_split_fails_when_a_chain_vanished_from_the_model(tmp_path):
     assert any("no atoms for chain 'B'" in e for e in res["errors"])
 
 
+def test_split_restores_protonation_names_but_not_general_modifications(tmp_path):
+    source = tmp_path / "source.pdb"
+    source.write_text("\n".join([
+        "SEQRES   1 A    2  ASH MSE",
+        _atom("A", 1, resname="ASH", serial=1),
+        _atom("A", 2, resname="MSE", serial=2),
+    ]) + "\n")
+    model = tmp_path / "model.pdb"
+    model.write_text("\n".join([
+        _atom("A", 1, resname="ASP", serial=1),
+        _atom("A", 2, resname="MET", serial=2),
+    ]) + "\n")
+
+    result = _split_repaired_complex(model, {"A": str(source)})
+    names = {
+        int(line[22:26]): line[17:20].strip()
+        for line in Path(result["outputs"]["A"]).read_text().splitlines()
+        if line.startswith(("ATOM", "HETATM"))
+    }
+
+    assert result["success"] is True
+    assert names == {1: "ASH", 2: "MET"}
+
+
 # --- entry point: when the complex pass runs, and when it steps aside --------
 
 def test_single_protein_file_is_left_to_the_per_chain_path(tmp_path):
@@ -251,6 +275,56 @@ def test_one_chain_needing_modeller_pulls_the_whole_complex_in(tmp_path, monkeyp
     fused = seen["input"].read_text()
     assert {line[21] for line in fused.splitlines() if line.startswith("ATOM")} == {"A", "B"}
     assert set(outcome["outputs_by_source"]) == {str(a), str(b)}
+
+
+def test_terminal_request_and_per_chain_windows_reach_the_complex_pass(
+    tmp_path, monkeypatch,
+):
+    a = _write_chain(tmp_path, "p1.pdb", "A", [53, 54])
+    b = _write_chain(tmp_path, "p2.pdb", "B", [1, 2])
+    model = tmp_path / "model.pdb"
+    model.write_text("\n".join(
+        [_atom("A", n, serial=i + 1) for i, n in enumerate([47, 48, 49, 50, 51, 52, 53, 54])]
+        + [_atom("B", n, serial=i + 20) for i, n in enumerate([1, 2])]
+    ) + "\n")
+    decisions = []
+
+    def fake_decision(method, path, **kwargs):
+        decisions.append((str(path), kwargs))
+        return {
+            "method": "modeller" if Path(path) == a else "pdbfixer",
+            "escalated": Path(path) == a,
+            "out_of_scope": Path(path) == a,
+            "summary": None,
+            "terminal_summary": {"total_residues": 6, "max_segment_length": 6},
+            "terminal_out_of_scope": False,
+            "usability": {"usable": True},
+        }
+
+    seen = {}
+
+    def fake_repair(path, **kwargs):
+        seen.update(kwargs)
+        return {
+            "applied": True, "success": True, "model_file": str(model),
+            "summary": {"total_residues": 6}, "operation": {}, "validation": {},
+            "errors": [], "warnings": [], "code": None,
+        }
+
+    monkeypatch.setattr(cp, "_resolve_missing_residue_method", fake_decision)
+    monkeypatch.setattr(cp, "_repair_missing_residues_with_modeller", fake_repair)
+    outcome = cp.repair_complex_missing_residues(
+        [a, b],
+        work_dir=tmp_path,
+        build_terminal_missing_residues=True,
+        build_windows_by_source={str(a): (47, 54), str(b): (1, 2)},
+    )
+
+    assert outcome["success"] is True
+    assert all(kwargs["build_terminal_missing_residues"] is True
+               for _path, kwargs in decisions)
+    assert seen["build_terminal_missing_residues"] is True
+    assert seen["build_windows_by_chain"] == {"A": (47, 54), "B": (1, 2)}
 
 
 def test_unreadable_chain_defers_instead_of_aborting(tmp_path, monkeypatch):
@@ -386,6 +460,45 @@ class _ObservedChain:
 
 def _positions(chains, spans, internal, pairs):
     return cp._disulfide_patch_positions(chains, spans, internal, pairs)
+
+
+def test_exact_site_resolver_numbers_both_terminal_directions():
+    n_terminal = cp._resolve_target_residue_sites(
+        [_ObservedChain("A", [53, 54])], [["X"] * 8],
+        {(0, 0): ["X"] * 6}, build_windows_by_chain={"A": [(47, 54)]},
+    )
+    c_terminal = cp._resolve_target_residue_sites(
+        [_ObservedChain("B", [1, 2])], [["X"] * 5],
+        {(0, 2): ["X"] * 3}, build_windows_by_chain={"B": [(1, 5)]},
+    )
+
+    assert n_terminal["errors"] == []
+    assert n_terminal["sites"] == [("A", number, "") for number in range(47, 55)]
+    assert c_terminal["errors"] == []
+    assert c_terminal["sites"] == [("B", number, "") for number in range(1, 6)]
+
+
+def test_exact_site_resolver_handles_internal_and_terminal_gaps_together():
+    resolved = cp._resolve_target_residue_sites(
+        [_ObservedChain("A", [1, 2, 5, 6])], [["X"] * 7],
+        {(0, 2): ["X", "X"], (0, 4): ["X"]},
+        build_windows_by_chain={"A": [(1, 7)]},
+    )
+
+    assert resolved["errors"] == []
+    assert resolved["sites"] == [("A", number, "") for number in range(1, 8)]
+    assert resolved["gap_sites"][(0, 2)] == [("A", 3, ""), ("A", 4, "")]
+    assert resolved["gap_sites"][(0, 4)] == [("A", 7, "")]
+
+
+def test_insertion_coded_one_anchor_terminal_numbering_fails_closed():
+    resolved = cp._resolve_target_residue_sites(
+        [_ObservedChain("A", [(53, "A"), (54, "")])], [["X"] * 3],
+        {(0, 0): ["X"]}, build_windows_by_chain={"A": [(52, 54)]},
+    )
+
+    assert resolved["sites"] == []
+    assert any("insertion-coded one-anchor" in error for error in resolved["errors"])
 
 
 def test_positions_are_model_indices_not_author_numbers():
