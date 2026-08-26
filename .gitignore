@@ -129,3 +129,15 @@ summary_*.json
 
 # Local operator notes for a specific site (see the file's own header)
 /RIKYU.md
+
+# Study-specific analysis scripts. studies/ is ignored, so these live in
+# scripts/ to stay runnable, but they belong to one investigation rather than
+# to MDClaw itself.
+scripts/cv_selection.py
+scripts/cv_compute.py
+scripts/cv_unbiased_report.py
+scripts/umbrella_bias_tas1r.py
+scripts/umbrella_build.py
+scripts/umbrella_mbar.py
+scripts/umbrella_compare.py
+scripts/run_step6_analysis.sh
