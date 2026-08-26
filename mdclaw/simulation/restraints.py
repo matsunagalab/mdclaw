@@ -47,24 +47,24 @@ def _component_label(component: dict[str, Any]) -> str:
     return str(component_type)
 
 
-def _load_component_map(path: Optional[str]) -> tuple[dict[int, dict], list[str]]:
+def _load_component_map(path: Optional[str]) -> tuple[list[dict], list[str]]:
+    """Solute components from prep, in prep's own atom order."""
     if not path:
-        return {}, []
+        return [], []
     try:
         payload = json.loads(Path(path).read_text())
-        components = payload.get("components", [])
-        by_chain_index = {
-            int(component["topology_chain_index"]): component
-            for component in components
-            if component.get("topology_chain_index") is not None
-            and (
+        components = [
+            component
+            for component in payload.get("components", [])
+            if (
                 component.get("source_chain_type")
                 or component.get("prepared_fragment_role")
             ) in _SOLUTE_COMPONENT_TYPES
-        }
-        return by_chain_index, []
+        ]
+        components.sort(key=lambda c: int(c.get("atom_index_start") or 0))
+        return components, []
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        return {}, [f"Could not read prep chain_identity_map: {exc}"]
+        return [], [f"Could not read prep chain_identity_map: {exc}"]
 
 
 def select_restraint_atoms(
@@ -80,18 +80,45 @@ def select_restraint_atoms(
     if selection == "solute_heavy":
         components, warnings = _load_component_map(chain_identity_map_file)
         if components:
+            # Address components by their prep atom-index range, not by chain
+            # index. Topology generation does not preserve prep's chain
+            # decomposition: when Pablo identifies every residue it emits each
+            # ACE/NME cap as a chain of its own, and when it falls back to
+            # PDBFile it does not. Chain index N in prep is then a different
+            # molecule in the built topology -- and the failure is silent,
+            # because the wrong chains still yield plausible-looking counts.
+            # Solute atoms keep prep's order and lead the topology (solvent and
+            # its virtual sites are appended), so the ranges do carry over.
+            atoms = list(topology.atoms())
             indices: list[int] = []
             counts: dict[str, int] = {}
-            chains = list(topology.chains())
-            for chain_index, component in components.items():
-                if chain_index >= len(chains):
+            for component in components:
+                start = component.get("atom_index_start")
+                end = component.get("atom_index_end_exclusive")
+                if start is None or end is None:
                     warnings.append(
-                        "prep chain_identity_map references missing topology "
-                        f"chain index {chain_index}"
+                        "prep chain_identity_map component "
+                        f"{component.get('component_id')} carries no atom range"
+                    )
+                    continue
+                start, end = int(start), int(end)
+                if end > len(atoms):
+                    warnings.append(
+                        "prep chain_identity_map component "
+                        f"{component.get('component_id')} ends at atom {end}, "
+                        f"past the {len(atoms)}-atom topology"
                     )
                     continue
                 label = _component_label(component)
-                for atom in chains[chain_index].atoms():
+                for atom in atoms[start:end]:
+                    if atom.residue.name.strip().upper() in WATER_NAMES:
+                        warnings.append(
+                            "prep chain_identity_map component "
+                            f"{component.get('component_id')} covers solvent at "
+                            f"atom {atom.index}; solute atom order did not carry "
+                            "over to the built topology"
+                        )
+                        break
                     if _is_heavy_atom(atom):
                         indices.append(atom.index)
                         counts[label] = counts.get(label, 0) + 1
