@@ -6,7 +6,7 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import new_simulation, setup_logger  # noqa: E402
-from mdclaw._tool_meta import node_tool  # noqa: E402
+from mdclaw._tool_meta import node_tool, tool_parameter_examples  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -25,6 +25,7 @@ WORKING_DIR = Path("outputs").resolve()
 from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fail_node_if_running, _resolve_implicit_solvent_model, _resolve_topology_run_settings  # noqa: E402
 from mdclaw.simulation.custom_forces import CUSTOM_FORCE_GROUP, CustomForceError, CustomForceReporter, custom_force_signature, load_custom_forces, write_cv_metadata  # noqa: E402
 from mdclaw.simulation.integrator_plan import _compute_step_plan, _record_production_node_result  # noqa: E402
+from mdclaw.simulation.restraints import DistanceRestraintError, load_distance_restraints, normalize_distance_restraints  # noqa: E402
 from mdclaw.simulation.restart import _close_reporter_stream, _count_state_data_rows, _detect_ensemble_mismatch, _flush_reporter_stream, _load_state_into_simulation, _resolve_dcd_append_mode, _resolve_restart_node_id_for_run, _restart_random_seed, _restart_source_metadata, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _effective_pressure_bar, _integrator_signature, _load_xml_topology_inputs, _signature_mismatches, _system_signature, _validate_xml_system_contract  # noqa: E402
 
@@ -55,6 +56,13 @@ def _safe_custom_force_signature(
 
 
 @node_tool(node_type="prod")
+@tool_parameter_examples(distance_restraints=[[{
+    "name": "tm3_tm6",
+    "selection_group1": "protein and resid 100 to 120 and not element H",
+    "selection_group2": "protein and resid 240 to 260 and not element H",
+    "force_constant_kj_mol_nm2": 1000.0,
+    "target_distance_nm": 1.2,
+}]])
 def run_production(
     system_xml_file: Optional[str] = None,
     topology_pdb_file: Optional[str] = None,
@@ -67,6 +75,7 @@ def run_production(
     trajectory_format: str = "dcd",
     custom_force_script: Optional[str] = None,
     custom_force_parameters: Optional[dict] = None,
+    distance_restraints: Optional[list[dict]] = None,
     name: Optional[str] = None,
     output_dir: Optional[str] = None,
     is_membrane: bool = False,
@@ -123,6 +132,12 @@ def run_production(
                      ``openmm-torch`` build that provides ``PythonTorchForce``.
         custom_force_parameters: Optional dict passed to the script as
                      ``ctx.params``. Recognized keys include ``pbc`` (bool).
+        distance_restraints: Optional non-empty list of harmonic center-of-mass
+                     distance restraints. Each object must contain ``name``,
+                     ``selection_group1``, ``selection_group2``,
+                     ``force_constant_kj_mol_nm2``, and ``target_distance_nm``.
+                     Selections use the mdtraj DSL. This native OpenMM route is
+                     mutually exclusive with ``custom_force_script``.
         name: Optional name prefix for output files
         output_dir: Output directory. If None, creates output/{job_id}/
         is_membrane: Set True for membrane systems to use MonteCarloMembraneBarostat
@@ -205,6 +220,29 @@ def run_production(
             if (custom_force_parameters is None
                     and _inputs.get("custom_force_parameters") is not None):
                 custom_force_parameters = _inputs["custom_force_parameters"]
+        if (distance_restraints is None
+                and _inputs.get("distance_restraints") is not None):
+            distance_restraints = _inputs["distance_restraints"]
+        try:
+            distance_restraints = normalize_distance_restraints(
+                distance_restraints
+            )
+        except DistanceRestraintError as exc:
+            return create_validation_error(
+                "distance_restraints",
+                str(exc),
+                expected="non-empty list of harmonic COM-distance restraint objects",
+                actual=repr(distance_restraints),
+                code=exc.code,
+            )
+        if custom_force_script and distance_restraints:
+            return create_validation_error(
+                "custom_force_script / distance_restraints",
+                "Specify either custom_force_script or distance_restraints, not both.",
+                expected="exactly one production bias route",
+                actual="both provided",
+                code="production_bias_conflict",
+            )
         if (pressure_bar is None
                 and _eq_final_ensemble == "NPT"
                 and _eq_pressure_bar is not None):
@@ -264,6 +302,7 @@ def run_production(
                 "custom_force": _safe_custom_force_signature(
                     custom_force_script, custom_force_parameters,
                 ),
+                "distance_restraints": distance_restraints,
             },
         )
         if not _ctx["success"]:
@@ -328,6 +367,26 @@ def run_production(
             timestep_fs=timestep_fs,
         )
         pressure_bar = _effective_pressure_bar(pressure_bar, implicit_solvent)
+        try:
+            distance_restraints = normalize_distance_restraints(
+                distance_restraints
+            )
+        except DistanceRestraintError as exc:
+            return create_validation_error(
+                "distance_restraints",
+                str(exc),
+                expected="non-empty list of harmonic COM-distance restraint objects",
+                actual=repr(distance_restraints),
+                code=exc.code,
+            )
+        if custom_force_script and distance_restraints:
+            return create_validation_error(
+                "custom_force_script / distance_restraints",
+                "Specify either custom_force_script or distance_restraints, not both.",
+                expected="exactly one production bias route",
+                actual="both provided",
+                code="production_bias_conflict",
+            )
 
     if not (system_xml_file and topology_pdb_file):
         return create_validation_error(
@@ -371,6 +430,8 @@ def run_production(
         "start_time_ns": None,
         "hmr": False,
         "random_seed": None,
+        "distance_restraints": distance_restraints,
+        "distance_restraint_signature": None,
         "errors": [],
         "warnings": []
     }
@@ -417,6 +478,17 @@ def run_production(
         return _fail_node_if_running(job_dir, node_id, result)
     if state_xml_path and not state_xml_path.is_file():
         result["errors"].append(f"state.xml not found: {state_xml_file}")
+        return _fail_node_if_running(job_dir, node_id, result)
+    if (
+        restart_from
+        and Path(restart_from).suffix.lower() != ".xml"
+        and (custom_force_script or distance_restraints)
+    ):
+        result["code"] = "production_bias_checkpoint_unsupported"
+        result["errors"].append(
+            "Biased production requires a portable XML state restart; binary "
+            "checkpoints require an identical System."
+        )
         return _fail_node_if_running(job_dir, node_id, result)
 
     try:
@@ -527,6 +599,7 @@ def run_production(
         # Context creation). The bias goes in a dedicated force group so its
         # energy can be logged in isolation for CV analysis / reweighting.
         _custom_force_loaded = None
+        _distance_restraint_loaded = None
         if custom_force_script:
             try:
                 _custom_force_loaded = load_custom_forces(
@@ -549,15 +622,34 @@ def run_production(
                 "has_cv": _custom_force_loaded["has_cv"],
                 "cv_names": _custom_force_loaded["cv_names"],
             }
-            if restart_from:
-                result["warnings"].append(
-                    "Custom force changes the System; binary .chk restart is "
-                    "unsupported with a custom force. The portable XML state "
-                    "restart is used instead."
-                )
             logger.info(
                 "Custom force loaded (kind=%s, cv=%s)",
                 _custom_force_loaded["kind"], _custom_force_loaded["cv_names"],
+            )
+        elif distance_restraints:
+            try:
+                _distance_restraint_loaded = load_distance_restraints(
+                    system=system,
+                    topology=xml_inputs.topology,
+                    distance_restraints=distance_restraints,
+                    is_periodic=is_periodic,
+                )
+            except DistanceRestraintError as exc:
+                result["errors"].append(str(exc))
+                result["code"] = exc.code
+                return _fail_node_if_running(job_dir, node_id, result)
+            for _f in _distance_restraint_loaded["forces"]:
+                _f.setForceGroup(CUSTOM_FORCE_GROUP)
+                system.addForce(_f)
+            result["distance_restraints"] = _distance_restraint_loaded[
+                "restraints"
+            ]
+            result["distance_restraint_signature"] = (
+                _distance_restraint_loaded["signature"]
+            )
+            logger.info(
+                "Native distance restraints loaded (cv=%s)",
+                _distance_restraint_loaded["cv_names"],
             )
 
         restart_seed_step: Optional[int] = None
@@ -905,14 +997,16 @@ def run_production(
         # returned a cv_dict) are logged alongside. Shares the trajectory /
         # energy report interval and append state.
         _cv_reporter = None
-        if _custom_force_loaded is not None:
+        if (_custom_force_loaded is not None
+                or _distance_restraint_loaded is not None):
+            _bias = _custom_force_loaded or _distance_restraint_loaded
             cv_file = out_dir / f"{pref}collective_variables.csv"
             _cv_reporter = CustomForceReporter(
                 str(cv_file),
                 report_interval,
                 force_group=CUSTOM_FORCE_GROUP,
-                evaluator=_custom_force_loaded["evaluator"],
-                cv_names=_custom_force_loaded["cv_names"],
+                evaluator=_bias.get("evaluator"),
+                cv_names=_bias["cv_names"],
                 append=do_append,
             )
             simulation.reporters.append(_cv_reporter)
@@ -920,10 +1014,14 @@ def run_production(
             meta_file = out_dir / f"{pref}collective_variables.meta.json"
             write_cv_metadata(
                 str(meta_file),
-                signature=_custom_force_loaded["signature"],
-                cv_names=_custom_force_loaded["cv_names"],
+                signature=_bias["signature"],
+                cv_names=_bias["cv_names"],
                 temperature_kelvin=temperature_kelvin,
-                parameters=custom_force_parameters,
+                parameters=(
+                    custom_force_parameters
+                    if _custom_force_loaded is not None
+                    else {"distance_restraints": _bias["restraints"]}
+                ),
             )
             result["collective_variables_meta_file"] = str(meta_file)
 

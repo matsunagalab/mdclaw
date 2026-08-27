@@ -484,6 +484,36 @@ def test_continue_from_no_custom_force(tmp_path):
     assert _resolve_prod_custom_force(str(job), "prod_child") == {}
 
 
+def test_continue_from_inherits_distance_restraints(tmp_path):
+    from mdclaw.node.inputs import _resolve_prod_distance_restraints
+
+    restraints = [{
+        "name": "tm3_tm6",
+        "selection_group1": "index 0",
+        "selection_group2": "index 1",
+        "force_constant_kj_mol_nm2": 1000.0,
+        "target_distance_nm": 1.2,
+    }]
+    job = tmp_path / "job"
+    parent = job / "nodes" / "prod_parent"
+    parent.mkdir(parents=True)
+    (parent / "node.json").write_text(json.dumps({
+        "node_id": "prod_parent",
+        "node_type": "prod",
+        "metadata": {"distance_restraints": restraints},
+    }))
+    child = job / "nodes" / "prod_child"
+    child.mkdir(parents=True)
+    (child / "node.json").write_text(json.dumps({
+        "node_id": "prod_child",
+        "node_type": "prod",
+        "metadata": {"continued_from": "prod_parent"},
+    }))
+
+    inherited = _resolve_prod_distance_restraints(str(job), "prod_child")
+    assert inherited == {"distance_restraints": restraints}
+
+
 def test_write_cv_metadata(tmp_path):
     meta = tmp_path / "cv.meta.json"
     cf.write_cv_metadata(

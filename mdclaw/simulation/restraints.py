@@ -1,6 +1,8 @@
 """Shared positional-restraint atom selection for simulation nodes."""
 
 import json
+import math
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -8,6 +10,14 @@ from mdclaw.chemistry_constants import WATER_NAMES, is_standard_bare_ion_resname
 
 
 RESTRAINT_SELECTIONS = ("solute_heavy", "CA", "backbone", "heavy")
+_DISTANCE_RESTRAINT_FIELDS = {
+    "name",
+    "selection_group1",
+    "selection_group2",
+    "force_constant_kj_mol_nm2",
+    "target_distance_nm",
+}
+_DISTANCE_RESTRAINT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _BACKBONE_NAMES = {"N", "CA", "C", "O"}
 _SOLUTE_COMPONENT_TYPES = {"protein", "nucleic", "glycan", "ligand", "ion"}
 # Used only when prep provenance is unavailable. The canonical path selects
@@ -17,6 +27,271 @@ _COMMON_LIPID_RESNAMES = {
     "POPC", "POPE", "POPG", "POPS", "DOPC", "DOPE", "DOPG", "DOPS",
     "DPPC", "DPPE", "DPPG", "DMPC", "DSPC", "DLPC", "CHL", "CHL1",
 }
+
+
+class DistanceRestraintError(RuntimeError):
+    """Structured validation error for declarative distance restraints."""
+
+    def __init__(self, *, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def normalize_distance_restraints(
+    distance_restraints: Optional[list[dict]],
+) -> Optional[list[dict]]:
+    """Validate and normalize the topology-independent restraint schema."""
+    if distance_restraints is None:
+        return None
+    if not isinstance(distance_restraints, list) or not distance_restraints:
+        raise DistanceRestraintError(
+            code="distance_restraints_invalid",
+            message="distance_restraints must be a non-empty list of objects.",
+        )
+
+    normalized: list[dict] = []
+    names: set[str] = set()
+    for index, item in enumerate(distance_restraints):
+        if not isinstance(item, dict):
+            raise DistanceRestraintError(
+                code="distance_restraints_invalid",
+                message=f"distance_restraints[{index}] must be an object.",
+            )
+        missing = _DISTANCE_RESTRAINT_FIELDS - set(item)
+        unknown = set(item) - _DISTANCE_RESTRAINT_FIELDS
+        if missing or unknown:
+            details = []
+            if missing:
+                details.append("missing " + ", ".join(sorted(missing)))
+            if unknown:
+                details.append("unknown " + ", ".join(sorted(unknown)))
+            raise DistanceRestraintError(
+                code="distance_restraints_invalid",
+                message=f"distance_restraints[{index}] has " + "; ".join(details) + ".",
+            )
+
+        name = item["name"]
+        if not isinstance(name, str) or not _DISTANCE_RESTRAINT_NAME_RE.fullmatch(name):
+            raise DistanceRestraintError(
+                code="distance_restraints_invalid",
+                message=(
+                    f"distance_restraints[{index}].name must match "
+                    "[A-Za-z][A-Za-z0-9_]*."
+                ),
+            )
+        if name in names:
+            raise DistanceRestraintError(
+                code="distance_restraints_invalid",
+                message=f"distance restraint name {name!r} is duplicated.",
+            )
+        names.add(name)
+
+        selections = {}
+        for key in ("selection_group1", "selection_group2"):
+            value = item[key]
+            if not isinstance(value, str) or not value.strip():
+                raise DistanceRestraintError(
+                    code="distance_restraints_invalid",
+                    message=f"distance_restraints[{index}].{key} must be a non-empty string.",
+                )
+            selections[key] = value.strip()
+
+        force_constant = item["force_constant_kj_mol_nm2"]
+        target_distance = item["target_distance_nm"]
+        if (
+            isinstance(force_constant, bool)
+            or not isinstance(force_constant, (int, float))
+            or not math.isfinite(float(force_constant))
+            or float(force_constant) <= 0.0
+        ):
+            raise DistanceRestraintError(
+                code="distance_restraints_invalid",
+                message=(
+                    f"distance_restraints[{index}].force_constant_kj_mol_nm2 "
+                    "must be finite and greater than 0."
+                ),
+            )
+        if (
+            isinstance(target_distance, bool)
+            or not isinstance(target_distance, (int, float))
+            or not math.isfinite(float(target_distance))
+            or float(target_distance) < 0.0
+        ):
+            raise DistanceRestraintError(
+                code="distance_restraints_invalid",
+                message=(
+                    f"distance_restraints[{index}].target_distance_nm must be "
+                    "finite and greater than or equal to 0."
+                ),
+            )
+
+        normalized.append({
+            "name": name,
+            **selections,
+            "force_constant_kj_mol_nm2": float(force_constant),
+            "target_distance_nm": float(target_distance),
+        })
+    return normalized
+
+
+def distance_restraint_signature(
+    distance_restraints: Optional[list[dict]],
+) -> Optional[dict]:
+    """Return the reproducibility signature for declarative distance bias."""
+    normalized = normalize_distance_restraints(distance_restraints)
+    if normalized is None:
+        return None
+    return {
+        "kind": "openmm_centroid_distance_restraints",
+        "mass_weighting": "physical_element",
+        "restraints": normalized,
+    }
+
+
+def load_distance_restraints(
+    *,
+    system,
+    topology,
+    distance_restraints: list[dict],
+    is_periodic: bool,
+) -> dict:
+    """Build one native OpenMM harmonic COM-distance bias force."""
+    import mdtraj as md
+    import numpy as np
+    from openmm import CustomCentroidBondForce
+    from openmm.unit import dalton
+
+    normalized = normalize_distance_restraints(distance_restraints)
+    mdtraj_topology = md.Topology.from_openmm(topology)
+    if mdtraj_topology.n_atoms != system.getNumParticles():
+        raise DistanceRestraintError(
+            code="distance_restraint_topology_mismatch",
+            message=(
+                f"topology.pdb has {mdtraj_topology.n_atoms} atoms but system.xml "
+                f"has {system.getNumParticles()} particles."
+            ),
+        )
+
+    topology_atoms = list(topology.atoms())
+    groups: list[tuple[list[int], list[float], list[int], list[float]]] = []
+    for item in normalized:
+        selected: list[list[int]] = []
+        selected_weights: list[list[float]] = []
+        for key in ("selection_group1", "selection_group2"):
+            try:
+                indices = [int(value) for value in mdtraj_topology.select(item[key])]
+            except Exception as exc:
+                raise DistanceRestraintError(
+                    code="distance_restraint_selection_invalid",
+                    message=(
+                        f"distance restraint {item['name']!r} has an invalid "
+                        f"{key}: {exc}"
+                    ),
+                ) from exc
+            if not indices:
+                raise DistanceRestraintError(
+                    code="restraint_selection_empty",
+                    message=(
+                        f"distance restraint {item['name']!r} {key}={item[key]!r} "
+                        "matched zero atoms."
+                    ),
+                )
+            selected_residues = {
+                topology_atoms[atom_index].residue.index:
+                topology_atoms[atom_index].residue
+                for atom_index in indices
+            }
+            water_count = sum(
+                residue.name.strip().upper() in WATER_NAMES
+                for residue in selected_residues.values()
+            )
+            ion_count = sum(
+                len(list(residue.atoms())) == 1
+                and is_standard_bare_ion_resname(residue.name.strip())
+                for residue in selected_residues.values()
+            )
+            if water_count or ion_count:
+                raise DistanceRestraintError(
+                    code="distance_restraints_invalid",
+                    message=(
+                        f"distance restraint {item['name']!r} {key} matched "
+                        f"{water_count} water residue(s) and {ion_count} "
+                        "bare-ion residue(s). On a solvated topology, use "
+                        "resid rather than resSeq so wrapped/reused PDB residue "
+                        "numbers cannot select solvent."
+                    ),
+                )
+            weights = [
+                (
+                    topology_atoms[atom_index].element.mass.value_in_unit(dalton)
+                    if topology_atoms[atom_index].element is not None
+                    else 0.0
+                )
+                for atom_index in indices
+            ]
+            if sum(weights) <= 0.0:
+                raise DistanceRestraintError(
+                    code="distance_restraints_invalid",
+                    message=(
+                        f"distance restraint {item['name']!r} {key} has zero "
+                        "total particle mass."
+                    ),
+                )
+            selected.append(indices)
+            selected_weights.append(weights)
+        overlap = sorted(set(selected[0]) & set(selected[1]))
+        if overlap:
+            raise DistanceRestraintError(
+                code="distance_restraint_groups_overlap",
+                message=(
+                    f"distance restraint {item['name']!r} groups overlap at "
+                    f"{len(overlap)} atoms; use disjoint groups."
+                ),
+            )
+        groups.append((
+            selected[0], selected_weights[0], selected[1], selected_weights[1]
+        ))
+
+    force = CustomCentroidBondForce(
+        2, "0.5*k*(distance(g1,g2)-r0)^2"
+    )
+    force.addPerBondParameter("k")
+    force.addPerBondParameter("r0")
+    force.setUsesPeriodicBoundaryConditions(bool(is_periodic))
+    for item, group in zip(normalized, groups):
+        group1, weights1, group2, weights2 = group
+        # Use physical elemental masses rather than the System particle masses:
+        # HMR changes both hydrogen and bonded-heavy-atom masses, but the
+        # scientific COM coordinate must not change when HMR is enabled.
+        group1_id = force.addGroup(group1, weights1)
+        group2_id = force.addGroup(group2, weights2)
+        force.addBond(
+            [group1_id, group2_id],
+            [item["force_constant_kj_mol_nm2"], item["target_distance_nm"]],
+        )
+
+    def _evaluator(positions_np, box_np):
+        values = {}
+        for item, group in zip(normalized, groups):
+            group1, weights1, group2, weights2 = group
+            center1 = np.average(positions_np[group1], axis=0, weights=weights1)
+            center2 = np.average(positions_np[group2], axis=0, weights=weights2)
+            displacement = center2 - center1
+            if is_periodic and box_np is not None:
+                fractional = displacement @ np.linalg.inv(box_np)
+                displacement -= np.rint(fractional) @ box_np
+            values[item["name"]] = float(np.linalg.norm(displacement))
+        return values
+
+    signature = distance_restraint_signature(normalized)
+    return {
+        "forces": [force],
+        "evaluator": _evaluator,
+        "cv_names": [item["name"] for item in normalized],
+        "kind": signature["kind"],
+        "signature": signature,
+        "restraints": normalized,
+    }
 
 
 def _is_heavy_atom(atom) -> bool:

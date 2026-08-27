@@ -1000,9 +1000,15 @@ class TestMDSimulationServer:
         (eq_artifacts / Path(equil["checkpoint_file"]).name).write_bytes(
             Path(equil["checkpoint_file"]).read_bytes()
         )
+        (eq_artifacts / Path(equil["state_file"]).name).write_bytes(
+            Path(equil["state_file"]).read_bytes()
+        )
         complete_node(
             str(job_dir), eq["node_id"],
-            artifacts={"checkpoint": f"artifacts/{Path(equil['checkpoint_file']).name}"},
+            artifacts={
+                "checkpoint": f"artifacts/{Path(equil['checkpoint_file']).name}",
+                "state": f"artifacts/{Path(equil['state_file']).name}",
+            },
         )
 
         script = tmp_path / "restraint.py"
@@ -1037,6 +1043,120 @@ class TestMDSimulationServer:
         # The script was copied into the node artifacts directory.
         copied = job_dir / "nodes" / prod["node_id"] / "artifacts" / "custom_force_script.py"
         assert copied.is_file()
+
+    def test_run_production_native_distance_restraint_records_cv_and_metadata(
+        self,
+        small_pdb,
+        tmp_path,
+        openmm_cpu_platform,
+    ):
+        """Native COM-distance bias is serializable and records exact CVs."""
+        import json
+
+        from openmm import CustomCentroidBondForce, XmlSerializer
+
+        from mdclaw._node import complete_node, create_node, read_node
+        from mdclaw.simulation.equilibrate import run_equilibration
+        from mdclaw.simulation.production import run_production
+
+        amber = self._build_topology(small_pdb, tmp_path)
+        equil = run_equilibration(
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            nvt_steps=100,
+            npt_steps=100,
+            output_dir=str(tmp_path / "equil_native_distance"),
+            platform=openmm_cpu_platform,
+        )
+        assert equil["success"] is True
+        restraints = [{
+            "name": "atom_distance",
+            "selection_group1": "index 0",
+            "selection_group2": "index 1",
+            "force_constant_kj_mol_nm2": 100.0,
+            "target_distance_nm": 0.15,
+        }]
+
+        job_dir = tmp_path / "job_native_distance"
+        topo = create_node(str(job_dir), "topo")
+        topo_artifacts = job_dir / "nodes" / topo["node_id"] / "artifacts"
+        topo_artifacts.mkdir(parents=True, exist_ok=True)
+        topo_files = {}
+        for key in ("system_xml", "topology_pdb", "state_xml", "amber_metadata"):
+            src = Path(amber[key])
+            (topo_artifacts / src.name).write_bytes(src.read_bytes())
+            topo_files[key] = f"artifacts/{src.name}"
+        complete_node(
+            str(job_dir),
+            topo["node_id"],
+            artifacts=topo_files,
+            metadata={"hmr": True, "implicit_solvent": None},
+        )
+        eq = create_node(str(job_dir), "eq", parent_node_ids=[topo["node_id"]])
+        eq_artifacts = job_dir / "nodes" / eq["node_id"] / "artifacts"
+        eq_artifacts.mkdir(parents=True, exist_ok=True)
+        eq_state = eq_artifacts / "equilibrated.xml"
+        eq_state.write_bytes(Path(equil["state_file"]).read_bytes())
+        complete_node(
+            str(job_dir),
+            eq["node_id"],
+            artifacts={"state": "artifacts/equilibrated.xml"},
+            metadata={"final_step": 0},
+        )
+        prod = create_node(
+            str(job_dir),
+            "prod",
+            parent_node_ids=[eq["node_id"]],
+            conditions={
+                "simulation_time_ns": 0.001,
+                "distance_restraints": restraints,
+            },
+        )
+
+        result = run_production(
+            simulation_time_ns=0.001,
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            timestep_fs=2.0,
+            output_frequency_ps=0.5,
+            platform=openmm_cpu_platform,
+            job_dir=str(job_dir),
+            node_id=prod["node_id"],
+            distance_restraints=restraints,
+        )
+
+        assert result["success"] is True, result["errors"]
+        assert result["distance_restraint_signature"]["kind"] == (
+            "openmm_centroid_distance_restraints"
+        )
+        cv_rows = Path(result["collective_variables_file"]).read_text().splitlines()
+        assert cv_rows[0] == (
+            "step,time_ps,bias_energy_kj_mol,atom_distance"
+        )
+        assert cv_rows[1:] and float(cv_rows[1].split(",")[-1]) >= 0.0
+        runtime_system = XmlSerializer.deserialize(
+            Path(result["runtime_system_file"]).read_text()
+        )
+        assert any(
+            isinstance(force, CustomCentroidBondForce)
+            for force in runtime_system.getForces()
+        )
+        cv_meta = json.loads(
+            Path(result["collective_variables_meta_file"]).read_text()
+        )
+        assert cv_meta["parameters"] == {"distance_restraints": restraints}
+
+        prod_node = read_node(str(job_dir), prod["node_id"])
+        assert prod_node["metadata"]["distance_restraints"] == restraints
+        assert prod_node["metadata"]["distance_restraint_signature"] == (
+            result["distance_restraint_signature"]
+        )
+        assert prod_node["artifacts"]["collective_variables"] == (
+            "artifacts/collective_variables.csv"
+        )
 
     def test_run_md_with_platform_cpu(
         self,

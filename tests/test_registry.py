@@ -113,6 +113,14 @@ class TestImportServers:
             assert sig.parameters[name].default is None
         assert "custom_force_module" not in sig.parameters
 
+    def test_run_production_has_distance_restraints_param(self):
+        """run_production exposes native harmonic COM-distance restraints."""
+        import inspect
+        from mdclaw.simulation.production import run_production
+
+        param = inspect.signature(run_production).parameters["distance_restraints"]
+        assert param.default is None
+
     def test_md_simulation_platform_preflight_registered(self):
         """Local-run feasibility preflight is exposed as a CLI/MCP tool."""
         from mdclaw.simulation import TOOLS

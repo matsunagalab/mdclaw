@@ -452,13 +452,13 @@ def _build_python_torch_force(
 
 class CustomForceReporter:
     """OpenMM reporter that logs the bias potential energy (always) and any
-    collective-variable values (when the script returns a ``cv_dict``).
+    collective-variable values.
 
     The bias energy is read from the dedicated ``CUSTOM_FORCE_GROUP`` so it is
     isolated from the force-field energy — exactly the per-frame quantity a
-    later pymbar/MBAR reweighting needs. CV values are obtained by
-    re-evaluating the user's ``energy`` function on the reported frame
-    (forward pass only).
+    later pymbar/MBAR reweighting needs. Script CV values are obtained by
+    re-evaluating the user's ``energy`` function on the reported frame; native
+    distance CV values are computed from the reported positions.
 
     Output: ``collective_variables.csv`` with columns
     ``step,time_ps,bias_energy_kj_mol[,<cv...>]``.

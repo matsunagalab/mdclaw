@@ -651,6 +651,25 @@ class TestArgparseConstruction:
         # custom_force_parameters is a JSON dict at the CLI boundary
         assert args.custom_force_parameters == '{"k": 1000.0, "d0": 1.2}'
 
+    def test_run_production_distance_restraints_json_flag(self):
+        """Declarative distance restraints use the list[dict] JSON path."""
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+        value = (
+            '[{"name":"tm3_tm6","selection_group1":"index 0",'
+            '"selection_group2":"index 1",'
+            '"force_constant_kj_mol_nm2":1000.0,'
+            '"target_distance_nm":1.2}]'
+        )
+
+        args = parser.parse_args([
+            "run_production", "--distance-restraints", value,
+        ])
+
+        assert args.distance_restraints == value
+
     def test_path_params_parse_as_path(self):
         from mdclaw._cli import _build_parser
 

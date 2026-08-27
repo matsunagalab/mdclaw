@@ -505,6 +505,19 @@ def _resolve_prod_custom_force(job_dir: str, node_id: str) -> dict:
     return result
 
 
+def _resolve_prod_distance_restraints(job_dir: str, node_id: str) -> dict:
+    """Inherit declarative distance bias from a ``--continue-from`` parent."""
+    continued_from = _read_continued_from(job_dir, node_id)
+    if continued_from is None:
+        return {}
+    restraints = _read_metadata_field(
+        job_dir, continued_from, "distance_restraints"
+    )
+    if isinstance(restraints, list):
+        return {"distance_restraints": restraints}
+    return {}
+
+
 def _resolve_eq_ensemble_metadata(job_dir: str, node_id: str) -> dict:
     result: dict = {}
     eq_anc = _find_ancestor_node_id(job_dir, node_id, "eq")
@@ -682,6 +695,7 @@ def resolve_node_inputs(
                 result["is_membrane"] = is_membrane
         result.update(_resolve_md_restart(job_dir, node_id))
         result.update(_resolve_prod_custom_force(job_dir, node_id))
+        result.update(_resolve_prod_distance_restraints(job_dir, node_id))
 
         # Surface the eq ancestor's ensemble as a default-pressure hint
         # so a prod that omits ``--pressure-bar`` still defaults to NPT

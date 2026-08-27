@@ -1093,3 +1093,55 @@ def test_solvate_structure_node_condition_mismatch_marks_failed(tmp_path):
     assert result["success"] is False
     assert any("condition" in error for error in result.get("errors", []))
     assert read_node(str(job_dir), node["node_id"])["status"] == "failed"
+
+
+def _valid_distance_restraints():
+    return [{
+        "name": "tm3_tm6",
+        "selection_group1": "index 0",
+        "selection_group2": "index 1",
+        "force_constant_kj_mol_nm2": 1000.0,
+        "target_distance_nm": 1.2,
+    }]
+
+
+def test_run_production_rejects_empty_distance_restraints():
+    from mdclaw.simulation.production import run_production
+
+    result = run_production(distance_restraints=[])
+
+    assert result["success"] is False
+    assert result["code"] == "distance_restraints_invalid"
+
+
+def test_run_production_rejects_two_bias_routes():
+    from mdclaw.simulation.production import run_production
+
+    result = run_production(
+        custom_force_script="bias.py",
+        distance_restraints=_valid_distance_restraints(),
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "production_bias_conflict"
+
+
+def test_run_production_rejects_checkpoint_for_bias(tmp_path):
+    from mdclaw.simulation.production import run_production
+
+    system_xml = tmp_path / "system.xml"
+    topology_pdb = tmp_path / "topology.pdb"
+    checkpoint = tmp_path / "checkpoint.chk"
+    system_xml.write_text("")
+    topology_pdb.write_text("")
+    checkpoint.write_bytes(b"")
+
+    result = run_production(
+        system_xml_file=str(system_xml),
+        topology_pdb_file=str(topology_pdb),
+        restart_from=str(checkpoint),
+        distance_restraints=_valid_distance_restraints(),
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "production_bias_checkpoint_unsupported"

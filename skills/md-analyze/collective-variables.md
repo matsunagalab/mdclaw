@@ -1,15 +1,17 @@
 # Analyze: Collective Variables & Bias Energy
 
-A production run launched with a custom force (`skills/md-production/custom-force.md`)
-emits a per-frame log under the prod node's artifacts.
+A production run launched with a declarative distance restraint
+(`skills/md-production/distance-restraints.md`) or custom force
+(`skills/md-production/custom-force.md`) emits a per-frame log under the prod
+node's artifacts.
 
 ## Artifacts
 
 | Artifact key | File | Contents |
 |---|---|---|
 | `collective_variables` | `artifacts/collective_variables.csv` | `step,time_ps,bias_energy_kj_mol[,<cv...>]` per report frame. |
-| `collective_variables_meta` | `artifacts/collective_variables.meta.json` | `temperature_kelvin`, `parameters`, custom-force `signature`, `cv_names`, `bias_energy_unit`. |
-| `custom_force_script` | the exact bias used | provenance. |
+| `collective_variables_meta` | `artifacts/collective_variables.meta.json` | `temperature_kelvin`, `parameters`, bias `signature`, `cv_names`, `bias_energy_unit`. |
+| `custom_force_script` | the exact script bias used, when applicable | provenance. |
 
 `bias_energy_kj_mol` is always present (read from the dedicated custom-force
 group, isolated from the force-field energy). CV columns appear only when the
@@ -24,11 +26,13 @@ meta = json.load(open("nodes/<prod_id>/artifacts/collective_variables.meta.json"
 # df["bias_energy_kj_mol"], df["<cv_name>"], meta["temperature_kelvin"], meta["parameters"]
 ```
 
-Use the CV columns to score a candidate collective variable (separation
+Native distance-restraint CV columns are the exact mass-weighted OpenMM
+coordinates used by the bias and are reported in nm. Use the CV columns to
+score a candidate collective variable (separation
 between states, free-energy profile along the CV, autocorrelation) and to drive
 an autoresearch loop: branch a new biased prod node with adjusted parameters or
 a refined `energy(positions, ctx)` script and compare. Each trial is a distinct
-node keyed by its custom-force signature.
+node keyed by its bias signature.
 
 ## If no CV columns were logged
 

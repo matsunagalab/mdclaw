@@ -393,6 +393,15 @@ signature, update the relevant section here and the matching skill examples.
   bias energy + optional CV values are logged to
   `collective_variables.csv` (+ `.meta.json`). See
   `mdclaw/simulation/custom_forces.py`.
+  It also accepts `distance_restraints` as one JSON `list[dict]` for native
+  harmonic atom/center-of-mass distances. Every entry requires `name`,
+  `selection_group1`, `selection_group2`,
+  `force_constant_kj_mol_nm2`, and `target_distance_nm`. This route uses an
+  OpenMM `CustomCentroidBondForce` with per-bond parameters, physical elemental
+  mass weights (independent of HMR), automatic periodic displacement handling,
+  and the same collective-variable artifacts. It is
+  mutually exclusive with `custom_force_script`; biased restarts require an
+  XML state rather than a binary checkpoint.
 
 ## `visualization/`
 

@@ -23,6 +23,11 @@ mdclaw --job-dir <job_dir> --node-id <rmsd_analyze_node_id> analyze_rmsd
 | Frame alignment for viz / dim-reduction | `fit_trajectory` | prerequisite for some metrics |
 | Energy / temperature / volume / density | production `energy.dat` lineage or the combined energy artifact | not a separate analyze tool |
 
+`analyze_distance --mode com` computes a geometric (unweighted) centroid and
+does not reproduce the mass-weighted, periodic OpenMM coordinate used by a
+production distance restraint. For biased runs, use the prod node's
+`collective_variables` artifact as the exact CV record.
+
 Prefer DAG-resolved artifacts from the analyze node. For ad-hoc external
 trajectories, explicit file paths are acceptable when the user asks for them.
 

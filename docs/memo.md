@@ -7,6 +7,33 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-27 — Distance-restraint selection and throughput correction
+
+- This overturns the `CustomCVForce` implementation recorded immediately
+  below: a 358,101-atom benchmark measured an 11.8% throughput loss from that
+  wrapper, while direct `CustomCentroidBondForce` was indistinguishable from
+  unbiased throughput. The production force now uses direct per-bond `k`/`r0`;
+  report-time positions reproduce the same mass-weighted, minimum-image CV.
+- Solvated-topology selections containing water or bare ions are rejected.
+  Examples use topology-wide `resid` plus `protein`, because PDB `resSeq`
+  numbers wrap and are reused by solvent.
+
+## 2026-08-27 — Native harmonic production distance restraints
+
+- Added the declarative `run_production(distance_restraints=...)` contract for
+  harmonic atom/center-of-mass distances using native OpenMM
+  `CustomCVForce` + `CustomCentroidBondForce`, avoiding per-step
+  PythonTorchForce/autograd overhead.
+- The exact biased coordinate and bias energy use the existing
+  `collective_variables.csv` / `.meta.json` artifacts. Distance groups use
+  explicit physical elemental mass weights so HMR does not change the CV.
+- Biased `--continue-from` inherits the parent declaration and requires the
+  portable XML state; binary checkpoint restart is rejected because the live
+  System contains an added bias force.
+- Scope is production-only harmonic distance bias. Equilibration restraints,
+  flat-bottom/angle/dihedral potentials, PMF/MBAR, and changes to
+  `analyze_distance` remain separate work.
+
 ## 2026-08-27 — Closed the custom-XML topology-builder contract drift
 
 `build_openmm_system` remains the research escape hatch, but now reuses the

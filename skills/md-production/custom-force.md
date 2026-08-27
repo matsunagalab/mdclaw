@@ -1,9 +1,10 @@
 # Production MD: Custom Force / CV Bias (PythonTorchForce)
 
-Attach an arbitrary biasing potential (positional restraint, distance/angle
-bias, domain-distance bias, a candidate collective variable, ...) to a
-production run. This is the foundation for CV exploration and, later, pymbar
-reweighting.
+Attach an arbitrary biasing potential that MDClaw's declarative harmonic
+distance restraint cannot express (for example angle/dihedral bias or an ML
+potential). For harmonic atom/center-of-mass distances, use
+`skills/md-production/distance-restraints.md`; it stays inside native OpenMM
+kernels and avoids per-step Python/autograd overhead.
 
 You write one Python function `energy(positions, ctx)` and pass it with
 `--custom-force-script`. **You write only the potential energy; MDClaw
@@ -62,8 +63,7 @@ mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
   --custom-force-parameters '{"selection": "name CA", "k": 1000.0}'
 ```
 
-For a distance / centroid / other CV bias, compute the scalar CV from
-`positions` with torch ops the same way and return
+For another CV bias, compute the scalar CV from `positions` with torch ops and return
 `(bias_energy, {"<cv_name>": cv_value})` so the CV is logged.
 
 ## Using a pre-trained model

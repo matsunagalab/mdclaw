@@ -153,6 +153,11 @@ def _record_production_node_result(
             metadata["custom_force_parameters"] = (
                 (custom_force.get("signature") or {}).get("parameters")
             )
+        if result.get("distance_restraints"):
+            metadata["distance_restraints"] = result["distance_restraints"]
+            metadata["distance_restraint_signature"] = result.get(
+                "distance_restraint_signature"
+            )
         # Passed on, so a run whose residue names were not restored says so in
         # node.json. Under SLURM the tool's stdout is only captured on failure,
         # so a warned-but-successful run left the message nowhere anyone reads.

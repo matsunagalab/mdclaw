@@ -91,11 +91,10 @@ with `mdclaw update_workflow_state --params ...` before creating new prod nodes.
    - Explicit water -> **Read and follow `skills/md-production/explicit-water.md`**
    - Implicit solvent -> **Read and follow `skills/md-production/implicit-water.md`**
 
-To apply a biasing potential (positional restraint, distance / domain bias, or
-a candidate collective variable for CV exploration), **read and follow
-`skills/md-production/custom-force.md`** — you write a single
-`energy(positions, ctx)` function and MDClaw computes the forces by autograd,
-logging bias energy and CV values for analysis.
+For a harmonic atom/center-of-mass distance bias, **read and follow
+`skills/md-production/distance-restraints.md`**. For an arbitrary potential
+that the declarative distance route cannot express, **read and follow
+`skills/md-production/custom-force.md`**.
 
 ## Handoff
 

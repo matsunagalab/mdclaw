@@ -43,6 +43,12 @@ platform-specific). Topology artifacts are XML-only: every restart
 reads the same `system.xml` + `topology.pdb` + `state.xml` triple from
 the topo ancestor.
 
+Biased production changes the live System and therefore requires the portable
+XML state; binary checkpoint restart fails with
+`production_bias_checkpoint_unsupported`. Extend a biased production only with
+`--continue-from`: the distance-restraint declaration, or the custom-force
+script and parameters, is then inherited unless explicitly overridden.
+
 ## Switching Ensembles Across Nodes
 
 `state.xml` is loaded via `XmlSerializer.deserialize` and only

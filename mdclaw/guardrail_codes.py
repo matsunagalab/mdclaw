@@ -301,6 +301,12 @@ GUARDRAIL_CODES: dict[str, str] = {
     "minimization_restraint_atoms_invalid": "Provide a valid restraint atom selection.",
     "equilibration_restraint_atoms_invalid": "Provide a valid restraint atom selection.",
     "restraint_selection_empty": "Use a restraint selection that matches at least one atom.",
+    "distance_restraints_invalid": "Provide valid non-empty harmonic distance restraint objects.",
+    "distance_restraint_selection_invalid": "Provide valid mdtraj selections for both restraint groups.",
+    "distance_restraint_groups_overlap": "Use disjoint atom groups for a distance restraint.",
+    "distance_restraint_topology_mismatch": "Use a matching system.xml and topology.pdb artifact pair.",
+    "production_bias_conflict": "Choose either distance restraints or a custom force script.",
+    "production_bias_checkpoint_unsupported": "Restart biased production from a portable XML state.",
     "equilibration_time_step_conflict": "Resolve the equilibration time-step conflict (HMR vs dt).",
     "timestep_unsupported": "Use a supported integration time step for this system.",
 
