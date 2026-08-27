@@ -57,6 +57,29 @@ def _two_residue_protein_pdb() -> str:
     )
 
 
+def _ash_ala_pdb() -> str:
+    return "\n".join(
+        [
+            _atom_line(1, "N", "ASH", "A", 25, 0.0, 0.0, 0.0, "N"),
+            _atom_line(2, "CA", "ASH", "A", 25, 1.45, 0.0, 0.0, "C"),
+            _atom_line(3, "C", "ASH", "A", 25, 2.0, 1.4, 0.0, "C"),
+            _atom_line(4, "O", "ASH", "A", 25, 1.3, 2.4, 0.0, "O"),
+            _atom_line(5, "CB", "ASH", "A", 25, 2.0, -0.8, -1.2, "C"),
+            _atom_line(6, "CG", "ASH", "A", 25, 3.5, -0.8, -1.2, "C"),
+            _atom_line(7, "OD1", "ASH", "A", 25, 4.1, 0.2, -1.2, "O"),
+            _atom_line(8, "OD2", "ASH", "A", 25, 4.1, -1.9, -1.2, "O"),
+            _atom_line(9, "HD2", "ASH", "A", 25, 4.5, -2.3, -1.2, "H"),
+            _atom_line(10, "N", "ALA", "A", 26, 3.3, 1.5, 0.0, "N"),
+            _atom_line(11, "CA", "ALA", "A", 26, 4.1, 2.7, 0.0, "C"),
+            _atom_line(12, "C", "ALA", "A", 26, 5.6, 2.4, 0.0, "C"),
+            _atom_line(13, "O", "ALA", "A", 26, 6.4, 3.3, 0.0, "O"),
+            _atom_line(14, "CB", "ALA", "A", 26, 3.7, 3.5, 1.2, "C"),
+            "END",
+            "",
+        ]
+    )
+
+
 class FakeHPacker:
     last_kwargs = None
 
@@ -195,6 +218,103 @@ def test_run_hpacker_mutation_writes_mutant_and_preserves_nonprotein(monkeypatch
     assert "HETATM" in text and " BEN B   1" in text
 
 
+def test_run_hpacker_mutation_reapplies_nonmutated_ash(monkeypatch, tmp_path):
+    from mdclaw import sidechain_packer
+
+    monkeypatch.setattr(
+        sidechain_packer,
+        "_load_hpacker_class",
+        lambda: (FakeHPacker, "test-version"),
+    )
+
+    def rebuild_without_ash_hd2(input_pdb, output_pdb, reference_pdb=None):
+        lines = [
+            line
+            for line in Path(input_pdb).read_text().splitlines()
+            if line[12:16].strip() != "HD2"
+        ]
+        Path(output_pdb).write_text("\n".join(lines) + "\n")
+
+    monkeypatch.setattr(
+        sidechain_packer,
+        "_rebuild_protein_hydrogens",
+        rebuild_without_ash_hd2,
+    )
+    input_pdb = tmp_path / "input.pdb"
+    output_pdb = tmp_path / "mutant.pdb"
+    input_pdb.write_text(_ash_ala_pdb())
+
+    result = sidechain_packer.run_hpacker_mutation(
+        input_pdb,
+        output_pdb,
+        mutations=["A:A26A"],
+    )
+
+    assert result.success, result.errors
+    ash_hd2 = [
+        line
+        for line in output_pdb.read_text().splitlines()
+        if line.startswith("ATOM")
+        and line[17:20].strip() == "ASH"
+        and line[12:16].strip() == "HD2"
+    ]
+    assert len(ash_hd2) == 1
+
+
+def test_run_hpacker_mutation_does_not_reapply_variant_at_mutation_target(
+    monkeypatch, tmp_path
+):
+    from mdclaw import sidechain_packer
+    from mdclaw.structure import protonation
+
+    monkeypatch.setattr(
+        sidechain_packer,
+        "_load_hpacker_class",
+        lambda: (FakeHPacker, "test-version"),
+    )
+    monkeypatch.setattr(
+        sidechain_packer,
+        "_rebuild_protein_hydrogens",
+        lambda input_pdb, output_pdb, reference_pdb=None: Path(
+            output_pdb
+        ).write_text(Path(input_pdb).read_text()),
+    )
+    captured = {}
+
+    def capture_reapplication(pdb_file, protonation_states, ph=7.4):
+        captured["states"] = protonation_states
+        captured["ph"] = ph
+        return {"success": True, "errors": [], "warnings": []}
+
+    monkeypatch.setattr(
+        protonation,
+        "_apply_protonation_states_with_modeller",
+        capture_reapplication,
+    )
+    input_pdb = tmp_path / "input.pdb"
+    output_pdb = tmp_path / "mutant.pdb"
+    input_pdb.write_text(_ash_ala_pdb().replace("ALA A  26", "ASH A  26"))
+
+    result = sidechain_packer.run_hpacker_mutation(
+        input_pdb,
+        output_pdb,
+        mutations=["A:D25N"],
+    )
+
+    assert result.success, result.errors
+    assert captured == {
+        "states": [
+            {
+                "chain": "A",
+                "resnum": "26",
+                "icode": "",
+                "state": "ASH",
+            }
+        ],
+        "ph": 7.0,
+    }
+
+
 def test_run_hpacker_reports_missing_backend(monkeypatch, tmp_path):
     from mdclaw import sidechain_packer
 
@@ -219,6 +339,7 @@ def test_run_hpacker_reports_missing_backend(monkeypatch, tmp_path):
 
 def test_run_hpacker_preserves_protein_like_histidine_variant(monkeypatch, tmp_path):
     from mdclaw import sidechain_packer
+    from mdclaw.structure import protonation
 
     monkeypatch.setattr(
         sidechain_packer,
@@ -230,6 +351,13 @@ def test_run_hpacker_preserves_protein_like_histidine_variant(monkeypatch, tmp_p
         "_rebuild_protein_hydrogens",
         lambda input_pdb, output_pdb, reference_pdb=None: output_pdb.write_text(
             Path(input_pdb).read_text()
+        ),
+    )
+    monkeypatch.setattr(
+        protonation,
+        "_apply_protonation_states_with_modeller",
+        lambda *args, **kwargs: pytest.fail(
+            "full repack must not reapply protonation variants"
         ),
     )
 

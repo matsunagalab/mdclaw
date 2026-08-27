@@ -823,6 +823,53 @@ def run_hpacker(
                 hydrogenated_output,
                 reference_pdb=hydrogen_reference,
             )
+            if not reconstruct_all_sidechains:
+                variant_residues = [
+                    residue
+                    for residue in residues
+                    if residue.resname in PROTEIN_VARIANT_TO_STANDARD
+                    and residue.hpacker_id not in mutation_map
+                ]
+                if variant_residues:
+                    from mdclaw.structure.protonation import (
+                        _apply_protonation_states_with_modeller,
+                        _canonical_protonation_state,
+                    )
+
+                    _restore_reference_resnames(
+                        hydrogenated_output, residues, mutation_map
+                    )
+                    # PDBFixer's writer emits inferred disulfide CONECT records,
+                    # which the merge below normally discards before rebuilding
+                    # the input records. Drop them before Modeller reloads this
+                    # intermediate file, or the inferred bond is registered twice.
+                    hydrogenated_output.write_text(
+                        "\n".join(
+                            line
+                            for line in hydrogenated_output.read_text().splitlines()
+                            if not line.startswith("CONECT")
+                        )
+                        + "\n"
+                    )
+                    protonation_result = _apply_protonation_states_with_modeller(
+                        hydrogenated_output,
+                        [
+                            {
+                                "chain": residue.chain,
+                                "resnum": str(residue.resseq),
+                                "icode": residue.icode,
+                                "state": _canonical_protonation_state(
+                                    residue.resname
+                                ),
+                            }
+                            for residue in variant_residues
+                        ],
+                        ph=7.0,
+                    )
+                    if not protonation_result["success"]:
+                        raise HPackerExecutionError(
+                            "; ".join(protonation_result["errors"])
+                        )
         except Exception as exc:
             return HPackerRunResult(
                 success=False,
