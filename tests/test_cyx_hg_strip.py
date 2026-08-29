@@ -7,6 +7,7 @@ residue promoted to CYX by the reconciliation pass.
 """
 from __future__ import annotations
 
+from math import dist
 import sys
 from pathlib import Path
 
@@ -98,9 +99,53 @@ END
     assert result["stripped_hg_from_cyx"] == 0, (
         "CYS keeps its HG; strip applies only to final CYX residues"
     )
+    assert result["rebuilt_hg_on_demoted_cys"] == 0
     content = p.read_text()
     assert "CYS A" in content
     assert "HG  CYS A  23" in content or " HG CYS A  23" in content  # HG survives the demotion
+
+
+def test_reconcile_rebuilds_hg_on_two_close_cyx_demoted_to_cys(tmp_path):
+    """An explicit empty pair list must make two 2.03 A thiols, not CCYX."""
+    from mdclaw.structure.disulfide import _reconcile_cyx_cys_in_pdb
+
+    pdb = """\
+ATOM      1  N   CYX A  10      11.240  15.750  30.422  1.00  0.00           N
+ATOM      2  CA  CYX A  10      10.387  16.143  31.524  1.00  0.00           C
+ATOM      3  C   CYX A  10      10.054  17.651  31.423  1.00  0.00           C
+ATOM      4  O   CYX A  10      10.923  18.482  31.198  1.00  0.00           O
+ATOM      5  CB  CYX A  10      11.130  16.033  32.926  1.00  0.00           C
+ATOM      6  SG  CYX A  10      11.211  14.227  33.306  1.00  0.00           S
+ATOM      7  N   CYX A  20       6.772  14.876  34.904  1.00  0.00           N
+ATOM      8  CA  CYX A  20       8.035  14.842  35.681  1.00  0.00           C
+ATOM      9  C   CYX A  20       8.827  16.109  35.521  1.00  0.00           C
+ATOM     10  O   CYX A  20       8.332  17.027  34.791  1.00  0.00           O
+ATOM     11  CB  CYX A  20       8.837  13.576  35.206  1.00  0.00           C
+ATOM     12  SG  CYX A  20       9.301  13.545  33.474  1.00  0.00           S
+TER
+END
+"""
+    path = tmp_path / "close_cyx.pdb"
+    path.write_text(pdb)
+
+    result = _reconcile_cyx_cys_in_pdb(str(path), [])
+
+    atoms: dict[str, set[str]] = {}
+    sg_positions = []
+    for line in path.read_text().splitlines():
+        if not line.startswith("ATOM"):
+            continue
+        resnum = line[22:26].strip()
+        atoms.setdefault(resnum, set()).add(line[12:16].strip())
+        if line[12:16].strip() == "SG":
+            sg_positions.append(tuple(float(line[start:start + 8])
+                                      for start in (30, 38, 46)))
+        assert line[17:20].strip() == "CYS"
+
+    assert result["rebuilt_hg_on_demoted_cys"] == 2
+    assert atoms["10"] >= {"SG", "HG"}
+    assert atoms["20"] >= {"SG", "HG"}
+    assert dist(*sg_positions) == pytest.approx(2.03, abs=0.01)
 
 
 def test_reconcile_noop_on_consistent_input(tmp_path):
@@ -120,6 +165,7 @@ END
         "renamed_to_cys": 0,
         "renamed_to_cyx": 0,
         "stripped_hg_from_cyx": 0,
+        "rebuilt_hg_on_demoted_cys": 0,
         # Reported so the caller can fail on it: a declared endpoint that could
         # not be identified must not pass as a warning.
         "unresolved_endpoints": [],

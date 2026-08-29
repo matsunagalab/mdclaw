@@ -2562,17 +2562,20 @@ def prepare_complex(
                         reconcile = _reconcile_cyx_cys_in_pdb(
                             merge_result["output_file"],
                             result.get("disulfide_bonds", []),
+                            ph=ph,
                         )
                         if (
                             reconcile["renamed_to_cys"]
                             or reconcile["renamed_to_cyx"]
                             or reconcile.get("stripped_hg_from_cyx", 0)
+                            or reconcile.get("rebuilt_hg_on_demoted_cys", 0)
                         ):
                             logger.info(
                                 f"  ↳ CYS/CYX reconciliation: "
                                 f"{reconcile['renamed_to_cyx']} promoted, "
                                 f"{reconcile['renamed_to_cys']} demoted, "
-                                f"{reconcile.get('stripped_hg_from_cyx', 0)} HG atoms stripped"
+                                f"{reconcile.get('stripped_hg_from_cyx', 0)} HG atoms stripped, "
+                                f"{reconcile.get('rebuilt_hg_on_demoted_cys', 0)} thiol H atoms rebuilt"
                             )
                             result["cys_cyx_reconciliation"] = reconcile
                         unresolved = reconcile.get("unresolved_endpoints") or []
@@ -2587,9 +2590,12 @@ def prepare_complex(
                             result["overall_status"] = "failed"
                             return result
                     except Exception as e:
-                        result["warnings"].append(
-                            f"CYS/CYX reconciliation skipped: {type(e).__name__}: {e}"
+                        result["errors"].append(
+                            f"CYS/CYX reconciliation failed: {type(e).__name__}: {e}"
                         )
+                        result["code"] = "protonation_state_override_failed"
+                        result["overall_status"] = "failed"
+                        return result
                 else:
                     result["warnings"].append(f"Merge failed: {merge_result.get('errors', [])}")
                     result["merge_result"] = {"success": False, "errors": merge_result.get("errors", [])}

@@ -7,6 +7,16 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-30 — CYX demotion now rebuilds the reduced-cysteine thiol
+
+The task-016 defect below is fixed at the CYS/CYX reconciliation boundary.
+When an explicit disulfide list demotes a pdb2pqr CYX to CYS and the residue has
+no HG, reconciliation now sends that site through the existing CYS protonation
+path (`present={HG}`). A two-Cys regression at 2.03 A confirms that an empty
+pair list produces two CYS residues with HG while preserving the SG geometry.
+A SIF replay on cached 1AY7 chains A+B completed prep successfully with no
+disulfides and reported two rebuilt thiol hydrogens.
+
 ## 2026-08-30 — Defect report written by a benchmark agent: CYX→CYS demotion leaves thiols deprotonated
 
 *Written verbatim by the pi + deepseek-v4-flash agent during MDDataBench task 016 (it found the

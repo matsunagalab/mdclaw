@@ -49,7 +49,11 @@ pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 
 
-def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dict[str, int]:
+def _reconcile_cyx_cys_in_pdb(
+    pdb_file: str,
+    disulfide_bonds: List[dict],
+    ph: float = 7.4,
+) -> Dict[str, object]:
     """Rewrite CYS/CYX residue names in *pdb_file* to match *disulfide_bonds*.
 
     pdb2pqr geometrically detects SS-bonded cysteines and renames them to
@@ -63,12 +67,12 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
       without an SS bond, leaving SG unprotonated — chemically wrong).
     - CYS residues that *are* in ``disulfide_bonds`` are promoted to CYX.
 
-    Additionally, every final CYX residue has its ``HG`` thiol hydrogen
-    stripped. SS-bonded cysteines have their SG bonded to another SG,
-    not to a proton, and the Amber CYX template has no ``HG`` atom — a
-    surviving HG fails template matching at openmmforcefields build time
-    (and historically caused tleap to abort with
-    ``FATAL: Atom .R<CYX N>.A<HG> does not have a type``).
+    A demoted CYS that arrived without ``HG`` is rebuilt through the canonical
+    CYS protonation path. Every final CYX instead has ``HG`` stripped:
+    SS-bonded cysteines have their SG bonded to another SG, not to a proton,
+    and the Amber CYX template has no ``HG`` atom — a surviving HG fails
+    template matching at openmmforcefields build time (and historically caused
+    tleap to abort with ``FATAL: Atom .R<CYX N>.A<HG> does not have a type``).
     Observed for 5vm0_A and 7on5_A in the 2422-row batch.
 
     Runs unconditionally after merge; it is a no-op whenever the
@@ -82,13 +86,14 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
     # insertion-coded neighbour from being renamed instead: MODELLER can now
     # patch the right Cys, and renaming a different one here would put the bond
     # and the CYX label on two different residues.
-    cysteines: dict = {}
+    cysteines: dict[tuple[str, int, str], set[str]] = {}
     for line in lines:
         if len(line) >= 27 and line.startswith(("ATOM", "HETATM")):
             if line[17:20].strip() in {"CYS", "CYX", "CYM"}:
                 try:
-                    cysteines[(line[21].strip(), int(line[22:26].strip()),
-                               line[26].strip())] = True
+                    site = (line[21].strip(), int(line[22:26].strip()),
+                            line[26].strip())
+                    cysteines.setdefault(site, set()).add(line[12:16].strip())
                 except ValueError:
                     continue
 
@@ -111,6 +116,7 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
     renamed_to_cys = 0
     renamed_to_cyx = 0
     stripped_hg = 0
+    demoted_to_cys: set[tuple[str, int, str]] = set()
 
     for line in lines:
         if len(line) >= 27 and line.startswith(("ATOM", "HETATM")):
@@ -127,6 +133,7 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
                 line = line[:17] + "CYS" + line[20:]
                 final_resname = "CYS"
                 renamed_to_cys += 1
+                demoted_to_cys.add(key)
             elif resname in {"CYS", "CYM"} and key in target_cyx:
                 line = line[:17] + "CYX" + line[20:]
                 final_resname = "CYX"
@@ -143,15 +150,32 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
         out.append(line)
 
     path.write_text("\n".join(out) + ("\n" if lines and not lines[-1].endswith("\n") else ""))
+    needs_hg = sorted(site for site in demoted_to_cys
+                      if "HG" not in cysteines[site])
+    if needs_hg:
+        from mdclaw.structure.protonation import (
+            _apply_protonation_states_with_modeller,
+        )
+
+        protonation = _apply_protonation_states_with_modeller(
+            path,
+            [{"chain": chain, "resnum": str(resnum), "icode": icode,
+              "state": "CYS"}
+             for chain, resnum, icode in needs_hg],
+            ph=ph,
+        )
+        if not protonation["success"]:
+            raise RuntimeError(
+                "Could not rebuild HG on CYX-demoted CYS residue(s): "
+                + "; ".join(protonation["errors"])
+            )
     return {
         "renamed_to_cys": renamed_to_cys,
         "renamed_to_cyx": renamed_to_cyx,
         "stripped_hg_from_cyx": stripped_hg,
-        # Reported rather than raised: the caller wraps this in a broad
-        # `except Exception` that turns failures into warnings, and an endpoint
-        # that could not be resolved must not be one. Leaving it unreported also
-        # lets an existing CYX be demoted back to CYS on the strength of a bond
-        # nobody could locate.
+        "rebuilt_hg_on_demoted_cys": len(needs_hg),
+        # Leaving an endpoint unreported lets an existing CYX be demoted back
+        # to CYS on the strength of a bond nobody could locate.
         "unresolved_endpoints": unresolved,
     }
 
