@@ -3,9 +3,9 @@
 Standalone restrained minimization in a `min` node, followed by low-temperature
 NVT warmup, normal-temperature NVT heating, and (explicit water) NPT density
 equilibration in an `eq` node, with solute-heavy positional restraints. The
-same `min -> eq` prelude is used for explicit and implicit systems. Both
-equilibration stages use 4 fs + HMR so the final checkpoint is compatible with
-production settings.
+same `min -> eq` prelude is used for explicit and implicit systems. By default,
+k=100 restraints remain active through both NVT and NPT; both stages use 4 fs +
+HMR so the final checkpoint is compatible with production settings.
 
 ## Run Equilibration
 
@@ -56,7 +56,8 @@ identical to the explicit commands above.
   | `CA` | alpha carbons | protein-only legacy selection |
   | `backbone` | protein backbone heavy atoms (N, CA, C, O) | |
   | `heavy` | all non-hydrogen solute atoms | strongest; useful for early-stage relaxation |
-- All restraints are removed in the production-matching checkpoint.
+- The restrained NVT/NPT end state is transferred to a restraint-free
+  production checkpoint; no unrestrained equilibration stage runs.
 - NVT and NPT default lengths: 1 ns each. Prefer `--nvt-time-ns` /
   `--npt-time-ns` for user-facing duration requests.
 - Do not convert ns/ps to steps in the agent. The tool converts time to
@@ -71,9 +72,8 @@ identical to the explicit commands above.
   Both record `currentStep=0` so `run_production --simulation-time-ns` is the
   full production length. Production auto-resolves the state via the DAG.
 - Energy should drop during the `min` node minimization (good sign).
-- For finer control (e.g. NPT compress with `heavy` → NVT thermalize with `CA`
-  → NPT relax with no restraints), chain multiple eq nodes — see
-  `skills/md-equilibration/multi-stage-eq.md`.
+- Use the optional `multi-stage-eq.md` chain only for an explicit final
+  unrestrained NPT request; do not add that stage to the default protocol.
 
 ---
 

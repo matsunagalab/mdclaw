@@ -122,6 +122,7 @@ class TestPipelineEqChainDag:
             platform="CPU",
         )
         assert result["success"], result.get("errors")
+        assert result["restraint_count"] > 0
         # First eq has no eq/prod ancestor — runs from the topo state.xml
         # via the XML topology inputs, not from a restart artifact.
         assert result.get("restarted_from") is None
@@ -167,6 +168,7 @@ class TestPipelineEqChainDag:
             platform="CPU",
         )
         assert result["success"], result.get("errors")
+        assert result["restraint_count"] > 0
         # Auto-resolved restart from eq_001's state.xml.
         eq1_state = node_artifact(job_dir, self.eq1_id, "state").resolve()
         assert Path(result["restarted_from"]) == eq1_state
@@ -209,6 +211,7 @@ class TestPipelineEqChainDag:
             platform="CPU",
         )
         assert result["success"], result.get("errors")
+        assert result["restraint_count"] == 0
         eq2_state = node_artifact(job_dir, self.eq2_id, "state").resolve()
         assert Path(result["restarted_from"]) == eq2_state
 

@@ -51,8 +51,9 @@ persist it with `mdclaw update_workflow_state --params '{"execution_mode":"auton
    `--pressure-bar 0`).
 3. Hand off (see Handoff below).
 
-For finer control than one `min` + `eq` pair (e.g. NPT compress -> NVT
-thermalize -> NPT relax), see `skills/md-equilibration/multi-stage-eq.md`.
+The default `eq` keeps k=100 solute-heavy restraints through NVT and NPT, then
+transfers the end state to a restraint-free checkpoint without unrestrained MD.
+Use `multi-stage-eq.md` only for an explicit final-unrestrained-NPT request.
 
 ## Node Setup
 

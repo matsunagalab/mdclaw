@@ -7,6 +7,38 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-29 — Phase (a) removes the seven pass2 ambiguities on the MDClaw side
+
+- Disjoint residue ranges now produce separate components by default, with
+  `join_range_pieces` as the explicit opt-in for joining them.
+- Packmol receives a sequentially renumbered solute copy while the deposited
+  residue identity is restored from the original; a residue-count mismatch now
+  fails as `solute_identity_not_preserved`.
+- The digit-first glycan guess is gone. Curated names/entity metadata classify
+  deposited glycans, while installed GLYCAM templates cover topology-time names.
+- The writable membrane-patch cache now defaults to the XDG user cache (or
+  `~/.cache`) after the existing MDClaw environment overrides. Membrane skill
+  recipes explicitly carry the chosen water model into embedding and topology.
+- The HPC skill now submits the complete host-side `min -> eq -> prod` afterok
+  chain immediately after topology. Equilibration guidance now states that the
+  default k=100 restraints remain through NVT/NPT and that no unrestrained MD is
+  run before the clean production checkpoint; the optional k=0 NPT stage is
+  used only when explicitly requested.
+
+RCSB-focused replays confirmed 010/012 produce 3/4 separate range components,
+019/024 restore all 624/300 solute residues after Packmol-safe renumbering, and
+043 prepares 9RQ as a non-glycan ligand with CCD-derived net charge -2. The
+DPPC+TIP3P+0.15 M cache probe hit the bundled patch. Full agent/scored replays
+were not run because their attempt workspaces and frozen harness are not in the
+retained evidence; a no-tool Pi/DeepSeek dry run was attempted but did not
+return in this managed environment.
+
+Verification in `mdclaw.sif`: focused tests passed; the OpenMM NPT -> NVT ->
+explicit-k=0-NPT -> production DAG passed 8 tests; the full non-slow,
+non-integration unit suite passed 1778 tests with 103 deselected; ruff passed.
+The combined `skills/**` edit is net -1 line. No MDDataBench files or scoring
+thresholds were changed.
+
 ## 2026-08-29 — TIP3P membrane patches are bundled; the OPC-only cache never hit in a 28-attempt campaign
 
 All seven bundled membrane patches were `opc + ff19SB + 0.15 M`, and every membrane
