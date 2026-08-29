@@ -761,6 +761,32 @@ def test_glycam_name_authority_matches_installed_ffxml_exactly():
     assert {"0FA", "0fA"} <= actual
 
 
+def test_source_glycan_signals_do_not_guess_digit_first_ligands(tmp_path):
+    from mdclaw.amber.content_detection import detect_glycan_content
+    from mdclaw.chemistry_constants import (
+        classify_glycan_residues,
+        is_glycan_residue_name,
+    )
+
+    assert is_glycan_residue_name("9RQ") is False
+    assert classify_glycan_residues({"NAG"})["is_glycan"] is True
+    metadata = classify_glycan_residues(
+        {"XYZ"}, entity_name="branched oligosaccharide"
+    )
+    assert metadata["is_glycan"] is True
+    assert metadata["metadata_signal"] is True
+    assert metadata["unsupported_residue_names"] == ["XYZ"]
+
+    topology_pdb = tmp_path / "post_prepareforleap.pdb"
+    topology_pdb.write_text(
+        "HETATM    1  C1  0fA G   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    detected = detect_glycan_content(topology_pdb)
+    assert detected["has_glycan"] is True
+    assert detected["residue_names"] == ["0fA"]
+
+
 def test_mdclaw_package_has_no_pasted_glycam_name_sets():
     from mdclaw.amber.forcefield_constants import glycam_template_residue_names
 

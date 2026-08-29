@@ -262,14 +262,7 @@ def _clean_residue_name(name: str | None) -> str:
 def is_glycan_residue_name(name: str | None) -> bool:
     """Return True for common glycan residue names in PDB/mmCIF inputs."""
     cleaned = _clean_residue_name(name)
-    if cleaned in COMMON_GLYCAN_RESNAMES:
-        return True
-    # GLYCAM-style residue/template names are often compact three-character
-    # codes with a numeric linkage/anomer prefix. Accept these only as a
-    # fallback so ordinary ligands such as ATP/NAD are not reclassified.
-    if len(cleaned) == 3 and cleaned[0].isdigit() and cleaned[1:].isalpha():
-        return True
-    return False
+    return cleaned in COMMON_GLYCAN_RESNAMES
 
 
 def entity_suggests_glycan(entity_type: str | None = None, polymer_type: str | None = None,

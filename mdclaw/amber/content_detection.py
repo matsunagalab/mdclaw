@@ -65,7 +65,7 @@ cpptraj_wrapper = BaseToolWrapper("cpptraj")
 # Force Field Mappings (based on Amber Manual 2024 recommendations)
 # =============================================================================
 
-from mdclaw.amber.forcefield_constants import POLYPHOSPHATE_LIGANDS, STANDARD_PROTEIN_RESIDUES, WATER_RESIDUES  # noqa: E402
+from mdclaw.amber.forcefield_constants import POLYPHOSPHATE_LIGANDS, STANDARD_PROTEIN_RESIDUES, WATER_RESIDUES, is_glycam_template_residue  # noqa: E402
 
 
 def _gemmi_available() -> bool:
@@ -303,8 +303,12 @@ def detect_glycan_content(pdb_path: Path) -> dict:
     for line in pdb_path.read_text().splitlines():
         if not line.startswith(("ATOM", "HETATM")):
             continue
-        resname = line[17:20].strip().upper()
-        if not is_glycan_residue_name(resname):
+        raw_resname = line[17:20].strip()
+        if is_glycan_residue_name(raw_resname):
+            resname = raw_resname.upper()
+        elif is_glycam_template_residue(raw_resname):
+            resname = raw_resname
+        else:
             continue
         chain = line[21].strip() or "A"
         resnum = line[22:26].strip()

@@ -69,7 +69,7 @@ cpptraj_wrapper = BaseToolWrapper("cpptraj")
 # =============================================================================
 
 from mdclaw.amber.content_detection import _gemmi_available, _scan_pdb_ion_residue_names, _scan_pdb_text_for_ptm_residues, detect_glycan_content, detect_nucleic_content, detect_water_type  # noqa: E402
-from mdclaw.amber.forcefield_constants import CANONICAL_PROTEIN_FORCEFIELDS, GLYCAN_FORCEFIELDS, NUCLEIC_FORCEFIELDS, PHOSAA_LIBRARY_FOR_FF  # noqa: E402
+from mdclaw.amber.forcefield_constants import CANONICAL_PROTEIN_FORCEFIELDS, GLYCAN_FORCEFIELDS, NUCLEIC_FORCEFIELDS, PHOSAA_LIBRARY_FOR_FF, is_glycam_template_residue  # noqa: E402
 from mdclaw.amber.glycam_topology import _prepare_glycam_pdb_with_cpptraj  # noqa: E402
 from mdclaw.amber.ligand_validation import implicit_ligand_diagnostics, validate_initial_ligand_contacts, validate_ligand_chemistry, validate_ligand_template_coverage, validate_modxna_params  # noqa: E402
 from mdclaw.amber.openmm_build import _record_topology_build_stage, _run_openmmforcefields_build  # noqa: E402
@@ -1033,12 +1033,14 @@ def build_amber_system(
         }
     if glycan_metadata and isinstance(glycan_metadata, dict):
         metadata_residues = {
-            str(r.get("source_resname") or r.get("resname") or "").upper()
+            str(r.get("source_resname") or r.get("resname") or "").strip()
             for r in glycan_metadata.get("residue_mapping", [])
         }
         unsupported_glycans = sorted(
             name for name in metadata_residues
-            if name and not is_glycan_residue_name(name)
+            if name
+            and not is_glycan_residue_name(name)
+            and not is_glycam_template_residue(name)
         )
         if unsupported_glycans:
             blocked = {
