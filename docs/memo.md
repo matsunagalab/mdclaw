@@ -7,6 +7,17 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-29 — DAG-derived analysis time axes
+
+- Removed the fixed 100 ps assumption from RMSD, distance, and Q CSV output.
+  `concat_trajectory` now pairs each trajectory with its energy artifact and
+  prod `timestep_fs` in one continuation-chain walk, then writes
+  `frame_times_ns.npy` from the retained energy `Step` rows after applying the
+  same stride as the DCD. Mixed output cadences are represented directly.
+- Fit and metric descendants resolve that artifact through the analyze DAG.
+  Direct-mode and legacy inputs without it remain analyzable but emit
+  frame-only CSVs; MDClaw no longer invents a `time_ns` value.
+
 ## 2026-08-27 — Distance-restraint selection and throughput correction
 
 - This overturns the `CustomCVForce` implementation recorded immediately

@@ -12,7 +12,7 @@ from mdclaw.node.constants import DAG_GUIDANCE  # noqa: E402
 from mdclaw.node.graph import find_ancestor_artifact, get_ancestors  # noqa: E402
 from mdclaw.node.io import _load_json_artifact, _read_artifact_from_node, _read_continued_from, _read_metadata_field, _read_node_metadata, _sanitize_label  # noqa: E402
 from mdclaw.node.lifecycle import read_node, validate_node_execution_context  # noqa: E402
-from mdclaw.node.prod_chain import _collect_prod_artifact_chain, _find_ancestor_node_id, _select_md_restart_ancestor, _walk_prod_chain_from  # noqa: E402
+from mdclaw.node.prod_chain import _find_ancestor_node_id, _select_md_restart_ancestor, _walk_prod_trajectory_records_from  # noqa: E402
 from mdclaw.node.progress import _load_progress_v3  # noqa: E402
 
 
@@ -746,16 +746,28 @@ def resolve_node_inputs(
         )
         if topology:
             result["topology_file"] = topology
+        frame_times_ns = find_ancestor_artifact(
+            job_dir, node_id, "analyze", "frame_times_ns"
+        )
+        if frame_times_ns:
+            result["frame_times_ns_file"] = frame_times_ns
 
         if n_parents == 1 and parent_types[0] == "prod":
             # Phase 1 single-prod shape: trajectory + energy chain
             # collected chronologically along the prod lineage.
-            result["trajectory_chain"] = _collect_prod_artifact_chain(
-                job_dir, node_id, "trajectory"
+            trajectory_records = _walk_prod_trajectory_records_from(
+                job_dir, parents[0]
             )
-            result["energy_chain"] = _collect_prod_artifact_chain(
-                job_dir, node_id, "energy"
-            )
+            result["trajectory_records"] = trajectory_records
+            result["trajectory_chain"] = [
+                record["trajectory_file"]
+                for record in trajectory_records
+            ]
+            result["energy_chain"] = [
+                record["energy_file"]
+                for record in trajectory_records
+                if record.get("energy_file")
+            ]
         elif n_parents >= 1 and all(pt == "prod" for pt in parent_types):
             # Phase 3 multi-prod shape: each parent is an independent
             # leaf prod; walk its own chain and produce one branch
@@ -765,12 +777,18 @@ def resolve_node_inputs(
                 # Borrow the chain collector by pointing a synthetic
                 # analyze node at this prod. Simplest is to walk
                 # directly from the parent id.
-                traj_chain = _walk_prod_chain_from(
-                    job_dir, pid, "trajectory"
+                trajectory_records = _walk_prod_trajectory_records_from(
+                    job_dir, pid
                 )
-                energy_chain = _walk_prod_chain_from(
-                    job_dir, pid, "energy"
-                )
+                traj_chain = [
+                    record["trajectory_file"]
+                    for record in trajectory_records
+                ]
+                energy_chain = [
+                    record["energy_file"]
+                    for record in trajectory_records
+                    if record.get("energy_file")
+                ]
                 conditions = _read_node_metadata(job_dir, pid).get(
                     "conditions", {}
                 )
@@ -778,6 +796,7 @@ def resolve_node_inputs(
                     {
                         "label": _sanitize_label(pid),
                         "leaf_prod_id": pid,
+                        "trajectory_records": trajectory_records,
                         "trajectory_chain": traj_chain,
                         "energy_chain": energy_chain,
                         "conditions": conditions,
@@ -819,6 +838,9 @@ def resolve_node_inputs(
                         ),
                         "energy_file": _abs(
                             b.get("combined_energy") or b.get("energy")
+                        ),
+                        "frame_times_ns_file": _abs(
+                            b.get("frame_times_ns")
                         ),
                         "conditions": b.get("conditions", {}),
                     }
@@ -863,6 +885,11 @@ def resolve_node_inputs(
                 energy = _read_artifact_from_node(
                     job_dir, pid, "combined_energy"
                 )
+                frame_times = _read_artifact_from_node(
+                    job_dir, pid, "frame_times_ns"
+                ) or find_ancestor_artifact(
+                    job_dir, pid, "analyze", "frame_times_ns"
+                )
                 conditions = _read_node_metadata(job_dir, pid).get(
                     "conditions", {}
                 )
@@ -876,6 +903,7 @@ def resolve_node_inputs(
                         "leaf_prod_id": None,
                         "trajectory_file": traj,
                         "energy_file": energy,
+                        "frame_times_ns_file": frame_times,
                         "conditions": conditions,
                     }
                 )

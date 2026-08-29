@@ -2904,15 +2904,21 @@ class TestDAGAutoResolve:
         jd = str(full_dag)
         complete_node(jd, "prod_001",
                       artifacts={"trajectory": "artifacts/trajectory.dcd",
-                                 "state": "artifacts/state.xml"})
+                                 "energy": "artifacts/energy.dat",
+                                 "state": "artifacts/state.xml"},
+                      metadata={"timestep_fs": 4.0})
         create_node(jd, "prod", continue_from="prod_001")
         complete_node(jd, "prod_002",
                       artifacts={"trajectory": "artifacts/trajectory.dcd",
-                                 "state": "artifacts/state.xml"})
+                                 "energy": "artifacts/energy.dat",
+                                 "state": "artifacts/state.xml"},
+                      metadata={"timestep_fs": 4.0})
         create_node(jd, "prod", continue_from="prod_002")
         complete_node(jd, "prod_003",
                       artifacts={"trajectory": "artifacts/trajectory.dcd",
-                                 "state": "artifacts/state.xml"})
+                                 "energy": "artifacts/energy.dat",
+                                 "state": "artifacts/state.xml"},
+                      metadata={"timestep_fs": 4.0})
         create_node(
             jd,
             "analyze",
@@ -2925,6 +2931,153 @@ class TestDAGAutoResolve:
         assert "prod_001/artifacts" in chain[0]
         assert "prod_002/artifacts" in chain[1]
         assert "prod_003/artifacts" in chain[2]
+        records = inputs["trajectory_records"]
+        assert [record["node_id"] for record in records] == [
+            "prod_001",
+            "prod_002",
+            "prod_003",
+        ]
+        assert [record["energy_file"] for record in records] == inputs[
+            "energy_chain"
+        ]
+        assert [record["timestep_fs"] for record in records] == [4.0] * 3
+
+    def test_analyze_trajectory_records_skip_prod_without_trajectory(
+        self, full_dag
+    ):
+        """A skipped DCD cannot shift another prod's timing metadata."""
+        from mdclaw._node import resolve_node_inputs
+
+        jd = str(full_dag)
+        complete_node(jd, "prod_001",
+                      artifacts={"trajectory": "artifacts/trajectory.dcd",
+                                 "energy": "artifacts/energy.dat"},
+                      metadata={"timestep_fs": 4.0})
+        create_node(jd, "prod", continue_from="prod_001")
+        complete_node(jd, "prod_002",
+                      artifacts={"state": "artifacts/state.xml"},
+                      metadata={"timestep_fs": 2.0})
+        create_node(jd, "prod", continue_from="prod_002")
+        complete_node(jd, "prod_003",
+                      artifacts={"trajectory": "artifacts/trajectory.dcd",
+                                 "energy": "artifacts/energy.dat"},
+                      metadata={"timestep_fs": 4.0})
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["prod_003"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
+
+        inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
+        records = inputs["trajectory_records"]
+        assert [record["node_id"] for record in records] == [
+            "prod_001",
+            "prod_003",
+        ]
+        assert [record["timestep_fs"] for record in records] == [4.0, 4.0]
+        assert len(inputs["trajectory_chain"]) == 2
+        assert len(inputs["energy_chain"]) == 2
+
+    def test_concat_prod_continuation_writes_dag_frame_times(
+        self, full_dag, alanine_dipeptide_pdb
+    ):
+        """prod_001 -> prod_002 -> concat emits the exact DAG time axis."""
+        import mdtraj as md
+        import numpy as np
+
+        from mdclaw.analyze.concat import concat_trajectory
+
+        jd = str(full_dag)
+        topology_path = (
+            Path(jd)
+            / "nodes"
+            / "topo_001"
+            / "artifacts"
+            / "topology.pdb"
+        )
+        topology_path.write_text(Path(alanine_dipeptide_pdb).read_text())
+        source = md.load_pdb(alanine_dipeptide_pdb)
+
+        def _complete_prod(node_id, steps):
+            complete_node(
+                jd,
+                node_id,
+                artifacts={
+                    "trajectory": "artifacts/trajectory.dcd",
+                    "energy": "artifacts/energy.dat",
+                    "state": "artifacts/state.xml",
+                },
+                metadata={"timestep_fs": 4.0},
+            )
+            artifacts = Path(jd) / "nodes" / node_id / "artifacts"
+            trajectory = md.Trajectory(
+                xyz=np.repeat(source.xyz, len(steps), axis=0),
+                topology=source.topology,
+            )
+            trajectory.save_dcd(str(artifacts / "trajectory.dcd"))
+            (artifacts / "energy.dat").write_text(
+                '"Step","Potential Energy (kJ/mole)"\n'
+                + "".join(f"{step},-1\n" for step in steps)
+            )
+
+        _complete_prod("prod_001", [2500, 5000, 7500])
+        create_node(jd, "prod", continue_from="prod_001")
+        _complete_prod("prod_002", [8000, 8500, 9000])
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["prod_002"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
+
+        result = concat_trajectory(
+            job_dir=jd,
+            node_id="analyze_001",
+            selection="all",
+        )
+
+        assert result["success"] is True, result["errors"]
+        np.testing.assert_allclose(
+            np.load(result["frame_times_ns"]),
+            [0.0, 0.01, 0.02, 0.022, 0.024, 0.026],
+        )
+        node = read_node(jd, "analyze_001")
+        assert node["artifacts"]["frame_times_ns"].endswith(
+            "combined.frame_times_ns.npy"
+        )
+
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["analyze_001"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
+        child_inputs = resolve_node_inputs(jd, "analyze_002", "analyze")
+        assert child_inputs["frame_times_ns_file"].endswith(
+            "analyze_001/artifacts/combined.frame_times_ns.npy"
+        )
+        complete_node(
+            jd,
+            "analyze_002",
+            artifacts={
+                "fitted_trajectory": "artifacts/fitted.dcd",
+                "reference_pdb": "artifacts/combined.pdb",
+            },
+        )
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["analyze_002"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
+        metric_inputs = resolve_node_inputs(jd, "analyze_003", "analyze")
+        assert metric_inputs["trajectory_file"].endswith(
+            "analyze_002/artifacts/fitted.dcd"
+        )
+        assert metric_inputs["frame_times_ns_file"].endswith(
+            "analyze_001/artifacts/combined.frame_times_ns.npy"
+        )
 
     def test_analyze_blocks_prod_parent_without_trajectory_artifact(
         self, full_dag

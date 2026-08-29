@@ -17,9 +17,9 @@ from mdclaw._common import (
     ensure_directory,
     setup_logger,
 )
-from mdclaw.analyze.inputs import _rel_to_node_root, _resolve_analyze_branches, _resolve_analyze_parent_inputs, _selected_residue_atom_groups, _stream_dcd_chunks
+from mdclaw.analyze.inputs import _load_frame_times_ns, _rel_to_node_root, _resolve_analyze_branches, _resolve_analyze_parent_inputs, _selected_residue_atom_groups, _stream_dcd_chunks
 from mdclaw._tool_meta import node_tool
-from mdclaw.analyze.plots import _save_matrix_plot, _save_overlay_plot, _save_timeseries_plot, _time_axis_ns
+from mdclaw.analyze.plots import _save_matrix_plot, _save_overlay_plot, _save_timeseries_plot
 
 logger = setup_logger(__name__)
 
@@ -36,6 +36,7 @@ def analyze_rmsd(
     output_name: str = "rmsd",
     chunk: int = 1000,
     _out_dir_override: Optional[str] = None,
+    _frame_times_ns_override: Optional[str] = None,
 ) -> dict:
     """RMSD timeseries against a reference frame or structure.
 
@@ -58,6 +59,7 @@ def analyze_rmsd(
         "errors": [],
         "warnings": [],
     }
+    frame_times_ns_file = _frame_times_ns_override
 
     # Multi-branch dispatch: if the parent analyze node exposes
     # multiple branches (Phase 3), iterate and emit an overlay plot.
@@ -82,10 +84,13 @@ def analyze_rmsd(
                     selection_rmsd=selection_rmsd,
                     reference_frame=reference_frame,
                     chunk=chunk,
+                    _frame_times_ns_override=None,
                 ),
             )
         if len(branches) == 1 and trajectory_file is None:
             trajectory_file = branches[0]["trajectory_file"]
+        if len(branches) == 1 and frame_times_ns_file is None:
+            frame_times_ns_file = branches[0].get("frame_times_ns_file")
 
     trajectory_file, reference_pdb, node_mode = _resolve_analyze_parent_inputs(
         job_dir, node_id, trajectory_file, reference_pdb
@@ -170,11 +175,20 @@ def analyze_rmsd(
         npy_path = out_dir / f"{output_name}.npy"
         np.save(npy_path, rmsd)
         csv_path = out_dir / f"{output_name}.csv"
-        t = _time_axis_ns(rmsd.size)
+        frame_times_ns = (
+            _load_frame_times_ns(frame_times_ns_file, rmsd.size)
+            if frame_times_ns_file
+            else None
+        )
         with csv_path.open("w") as f:
-            f.write("frame,time_ns,rmsd_nm\n")
-            for i, (ti, v) in enumerate(zip(t, rmsd)):
-                f.write(f"{i},{ti:.4f},{float(v):.6f}\n")
+            if frame_times_ns is None:
+                f.write("frame,rmsd_nm\n")
+                for i, v in enumerate(rmsd):
+                    f.write(f"{i},{float(v):.6f}\n")
+            else:
+                f.write("frame,time_ns,rmsd_nm\n")
+                for i, (ti, v) in enumerate(zip(frame_times_ns, rmsd)):
+                    f.write(f"{i},{ti:.6f},{float(v):.6f}\n")
         png_path = out_dir / f"{output_name}.png"
         _save_timeseries_plot(
             rmsd,
@@ -260,6 +274,7 @@ def analyze_distance(
     output_name: str = "distance",
     chunk: int = 1000,
     _out_dir_override: Optional[str] = None,
+    _frame_times_ns_override: Optional[str] = None,
 ) -> dict:
     """Inter-atom or group-group distance timeseries.
 
@@ -285,6 +300,7 @@ def analyze_distance(
         "errors": [],
         "warnings": [],
     }
+    frame_times_ns_file = _frame_times_ns_override
 
     # Multi-branch dispatch
     if job_dir and node_id:
@@ -309,10 +325,13 @@ def analyze_distance(
                     selection_group2=selection_group2,
                     mode=mode,
                     chunk=chunk,
+                    _frame_times_ns_override=None,
                 ),
             )
         if len(branches) == 1 and trajectory_file is None:
             trajectory_file = branches[0]["trajectory_file"]
+        if len(branches) == 1 and frame_times_ns_file is None:
+            frame_times_ns_file = branches[0].get("frame_times_ns_file")
 
     trajectory_file, reference_pdb, node_mode = _resolve_analyze_parent_inputs(
         job_dir, node_id, trajectory_file, reference_pdb
@@ -403,15 +422,23 @@ def analyze_distance(
         npy_path = out_dir / f"{output_name}.npy"
         np.save(npy_path, ts)
         csv_path = out_dir / f"{output_name}.csv"
-        t = _time_axis_ns(ts.shape[0])
+        frame_times_ns = (
+            _load_frame_times_ns(frame_times_ns_file, ts.shape[0])
+            if frame_times_ns_file
+            else None
+        )
         with csv_path.open("w") as f:
-            header = ["frame", "time_ns"] + [
-                f"d{i}_nm" for i in range(ts.shape[1])
-            ]
+            header = ["frame"]
+            if frame_times_ns is not None:
+                header.append("time_ns")
+            header.extend(f"d{i}_nm" for i in range(ts.shape[1]))
             f.write(",".join(header) + "\n")
-            for i, ti in enumerate(t):
+            for i in range(ts.shape[0]):
                 vals = ",".join(f"{float(v):.6f}" for v in ts[i])
-                f.write(f"{i},{ti:.4f},{vals}\n")
+                if frame_times_ns is None:
+                    f.write(f"{i},{vals}\n")
+                else:
+                    f.write(f"{i},{frame_times_ns[i]:.6f},{vals}\n")
         png_path = out_dir / f"{output_name}.png"
         _save_timeseries_plot(
             ts,
@@ -513,6 +540,7 @@ def analyze_q_value(
     output_name: str = "q_value",
     chunk: int = 1000,
     _out_dir_override: Optional[str] = None,
+    _frame_times_ns_override: Optional[str] = None,
 ) -> dict:
     """Best-Hummer Q-value timeseries against a native reference.
 
@@ -534,6 +562,7 @@ def analyze_q_value(
         "errors": [],
         "warnings": [],
     }
+    frame_times_ns_file = _frame_times_ns_override
 
     # Multi-branch dispatch
     if job_dir and node_id:
@@ -560,10 +589,13 @@ def analyze_q_value(
                     native_cutoff_nm=native_cutoff_nm,
                     min_resid_gap=min_resid_gap,
                     chunk=chunk,
+                    _frame_times_ns_override=None,
                 ),
             )
         if len(branches) == 1 and trajectory_file is None:
             trajectory_file = branches[0]["trajectory_file"]
+        if len(branches) == 1 and frame_times_ns_file is None:
+            frame_times_ns_file = branches[0].get("frame_times_ns_file")
 
     trajectory_file, reference_pdb, node_mode = _resolve_analyze_parent_inputs(
         job_dir, node_id, trajectory_file, reference_pdb
@@ -653,11 +685,20 @@ def analyze_q_value(
         npy_path = out_dir / f"{output_name}.npy"
         np.save(npy_path, q)
         csv_path = out_dir / f"{output_name}.csv"
-        t = _time_axis_ns(q.size)
+        frame_times_ns = (
+            _load_frame_times_ns(frame_times_ns_file, q.size)
+            if frame_times_ns_file
+            else None
+        )
         with csv_path.open("w") as f:
-            f.write("frame,time_ns,q\n")
-            for i, (ti, v) in enumerate(zip(t, q)):
-                f.write(f"{i},{ti:.4f},{float(v):.6f}\n")
+            if frame_times_ns is None:
+                f.write("frame,q\n")
+                for i, v in enumerate(q):
+                    f.write(f"{i},{float(v):.6f}\n")
+            else:
+                f.write("frame,time_ns,q\n")
+                for i, (ti, v) in enumerate(zip(frame_times_ns, q)):
+                    f.write(f"{i},{ti:.6f},{float(v):.6f}\n")
         png_path = out_dir / f"{output_name}.png"
         _save_timeseries_plot(
             q,
@@ -1291,12 +1332,17 @@ def _multi_branch_timeseries(
                     f"({traj_path!r})"
                 )
             per_out_name = f"{output_name}_{label}"
+            per_tool_kwargs = dict(tool_kwargs)
+            if "_frame_times_ns_override" in per_tool_kwargs:
+                per_tool_kwargs["_frame_times_ns_override"] = b.get(
+                    "frame_times_ns_file"
+                )
             per = tool_fn(
                 trajectory_file=traj_path,
                 reference_pdb=reference_pdb,
                 output_name=per_out_name,
                 _out_dir_override=str(out_dir),
-                **tool_kwargs,
+                **per_tool_kwargs,
             )
             if not per.get("success"):
                 raise RuntimeError(

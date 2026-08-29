@@ -48,18 +48,6 @@ def _save_overlay_plot(
     plt.close(fig)
 
 
-def _time_axis_ns(n_frames: int, dt_ps: float = 100.0) -> np.ndarray:
-    """Frame index → time axis (ns) for CSV/plot output.
-
-    ``dt_ps`` is the production run's ``output_frequency_ps``. Phase 1
-    writes that on every prod node's metadata, but Phase 2 tools
-    intentionally don't chase it across the DAG — they display the
-    frame axis and record the default (100 ps) so the caller can
-    rescale if needed.
-    """
-    return np.arange(n_frames, dtype=np.float64) * dt_ps / 1000.0
-
-
 def _save_timeseries_plot(
     data: np.ndarray,
     out_path: Path,

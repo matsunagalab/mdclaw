@@ -403,6 +403,22 @@ signature, update the relevant section here and the matching skill examples.
   mutually exclusive with `custom_force_script`; biased restarts require an
   XML state rather than a binary checkpoint.
 
+## `analyze/`
+
+- `concat_trajectory(...)`: walks the selected production continuation chain
+  oldest first, applies atom selection and stride, and writes combined DCD,
+  reference PDB, selection JSON, and (when available) combined energy CSV.
+  For DAG-resolved production inputs it also writes `frame_times_ns` from the
+  aligned energy `Step` values and each prod node's `timestep_fs`; trajectory,
+  energy, and timestep are collected in one lineage walk so skipped artifacts
+  cannot shift their correspondence.
+- `fit_trajectory(...)`: aligns trajectories without changing frame count;
+  downstream analyze nodes retain the ancestor `frame_times_ns` artifact.
+- `analyze_rmsd(...)`, `analyze_distance(...)`, and `analyze_q_value(...)`:
+  write a CSV `time_ns` column only when a DAG-resolved `frame_times_ns`
+  artifact exists. Direct and legacy inputs without it produce frame-only CSVs
+  instead of assuming a fixed output cadence.
+
 ## `visualization/`
 
 - `render_structure_preview(...)`: PyMOL headless PNG rendering for PDB/mmCIF.

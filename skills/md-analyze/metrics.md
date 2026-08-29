@@ -30,6 +30,10 @@ production distance restraint. For biased runs, use the prod node's
 
 Prefer DAG-resolved artifacts from the analyze node. For ad-hoc external
 trajectories, explicit file paths are acceptable when the user asks for them.
+`analyze_rmsd`, `analyze_distance`, and `analyze_q_value` include `time_ns` in
+their CSV only when concat's DAG-resolved `frame_times_ns` artifact is
+available. Direct-mode or legacy inputs without that artifact remain valid,
+but their CSV is frame-only; do not infer a cadence from the frame index.
 
 ## Named biological regions
 

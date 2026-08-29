@@ -216,6 +216,9 @@ def _finalize_concat_node(
                     "combined_energy": _rel_to_node_root(
                         b.get("combined_energy"), out_dir
                     ),
+                    "frame_times_ns": _rel_to_node_root(
+                        b.get("frame_times_ns"), out_dir
+                    ),
                     "total_frames": b.get("total_frames"),
                     "frames_per_source": b.get("frames_per_source", []),
                     "source_trajectories": b.get("source_trajectories", []),
@@ -256,6 +259,10 @@ def _finalize_concat_node(
     if result.get("combined_energy"):
         arts["combined_energy"] = _rel_to_node_root(
             result["combined_energy"], out_dir
+        )
+    if result.get("frame_times_ns"):
+        arts["frame_times_ns"] = _rel_to_node_root(
+            result["frame_times_ns"], out_dir
         )
     complete_node(
         job_dir,

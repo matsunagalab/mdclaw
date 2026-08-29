@@ -55,6 +55,7 @@ _STRUCTURED_ARTIFACT_PATH_KEYS = frozenset({
     "pdb_file",
     "combined_trajectory",
     "combined_energy",
+    "frame_times_ns",
     "fitted_trajectory",
     "trajectory",
     "trajectory_file",

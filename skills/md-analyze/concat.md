@@ -39,3 +39,7 @@ Key parameters:
 
 Outputs under `nodes/<analyze_node_id>/artifacts/` include combined DCD, reference
 PDB, selection JSON, and combined energy CSV when every source has energy data.
+When the production lineage also records `timestep_fs`, concat writes
+`frame_times_ns` from each retained energy row's `Step`. The time array follows
+the same `stride` as the DCD and remains correct across continuation segments
+with different output cadences.

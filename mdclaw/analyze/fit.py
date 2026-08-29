@@ -433,6 +433,9 @@ def _multi_branch_fit(
                     "label": label,
                     "leaf_prod_id": b.get("leaf_prod_id"),
                     "conditions": b.get("conditions", {}),
+                    "frame_times_ns": _rel_to_node_root(
+                        b.get("frame_times_ns_file"), out_dir
+                    ),
                     "fitted_trajectory": _rel_to_node_root(
                         per.get("fitted_trajectory"), out_dir
                     ),

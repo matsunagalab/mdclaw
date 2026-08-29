@@ -5,6 +5,7 @@ Split out of the original ``analyze_server`` monolith. Behavior unchanged.
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,77 @@ from mdclaw.analyze.registry import _finalize_concat_node
 logger = setup_logger(__name__)
 
 from mdclaw.structure.pdb_utils import overlay_source_resnames  # noqa: E402
+
+
+def _write_frame_times_ns(
+    *,
+    combined_energy: Path,
+    trajectory_records: list[dict],
+    source_energy_files: list[str],
+    frames_per_source: list[int],
+    energy_rows_per_source: list[int],
+    total_frames: int,
+    output_path: Path,
+) -> Optional[Path]:
+    """Write exact relative frame times from aligned StateDataReporter rows."""
+    if not trajectory_records:
+        return None
+    record_energy = [record.get("energy_file") for record in trajectory_records]
+    timesteps = [record.get("timestep_fs") for record in trajectory_records]
+    aligned = (
+        not any(path is None for path in record_energy)
+        and [str(path) for path in record_energy] == source_energy_files
+        and frames_per_source == energy_rows_per_source
+        and not any(value is None for value in timesteps)
+    )
+    if not aligned:
+        logger.warning(
+            "Skipping frame_times_ns: prod trajectory, energy, timestep, "
+            "or per-source row alignment is incomplete."
+        )
+        return None
+    timestep_fs = float(timesteps[0])
+    if not all(np.isclose(float(value), timestep_fs) for value in timesteps):
+        logger.warning(
+            "Skipping frame_times_ns: prod segments use different "
+            "timestep_fs values."
+        )
+        return None
+
+    try:
+        with combined_energy.open(newline="") as handle:
+            reader = csv.reader(handle)
+            header = next(reader)
+            names = [name.strip().lstrip("#").strip('"') for name in header]
+            step_column = names.index("Step")
+            steps = np.asarray(
+                [float(row[step_column]) for row in reader if row],
+                dtype=np.float64,
+            )
+    except (OSError, StopIteration, ValueError, IndexError, csv.Error) as exc:
+        logger.warning(
+            f"Skipping frame_times_ns: energy Step column is unusable ({exc})."
+        )
+        return None
+
+    frame_times_ns = steps * timestep_fs / 1_000_000.0
+    valid = (
+        steps.size == total_frames
+        and np.all(np.isfinite(frame_times_ns))
+        and (
+            frame_times_ns.size < 2
+            or np.all(np.diff(frame_times_ns) > 0)
+        )
+    )
+    if not valid:
+        logger.warning(
+            "Skipping frame_times_ns: energy steps do not form one finite, "
+            "strictly increasing value per trajectory frame."
+        )
+        return None
+    frame_times_ns -= frame_times_ns[0]
+    np.save(output_path, frame_times_ns)
+    return output_path
 
 
 @node_tool(node_type="analyze")
@@ -82,6 +154,9 @@ def concat_trajectory(
           - success: bool
           - output_dir: str
           - combined_trajectory: str  (path to output DCD)
+          - combined_energy: str      (path to aligned energy CSV, if present)
+          - frame_times_ns: str       (path to exact relative time array when
+                                       DAG cadence inputs are complete)
           - reference_pdb: str        (path to first-frame PDB of the
                                        stripped system — use as topology
                                        for downstream analysis)
@@ -102,6 +177,7 @@ def concat_trajectory(
         # single-branch keys (set only when exactly one branch)
         "combined_trajectory": None,
         "combined_energy": None,
+        "frame_times_ns": None,
         "reference_pdb": None,
         "selection_indices": None,
         "selection": selection,
@@ -124,6 +200,7 @@ def concat_trajectory(
 
     # Multi-branch resolution from the DAG (Phase 3 multi-prod parents)
     branches_input: Optional[list[dict]] = None
+    trajectory_records: list[dict] = []
 
     # DAG auto-resolution
     if _node_mode:
@@ -138,6 +215,7 @@ def concat_trajectory(
             branches_input = resolved["branches_input"]
         else:
             if trajectory_files is None:
+                trajectory_records = resolved.get("trajectory_records") or []
                 trajectory_files = resolved.get("trajectory_chain")
             if energy_files is None:
                 # Optional: present iff every prod in the lineage actually
@@ -404,6 +482,17 @@ def concat_trajectory(
                 logger.info(
                     f"Wrote {total_rows} energy rows → {energy_out}"
                 )
+                frame_times_path = _write_frame_times_ns(
+                    combined_energy=energy_out,
+                    trajectory_records=trajectory_records,
+                    source_energy_files=energy_files,
+                    frames_per_source=frames_per_source,
+                    energy_rows_per_source=rows_per_source,
+                    total_frames=total_frames,
+                    output_path=out_dir / f"{output_name}.frame_times_ns.npy",
+                )
+                if frame_times_path is not None:
+                    result["frame_times_ns"] = str(frame_times_path)
 
         result["success"] = True
 
@@ -471,6 +560,7 @@ def _run_multi_branch_concat(
         energy_chain = branch.get("energy_chain") or (
             [branch["energy_file"]] if branch.get("energy_file") else []
         )
+        trajectory_records = branch.get("trajectory_records") or []
         if not traj_chain:
             raise RuntimeError(
                 f"branch {label!r} has no trajectory to concatenate"
@@ -546,6 +636,20 @@ def _run_multi_branch_concat(
                     f"  branch {label!r}: {total_rows} energy rows → {combined_energy}"
                 )
 
+        frame_times_ns: Optional[Path] = None
+        if combined_energy is not None:
+            frame_times_ns = _write_frame_times_ns(
+                combined_energy=combined_energy,
+                trajectory_records=trajectory_records,
+                source_energy_files=[str(p) for p in energy_chain],
+                frames_per_source=frames_per_source,
+                energy_rows_per_source=rows_per_source,
+                total_frames=total_frames,
+                output_path=(
+                    out_dir / f"{output_name}_{label}.frame_times_ns.npy"
+                ),
+            )
+
         # Shared reference PDB: write once from the first completed
         # branch's first frame (after selection).
         if not first_frame_written:
@@ -568,6 +672,9 @@ def _run_multi_branch_concat(
                 "leaf_prod_id": branch.get("leaf_prod_id"),
                 "combined_trajectory": str(out_dcd),
                 "combined_energy": str(combined_energy) if combined_energy else None,
+                "frame_times_ns": (
+                    str(frame_times_ns) if frame_times_ns else None
+                ),
                 "total_frames": total_frames,
                 "frames_per_source": frames_per_source,
                 "source_trajectories": [str(p) for p in traj_chain],

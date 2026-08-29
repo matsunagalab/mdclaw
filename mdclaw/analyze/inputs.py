@@ -107,6 +107,30 @@ def _load_scalar_timeseries(timeseries_file: str, column: Any = None) -> tuple[n
     return series, metadata
 
 
+def _load_frame_times_ns(
+    frame_times_file: str, expected_frames: int
+) -> np.ndarray:
+    """Load and validate a concat-produced relative time axis."""
+    path = Path(frame_times_file)
+    if not path.is_file():
+        raise FileNotFoundError(f"frame_times_ns artifact not found: {path}")
+    values = np.asarray(np.load(path, allow_pickle=False), dtype=np.float64)
+    if values.ndim != 1:
+        raise ValueError(
+            f"frame_times_ns must be 1D; got shape {values.shape}"
+        )
+    if values.size != expected_frames:
+        raise ValueError(
+            f"frame_times_ns has {values.size} values but trajectory has "
+            f"{expected_frames} frames"
+        )
+    if not np.all(np.isfinite(values)):
+        raise ValueError("frame_times_ns contains NaN or infinite values")
+    if values.size > 1 and not np.all(np.diff(values) > 0):
+        raise ValueError("frame_times_ns must be strictly increasing")
+    return values
+
+
 def _stream_dcd_chunks(
     dcd_path: str,
     topology,
@@ -185,7 +209,8 @@ def _resolve_analyze_branches(
 
     Returns ``(branches, reference_pdb, node_mode)`` where ``branches``
     is a list of ``{"label": str, "trajectory_file": str,
-    "conditions": dict, "leaf_prod_id": Optional[str]}`` entries —
+    "frame_times_ns_file": Optional[str], "conditions": dict,
+    "leaf_prod_id": Optional[str]}`` entries —
     length 1 for a single-trajectory parent, N for a multi-branch
     parent. Downstream tools iterate this list uniformly so the same
     loop handles both shapes.
@@ -223,6 +248,7 @@ def _resolve_analyze_branches(
             {
                 "label": b["label"],
                 "trajectory_file": b.get("trajectory_file"),
+                "frame_times_ns_file": b.get("frame_times_ns_file"),
                 "conditions": b.get("conditions", {}),
                 "leaf_prod_id": b.get("leaf_prod_id"),
             }
@@ -241,6 +267,7 @@ def _resolve_analyze_branches(
             {
                 "label": label,
                 "trajectory_file": traj,
+                "frame_times_ns_file": resolved.get("frame_times_ns_file"),
                 "conditions": {},
                 "leaf_prod_id": None,
             }

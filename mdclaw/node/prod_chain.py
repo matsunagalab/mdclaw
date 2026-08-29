@@ -155,6 +155,52 @@ def _walk_prod_chain_from(
     return reversed_chain
 
 
+def _walk_prod_trajectory_records_from(
+    job_dir: str, leaf_prod_id: str
+) -> list[dict]:
+    """Return trajectory-producing prod records in chronological order.
+
+    Trajectory, energy, and timestep metadata are collected during the same
+    lineage walk so a prod without a trajectory cannot shift cadence metadata
+    out of alignment with the trajectory chain.
+    """
+    reversed_records: list[dict] = []
+    current: Optional[str] = leaf_prod_id
+    seen: set[str] = set()
+    while current and current not in seen:
+        seen.add(current)
+        cur_data = _read_node_json(job_dir, current)
+        if cur_data is None or cur_data.get("node_type") != "prod":
+            break
+        trajectory = _read_artifact_from_node(
+            job_dir, current, "trajectory"
+        )
+        if trajectory is not None:
+            energy = _read_artifact_from_node(job_dir, current, "energy")
+            timestep_fs = cur_data.get("metadata", {}).get("timestep_fs")
+            if not isinstance(timestep_fs, (int, float)) or timestep_fs <= 0:
+                timestep_fs = None
+            reversed_records.append(
+                {
+                    "node_id": current,
+                    "trajectory_file": trajectory,
+                    "energy_file": energy,
+                    "timestep_fs": (
+                        float(timestep_fs)
+                        if timestep_fs is not None
+                        else None
+                    ),
+                }
+            )
+        next_id = cur_data.get("metadata", {}).get("continued_from")
+        if not next_id:
+            cur_parents = cur_data.get("parent_node_ids", [])
+            next_id = cur_parents[0] if cur_parents else None
+        current = next_id
+    reversed_records.reverse()
+    return reversed_records
+
+
 def read_ancestor_final_step(
     job_dir: str,
     node_id: str,

@@ -1,13 +1,18 @@
 """Tests for analyze server registration and lightweight analyses."""
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 
+from mdclaw.analyze.concat import _write_frame_times_ns
 from mdclaw.analyze.equilibration import detect_equilibration
 from mdclaw.analyze.metrics import (
     analyze_contact_frequency,
+    analyze_distance,
+    analyze_q_value,
+    analyze_rmsd,
     analyze_rmsf,
 )
 
@@ -122,3 +127,103 @@ def test_analyze_contact_frequency_direct_writes_artifacts(tmp_path, tiny_mdtraj
     assert (tmp_path / "contacts" / "contacts_test.npy").is_file()
     assert (tmp_path / "contacts" / "contacts_test.csv").is_file()
     assert (tmp_path / "contacts" / "contacts_test.png").is_file()
+
+
+def test_write_frame_times_uses_reporter_steps_for_mixed_cadence(tmp_path):
+    """Reporter Step values preserve cadence changes across prod segments."""
+    combined_energy = tmp_path / "combined.energy.csv"
+    combined_energy.write_text(
+        '"Step","Potential Energy (kJ/mole)"\n'
+        "2500,-1\n5000,-1\n7500,-1\n8000,-1\n8500,-1\n9000,-1\n"
+    )
+    energy_1 = str(tmp_path / "prod_001.energy.dat")
+    energy_2 = str(tmp_path / "prod_002.energy.dat")
+    output = tmp_path / "frame_times_ns.npy"
+
+    path = _write_frame_times_ns(
+        combined_energy=combined_energy,
+        trajectory_records=[
+            {"energy_file": energy_1, "timestep_fs": 4.0},
+            {"energy_file": energy_2, "timestep_fs": 4.0},
+        ],
+        source_energy_files=[energy_1, energy_2],
+        frames_per_source=[3, 3],
+        energy_rows_per_source=[3, 3],
+        total_frames=6,
+        output_path=output,
+    )
+
+    assert path == output
+    np.testing.assert_allclose(
+        np.load(output),
+        [0.0, 0.01, 0.02, 0.022, 0.024, 0.026],
+    )
+
+
+def test_metric_csvs_use_concat_frame_times(tmp_path, tiny_mdtraj_inputs):
+    """RMSD, distance, and Q consume the same DAG time artifact."""
+    dcd_path, pdb_path = tiny_mdtraj_inputs
+    frame_times = np.asarray([0.0, 0.002, 0.012, 0.014])
+    frame_times_path = tmp_path / "frame_times_ns.npy"
+    np.save(frame_times_path, frame_times)
+
+    rmsd = analyze_rmsd(
+        trajectory_file=dcd_path,
+        reference_pdb=pdb_path,
+        selection_align="all",
+        selection_rmsd="all",
+        output_name="rmsd_time_test",
+        _out_dir_override=str(tmp_path / "rmsd_time"),
+        _frame_times_ns_override=str(frame_times_path),
+    )
+    distance = analyze_distance(
+        trajectory_file=dcd_path,
+        reference_pdb=pdb_path,
+        atom_pairs=[[0, 1]],
+        output_name="distance_time_test",
+        _out_dir_override=str(tmp_path / "distance_time"),
+        _frame_times_ns_override=str(frame_times_path),
+    )
+    q_value = analyze_q_value(
+        trajectory_file=dcd_path,
+        reference_pdb=pdb_path,
+        native_pdb=pdb_path,
+        selection="all",
+        native_cutoff_nm=10.0,
+        min_resid_gap=-1,
+        output_name="q_time_test",
+        _out_dir_override=str(tmp_path / "q_time"),
+        _frame_times_ns_override=str(frame_times_path),
+    )
+
+    assert rmsd["success"] is True
+    assert distance["success"] is True
+    assert q_value["success"] is True
+    for csv_path in (
+        rmsd["rmsd_csv"],
+        distance["distance_csv"],
+        q_value["q_csv"],
+    ):
+        rows = np.genfromtxt(csv_path, delimiter=",", names=True)
+        assert "time_ns" in rows.dtype.names
+        np.testing.assert_allclose(rows["time_ns"], frame_times)
+
+
+def test_analyze_rmsd_direct_without_time_artifact_is_frame_only(
+    tmp_path, tiny_mdtraj_inputs
+):
+    """Direct mode never invents a cadence when the DAG artifact is absent."""
+    dcd_path, pdb_path = tiny_mdtraj_inputs
+    result = analyze_rmsd(
+        trajectory_file=dcd_path,
+        reference_pdb=pdb_path,
+        selection_align="all",
+        selection_rmsd="all",
+        output_name="rmsd_frame_only_test",
+        _out_dir_override=str(tmp_path / "rmsd_frame_only"),
+    )
+
+    assert result["success"] is True
+    assert Path(result["rmsd_csv"]).read_text().splitlines()[0] == (
+        "frame,rmsd_nm"
+    )
