@@ -36,6 +36,7 @@ from mdclaw.solvation.pdb_identity import (
     _auto_nucleic_packmol_charge_pdb_delta,
     _ligand_chemistry_packmol_charge_pdb_delta,
     _restore_packmol_solute_identity,
+    _write_packmol_safe_solute,
 )
 
 from mdclaw.solvation._base import (
@@ -548,6 +549,8 @@ def solvate_structure(
     # Copy input file to output directory
     input_copy = out_dir / pdb_path.name
     shutil.copy(pdb_path, input_copy)
+    packmol_input = out_dir / f"{pdb_path.stem}.packmol.pdb"
+    _write_packmol_safe_solute(input_copy, packmol_input)
 
     auto_charge_delta_report = {
         "success": True,
@@ -557,7 +560,7 @@ def solvate_structure(
         "reason": "not evaluated",
     }
     try:
-        auto_charge_delta_report = _auto_nucleic_packmol_charge_pdb_delta(input_copy)
+        auto_charge_delta_report = _auto_nucleic_packmol_charge_pdb_delta(packmol_input)
     except Exception as exc:  # noqa: BLE001
         auto_charge_delta_report = {
             "success": False,
@@ -580,7 +583,7 @@ def solvate_structure(
         "reason": "not evaluated",
     }
     try:
-        lipid_charge_delta_report = _auto_lipid_packmol_charge_pdb_delta(input_copy)
+        lipid_charge_delta_report = _auto_lipid_packmol_charge_pdb_delta(packmol_input)
     except Exception as exc:  # noqa: BLE001
         lipid_charge_delta_report = {
             "success": False,
@@ -625,7 +628,7 @@ def solvate_structure(
         "reason": "not evaluated",
     }
     try:
-        metal_charge_delta_report = _auto_metal_ion_packmol_charge_pdb_delta(input_copy)
+        metal_charge_delta_report = _auto_metal_ion_packmol_charge_pdb_delta(packmol_input)
     except Exception as exc:  # noqa: BLE001
         result["warnings"].append(
             "Could not evaluate automatic metal-ion charge_pdb_delta "
@@ -696,7 +699,7 @@ def solvate_structure(
         args = [
             '--solvate',
             '--dist', str(dist),
-            '--pdb', str(input_copy),
+            '--pdb', str(packmol_input),
             '-o', str(output_file),
             '--packlog', str(packlog),
             '--ffwat', water_model.lower(),  # Water model for solvation
@@ -825,6 +828,13 @@ def solvate_structure(
             restore_report = _restore_packmol_solute_identity(input_copy, output_file)
             result.update(restore_report)
             result["warnings"].extend(restore_report.get("solute_identity_restore_warnings", []))
+            if not restore_report.get("solute_identity_preserved"):
+                result["success"] = False
+                result["code"] = "solute_identity_not_preserved"
+                result["errors"].append(
+                    "Packmol output did not preserve every source solute residue; "
+                    "the solvated structure is not safe to use."
+                )
         
     except Exception as e:
         error_msg = f"Error during solvation: {type(e).__name__}: {str(e)}"

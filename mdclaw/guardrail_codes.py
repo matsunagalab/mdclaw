@@ -201,6 +201,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "explicit_solvent_box_dimensions_missing": "Build topology from a completed explicit-solvent solv node.",
     "explicit_ions_in_implicit_solvent": "Remove explicit ions before an implicit build, or use explicit/vacuum.",
     "neutralization_charge_mismatch": "Fix retained ion or ligand charges, then rebuild solvation and topology on new nodes.",
+    "solute_identity_not_preserved": "Discard this solvated output; Packmol lost or reordered a solute residue, so rebuild from the source.",
     "membrane_neutralization_failed": "Membrane charge evaluation or counter-ion placement failed; rebuild with enough bulk water.",
     "membrane_patch_bilayer_misplaced": "The tiled bilayer did not land on the protein's membrane frame; the lipids would surround the wrong region.",
     "membrane_patch_solute_exceeds_box_z": "The solute is taller than the periodic cell; it would overlap its own image. Rebuild with a taller patch or membrane_backend=packmol-memgen.",

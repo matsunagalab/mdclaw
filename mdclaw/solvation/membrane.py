@@ -42,6 +42,7 @@ from mdclaw.solvation.pdb_identity import (
     _auto_metal_ion_packmol_charge_pdb_delta,
     _auto_nucleic_packmol_charge_pdb_delta,
     _restore_packmol_solute_identity,
+    _write_packmol_safe_solute,
 )
 from mdclaw.solvation.patch_membrane import (
     embed_with_membrane_patch_tiles,
@@ -2702,6 +2703,9 @@ def embed_in_membrane(
             )
         return result
 
+    packmol_input = out_dir / f"{oriented_input.stem}.packmol.pdb"
+    _write_packmol_safe_solute(oriented_input, packmol_input)
+
     packmol_charge_report = {
         "success": True,
         "charge_pdb_delta": 0,
@@ -2710,7 +2714,7 @@ def embed_in_membrane(
         "ions": {},
     }
     try:
-        packmol_charge_report = _membrane_packmol_charge_delta(oriented_input)
+        packmol_charge_report = _membrane_packmol_charge_delta(packmol_input)
     except Exception as exc:  # noqa: BLE001
         result["code"] = "forcefield_template_contract_unavailable"
         result["errors"].append(
@@ -2754,7 +2758,7 @@ def embed_in_membrane(
             '--dist', str(dist),
             '--dist_wat', str(dist_wat),
             '--leaflet', str(leaflet),
-            '--pdb', str(oriented_input),
+            '--pdb', str(packmol_input),
             '-o', str(output_file),
             '--packlog', str(packlog),
             '--nloop', str(nloop),
@@ -2844,7 +2848,7 @@ def embed_in_membrane(
                     base_args=args,
                     attempt_plan=attempt_plan,
                     lanes=effective_race_lanes,
-                    input_copy=oriented_input,
+                    input_copy=packmol_input,
                     out_dir=out_dir,
                     output_name=output_name,
                     membrane_timeout=membrane_timeout,
@@ -2932,7 +2936,7 @@ def embed_in_membrane(
                 attempt_args = _build_membrane_attempt_args(
                     base_args=args,
                     attempt={**attempt, "lane": attempt_index},
-                    input_copy=oriented_input,
+                    input_copy=packmol_input,
                     output_file=output_file,
                     packlog=packlog,
                     salt_override_active=salt_override_active,
@@ -3114,6 +3118,13 @@ def embed_in_membrane(
                 result["warnings"].extend(
                     restore_report.get("solute_identity_restore_warnings", [])
                 )
+                if not restore_report.get("solute_identity_preserved"):
+                    result["success"] = False
+                    result["code"] = "solute_identity_not_preserved"
+                    result["errors"].append(
+                        "Packmol output did not preserve every source solute "
+                        "residue; the membrane structure is not safe to use."
+                    )
                 if membrane_geometry_validation:
                     _record_membrane_embedding_geometry(
                         result=result,

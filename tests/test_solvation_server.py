@@ -26,10 +26,13 @@ from mdclaw.solvation.box import extract_box_size_from_packmol_inp
 from mdclaw.solvation.membrane import embed_in_membrane
 
 
-def _pdb_atom(serial, atom, resname, chain, resseq, element, x=0.0):
+def _pdb_atom(
+    serial, atom, resname, chain, resseq, element, x=0.0, insertion_code=""
+):
     return (
         f"ATOM  {serial:5d} {atom:<4} {resname:>3} {chain:1}{resseq:4d}"
-        f"    {x:8.3f}{0.0:8.3f}{0.0:8.3f}  1.00  0.00          {element:>2}\n"
+        f"{insertion_code:1}   {x:8.3f}{0.0:8.3f}{0.0:8.3f}"
+        f"  1.00  0.00          {element:>2}\n"
     )
 
 
@@ -1014,6 +1017,65 @@ def _install_fake_memgen(monkeypatch):
     return calls
 
 
+def test_solvate_structure_rejects_packmol_solute_residue_collapse(
+    tmp_path,
+    monkeypatch,
+):
+    pdb = tmp_path / "insertions.pdb"
+    pdb.write_text(
+        _pdb_atom(1, "CA", "SER", "H", 82, "C")
+        + _pdb_atom(2, "CA", "SER", "H", 82, "C", insertion_code="A")
+        + _pdb_atom(3, "CA", "SER", "H", 82, "C", insertion_code="B")
+        + "END\n"
+    )
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(list(args))
+        input_path = Path(args[args.index("--pdb") + 1])
+        output_path = Path(args[args.index("-o") + 1])
+        atoms = [
+            line.ljust(80)[:22] + "   1 " + line.ljust(80)[27:]
+            for line in input_path.read_text().splitlines()
+            if line.startswith(("ATOM", "HETATM"))
+        ]
+        output_path.write_text(
+            "CRYST1   40.000   40.000   40.000  90.00  90.00  90.00 P 1           1\n"
+            + "\n".join(atoms)
+            + "\nHETATM 9999  O   WAT W   1       9.000   0.000   0.000  1.00  0.00           O\n"
+            + "END\n"
+        )
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation._base.packmol_memgen_wrapper.run",
+        fake_run,
+    )
+
+    result = solv_water.solvate_structure(
+        pdb_file=str(pdb),
+        output_dir=str(tmp_path),
+        output_name="solvated",
+        salt=True,
+        water_model="opc",
+    )
+
+    packmol_input = Path(calls[0][calls[0].index("--pdb") + 1])
+    packmol_atoms = [
+        line for line in packmol_input.read_text().splitlines()
+        if line.startswith(("ATOM", "HETATM"))
+    ]
+    assert [line[22:26].strip() for line in packmol_atoms] == ["1", "2", "3"]
+    assert result["success"] is False
+    assert result["code"] == "solute_identity_not_preserved"
+    assert result["solute_residue_count_source"] == 3
+    assert result["solute_residue_count_restored"] is None
+
+
 def test_solvate_structure_no_salt_disables_counterions(tmp_path, monkeypatch):
     pdb = tmp_path / "protein.pdb"
     pdb.write_text(_pdb_atom(1, "CA", "ALA", "A", 1, "C") + "END\n")
@@ -1248,7 +1310,7 @@ def test_solvate_structure_includes_ligand_charge_delta(
     assert result["ligand_charge_delta_entries"][0]["residue_name"] == "STI"
 
 
-def test_solvate_structure_includes_duplicate_mg_resseq_charge_delta(
+def test_solvate_structure_normalizes_duplicate_mg_resseq_before_charge_delta(
     tmp_path,
     monkeypatch,
 ):
@@ -1310,13 +1372,13 @@ def test_solvate_structure_includes_duplicate_mg_resseq_charge_delta(
     )
 
     assert result["success"] is True
-    assert calls[0][calls[0].index("--charge_pdb_delta") + 1] == "4"
-    assert result["auto_charge_pdb_delta"] == 4
-    assert result["metal_ion_charge_delta"] == 2
+    assert calls[0][calls[0].index("--charge_pdb_delta") + 1] == "2"
+    assert result["auto_charge_pdb_delta"] == 2
+    assert result["metal_ion_charge_delta"] == 0
     assert [
         entry["charge_pdb_delta"]
         for entry in result["metal_ion_charge_entries"]
-    ] == [0, 2]
+    ] == [0, 0]
 
 
 def test_packmol_box_extraction_uses_union_of_inside_boxes(tmp_path):

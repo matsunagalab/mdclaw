@@ -17,14 +17,18 @@ ligand is not, and topology validation does not check element preservation.
 
 from __future__ import annotations
 
+from mdclaw.solvation.pdb_identity import (
+    _restore_packmol_solute_identity,
+    _write_packmol_safe_solute,
+)
 from mdclaw.structure.pdb_utils import restore_solute_identity_by_prefix
 
 
-def _atom(serial, name, resname, chain, resseq, element, x=0.0):
+def _atom(serial, name, resname, chain, resseq, element, x=0.0, icode=""):
     """One PDB record, with the atom name placed as the caller writes it."""
     return (
-        f"HETATM{serial:5d} {name:<4} {resname:>3} {chain:1}{resseq:4d}"
-        f"    {x:8.3f}{0.0:8.3f}{0.0:8.3f}  1.00  0.00          {element:>2}"
+        f"HETATM{serial:5d} {name:<4} {resname:>3} {chain:1}{resseq:4d}{icode:1}"
+        f"   {x:8.3f}{0.0:8.3f}{0.0:8.3f}  1.00  0.00          {element:>2}"
     )
 
 
@@ -120,3 +124,39 @@ def test_the_overlay_still_refuses_when_the_residues_are_out_of_step(tmp_path):
     solvated = "\n".join([_memgen_style(1, "CL1", "LIG", "B", 1)])
     assert restore_solute_identity_by_prefix(
         solvated, source, restore_numbering=False) is None
+
+
+def test_packmol_copy_and_restore_preserve_82_insertion_code_series(tmp_path):
+    source = _write(tmp_path, "insertions.pdb", [
+        _atom(1, "N", "SER", "H", 82, "N"),
+        _atom(2, "CA", "SER", "H", 82, "C", icode="A"),
+        _atom(3, "C", "SER", "H", 82, "C", icode="B"),
+    ])
+    packmol_input = tmp_path / "insertions.packmol.pdb"
+
+    assert _write_packmol_safe_solute(source, packmol_input) == 3
+    safe_atoms = [
+        line for line in packmol_input.read_text().splitlines()
+        if line.startswith(("ATOM", "HETATM"))
+    ]
+    assert [line[22:26].strip() for line in safe_atoms] == ["1", "2", "3"]
+    assert [line[26:27] for line in safe_atoms] == [" ", " ", " "]
+
+    output = tmp_path / "solvated.pdb"
+    output.write_text(
+        packmol_input.read_text().replace("END\n", "")
+        + _atom(4, "O", "WAT", "W", 1, "O", x=9.0)
+        + "\nEND\n"
+    )
+    report = _restore_packmol_solute_identity(source, output)
+
+    assert report["solute_identity_preserved"] is True
+    assert report["solute_residue_count_source"] == 3
+    assert report["solute_residue_count_restored"] == 3
+    restored_atoms = [
+        line for line in output.read_text().splitlines()
+        if line.startswith(("ATOM", "HETATM"))
+    ]
+    assert [(line[22:26].strip(), line[26:27].strip()) for line in restored_atoms[:3]] == [
+        ("82", ""), ("82", "A"), ("82", "B"),
+    ]

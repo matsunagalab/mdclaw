@@ -92,6 +92,36 @@ def _iter_pdb_residues(path: Path) -> list[dict]:
     return residues
 
 
+def _write_packmol_safe_solute(source_pdb: Path, output_pdb: Path) -> int:
+    """Write a Packmol-facing copy with one global sequential residue index."""
+    source_text = source_pdb.read_text(encoding="utf-8", errors="ignore")
+    output_lines: list[str] = []
+    current_key: tuple[str, str, str, str] | None = None
+    residue_count = 0
+    for line in source_text.splitlines():
+        if line.startswith("TER"):
+            current_key = None
+        if line.startswith(("ATOM", "HETATM")):
+            key = _pdb_residue_key(line)
+            if key != current_key:
+                residue_count += 1
+                if residue_count > 9999:
+                    raise ValueError(
+                        "Packmol-facing PDB exceeds the 9999-residue PDB field"
+                    )
+                current_key = key
+            padded = line.ljust(80)
+            line = (
+                padded[:22]
+                + f"{residue_count:4d} "
+                + padded[27:]
+            ).rstrip()
+        output_lines.append(line)
+    trailing = "\n" if source_text.endswith("\n") else ""
+    output_pdb.write_text("\n".join(output_lines) + trailing, encoding="utf-8")
+    return residue_count
+
+
 _PACKMOL_NUCLEIC_ROLE_CHARGES = {
     "DNA": {"internal": -1.0, "five_prime": -0.3079, "three_prime": -0.6921},
     "RNA": {"internal": -1.0, "five_prime": -0.3081, "three_prime": -0.6919},
@@ -661,17 +691,27 @@ def _restore_packmol_solute_identity(input_pdb: Path, output_pdb: Path) -> dict:
     """
     report = {
         "solute_identity_restored": False,
+        "solute_identity_preserved": False,
         "solute_identity_restored_atom_count": 0,
+        "solute_residue_count_source": 0,
+        "solute_residue_count_restored": None,
         "solute_identity_restore_warnings": [],
     }
-    from mdclaw.structure.pdb_utils import restore_solute_identity_by_prefix
+    from mdclaw.structure.pdb_utils import (
+        _pdb_residue_blocks,
+        restore_solute_identity_by_prefix,
+    )
 
     try:
+        input_text = input_pdb.read_text(encoding="utf-8", errors="ignore")
         input_atoms = _pdb_atom_lines(input_pdb)
         output_text = output_pdb.read_text(encoding="utf-8", errors="ignore")
     except OSError as exc:
         report["solute_identity_restore_warnings"].append(f"Could not read PDB for solute identity restore: {exc}")
         return report
+
+    source_residue_count = len(_pdb_residue_blocks(input_text.splitlines()))
+    report["solute_residue_count_source"] = source_residue_count
 
     if not input_atoms:
         report["solute_identity_restore_warnings"].append("Input PDB has no ATOM/HETATM records")
@@ -686,6 +726,17 @@ def _restore_packmol_solute_identity(input_pdb: Path, output_pdb: Path) -> dict:
         return report
 
     output_pdb.write_text(restored, encoding="utf-8")
+    restored_residue_count = len(
+        _pdb_residue_blocks(restored.splitlines())[:source_residue_count]
+    )
+    report["solute_residue_count_restored"] = restored_residue_count
+    if restored_residue_count != source_residue_count:
+        report["solute_identity_restore_warnings"].append(
+            "Restored solute residue count does not match the source "
+            f"({restored_residue_count} != {source_residue_count})"
+        )
+        return report
     report["solute_identity_restored"] = True
+    report["solute_identity_preserved"] = True
     report["solute_identity_restored_atom_count"] = len(input_atoms)
     return report
