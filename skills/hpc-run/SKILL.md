@@ -45,20 +45,18 @@ its inputs from the DAG.
 
 ## Critical Rules
 
-- **Submit `min -> eq -> prod` as one `afterok` chain, then stop.** Pass the
-  upstream job id to `submit_job --dependency afterok:<slurm_id>`; Slurm holds
-  each stage until its parent succeeds. Waiting for one stage before submitting
-  the next pays the queue twice more for nothing: measured on Rikyu, queue time
-  ran to a 2088 s median while each stage ran for minutes, and agents that
-  submitted serially spent their whole wall-clock budget in the queue. Report
-  the submitted job ids and the DAG handoff rather than polling to completion,
-  unless the caller asked you to see the run finish.
-- Run SLURM control-plane tools (`submit_job`, `submit_array_job`, `check_job`,
-  monitoring, cancellation, and cluster configuration) through the host-side
-  `mdclaw` launcher (`bin/mdclaw` when working from a repository checkout).
-  Do not invoke those tools with `singularity exec`: the launcher deliberately
-  keeps `sbatch`, `squeue`, and related commands on the host and uses the
-  configured SIF only for the compute payload.
+- **Immediately after topology exists, submit the whole `min -> eq -> prod`
+  chain, then stop.** Invoke `submit_job` through the host-side `mdclaw`
+  launcher for minimization, equilibration with
+  `--dependency afterok:<min_slurm_id>`, and production with
+  `--dependency afterok:<eq_slurm_id>`. Production must be the final `sbatch`.
+  Report all three job IDs and the DAG handoff, then exit without polling unless
+  the caller explicitly asked you to see the run finish.
+- The host launcher and configured cluster policy own the SIF and keep
+  `sbatch`, `squeue`, and related control-plane commands on the host. Never
+  invent an in-container `sbatch` bridge, invoke SLURM tools with
+  `singularity exec`, or export `APPTAINER_*` / `SINGULARITY*` variables into
+  the submit shell. Use `bin/mdclaw` from a repository checkout.
 - Always pass both `--job-dir` and `--node-id` when submitting or running a DAG
   workflow node.
 - Do not pass `--system-xml-file`, `--topology-pdb-file`, `--state-xml-file`, or `--restart-from` in normal
