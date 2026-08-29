@@ -46,23 +46,23 @@ mdclaw create_node --job-dir <job_dir> --node-type solv
 mdclaw explain_node --job-dir <job_dir> --node-id <solv_node_id>
 mdclaw --job-dir <job_dir> --node-id <solv_node_id> embed_in_membrane \
   --lipids POPC --ratio "1" --dist 15.0 --dist-wat 17.5 \
-  --salt --saltcon 0.15
+  --water-model <requested-or-decided-model> --salt --saltcon 0.15
 ```
 
 `pdb_file` auto-resolves from the `prep` parent's `merged_pdb` artifact. If a
 manually oriented structure is required, register it on an explicit prep
 branch instead of overriding the solv input path. On success the solv node
 records `is_membrane=true`, so build topology with
-`build_amber_system --is-membrane` (see `explicit-water.md`).
+`build_amber_system --is-membrane --forcefield <chosen-forcefield> --water-model <requested-or-decided-model>` (see `explicit-water.md`).
 
 ## Orientation
 
-`embed_in_membrane` orients the protein itself before packing; no separate
-command is needed:
+`embed_in_membrane` orients the protein itself before packing; no separate command is needed:
 
 ```bash
 mdclaw --job-dir <job_dir> --node-id <solv_node_id> embed_in_membrane \
-  --lipids POPC --ratio "1" --dist 15.0 --dist-wat 17.5 --salt --saltcon 0.15
+  --lipids POPC --ratio "1" --dist 15.0 --dist-wat 17.5 \
+  --water-model <requested-or-decided-model> --salt --saltcon 0.15
 ```
 
 `auto` transfers the membrane frame from an OPM homolog when one passes the

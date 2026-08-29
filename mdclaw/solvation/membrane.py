@@ -2041,7 +2041,10 @@ def embed_in_membrane(
         nloop_all: PACKMOL GENCAN loops for final packing (default: 100).
                    MDClaw adaptively retries with a larger bounded budget if
                    Packmol reports imperfect packing.
-        water_model: Water model type (default: "opc").
+        water_model: Water model type. Defaults to "opc" only when no model was
+                     specified by the user/caller; an explicitly requested
+                     model must be passed here and carried unchanged into
+                     build_amber_system.
                      Options: "tip3p", "opc", "opc3", "tip4pew", "spce".
                      Must match the water model used in build_amber_system.
                      OPC is strongly recommended with ff19SB (Amber Manual 2024).
@@ -2068,8 +2071,9 @@ def embed_in_membrane(
                      ``auto`` (build on miss), or ``refresh`` (rebuild).
         membrane_cache_dir: Optional patch cache root. Defaults to
                      ``MDCLAW_MEMBRANE_CACHE_DIR`` or
-                     ``MDCLAW_CACHE_DIR/membrane_patches``. Read-only bundled
-                     caches are searched via ``MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR``.
+                     ``MDCLAW_CACHE_DIR/membrane_patches``, then the XDG (or
+                     ``~/.cache``) user cache. Read-only bundled caches use
+                     ``MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR``.
         membrane_carve_padding: Protein-membrane contact cutoff in Angstroms used
                      to remove overlapping tiled lipid/water/ion residues.
         membrane_patch_side: Square patch side length in Angstroms for the

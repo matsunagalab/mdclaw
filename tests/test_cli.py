@@ -514,6 +514,26 @@ class TestArgparseConstruction:
         )
         assert args.lipids == ["POPC", "POPE", "CHL1"]
 
+    def test_membrane_skill_embed_recipes_pass_water_model(self):
+        skill_text = (REPO_ROOT / "skills/md-prepare/membrane.md").read_text()
+        bash_blocks = [
+            part.split("```", 1)[0]
+            for part in skill_text.split("```bash")[1:]
+        ]
+        embed_recipes = [
+            block for block in bash_blocks if "embed_in_membrane" in block
+        ]
+        topology_recipes = [
+            line
+            for line in skill_text.splitlines()
+            if "build_amber_system --is-membrane" in line
+        ]
+
+        assert embed_recipes
+        assert all("--water-model" in recipe for recipe in embed_recipes)
+        assert topology_recipes
+        assert all("--water-model" in recipe for recipe in topology_recipes)
+
     def test_embed_in_membrane_lipids_accepts_list_and_colon_string(
         self, monkeypatch, capsys
     ):
