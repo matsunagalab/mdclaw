@@ -50,7 +50,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Writable patch cache root to populate (default: mdclaw/data/membrane_patches).",
     )
     parser.add_argument(
-        "--water-model", default="opc", help="Water model for the patch (default: opc)."
+        "--water-model", default="tip3p", help="Water model for the patch (default: tip3p)."
     )
     parser.add_argument(
         "--saltcon", type=float, default=0.15, help="Salt concentration in M (default: 0.15)."

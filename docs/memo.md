@@ -7,6 +7,32 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-29 — TIP3P membrane patches are bundled; the OPC-only cache never hit in a 28-attempt campaign
+
+All seven bundled membrane patches were `opc + ff19SB + 0.15 M`, and every membrane
+task in MDDataBench asks for TIP3P (the reference MDs used it), so the bundled cache
+missed by construction: in `full100-pass2` (pi + kimi-k3, Rikyu) the 28 membrane
+attempts each paid a cold packmol + equilibration build in `solv_001` — directly timed
+foreground intervals of 1.5–2.3 ks — and the writable cache defaults to the CWD-relative
+`.mdclaw_cache`, so the second replicate of a task could not reuse the first's patch.
+Membrane agent wall time p90 sat at the 5400 s ceiling; three of the four agent timeouts
+in that campaign were membrane tasks.
+
+Six TIP3P patches (POPC, POPE, DPPC, POPC:CHL1 4:1, POPC:POPE:CHL1 2:1:1,
+DPPC:DOPC:CHL1 1:1:1; `ff14SB` by `patch_equilibration_forcefield`, 0.15 M NaCl) were
+built on floyd with `scripts/warmup_membrane_cache.py --water-model tip3p` (≈10 min each
+in parallel) and added under `mdclaw/data/membrane_patches` beside the OPC set (7.6 → 14
+MB). `probe_patch_cache` now reports `bundled` for all six TIP3P compositions and still for
+all seven OPC ones. The warm-up script's default water model is now `tip3p`.
+
+**DOPC + TIP3P did not build**: twice, deterministically, `Particle coordinate is NaN`
+in the 50 K NVT warm-up right after the staged minimisation — a packing clash the
+minimiser cannot clear, the same shape as the P18 packmol-memgen failure. The OPC DOPC
+patch builds fine. Left uncached; no task in the current cast uses DOPC. Also still open:
+the writable cache location (a per-user or per-campaign root would let rebuilt patches be
+reused), and `embed_in_membrane` defaulting to OPC — two agents in that campaign omitted
+`--water-model tip3p`, silently got an OPC membrane, noticed, and rebuilt.
+
 ## 2026-08-29 — Solvation ion intent and charge are explicit
 
 - The canonical solvent-regime guide now maps absent/neutralised ion wording to
