@@ -29,11 +29,11 @@ Chain ID rule:
 - For mmCIF input, pass the per-chain `chain_id` shown by MDClaw
   inspection (`label_asym_id`) to `--select-chains`.
 - Do not use gemmi's internal generated PDB chain names such as `Axp`.
-- After `prepare_complex`, `merged_pdb` may reuse one-character PDB chain IDs
-  for very large assemblies. Treat those IDs as MD compatibility labels only.
-  Use `chain_identity_map.json` for canonical component identity
-  (`component_id`, source label/auth IDs, topology chain index, atom/residue
-  ranges).
+- Multiple `--residue-ranges` pieces from one polymer become separate components
+  by default. Use `--join-range-pieces` only when the user explicitly wants a
+  join; PDB `CONECT` records do not suppress standard peptide bonds.
+- Treat post-prep PDB chain IDs as compatibility labels; use
+  `chain_identity_map.json` for canonical component identity and ranges.
 
 Crystallization-additive / unknown-HETATM triage (do this first):
 

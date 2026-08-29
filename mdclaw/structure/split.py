@@ -684,6 +684,7 @@ def split_molecules(
     keep_crystal_waters: bool = False,
     include_associated_ligands: bool = False,
     residue_ranges: Optional[List[str]] = None,
+    join_range_pieces: bool = False,
 ) -> dict:
     """Split an mmCIF or PDB structure file into separate chain files.
 
@@ -778,6 +779,11 @@ def split_molecules(
                            associated with selected protein/nucleic/glycan
                            author chains. If False, this condition blocks
                            instead of silently dropping associated ligands.
+        residue_ranges: Polymer residue ranges to retain. Multiple ranges from
+                           one chain are written as separate components unless
+                           ``join_range_pieces`` is true.
+        join_range_pieces: Join multiple selected ranges from one source chain
+                           into one output component (default: False).
 
     Returns:
         Dict with:
@@ -849,7 +855,12 @@ def split_molecules(
         "chain_file_info": [],
         "include_types": include_types,
         "selection_adjustments": [],
-        "residue_ranges": {"requested": [], "resolved": {}, "delivered": {}},
+        "residue_ranges": {
+            "requested": [],
+            "resolved": {},
+            "delivered": {},
+            "join_range_pieces": bool(join_range_pieces),
+        },
         "errors": [],
         "warnings": []
     }
@@ -1600,17 +1611,12 @@ def split_molecules(
                         )
                         continue
             
-            # Build new structure with this chain's residues
-            new_structure = gemmi.Structure()
-            new_model = gemmi.Model("1")
             # Use author_chain (single letter) for PDB compatibility
             # label_asym_id can be too long for PDB format (e.g., "Axp" from OPM)
             author_chain = info.get("author_chain", chain_id)
             # Ensure chain name is max 1 character for PDB format
             pdb_chain_name = author_chain[0] if len(author_chain) > 1 else (author_chain if author_chain else "A")
-            new_chain = gemmi.Chain(pdb_chain_name)
-            residue_count = 0
-            
+
             waters_skipped = 0
             # The residue range, if this chain was given one. Matched against
             # both names because a range may be written with either, which is
@@ -1639,6 +1645,18 @@ def split_molecules(
                     piece["selection_mode"] = resolution.get("selection_mode")
                     piece["start_observed"] = resolution.get("start_observed")
                     piece["end_observed"] = resolution.get("end_observed")
+            separate_range_pieces = bool(
+                chain_ranges and len(chain_ranges) > 1 and not join_range_pieces
+            )
+            component_keys = (
+                [entry.spelled() for entry in chain_ranges]
+                if separate_range_pieces
+                else [None]
+            )
+            component_chains = {
+                key: gemmi.Chain(pdb_chain_name) for key in component_keys
+            }
+            component_residue_counts = dict.fromkeys(component_keys, 0)
             for residue_index, residue in enumerate(subchain):
                 res_name = residue.name.strip()
                 # Skip water residues unless explicitly keeping them
@@ -1679,6 +1697,8 @@ def split_molecules(
                             range_boundary_icodes.append(
                                 f"{residue.name}{residue.seqid.num}{icode}")
                         continue
+                else:
+                    held = None
                 
                 new_residue = gemmi.Residue()
                 new_residue.name = residue.name
@@ -1698,8 +1718,9 @@ def split_molecules(
                             new_residue.add_atom(new_atom)
                             seen_atom_names.add(atom.name)
                 if len(list(new_residue)) > 0:
-                    new_chain.add_residue(new_residue)
-                    residue_count += 1
+                    component_key = held.spelled() if separate_range_pieces else None
+                    component_chains[component_key].add_residue(new_residue)
+                    component_residue_counts[component_key] += 1
 
             if waters_skipped > 0:
                 logger.info(f"Skipped {waters_skipped} water residue(s) in chain {chain_id}")
@@ -1735,7 +1756,13 @@ def split_molecules(
                     "span_delivered": describe_span(range_kept),
                 }
 
-            if len(list(new_chain)):
+            for component_index, component_key in enumerate(component_keys, start=1):
+                new_chain = component_chains[component_key]
+                residue_count = component_residue_counts[component_key]
+                if not len(list(new_chain)):
+                    continue
+                new_structure = gemmi.Structure()
+                new_model = gemmi.Model("1")
                 new_model.add_chain(new_chain)
                 new_structure.add_model(new_model)
                 
@@ -1763,6 +1790,11 @@ def split_molecules(
                 elif chain_type == "glycan":
                     if resnum is not None:
                         out_file = out_dir / f"glycan_{res_name}_{author_chain_id}{resnum}.pdb"
+                        if separate_range_pieces:
+                            out_file = out_dir / (
+                                f"glycan_{res_name}_{author_chain_id}{resnum}_"
+                                f"piece{component_index}.pdb"
+                            )
                     else:
                         out_file = out_dir / f"glycan_{glycan_idx}.pdb"
                     glycan_files.append(str(out_file))
@@ -1800,7 +1832,7 @@ def split_molecules(
 
                 new_structure.write_pdb(str(out_file))
                 logger.info(f"Wrote {chain_type}: {out_file}")
-                chain_file_info.append({
+                file_info = {
                     "chain_id": chain_id,
                     "author_chain": info.get("author_chain", chain_id),
                     "chain_type": chain_type,
@@ -1809,7 +1841,35 @@ def split_molecules(
                     "unique_id": info.get("unique_id"),
                     "file": str(out_file),
                     "residue_count": residue_count
-                })
+                }
+                if component_key is not None:
+                    resolved_piece = next(
+                        piece
+                        for piece in result["residue_ranges"]["resolved"][chain_id]["pieces"]
+                        if piece["range"] == component_key
+                    )
+                    file_info["residue_range"] = dict(resolved_piece)
+                chain_file_info.append(file_info)
+
+                if chain_ranges:
+                    delivered = result["residue_ranges"]["delivered"][
+                        f"{rr.spelled(chain_ranges)}@{chain_id}"
+                    ]
+                    delivered_ranges = (
+                        [component_key]
+                        if component_key is not None
+                        else [entry.spelled() for entry in chain_ranges]
+                    )
+                    for spelling in delivered_ranges:
+                        delivered["ranges"][spelling]["delivered_component"] = str(
+                            out_file
+                        )
+                        resolved_piece = next(
+                            piece
+                            for piece in result["residue_ranges"]["resolved"][chain_id]["pieces"]
+                            if piece["range"] == spelling
+                        )
+                        resolved_piece["delivered_component"] = str(out_file)
         
         result["protein_files"] = protein_files
         result["nucleic_files"] = nucleic_files

@@ -820,13 +820,14 @@ def _residue_range_coverage(split_result, protein_results):
     resolved = ((split_result or {}).get("residue_ranges") or {}).get("resolved") or {}
     if not resolved:
         return {}
-    coverage = {}
+    present_by_chain = {}
     for protein in protein_results:
-        entry = resolved.get(protein.get("chain_id"))
+        chain_id = protein.get("chain_id")
+        entry = resolved.get(chain_id)
         output = protein.get("output_file")
         if not entry or not output or not protein.get("success"):
             continue
-        present = set()
+        present = present_by_chain.setdefault(chain_id, set())
         try:
             for line in Path(output).read_text().splitlines():
                 if line.startswith(("ATOM", "HETATM")):
@@ -836,6 +837,9 @@ def _residue_range_coverage(split_result, protein_results):
                         continue
         except OSError:
             continue
+    coverage = {}
+    for chain_id, present in present_by_chain.items():
+        entry = resolved[chain_id]
         # The union of the chain's pieces, not the span between the first and
         # the last: a fusion construct asks for 18-214 and 383-458 and never for
         # the 168 residues of crystallisation partner sitting between them.
@@ -843,7 +847,7 @@ def _residue_range_coverage(split_result, protein_results):
         for piece in _pieces(entry):
             wanted |= set(range(piece["start"], piece["end"] + 1))
         missing = sorted(wanted - present)
-        coverage[protein["chain_id"]] = {
+        coverage[chain_id] = {
             "range": entry["range"],
             "requested": len(wanted),
             "delivered": len(wanted & present),
@@ -886,6 +890,14 @@ def _window_for_chain(split_result, chain_id):
     if not entry:
         return None
     return [(piece["start"], piece["end"]) for piece in _pieces(entry)]
+
+
+def _window_for_component(split_result, chain_info):
+    """Return the build window for one split file/component."""
+    piece = (chain_info or {}).get("residue_range")
+    if piece:
+        return [(piece["start"], piece["end"])]
+    return _window_for_chain(split_result, (chain_info or {}).get("chain_id"))
 
 
 def _states_for_chain(states, author_chain, chain_id):
@@ -964,6 +976,7 @@ def prepare_complex(
     missing_residue_method: str = "auto",
     build_terminal_missing_residues: bool = False,
     residue_ranges: Optional[List[str]] = None,
+    join_range_pieces: bool = False,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
@@ -1019,6 +1032,9 @@ def prepare_complex(
             ``build_terminal_missing_residues`` it also bounds what may be
             built: ``A:4-315`` on a chain whose SEQRES runs to 317 adds residue
             315 and stops.
+        join_range_pieces: Join multiple selected ranges from one source chain
+            into one component. The default keeps each range as a separate
+            component so omitted spans cannot acquire peptide bonds.
         build_terminal_missing_residues: Also rebuild residues missing from a
             chain's termini (default: False). An unresolved terminus is
             disorder rather than a gap to bridge, and a simulation normally
@@ -1542,6 +1558,7 @@ def prepare_complex(
             include_associated_ligands=include_associated_ligands,
             keep_crystal_waters=keep_crystal_waters,
             residue_ranges=residue_ranges,
+            join_range_pieces=join_range_pieces,
         )
         if glycan_selection_adjustment is not None:
             split_result.setdefault("selection_adjustments", []).append(
@@ -1678,12 +1695,15 @@ def prepare_complex(
         all_chains_lookup = {c["chain_id"]: c for c in split_result.get("all_chains", [])}
         
         chain_info_map = {}
+        chain_info_by_file = {}
         for info in split_result.get("chain_file_info", []):
             chain_id = info["chain_id"]
-            chain_info_map[chain_id] = {
+            enriched = {
                 **info,
                 "all_chain_data": all_chains_lookup.get(chain_id, {})
             }
+            chain_info_map.setdefault(chain_id, enriched)
+            chain_info_by_file[info["file"]] = enriched
 
         # Preflight: catch crystallization additives / placeholder residues that
         # the default ``ligand`` selection swept in, before they fail much later
@@ -1894,10 +1914,10 @@ def prepare_complex(
             # is built into space the partner chain occupies; the chains about
             # to be merged are the assembly, so MODELLER gets them together.
             build_windows_by_source = {
-                str(cinfo["file"]): _window_for_chain(split_result, chain_id)
-                for chain_id, cinfo in chain_info_map.items()
+                str(cinfo["file"]): _window_for_component(split_result, cinfo)
+                for cinfo in chain_info_by_file.values()
                 if cinfo.get("file") in split_result["protein_files"]
-                and _window_for_chain(split_result, chain_id) is not None
+                and _window_for_component(split_result, cinfo) is not None
             }
             complex_repair = repair_complex_missing_residues(
                 split_result["protein_files"],
@@ -1930,18 +1950,16 @@ def prepare_complex(
 
             for protein_file in split_result["protein_files"]:
                 # Find chain info for this file
-                chain_id = None
-                for cid, cinfo in chain_info_map.items():
-                    if cinfo.get("file") == protein_file:
-                        chain_id = cid
-                        break
+                component_info = chain_info_by_file.get(protein_file, {})
+                chain_id = component_info.get("chain_id")
 
                 protein_result = {
                     "chain_id": chain_id,
                     "author_chain": (
-                        chain_info_map.get(chain_id, {}).get("author_chain")
+                        component_info.get("author_chain")
                         or chain_id
                     ),
+                    "residue_range": component_info.get("residue_range"),
                     "input_file": protein_file,
                     "output_file": None,
                     "success": False,
@@ -1963,7 +1981,9 @@ def prepare_complex(
                         ignore_terminal_missing_residues=not (
                             terminal_caps_requested or build_terminal_missing_residues),
                         build_terminal_missing_residues=build_terminal_missing_residues,
-                        build_window=_window_for_chain(split_result, chain_id),
+                        build_window=_window_for_component(
+                            split_result, component_info
+                        ),
                         disulfide_pairs=sa_disulfide_pairs,
                         protonation_method=protonation_method,
                         preserve_input_protonation=preserve_input_protonation,
@@ -2059,13 +2079,8 @@ def prepare_complex(
         if split_result.get("nucleic_files"):
             logger.info(f"Step 4: Preparing {len(split_result['nucleic_files'])} nucleic chain(s)...")
             for nucleic_file in split_result["nucleic_files"]:
-                chain_id = None
-                cinfo_for_nucleic = {}
-                for cid, cinfo in chain_info_map.items():
-                    if cinfo.get("file") == nucleic_file:
-                        chain_id = cid
-                        cinfo_for_nucleic = cinfo
-                        break
+                cinfo_for_nucleic = chain_info_by_file.get(nucleic_file, {})
+                chain_id = cinfo_for_nucleic.get("chain_id")
                 nucleic_result = _prepare_standard_nucleic(
                     nucleic_file,
                     nucleic_subtype=cinfo_for_nucleic.get("nucleic_subtype"),
@@ -2099,13 +2114,8 @@ def prepare_complex(
         if split_result.get("glycan_files"):
             logger.info(f"Step 4.5: Passing through {len(split_result['glycan_files'])} glycan chain(s)...")
             for glycan_file in split_result["glycan_files"]:
-                chain_id = None
-                cinfo_for_glycan = {}
-                for cid, cinfo in chain_info_map.items():
-                    if cinfo.get("file") == glycan_file:
-                        chain_id = cid
-                        cinfo_for_glycan = cinfo
-                        break
+                cinfo_for_glycan = chain_info_by_file.get(glycan_file, {})
+                chain_id = cinfo_for_glycan.get("chain_id")
                 chain_data = cinfo_for_glycan.get("all_chain_data", {})
                 residue_names = chain_data.get("glycan_residue_names") or chain_data.get("residue_names", [])
                 if isinstance(residue_names, dict):
@@ -2127,19 +2137,15 @@ def prepare_complex(
             
             for ligand_file in split_result["ligand_files"]:
                 # Find chain info for this file
-                chain_id = None
+                cinfo_for_ligand = chain_info_by_file.get(ligand_file, {})
+                chain_id = cinfo_for_ligand.get("chain_id")
                 ligand_id = None
-                for cid, cinfo in chain_info_map.items():
-                    if cinfo.get("file") == ligand_file:
-                        chain_id = cid
-                        # Get ligand residue name
-                        chain_data = cinfo.get("all_chain_data", {})
-                        residue_names = chain_data.get("residue_names", {})
-                        if residue_names:
-                            unique_residues = residue_names.get("unique_residues", [])
-                            if unique_residues:
-                                ligand_id = unique_residues[0]  # First residue name
-                        break
+                chain_data = cinfo_for_ligand.get("all_chain_data", {})
+                residue_names = chain_data.get("residue_names", {})
+                if residue_names:
+                    unique_residues = residue_names.get("unique_residues", [])
+                    if unique_residues:
+                        ligand_id = unique_residues[0]  # First residue name
                 
                 # If ligand_id not found in chain_info_map, read directly from PDB file
                 if not ligand_id:
@@ -2158,7 +2164,6 @@ def prepare_complex(
                     result["warnings"].append(f"Could not determine ligand ID for {ligand_file}")
                     continue
                 
-                cinfo_for_ligand = chain_info_map.get(chain_id, {}) if chain_id else {}
                 ligand_instance_id = cinfo_for_ligand.get("unique_id")
                 author_chain = cinfo_for_ligand.get("author_chain", chain_id)
                 resnum = cinfo_for_ligand.get("resnum")

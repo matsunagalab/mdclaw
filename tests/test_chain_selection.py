@@ -108,6 +108,34 @@ def _write_insertion_ordered_chain(path: Path) -> str:
     return str(path)
 
 
+def _write_numbered_chain(path: Path, count: int = 6) -> str:
+    import gemmi
+
+    structure = gemmi.Structure()
+    model = gemmi.Model("1")
+    chain = gemmi.Chain("A")
+    for number in range(1, count + 1):
+        residue = gemmi.Residue()
+        residue.name = "ALA"
+        residue.seqid = gemmi.SeqId(number, " ")
+        for atom_name, element, dx in (
+            ("N", "N", 0.0), ("CA", "C", 1.3),
+            ("C", "C", 2.5), ("O", "O", 3.1),
+        ):
+            atom = gemmi.Atom()
+            atom.name = atom_name
+            atom.element = gemmi.Element(element)
+            atom.pos = gemmi.Position(number * 3.8 + dx, 0.0, 0.0)
+            atom.occ = 1.0
+            residue.add_atom(atom)
+        chain.add_residue(residue)
+    model.add_chain(chain)
+    structure.add_model(model)
+    structure.setup_entities()
+    structure.write_pdb(str(path))
+    return str(path)
+
+
 def test_inspect_molecules_exposes_label_and_author_ids(cif_label_ne_auth):
     """inspect_molecules summary must surface both label IDs and the label->author map."""
     r = _inspect(cif_label_ne_auth)
@@ -201,6 +229,46 @@ def test_split_range_uses_deposited_order_for_insertion_codes(tmp_path):
     assert record["kept"] == 3
     piece = result["residue_ranges"]["resolved"]["Axp"]["pieces"][0]
     assert piece["selection_mode"] == "ordered_observed_endpoints"
+
+
+def test_split_multiple_ranges_are_separate_components_unless_joined(tmp_path):
+    import gemmi
+
+    from mdclaw.structure.split import split_molecules
+
+    source = _write_numbered_chain(tmp_path / "six_residues.pdb")
+    separate = split_molecules(
+        structure_file=source,
+        output_dir=str(tmp_path / "separate"),
+        select_chains=["A"],
+        include_types=["protein"],
+        residue_ranges=["A:1-2", "A:5-6"],
+    )
+
+    assert separate["success"] is True, separate.get("errors")
+    assert len(separate["protein_files"]) == 2
+    assert [
+        [res.seqid.num for res in gemmi.read_structure(path)[0][0]]
+        for path in separate["protein_files"]
+    ] == [[1, 2], [5, 6]]
+    pieces = next(iter(separate["residue_ranges"]["resolved"].values()))["pieces"]
+    assert [piece["delivered_component"] for piece in pieces] == separate[
+        "protein_files"
+    ]
+
+    joined = split_molecules(
+        structure_file=source,
+        output_dir=str(tmp_path / "joined"),
+        select_chains=["A"],
+        include_types=["protein"],
+        residue_ranges=["A:1-2", "A:5-6"],
+        join_range_pieces=True,
+    )
+    assert joined["success"] is True, joined.get("errors")
+    assert len(joined["protein_files"]) == 1
+    assert [res.seqid.num for res in gemmi.read_structure(joined["protein_files"][0])[0][0]] == [
+        1, 2, 5, 6,
+    ]
 
 
 def test_split_molecules_matches_label_asym_id(cif_label_ne_auth, tmp_path):
