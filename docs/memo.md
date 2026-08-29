@@ -7,6 +7,47 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-30 — Defect report written by a benchmark agent: CYX→CYS demotion leaves thiols deprotonated
+
+*Written verbatim by the pi + deepseek-v4-flash agent during MDDataBench task 016 (it found the
+benchmark repo's CLAUDE.md from its workspace). Kept as a defect report; the workaround it found
+is real and the underlying defect is open.*
+
+
+Attempt 016 (1AY7, barstar complex, chain A 1–96 + chain B 1–89, TIP3P, 300 K
+NPT, >=2.5 ns prod) hit a reproducible chemistry/topology fault worth writing
+across attempts, in case the same task pattern recurs.
+
+Root cause: the deposit's Cys7–Cys96 (chain A) SG atoms sit 2.035 Å apart (a
+native disulfide). pdb2pqr (`--protonation-method standard`) names them CYX;
+`prepare_complex --disulfide-pairs '[]'` correctly demotes CYX→CYS in
+`merged.pdb`, but the demotion only renames — it does NOT rebuild the thiol
+proton (`HG`). The demoted Cys7/96 therefore enter `build_amber_system` as
+CYS with SG but no HG, still 2.035 Å apart. openff-pablo's `add_disulfide_crosslink`
+(CCD patch) sees the deprotonated SG pair and forms an SG–SG bond;
+`SystemGenerator.create_system` then dies with
+`No template found for residue 95 (CYS) ... the atoms and bonds in the residue
+match CCYX, but the set of externally bonded atoms is missing 1 S atom`.
+`--disulfide-bonds '[]'` on the topo node did NOT help: the crosslink is formed
+geometrically by pablo, independent of the declared bond list.
+
+Fix (worked first try): branch prep and force the two named sites protonated
+with `--protonation-states '{"A:7":"CYS","A:96":"CYS"}'`. The CYS spec in
+`mdclaw/structure/protonation.py` has `modeller_variant=CYS` / `present={HG}`,
+so the Modeller pass rebuilds the thiol H. With HG present on both SG, pablo's
+crosslink condition (leaving atoms absent) is false, no SG–SG bond forms, and
+the topology validation reports `observed_system_harmonic_sg_sg_bond_count: 0`.
+Lesson: a "reduced-cysteine, no disulfide" request must protonate the CYS
+explicitly via `--protonation-states`, or the build fails/misparametrizes once
+the deposit has native SS geometry.
+
+Submitted chain (all on `all`/n4, 8 h wall each, CUDA via `--nv` SIF):
+min_001 136026 -> afterok -> eq_001 136027 (300 K, 1 bar, 1 ns NVT + 1 ns NPT)
+-> afterok -> prod_001 136028 (3.0 ns, 300 K, NPT 1 bar, dcd every 10 ps).
+Topology: ff14SB + TIP3P (ff19SB+TIP3P is blocked; TIP3P request therefore
+forces the ff14SB+TIP3P pairing), HMR on (4 amu, 4 fs), PME 1.0 nm, HBonds.
+Box 83.88 Å cubic, 61807 atoms, 52 Na+/39 Cl- (solute −13).
+
 ## 2026-08-29 — Phase (a) removes the seven pass2 ambiguities on the MDClaw side
 
 - Disjoint residue ranges now produce separate components by default, with
