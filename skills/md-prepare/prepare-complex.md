@@ -23,6 +23,10 @@ add `--source-candidate-id <candidate_id>` to the validated
 For NMR-style model numbering, `--source-model-index 2` selects the second
 model-derived candidate.
 
+`--residue-ranges A:16-214 A:380-458` keeps the two pieces as separate chains
+(the reference does too). Add `--join-range-pieces` only when the request says
+"join the pieces" / "single continuous chain"; never for "without the fusion".
+
 For chain-associated ligands, use `inspect_molecules.associated_ligand_candidates`.
 If the task names a target residue/cofactor such as `NDP`, `ATP`, or `AP5`,
 prefer residue-name scoped selection by adding `--select-chains A B

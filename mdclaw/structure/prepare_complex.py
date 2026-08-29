@@ -1032,9 +1032,11 @@ def prepare_complex(
             ``build_terminal_missing_residues`` it also bounds what may be
             built: ``A:4-315`` on a chain whose SEQRES runs to 317 adds residue
             315 and stops.
-        join_range_pieces: Join multiple selected ranges from one source chain
-            into one component. The default keeps each range as a separate
-            component so omitted spans cannot acquire peptide bonds.
+        join_range_pieces: Bond the selected ranges of one chain into a single
+            chain across the omitted span. Only for a request that says "join
+            the pieces" / "single continuous chain". "Chain A residues 16-214
+            and 380-458" or "without the fusion" means separate components
+            (the default), which the reference keeps as separate molecules.
         build_terminal_missing_residues: Also rebuild residues missing from a
             chain's termini (default: False). An unresolved terminus is
             disorder rather than a gap to bridge, and a simulation normally

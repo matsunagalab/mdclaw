@@ -782,8 +782,9 @@ def split_molecules(
         residue_ranges: Polymer residue ranges to retain. Multiple ranges from
                            one chain are written as separate components unless
                            ``join_range_pieces`` is true.
-        join_range_pieces: Join multiple selected ranges from one source chain
-                           into one output component (default: False).
+        join_range_pieces: Bond the ranges of one chain into a single chain
+                           across the omitted span (default: False). Only for
+                           an explicit "join the pieces" request.
 
     Returns:
         Dict with:

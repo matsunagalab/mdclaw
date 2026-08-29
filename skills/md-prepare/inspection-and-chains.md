@@ -29,9 +29,6 @@ Chain ID rule:
 - For mmCIF input, pass the per-chain `chain_id` shown by MDClaw
   inspection (`label_asym_id`) to `--select-chains`.
 - Do not use gemmi's internal generated PDB chain names such as `Axp`.
-- Multiple `--residue-ranges` pieces from one polymer stay separate (default).
-  `--join-range-pieces` bonds them into one chain: only for "join the pieces" /
-  "single continuous chain"; "residues 16-214 and 380-458" means keep apart.
 - Treat post-prep PDB chain IDs as compatibility labels; use
   `chain_identity_map.json` for canonical component identity and ranges.
 
