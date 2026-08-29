@@ -1355,8 +1355,15 @@ def resolve_patch_cache_root(cache_dir: Optional[str] = None) -> Path:
         root = Path(cache_dir).expanduser()
     elif os.environ.get("MDCLAW_MEMBRANE_CACHE_DIR"):
         root = Path(os.environ["MDCLAW_MEMBRANE_CACHE_DIR"]).expanduser()
+    elif os.environ.get("MDCLAW_CACHE_DIR"):
+        root = Path(os.environ["MDCLAW_CACHE_DIR"]).expanduser() / "membrane_patches"
     else:
-        root = Path(os.environ.get("MDCLAW_CACHE_DIR", ".mdclaw_cache")).expanduser() / "membrane_patches"
+        cache_home = os.environ.get("XDG_CACHE_HOME")
+        root = (
+            Path(cache_home).expanduser()
+            if cache_home
+            else Path.home() / ".cache"
+        ) / "mdclaw" / "membrane_patches"
     return ensure_directory(root).resolve()
 
 

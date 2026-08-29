@@ -2133,14 +2133,44 @@ def test_compute_membrane_net_charge_disables_pablo_auto_download(
     assert captured["water_model"] == "tip3p"
 
 
-def test_embed_in_membrane_patch_tile_builds_then_reuses_cache(tmp_path, monkeypatch):
+def test_patch_cache_root_precedence_and_user_cache_fallback(tmp_path, monkeypatch):
+    from mdclaw.solvation.patch_membrane import resolve_patch_cache_root
+
+    explicit = tmp_path / "explicit"
+    membrane_env = tmp_path / "membrane-env"
+    mdclaw_env = tmp_path / "mdclaw-env"
+    xdg = tmp_path / "xdg"
+    home = tmp_path / "home"
+    monkeypatch.setenv("MDCLAW_MEMBRANE_CACHE_DIR", str(membrane_env))
+    monkeypatch.setenv("MDCLAW_CACHE_DIR", str(mdclaw_env))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(xdg))
+    monkeypatch.setenv("HOME", str(home))
+
+    assert resolve_patch_cache_root(str(explicit)) == explicit.resolve()
+    assert resolve_patch_cache_root() == membrane_env.resolve()
+    monkeypatch.delenv("MDCLAW_MEMBRANE_CACHE_DIR")
+    assert resolve_patch_cache_root() == (mdclaw_env / "membrane_patches").resolve()
+    monkeypatch.delenv("MDCLAW_CACHE_DIR")
+    assert resolve_patch_cache_root() == (xdg / "mdclaw" / "membrane_patches").resolve()
+    monkeypatch.delenv("XDG_CACHE_HOME")
+    assert resolve_patch_cache_root() == (
+        home / ".cache" / "mdclaw" / "membrane_patches"
+    ).resolve()
+
+
+def test_embed_in_membrane_patch_tile_builds_then_reuses_default_cache(
+    tmp_path, monkeypatch
+):
     input_pdb = tmp_path / "input.pdb"
     input_pdb.write_text(
         "ATOM      1  CA  ALA X   7       0.000   0.000   0.000  1.00  0.00           C\n"
         "ATOM      2  C   ALA X   7       1.000   0.000   0.000  1.00  0.00           C\n"
         "END\n"
     )
-    cache_dir = tmp_path / "cache"
+    xdg_cache = tmp_path / "xdg-cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(xdg_cache))
+    monkeypatch.delenv("MDCLAW_MEMBRANE_CACHE_DIR", raising=False)
+    monkeypatch.delenv("MDCLAW_CACHE_DIR", raising=False)
     calls = []
 
     lipids_by_group = [
@@ -2175,10 +2205,15 @@ def test_embed_in_membrane_patch_tile_builds_then_reuses_cache(tmp_path, monkeyp
         preoriented=True,
         membrane_backend="patch-tile",
         membrane_cache_mode="auto",
-        membrane_cache_dir=str(cache_dir),
         membrane_patch_side=40.0,
     )
+    first_cwd = tmp_path / "cwd-a"
+    second_cwd = tmp_path / "cwd-b"
+    first_cwd.mkdir()
+    second_cwd.mkdir()
+    monkeypatch.chdir(first_cwd)
     first = embed_in_membrane(output_dir=str(tmp_path / "a"), **common)
+    monkeypatch.chdir(second_cwd)
     second = embed_in_membrane(output_dir=str(tmp_path / "b"), **common)
 
     assert first["success"] is True, first.get("errors")
@@ -2186,6 +2221,7 @@ def test_embed_in_membrane_patch_tile_builds_then_reuses_cache(tmp_path, monkeyp
     assert first["parameters"]["membrane_cache_hit"] is False
     assert second["success"] is True
     assert second["parameters"]["membrane_cache_hit"] is True
+    assert (xdg_cache / "mdclaw" / "membrane_patches").is_dir()
     # Patch packmol runs exactly once (cold build), reused on the second call.
     assert len(calls) == 1
     assert "--distxy_fix" in calls[0]
