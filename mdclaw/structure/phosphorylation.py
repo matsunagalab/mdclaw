@@ -147,7 +147,7 @@ def _build_source_to_merged_chain_map(
     proteins: list[dict],
     merge_chain_mapping: dict,
 ) -> dict:
-    """Build the ``source_author_chain -> merged_chain`` composite map.
+    """Build the source-author-chain to merged-chain composite map.
 
     Three pieces are joined on file path:
 
@@ -168,15 +168,12 @@ def _build_source_to_merged_chain_map(
     coming out of ``detect_ptm_sites`` (which records the source chain as
     gemmi sees it on the source structure — multi-letter for mmCIF) line
     up directly with the merged chain id without a brittle truncate-and-
-    pray step.
+    pray step. A normal chain maps directly to its merged id. When several
+    separately delivered range pieces came from one source chain, its value
+    is instead a list of ``{start, start_icode, end, end_icode, target}``
+    records; site remappers select the record containing the source residue.
     """
-    chain_id_to_author: dict[str, str] = {}
-    for info in chain_file_info or []:
-        cid = info.get("chain_id")
-        if cid is not None:
-            chain_id_to_author[cid] = info.get("author_chain", cid)
-
-    composite: dict[str, str] = {}
+    grouped: dict[str, list[tuple[dict | None, str]]] = {}
     for p in proteins or []:
         if not p.get("success"):
             continue
@@ -184,15 +181,17 @@ def _build_source_to_merged_chain_map(
         cid = p.get("chain_id")
         if not cleaned_file or cid is None:
             continue
-        author = chain_id_to_author.get(cid, cid)
+        source_info = _source_info_for_protein(chain_file_info, p)
+        author = source_info.get("author_chain") or p.get("author_chain") or cid
+        residue_range = p.get("residue_range") or source_info.get("residue_range")
         per_file = (merge_chain_mapping or {}).get(cleaned_file) or {}
         if not per_file:
             continue
         # split_molecules emits one chain per cleaned file, so the per-file
         # mapping has exactly one entry. Take its value (the merged id).
         merged_id = next(iter(per_file.values()))
-        composite[author] = merged_id
-    return composite
+        grouped.setdefault(author, []).append((residue_range, merged_id))
+    return _collapse_piece_mappings(grouped)
 
 
 def _build_source_to_topology_index_map(
@@ -202,21 +201,16 @@ def _build_source_to_topology_index_map(
 ) -> dict:
     """Build ``source_author_chain -> topology_chain_index``.
 
-    Mirrors :func:`_build_source_to_merged_chain_map` but resolves the
-    *topology chain index* (the chain's 0-based position in merge order, which
-    equals its block position in merged.pdb) instead of the 1-char merged id.
+    Mirrors :func:`_build_source_to_merged_chain_map`, including range-piece
+    values, but resolves the *topology chain index* (the chain's 0-based
+    position in merge order, which equals its block position in merged.pdb)
+    instead of the 1-char merged id.
     The merged id is reused once the 62-id PDB pool is exhausted; the topology
     index never is, so it is the unambiguous chain selector for site-keyed
     edits on >62-chain assemblies. ``chain_mapping_entries`` comes from
     ``merge_structures`` and lists ``{source_file, topology_chain_index, ...}``
     (one entry per cleaned chain file, since split emits one chain per file).
     """
-    chain_id_to_author: dict[str, str] = {}
-    for info in chain_file_info or []:
-        cid = info.get("chain_id")
-        if cid is not None:
-            chain_id_to_author[cid] = info.get("author_chain", cid)
-
     file_to_topo: dict[str, int] = {}
     for entry in chain_mapping_entries or []:
         sf = entry.get("source_file")
@@ -224,7 +218,7 @@ def _build_source_to_topology_index_map(
         if sf is not None and ti is not None and sf not in file_to_topo:
             file_to_topo[sf] = int(ti)
 
-    index_map: dict[str, int] = {}
+    grouped: dict[str, list[tuple[dict | None, int]]] = {}
     for p in proteins or []:
         if not p.get("success"):
             continue
@@ -234,8 +228,76 @@ def _build_source_to_topology_index_map(
             continue
         topo = file_to_topo.get(cleaned_file)
         if topo is not None:
-            index_map[chain_id_to_author.get(cid, cid)] = topo
-    return index_map
+            source_info = _source_info_for_protein(chain_file_info, p)
+            author = source_info.get("author_chain") or p.get("author_chain") or cid
+            residue_range = p.get("residue_range") or source_info.get(
+                "residue_range"
+            )
+            grouped.setdefault(author, []).append((residue_range, topo))
+    return _collapse_piece_mappings(grouped)
+
+
+def _source_info_for_protein(chain_file_info: list[dict], protein: dict) -> dict:
+    """Find the split record for one prepared protein, including its piece."""
+    input_file = protein.get("input_file")
+    if input_file:
+        for info in chain_file_info or []:
+            if str(info.get("file")) == str(input_file):
+                return info
+
+    candidates = [
+        info
+        for info in chain_file_info or []
+        if info.get("chain_id") == protein.get("chain_id")
+    ]
+    wanted_range = (protein.get("residue_range") or {}).get("range")
+    if wanted_range:
+        for info in candidates:
+            if (info.get("residue_range") or {}).get("range") == wanted_range:
+                return info
+    return candidates[-1] if candidates else {}
+
+
+def _collapse_piece_mappings(grouped: dict) -> dict:
+    """Keep the legacy scalar map unless one source chain has range pieces."""
+    mapping: dict = {}
+    for author, entries in grouped.items():
+        if len(entries) > 1 and all(piece for piece, _target in entries):
+            mapping[author] = [
+                {
+                    "start": int(piece["start"]),
+                    "start_icode": str(piece.get("start_icode") or "").strip(),
+                    "end": int(piece["end"]),
+                    "end_icode": str(piece.get("end_icode") or "").strip(),
+                    "target": target,
+                }
+                for piece, target in entries
+            ]
+        else:
+            mapping[author] = entries[-1][1]
+    return mapping
+
+
+def _resolve_source_site_mapping(
+    mapping: dict, source_chain: object, resnum: object, icode: object = ""
+) -> object | None:
+    """Resolve a source residue through a scalar or range-piece mapping."""
+    value = (mapping or {}).get(source_chain)
+    if not isinstance(value, list):
+        return value
+    try:
+        site = (int(str(resnum).strip()), str(icode or "").strip())
+    except (TypeError, ValueError):
+        return None
+    targets = {
+        record.get("target")
+        for record in value
+        if (int(record["start"]), str(record.get("start_icode") or ""))
+        <= site
+        <= (int(record["end"]), str(record.get("end_icode") or ""))
+    }
+    targets.discard(None)
+    return next(iter(targets)) if len(targets) == 1 else None
 
 
 def _remap_detected_ptm_chains(
@@ -256,8 +318,9 @@ def _remap_detected_ptm_chains(
         detected_ptm_residues: list of ``{"chain","resnum","name"}`` from
             ``detect_ptm_sites`` — ``chain`` is the **source author chain**
             (full, possibly multi-letter on mmCIF inputs).
-        composite_chain_map: ``{source_author_chain: merged_chain}``.
-        chain_index_map: optional ``{source_author_chain: topology_chain_index}``.
+        composite_chain_map: ``{source_author_chain: merged_chain}``, with a
+            range-piece list as the value when one source chain was split.
+        chain_index_map: optional matching map to topology chain index.
             When supplied, each remapped entry also carries
             ``topology_chain_index`` so that ``phosphorylate_residues`` can
             target the correct chain even when >62-chain merges reuse the PDB
@@ -280,7 +343,9 @@ def _remap_detected_ptm_chains(
     dropped: list[dict] = []
     for ptm in detected_ptm_residues or []:
         original = ptm["chain"]
-        merged_chain = (composite_chain_map or {}).get(original)
+        merged_chain = _resolve_source_site_mapping(
+            composite_chain_map, original, ptm.get("resnum"), ptm.get("icode")
+        )
         if merged_chain is None:
             dropped.append(dict(ptm))
             continue
@@ -290,7 +355,11 @@ def _remap_detected_ptm_chains(
             "resnum": ptm["resnum"],
             "name": ptm["name"],
         }
-        topo_idx = (chain_index_map or {}).get(original)
+        if "icode" in ptm:
+            entry["icode"] = ptm["icode"]
+        topo_idx = _resolve_source_site_mapping(
+            chain_index_map, original, ptm.get("resnum"), ptm.get("icode")
+        )
         if topo_idx is not None:
             entry["topology_chain_index"] = int(topo_idx)
         remapped.append(entry)
@@ -309,7 +378,12 @@ def _remap_disulfide_chains(
         for key in ("cys1", "cys2"):
             cys = bond.get(key)
             if isinstance(cys, dict):
-                merged = (composite_chain_map or {}).get(cys.get("chain"))
+                merged = _resolve_source_site_mapping(
+                    composite_chain_map,
+                    cys.get("chain"),
+                    cys.get("resnum"),
+                    cys.get("icode"),
+                )
                 if merged is not None and merged != cys.get("chain"):
                     cys["original_chain"] = cys.get("chain")
                     cys["chain"] = merged
@@ -323,7 +397,12 @@ def _remap_protonation_state_chains(
     merged chain ids, so the reported summary matches merged.pdb."""
     for entry in protonation_states or []:
         if isinstance(entry, dict):
-            merged = (composite_chain_map or {}).get(entry.get("chain"))
+            merged = _resolve_source_site_mapping(
+                composite_chain_map,
+                entry.get("chain"),
+                entry.get("resnum"),
+                entry.get("icode"),
+            )
             if merged is not None and merged != entry.get("chain"):
                 entry["original_chain"] = entry.get("chain")
                 entry["chain"] = merged
@@ -340,7 +419,10 @@ def _remap_histidine_state_chains(
     out: dict = {}
     for key, state in histidine_states.items():
         chain, sep, rest = str(key).partition(":")
-        merged = (composite_chain_map or {}).get(chain)
+        resnum, _sep, icode = rest.partition(":")
+        merged = _resolve_source_site_mapping(
+            composite_chain_map, chain, resnum, icode
+        )
         out[f"{merged}:{rest}" if (merged and sep) else key] = state
     return out
 

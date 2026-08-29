@@ -68,7 +68,7 @@ from mdclaw.structure.clean_protein import (  # noqa: E402
 from mdclaw.structure.disulfide import _merge_disulfide_pairs, _reconcile_cyx_cys_in_pdb  # noqa: E402
 from mdclaw.structure.merge import _build_nucleic_residue_mapping, _build_residue_mapping_for_type, _enrich_chain_identity_map, _index_prepared_component_sources, merge_structures  # noqa: E402
 from mdclaw.structure.pdb_utils import _apply_component_disposition_to_split_result, _component_disposition_payload, _normalize_prepare_solvent_type  # noqa: E402
-from mdclaw.structure.phosphorylation import _build_source_to_merged_chain_map, _build_source_to_topology_index_map, _remap_detected_ptm_chains, _remap_disulfide_chains, _remap_histidine_state_chains, _remap_protonation_state_chains  # noqa: E402
+from mdclaw.structure.phosphorylation import _build_source_to_merged_chain_map, _build_source_to_topology_index_map, _remap_detected_ptm_chains, _remap_disulfide_chains, _remap_histidine_state_chains, _remap_protonation_state_chains, _resolve_source_site_mapping  # noqa: E402
 from mdclaw.structure.protonation import _normalize_protonation_state_overrides  # noqa: E402
 from mdclaw.structure.split import _inspect_molecules_impl, split_molecules  # noqa: E402
 from mdclaw.structure.terminal_caps import _resolve_terminal_cap_settings  # noqa: E402
@@ -218,7 +218,16 @@ def _remap_missing_residue_record(
     """Make merged.pdb chain identity primary while retaining provenance."""
     source_chain = protein.get("chain_id")
     author_chain = protein.get("author_chain") or source_chain
-    merged_chain = chain_map.get(source_chain, source_chain)
+    piece = protein.get("residue_range") or {}
+    merged_chain = _resolve_source_site_mapping(
+        chain_map,
+        author_chain,
+        piece.get("start"),
+        piece.get("start_icode"),
+    )
+    if merged_chain is None:
+        fallback = chain_map.get(source_chain, source_chain)
+        merged_chain = source_chain if isinstance(fallback, list) else fallback
     remapped = {
         **record,
         "chain_id": merged_chain,
@@ -561,7 +570,12 @@ def _remap_glycan_linkages(
     for link in linkages or []:
         protein = dict(link.get("protein") or {})
         glycan = dict(link.get("glycan") or {})
-        protein_chain = protein_chain_map.get(protein.get("chain"))
+        protein_chain = _resolve_source_site_mapping(
+            protein_chain_map,
+            protein.get("chain"),
+            protein.get("resnum"),
+            protein.get("icode"),
+        )
         glycan_key = (
             str(glycan.get("chain")),
             str(glycan.get("resnum")),
@@ -2566,6 +2580,7 @@ def prepare_complex(
                             result.get("disulfide_bonds", []),
                             ph=ph,
                         )
+                        result["cys_cyx_reconciliation"] = reconcile
                         if (
                             reconcile["renamed_to_cys"]
                             or reconcile["renamed_to_cyx"]
@@ -2579,10 +2594,8 @@ def prepare_complex(
                                 f"{reconcile.get('stripped_hg_from_cyx', 0)} HG atoms stripped, "
                                 f"{reconcile.get('rebuilt_hg_on_demoted_cys', 0)} thiol H atoms rebuilt"
                             )
-                            result["cys_cyx_reconciliation"] = reconcile
                         unresolved = reconcile.get("unresolved_endpoints") or []
                         if unresolved:
-                            result["cys_cyx_reconciliation"] = reconcile
                             result["errors"].extend(
                                 f"CYS/CYX reconciliation could not resolve a "
                                 f"declared disulfide endpoint: {problem}"

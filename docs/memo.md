@@ -7,6 +7,20 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-30 — Range-piece chain remapping preserves residue identity
+
+Source-to-merged-chain and source-to-topology-index maps now resolve a site by
+its source author chain, residue number, and insertion code when one deposited
+chain is delivered as several separate range pieces. Scalar mappings for
+ordinary chains are unchanged. Disulfide, PTM, protonation-summary, glycan-link,
+and missing-residue reporting consumers use the piece-aware resolution.
+
+A SIF replay of 5YC8 chain A with ranges 16–214 and 380–458 under standard
+protonation completed prep successfully: A:96–176 mapped to merged chain A,
+A:413–416 mapped to merged chain B, two disulfides were retained, and CYS/CYX
+reconciliation reported no unresolved endpoints. The full non-slow suite passed
+1780 tests with 7 skipped and 96 deselected; full ruff passed.
+
 ## 2026-08-30 — CYX demotion now rebuilds the reduced-cysteine thiol
 
 The task-016 defect below is fixed at the CYS/CYX reconciliation boundary.
