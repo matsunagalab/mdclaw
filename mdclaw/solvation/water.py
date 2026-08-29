@@ -1,6 +1,7 @@
 """Water/ion solvation tool (``solvate_structure``) and its OpenMM fallback."""
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -48,6 +49,42 @@ from mdclaw.solvation._base import (
     _record_salt_override_fallback,
     _run_packmol_if_needed,
 )
+
+
+def _neutralization_charge_from_diagnostics(text: str) -> int | float | None:
+    """Read packmol-memgen's final solute charge (including charge_pdb_delta)."""
+    matches = re.findall(
+        r"^\s*Charge\s*=\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))",
+        text,
+        flags=re.MULTILINE,
+    )
+    if not matches:
+        return None
+    charge = float(matches[-1])
+    return int(charge) if charge.is_integer() else charge
+
+
+def _count_requested_ions(pdb_path: Path, salt_c: str, salt_a: str) -> dict:
+    """Count the requested monatomic ion species in an output PDB."""
+    def normalize(value: str) -> str:
+        return "".join(c for c in value.upper() if c.isalpha())
+
+    cation_name, anion_name = normalize(salt_c), normalize(salt_a)
+    cation_count = anion_count = 0
+    for line in pdb_path.read_text(errors="replace").splitlines():
+        if not line.startswith(("ATOM  ", "HETATM")):
+            continue
+        residue_name = normalize(line[17:20].strip())
+        if residue_name == cation_name:
+            cation_count += 1
+        elif residue_name == anion_name:
+            anion_count += 1
+    return {
+        "cation_species": salt_c,
+        "cation_count": cation_count,
+        "anion_species": salt_a,
+        "anion_count": anion_count,
+    }
 
 
 def _solvate_with_openmm(
@@ -112,6 +149,7 @@ def _solvate_with_openmm(
             ionicStrength=(saltcon if salt else 0.0) * unit.molar,
             positiveIon=salt_c,
             negativeIon=salt_a,
+            neutralize=salt,
         )
 
         # Written WITHOUT keepIds. addSolvent's solvent chains carry OpenMM's
@@ -162,6 +200,7 @@ def _solvate_with_openmm(
             "total_atoms": atom_count,
             "method": "openmm_fallback",
         }
+        result["ion_counts"] = _count_requested_ions(output_file, salt_c, salt_a)
         result["warnings"].append("Used OpenMM fallback (packmol-memgen not available)")
         logger.info(f"OpenMM solvation complete: {output_file}")
 
@@ -195,9 +234,11 @@ def solvate_structure(
 ) -> dict:
     """Solvate a protein-ligand complex in a water box using packmol-memgen.
     
-    This tool creates a solvated system by surrounding the input structure
-    with water molecules and optionally adding salt ions for physiological
-    conditions.
+    With ``salt=True``, counterions neutralize the prepared solute and bulk ion
+    pairs reach ``saltcon``. The charge comes from the prepared, protonated
+    Amber residue names plus automatic ``charge_pdb_delta`` corrections for
+    ligands, nucleic acids, lipids, and metal ions. Zero counterions is correct
+    when that charge is zero.
     
     The output PDB file feeds into ``build_amber_system``, which uses
     ``openmmforcefields.SystemGenerator`` over an OpenFF Pablo–loaded
@@ -216,17 +257,22 @@ def solvate_structure(
                from the protein's centroid (max_rad). For proteins with asymmetric
                mass distribution, rectangular boxes (cubic=False) can reduce water
                count by 50-70%.
-        salt: Add salt ions (default: True)
-        salt_c: Cation type (default: "Na+"). Options: Na+, K+, etc.
-        salt_a: Anion type (default: "Cl-"). Options: Cl-, etc.
-        saltcon: Salt concentration in Molar (default: 0.15)
-        salt_override: Continue if neutralization requires more ions than
-                      the requested salt concentration. If False, MDClaw first
-                      tries the requested saltcon and automatically reruns once
-                      with packmol-memgen's --salt_override when that is the
-                      only blocker.
+        salt: Enable ion placement (default: True). True adds neutralizing
+              counterions plus bulk salt; False (``--no-salt``) skips both.
+        salt_c: Cation used for counterions and bulk salt (default: "Na+").
+        salt_a: Anion used for counterions and bulk salt (default: "Cl-").
+        saltcon: Bulk-salt concentration in molar (default: 0.15). Keep 0.15
+                 when ions are unspecified or the request only says
+                 "neutralised". Use ``salt=True, saltcon=0`` (CLI:
+                 ``--salt --saltcon 0``) only for explicit counterions only.
+        salt_override: Start with packmol-memgen's ``--salt_override``. False
+                       first tries ``saltcon`` and automatically retries once
+                       with the override only when neutralization needs a
+                       higher ion concentration than requested.
         overwrite: Overwrite existing output files (default: True)
-        notprotonate: Skip protonation by reduce (default: True, assumes pre-protonated)
+        notprotonate: Do not re-run Reduce protonation (default: True). The
+                      prepared input is already protonated, and its Amber
+                      residue names are still used to determine charge.
         preoriented: (Ignored for --solvate mode, automatically set to True by packmol-memgen)
         keepligs: Keep ligands in the structure (default: True). Important when
                   processing protein-ligand complexes.
@@ -248,6 +294,10 @@ def solvate_structure(
             - output_dir: str - Output directory path
             - input_file: str - Input PDB file path
             - parameters: dict - Parameters used for solvation
+            - solute_net_charge_e: int | float | None - Prepared-solute
+              charge used to choose counterions; None if unavailable
+            - ion_counts: dict - Requested cation/anion species and their
+              counts in the output PDB
             - packmol_log: str - Path to packmol log file (if available)
             - statistics: dict - Atom counts, etc.
             - box_dimensions: dict - Box size extracted from CRYST1 record:
@@ -291,6 +341,13 @@ def solvate_structure(
             "salt_override": salt_override,
         },
         "packmol_log": None,
+        "solute_net_charge_e": None,
+        "ion_counts": {
+            "cation_species": salt_c,
+            "cation_count": None,
+            "anion_species": salt_a,
+            "anion_count": None,
+        },
         "statistics": {},
         "errors": [],
         "warnings": []
@@ -461,6 +518,10 @@ def solvate_structure(
                         "salt_cation": salt_c,
                         "salt_anion": salt_a,
                         "salt_concentration_M": saltcon,
+                        "solute_net_charge_e": fallback_result.get(
+                            "solute_net_charge_e"
+                        ),
+                        "ion_counts": fallback_result.get("ion_counts"),
                         "total_atoms": fallback_result.get("statistics", {}).get("total_atoms"),
                     },
                     warnings=fallback_result.get("warnings", []))
@@ -595,10 +656,8 @@ def solvate_structure(
         + metal_charge_delta
         + ligand_charge_delta
     )
-    # --salt controls bulk salt, not neutralization: packmol-memgen adds
-    # counterions in both modes (--nocounter is the opt-out) and sizes them from
-    # its own per-residue charge guess. Apply the curated true-minus-guess
-    # correction to either counterion calculation.
+    # Packmol-memgen estimates prepared-residue charge. Apply the curated
+    # true-minus-guess correction before its counterion calculation.
     auto_charge_delta_applied = bool(auto_charge_delta)
     _reasons = [
         r for r in (
@@ -659,6 +718,8 @@ def solvate_structure(
             args.extend(['--salt', '--saltcon', str(saltcon)])
             if salt_override:
                 _append_salt_override_arg(args)
+        else:
+            args.append('--nocounter')
         
         if overwrite:
             args.append('--overwrite')
@@ -750,6 +811,17 @@ def solvate_structure(
             success_message="Successfully solvated structure",
         )
         if result.get("success") and output_file.exists():
+            diagnostics = _packmol_memgen_diagnostics(
+                out_dir=out_dir,
+                output_name=output_name,
+                proc_result=proc_result,
+            )
+            result["solute_net_charge_e"] = (
+                _neutralization_charge_from_diagnostics(diagnostics)
+            )
+            result["ion_counts"] = _count_requested_ions(
+                output_file, salt_c, salt_a
+            )
             restore_report = _restore_packmol_solute_identity(input_copy, output_file)
             result.update(restore_report)
             result["warnings"].extend(restore_report.get("solute_identity_restore_warnings", []))
@@ -790,6 +862,10 @@ def solvate_structure(
                     "box_shape": "cubic" if _box.get("is_cubic") else "rectangular",
                     "buffer_distance_angstrom": dist,
                     "salt_concentration_M": saltcon,
+                    "solute_net_charge_e": result.get(
+                        "solute_net_charge_e"
+                    ),
+                    "ion_counts": result.get("ion_counts"),
                     "auto_charge_pdb_delta": result.get("auto_charge_pdb_delta"),
                     "auto_charge_pdb_delta_applied": result.get(
                         "auto_charge_pdb_delta_applied"

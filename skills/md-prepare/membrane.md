@@ -134,15 +134,13 @@ mdclaw wait_node --job-dir <job_dir> --node-id <solv_node_id> \
   --timeout-seconds 7200 --poll-interval-seconds 30
 ```
 
-## Packmol race and salt override
+## Packmol race
 
 Membrane embedding runs MDClaw's bounded Packmol retry plan as a 4-lane parallel
 race by default (`--packmol-race-lanes 4`). Use `--packmol-race-lanes 1` only on
-CPU-constrained/shared hosts when preserving sequential behavior matters more
-than wall time. If neutralization needs a higher ion concentration than the
-requested `--saltcon` (default 0.15 M), MDClaw automatically reruns
-packmol-memgen with `--salt_override` without changing the explicit-solvent
-mode, recording a warning plus provenance metadata.
+CPU-constrained/shared hosts when sequential behavior matters more than wall
+time. Ion recipes and `--salt-override` behavior are canonical in
+`skills/common/solvent-regimes.md#ion-intent---exact-flags`.
 
 On retry, keep the requested lipid species, ratios, solute identity, solvent
 regime, and force-field intent fixed. Retries may adjust packing controls,
@@ -162,5 +160,4 @@ AMBER/LIPID residue-name postprocessing).
 | `packmol_imperfect_primary_output_candidate` | Packmol did not reach perfect packing after the bounded retry, but a postprocessed primary PDB was written. | Continue to `build_amber_system` and `run_minimization`; trust it only if topology load, finite energy, and minimization checks pass. |
 | `packmol_packing_quality_failed` + `retry_membrane_with_larger_box` | No perfect packing after bounded adaptive retry; the box is not MD-ready. | Retry only with the CLI-provided larger xy/lateral box suggestion unless geometry was explicitly fixed. |
 | `forced_output_available` metadata | A `*_FORCED` PDB was written during a failed attempt. | Keep for debugging/provenance only; do not feed to topology generation. |
-| `salt_override_required` metadata | Neutralization needs more ions than the requested salt concentration. | Accept the automatic `--salt_override` rerun and record the warning/provenance. |
 | `membrane_embedding_geometry_failed` | Protein/lipid placement failed the post-build PBC-aware bilayer-intersection check. | Retry only after fixing orientation or membrane settings; for beta barrels use `--memembed-beta-barrel` and avoid `--preoriented` unless the input is truly pre-oriented. |

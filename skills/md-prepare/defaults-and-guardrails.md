@@ -21,8 +21,8 @@ Preparation-specific defaults:
 - Ligands are cleaned into `ligand_chemistry`. A charged SMILES/SDF fixes the
   molecular state; an expected `net_charge` selects a matching protonation
   candidate but never changes the molecular graph by itself.
-- Ion retention/exclusion by regime, water-model ion coverage, and the
-  metal-site XML policy: `skills/common/solvent-regimes.md`.
+- Solvation ion recipes, ion retention/exclusion by regime, water-model ion
+  coverage, and the metal-site XML policy: `skills/common/solvent-regimes.md`.
 
 Guardrail handling:
 

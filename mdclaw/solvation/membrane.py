@@ -2018,16 +2018,22 @@ def embed_in_membrane(
                      only when MEMEMBED is the orientation backend.
         memembed_force_span: Pass MEMEMBED ``-l`` to force the target to span
                      the membrane.
-        salt: Add salt ions (default: True)
-        salt_c: Cation type (default: "Na+")
-        salt_a: Anion type (default: "Cl-")
-        saltcon: Salt concentration in Molar (default: 0.15)
-        salt_override: Start with packmol-memgen's --salt_override already
-                       enabled. If False, MDClaw first tries the requested
-                       saltcon and automatically reruns once with
-                       --salt_override when neutralization requires it.
+        salt: Enable ion placement (default: True). True adds neutralizing
+              counterions plus bulk salt; False (``--no-salt``) skips both.
+        salt_c: Cation used for counterions and bulk salt (default: "Na+").
+        salt_a: Anion used for counterions and bulk salt (default: "Cl-").
+        saltcon: Bulk-salt concentration in molar (default: 0.15). Keep 0.15
+                 for an unspecified or merely "neutralised" request; use
+                 ``salt=True, saltcon=0`` (CLI: ``--salt --saltcon 0``) only
+                 for explicit counterions only.
+        salt_override: Start with packmol-memgen's ``--salt_override``. False
+                       first tries ``saltcon`` and automatically retries once
+                       only when neutralization requires a higher concentration.
         overwrite: Overwrite existing output files (default: True)
-        notprotonate: Skip protonation (default: True, assumes pre-protonated)
+        notprotonate: Do not re-run protonation (default: True). The prepared
+                      input remains protonated for charge determination;
+                      packmol uses its Amber residue names plus MDClaw's
+                      nucleic/lipid/metal ``charge_pdb_delta`` corrections.
         keepligs: Keep ligands in the structure (default: True). Important when
                   processing protein-ligand complexes with MEMEMBED.
         nloop: PACKMOL GENCAN loops for individual packing (default: 20)
@@ -2544,7 +2550,7 @@ def embed_in_membrane(
                         water_model=water_model,
                     )
                 )
-                if _compute_membrane_net_charge is not None
+                if salt and _compute_membrane_net_charge is not None
                 else None
             ),
             timeout=patch_builder_timeout,
@@ -2564,13 +2570,7 @@ def embed_in_membrane(
             result["box_dimensions_file"] = patch_result.get("box_dimensions_file")
             result["statistics"].update(patch_result.get("statistics") or {})
             result["statistics"]["method"] = "patch_tile"
-            patch_neutralization = result["statistics"].get(
-                "neutralization",
-                {},
-            )
-            result["parameters"]["neutralization_expected"] = bool(
-                patch_neutralization.get("applied")
-            )
+            result["parameters"]["neutralization_expected"] = True
             result["packing_quality"] = {
                 "passed": True,
                 "backend": "patch-tile",
@@ -2635,9 +2635,7 @@ def embed_in_membrane(
                         "water_model": water_model,
                         "lipid_type": lipids,
                         "is_membrane": True,
-                        "neutralization_expected": bool(
-                            patch_neutralization.get("applied")
-                        ),
+                        "neutralization_expected": True,
                         "salt_concentration_M": saltcon,
                         "salt_override": salt_override,
                         "packing_quality": result.get("packing_quality"),
@@ -2779,6 +2777,8 @@ def embed_in_membrane(
             args.extend(['--salt', '--saltcon', str(saltcon)])
             if salt_override:
                 _append_salt_override_arg(args)
+        else:
+            args.append('--nocounter')
 
         # WORKAROUND: packmol-memgen has a bug where --overwrite causes MEMEMBED to be
         # skipped when preoriented=False. The condition in memembed_align() is:

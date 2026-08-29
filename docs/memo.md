@@ -7,6 +7,21 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-29 — Solvation ion intent and charge are explicit
+
+- The canonical solvent-regime guide now maps absent/neutralised ion wording to
+  the 0.15 M NaCl default, reserves `--saltcon 0` for counterions only, and maps
+  `no ions` to `--no-salt`.
+- `solvate_structure` reports `solute_net_charge_e` and requested-species
+  `ion_counts` in CLI results and solv-node metadata. The charge is parsed from
+  packmol-memgen after its prepared-residue estimate and MDClaw
+  `charge_pdb_delta` corrections; this makes charge 0 plus zero counterions an
+  explicit result instead of an inference from missing PDB ion records.
+- `--no-salt` now passes `--nocounter` (and disables OpenMM neutralization), so
+  it means no ions rather than counterions-only. SIF verification: ruff passed;
+  solvation/guardrail/CLI tests passed (233), as did the membrane and
+  phosphoprotein DAG pipelines on GPU (9).
+
 ## 2026-08-29 — DAG-derived analysis time axes
 
 - Removed the fixed 100 ps assumption from RMSD, distance, and Q CSV output.

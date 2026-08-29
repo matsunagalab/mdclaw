@@ -91,7 +91,8 @@ class TestPipelinePhosphoDag:
             node_id=self.solv_id,
             water_model="opc",
             dist=8.0,
-            salt=False,
+            salt=True,
+            saltcon=0,
         )
         assert result["success"], result.get("errors")
         assert read_node(str(job_dir), self.solv_id)["status"] == "completed"

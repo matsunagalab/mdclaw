@@ -54,10 +54,8 @@ instead of `solvate_structure`. The full procedure (backend, cold-build timing,
 Packmol race, salt override, failure codes) lives in
 `skills/md-prepare/membrane.md`.
 
-### Domain Knowledge
-- Buffer distance 15 A ensures protein doesn't interact with periodic images
-- 0.15M NaCl mimics physiological ionic strength
-- OPC is a 4-point model with best accuracy for ff19SB
+For exact user wording -> ion flags, automatic-charge semantics, and result
+fields, use `skills/common/solvent-regimes.md#ion-intent---exact-flags`.
 
 ---
 

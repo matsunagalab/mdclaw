@@ -144,7 +144,8 @@ signature, update the relevant section here and the matching skill examples.
 - `solvate_structure(...)`: explicit water box generation. In node mode the PDB
   resolves from the nearest prep ancestor. It first tries the requested salt
   concentration and records a warning if it must rerun packmol-memgen with
-  `--salt_override` to satisfy neutralization.
+  `--salt_override` to satisfy neutralization. Results expose the prepared
+  `solute_net_charge_e` and output-PDB `ion_counts` at top level.
 - `embed_in_membrane(...)`: membrane embedding and solvation.
   Defaults to `membrane_backend="patch-tile"`: build a small composition-keyed
   lipid patch once, equilibrate it under PBC (`build_amber_system` +

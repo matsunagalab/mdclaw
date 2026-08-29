@@ -1014,6 +1014,38 @@ def _install_fake_memgen(monkeypatch):
     return calls
 
 
+def test_solvate_structure_no_salt_disables_counterions(tmp_path, monkeypatch):
+    pdb = tmp_path / "protein.pdb"
+    pdb.write_text(_pdb_atom(1, "CA", "ALA", "A", 1, "C") + "END\n")
+    calls = _install_fake_memgen(monkeypatch)
+
+    result = solv_water.solvate_structure(
+        pdb_file=str(pdb),
+        output_dir=str(tmp_path),
+        output_name="solvated",
+        salt=False,
+        water_model="opc",
+    )
+
+    assert result["success"] is True
+    assert "--salt" not in calls[0]
+    assert "--nocounter" in calls[0]
+
+
+def test_count_requested_ions_accepts_pdb_and_cli_names(tmp_path):
+    pdb = tmp_path / "ions.pdb"
+    pdb.write_text(
+        _pdb_hetatm(1, "NA", "NA", "I", 1, "Na")
+        + _pdb_hetatm(2, "Cl-", "Cl-", "I", 2, "Cl")
+        + "END\n"
+    )
+
+    counts = solv_water._count_requested_ions(pdb, "Na+", "Cl-")
+
+    assert counts["cation_count"] == 1
+    assert counts["anion_count"] == 1
+
+
 def _nucleic_strand_pdb(path, resnames, chains):
     """A strand per chain whose 5' residue carries O5' but no phosphate.
 
@@ -1045,9 +1077,8 @@ def test_solvate_structure_applies_dna_charge_delta_without_bulk_salt(
     tmp_path,
     monkeypatch,
 ):
-    # --salt asks for bulk salt; packmol-memgen adds neutralizing counterions
-    # either way and sizes them from its own charge estimate. Gating the
-    # curated correction on --salt left neutralize-only systems non-neutral.
+    # --saltcon 0 asks for counterions without bulk pairs. The curated charge
+    # correction must still reach packmol-memgen's neutralization calculation.
     pdb = _nucleic_strand_pdb(
         tmp_path / "dna.pdb", ["DC", "DG", "DA"], [("A", 1), ("B", 13)]
     )
@@ -1057,13 +1088,15 @@ def test_solvate_structure_applies_dna_charge_delta_without_bulk_salt(
         pdb_file=str(pdb),
         output_dir=str(tmp_path),
         output_name="solvated",
-        salt=False,
+        salt=True,
+        saltcon=0,
         water_model="opc",
     )
 
     assert result["success"] is True
     argv = calls[0]
-    assert "--salt" not in argv
+    assert "--salt" in argv
+    assert argv[argv.index("--saltcon") + 1] == "0"
     assert argv[argv.index("--charge_pdb_delta") + 1] == "2"
     assert result["auto_charge_pdb_delta"] == 2
     assert result["auto_charge_pdb_delta_applied"] is True
@@ -1080,13 +1113,15 @@ def test_solvate_structure_applies_rna_charge_delta_without_bulk_salt(
         pdb_file=str(pdb),
         output_dir=str(tmp_path),
         output_name="solvated",
-        salt=False,
+        salt=True,
+        saltcon=0,
         water_model="opc",
     )
 
     assert result["success"] is True
     argv = calls[0]
-    assert "--salt" not in argv
+    assert "--salt" in argv
+    assert argv[argv.index("--saltcon") + 1] == "0"
     assert argv[argv.index("--charge_pdb_delta") + 1] == "1"
     assert result["auto_charge_pdb_delta_applied"] is True
 
@@ -1100,12 +1135,16 @@ def test_solvate_structure_protein_only_passes_no_charge_delta(
     pdb = tmp_path / "protein.pdb"
     pdb.write_text(_pdb_atom(1, "CA", "ALA", "A", 1, "C") + "END\n")
     calls = _install_fake_memgen(monkeypatch)
+    monkeypatch.setattr(
+        solv_water, "_packmol_memgen_diagnostics", lambda **_: "Charge = 0"
+    )
 
     result = solv_water.solvate_structure(
         pdb_file=str(pdb),
         output_dir=str(tmp_path),
         output_name="solvated",
-        salt=False,
+        salt=True,
+        saltcon=0,
         water_model="opc",
     )
 
@@ -1113,15 +1152,21 @@ def test_solvate_structure_protein_only_passes_no_charge_delta(
     assert "--charge_pdb_delta" not in calls[0]
     assert result["auto_charge_pdb_delta"] == 0
     assert result["auto_charge_pdb_delta_applied"] is False
+    assert result["solute_net_charge_e"] == 0
+    assert result["ion_counts"] == {
+        "cation_species": "Na+",
+        "cation_count": 0,
+        "anion_species": "Cl-",
+        "anion_count": 0,
+    }
 
 
 def test_solvate_structure_passes_counterion_species_without_bulk_salt(
     tmp_path,
     monkeypatch,
 ):
-    # packmol-memgen sizes neutralizing counterions with salt_c whether or not
-    # --salt is given, and defaults it to K+. Withholding the flag made
-    # solvate_structure's own Na+ default a fiction.
+    # packmol-memgen defaults its counterion to K+. The neutralize-only recipe
+    # must still pass solvate_structure's Na+ default explicitly.
     pdb = tmp_path / "protein.pdb"
     pdb.write_text(_pdb_atom(1, "CA", "ALA", "A", 1, "C") + "END\n")
     calls = _install_fake_memgen(monkeypatch)
@@ -1130,13 +1175,15 @@ def test_solvate_structure_passes_counterion_species_without_bulk_salt(
         pdb_file=str(pdb),
         output_dir=str(tmp_path),
         output_name="solvated",
-        salt=False,
+        salt=True,
+        saltcon=0,
         water_model="opc",
     )
 
     assert result["success"] is True
     argv = calls[0]
-    assert "--salt" not in argv
+    assert "--salt" in argv
+    assert argv[argv.index("--saltcon") + 1] == "0"
     assert argv[argv.index("--salt_c") + 1] == "Na+"
     assert argv[argv.index("--salt_a") + 1] == "Cl-"
 
@@ -2166,7 +2213,8 @@ def test_embed_in_membrane_patch_tile_neutralizes_net_charge(tmp_path, monkeypat
         lipids="POPC",
         ratio="1",
         preoriented=True,
-        salt=False,
+        salt=True,
+        saltcon=0,
         membrane_backend="patch-tile",
         membrane_cache_mode="auto",
         membrane_cache_dir=str(tmp_path / "cache"),
