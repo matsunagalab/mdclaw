@@ -34,6 +34,15 @@ environment behind `mdclaw <tool>`.
 
 ## Build And Test
 
+The amd64 image ships the membrane-patch cache that lives in the package
+(`mdclaw/data/membrane_patches`, OPC and TIP3P) and asserts at build time that
+both water models are present; it no longer runs a build-time warm-up. The
+image built 2026-08-29 had shipped an empty warm-up directory because that step
+hid its own failure behind `|| echo WARNING`, so every membrane run without a
+checkout overlay paid a 30-40 minute cold build. Regenerate the packaged
+patches with `scripts/warmup_membrane_cache.py --out mdclaw/data/membrane_patches`
+(defaults to TIP3P; pass `--water-model opc` for the OPC set) and commit them.
+
 ```bash
 docker build -f container/Dockerfile -t mdclaw:latest .
 docker build -f container/Dockerfile --build-arg BIOEMU_DEVICE=cuda -t mdclaw:latest .

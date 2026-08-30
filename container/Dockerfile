@@ -264,16 +264,20 @@ ENV LD_LIBRARY_PATH="/opt/mdclaw/lib:${LD_LIBRARY_PATH}"
 # filesystem and bind-mount it; otherwise it defaults to
 # ~/.cache/mdclaw/surrogates on the host bind.
 
-# Pre-build representative membrane patches (patch-tile backend) into a
-# read-only bundled cache so common compositions (single lipids, POPC:CHL1,
-# POPC:POPE:CHL1, raft mixtures) hit at runtime instead of triggering a cold
-# packmol pack + OpenMM equilibration. MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR tells
-# the runtime patch-tile backend where to find them.
-ENV MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR="/opt/mdclaw/share/membrane_patches"
-COPY scripts/warmup_membrane_cache.py /opt/mdclaw/share/warmup_membrane_cache.py
-RUN /opt/mdclaw/bin/python /opt/mdclaw/share/warmup_membrane_cache.py \
-        --out "$MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR" \
-    || echo "WARNING: membrane patch warm-up incomplete; runtime will cold-build on miss."
+# The representative membrane patches ship in the package itself
+# (mdclaw/data/membrane_patches, both OPC and TIP3P), so the image needs no
+# build-time warm-up: a cold packmol pack + OpenMM equilibration takes 30-40
+# minutes and the image built 2026-08-29 shipped an EMPTY warm-up directory
+# because the build-time run failed behind a `|| echo WARNING`. The bundled
+# lookup falls back to the packaged directory when the env var names nothing,
+# so the check below fails the build if the packaged patches are missing.
+RUN /opt/mdclaw/bin/python -c "\
+import pathlib, mdclaw; \
+root = pathlib.Path(mdclaw.__file__).parent / 'data' / 'membrane_patches'; \
+manifests = sorted(root.glob('*/*/manifest.json')); \
+water = {__import__('json').load(m.open())['parameters']['water_model'] for m in manifests}; \
+print('bundled membrane patches:', len(manifests), sorted(water)); \
+assert len(manifests) >= 12 and {'opc', 'tip3p'} <= water, (len(manifests), water)"
 
 # Copy entrypoint
 COPY container/scripts/entrypoint.sh /opt/mdclaw/bin/entrypoint.sh
