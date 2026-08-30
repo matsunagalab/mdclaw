@@ -1,30 +1,77 @@
 #!/usr/bin/env bash
 # Install repo-local Agent Skills entrypoints for Claude, Pi, OpenCode, Codex,
 # and other harnesses that discover mirrored skill directories.
+#
+# Skills always come from this checkout's skills/ directory. They are installed
+# into the project you run the script from (the current working directory), so
+# the same checkout can serve several projects; --user installs them under
+# $HOME instead, for every project of that user.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MODE="symlink"
+TARGET=""
 
-if [ "${1:-}" = "--copy" ]; then
-    MODE="copy"
-elif [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+usage() {
     cat <<'USAGE'
-Usage: scripts/install-agent-skills.sh [--copy]
+Usage: scripts/install-agent-skills.sh [--copy] [--user | --target DIR | DIR]
 
-Default mode creates relative symlinks under .agents/skills, .claude/skills,
-and .codex/skills.
+Installs the skills from this checkout into a project directory: DIR if given,
+otherwise the current working directory. Mirrors are written to
+DIR/.agents/skills, DIR/.claude/skills, and DIR/.codex/skills.
+
+Use --user to install into the user-level directories under $HOME instead, so
+the skills are visible to every project of that user.
+
+Default mode creates symlinks (relative inside this checkout, absolute when
+installing into another project).
 Use --copy for tools or filesystems that do not follow symlinks.
 USAGE
-    exit 0
-fi
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --copy)
+            MODE="copy"
+            ;;
+        --user)
+            [ -n "${HOME:-}" ] || { echo "--user needs HOME to be set" >&2; exit 2; }
+            [ -z "$TARGET" ] || { echo "Target directory given twice" >&2; exit 2; }
+            TARGET="$HOME"
+            ;;
+        --target)
+            [ $# -ge 2 ] || { echo "--target needs a directory" >&2; exit 2; }
+            [ -z "$TARGET" ] || { echo "Target directory given twice" >&2; exit 2; }
+            TARGET="$2"
+            shift
+            ;;
+        --help | -h)
+            usage
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+        *)
+            [ -z "$TARGET" ] || { echo "Target directory given twice" >&2; exit 2; }
+            TARGET="$1"
+            ;;
+    esac
+    shift
+done
+
+[ -n "$TARGET" ] || TARGET="$PWD"
+[ -d "$TARGET" ] || { echo "No such directory: $TARGET" >&2; exit 2; }
+INSTALL_ROOT="$(cd "$TARGET" && pwd)"
 
 SRC_ROOT="$REPO_ROOT/skills"
 DST_ROOTS=(
-    "$REPO_ROOT/.agents/skills"
-    "$REPO_ROOT/.claude/skills"
-    "$REPO_ROOT/.codex/skills"
+    "$INSTALL_ROOT/.agents/skills"
+    "$INSTALL_ROOT/.claude/skills"
+    "$INSTALL_ROOT/.codex/skills"
 )
 
 for dst_root in "${DST_ROOTS[@]}"; do
@@ -43,10 +90,12 @@ for skill_dir in "$SRC_ROOT"/*; do
         if [ "$MODE" = "copy" ]; then
             mkdir -p "$dst"
             cp -R "$skill_dir"/. "$dst"/
-        else
+        elif [ "$INSTALL_ROOT" = "$REPO_ROOT" ]; then
             ln -s "../../skills/$name" "$dst"
+        else
+            ln -s "$SRC_ROOT/$name" "$dst"
         fi
     done
 done
 
-echo "Installed Agent Skills in .agents/skills, .claude/skills, and .codex/skills ($MODE mode)."
+echo "Installed Agent Skills from $SRC_ROOT into $INSTALL_ROOT/{.agents,.claude,.codex}/skills ($MODE mode)."
