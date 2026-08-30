@@ -7,6 +7,27 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-30 — Image and SIF rebuilt; the bundled membrane patches are actually in them now
+
+`ghcr.io/matsunagalab/mdclaw:{latest,0.6.8,e92bbe80da5b}`, digest
+`sha256:99f8d9ce5db9cf92bfd791796b6ac7b843994b5705f3cb765641d8b0c6f63eb0`; local
+`mdclaw.sif` replaced (previous kept as `mdclaw.sif.20260829.bak`).
+
+The 2026-08-29 image shipped `/opt/mdclaw/share/membrane_patches` **empty**: the
+build-time warm-up failed and `|| echo WARNING` swallowed it, so anyone running
+the image without a checkout overlay paid a 30-40 minute cold build on every
+membrane composition. The warm-up step is gone; the patches ride in the package
+(`mdclaw/data/membrane_patches`, 7 OPC + 6 TIP3P) and a build-time assertion now
+fails the image if fewer than twelve manifests or either water model is missing.
+It printed `bundled membrane patches: 13 ['opc', 'tip3p']` on this build.
+
+Verified on the finished artifacts: `test-container.sh` 24/24 with GPU on both the
+image and the SIF; inside the SIF, with no checkout on `PYTHONPATH`, the baked
+package resolves its own `data/membrane_patches` and both `DPPC+tip3p` and
+`DPPC+opc` probe as cache hits. This image also carries every MDClaw fix from
+`580d80d` through `d105ea0` (ion intent, range-piece components, insertion-code
+solvation, glycan classification, thiol rebuild, piece-aware remap).
+
 ## 2026-08-30 — Range-piece chain remapping preserves residue identity
 
 Source-to-merged-chain and source-to-topology-index maps now resolve a site by
