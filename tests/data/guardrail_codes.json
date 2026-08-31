@@ -21,6 +21,7 @@
   "boltz_source_attach_failed",
   "comparison_requires_two_analyze",
   "complex_missing_residue_repair_failed",
+  "container_command_in_script",
   "container_overlay_source_unavailable",
   "container_source_mode_invalid",
   "continue_from_invalid_node_type",

@@ -197,6 +197,50 @@ class TestSubmitJob:
         assert "#SBATCH --job-name=wrap_test" in content
         assert "#SBATCH --gpus=1" in content
 
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_container_commands_refused_before_sbatch(
+        self, mock_run, mock_check, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+
+        for command, offending in [
+            ("singularity exec -nv image.sif mdclaw run", "singularity exec"),
+            ("/usr/bin/apptainer run image.sif mdclaw run", "apptainer run"),
+            ("apptainer shell image.sif", "apptainer shell"),
+            ("docker run --rm image mdclaw run", "docker run"),
+        ]:
+            result = submit_job(script=command, output_dir=str(tmp_path))
+
+            assert result["success"] is False
+            assert result["code"] == "container_command_in_script"
+            assert offending in result["message"]
+            assert "configure_container" in " ".join(result["hints"])
+
+        mock_check.assert_not_called()
+        mock_run.assert_not_called()
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_container_command_escape_hatch_warns_about_single_hyphen_nv(
+        self, mock_run, mock_check, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 10000\n")
+
+        result = submit_job(
+            script="singularity exec -nv image.sif mdclaw run",
+            allow_container_command=True,
+            output_dir=str(tmp_path),
+        )
+
+        assert result["success"] is True
+        assert "singularity exec" in result["message"]
+        assert "'-nv'" in result["message"]
+        assert "'--nv'" in result["message"]
+        assert result["message"] in result["warnings"]
+        mock_run.assert_called_once()
+
     @patch("mdclaw.slurm._base.check_external_tool", return_value=False)
     def test_sbatch_not_available(self, mock_check):
         result = submit_job(script="echo test")
@@ -1999,6 +2043,28 @@ class TestSubmitArrayJob:
         records = _read_job_records()
         ids = [r["job_id"] for r in records]
         assert ids == ["99999_0", "99999_1", "99999_2"]
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_array_container_command_refused_before_sbatch(
+        self, mock_run, mock_check, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+
+        result = submit_array_job(
+            tasks=[{
+                "job_dir": str(tmp_path / "unused_job"),
+                "node_id": "prod_001",
+                "command": "docker run image mdclaw run_production",
+            }],
+            output_dir=str(tmp_path),
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "container_command_in_script"
+        assert "docker run" in result["message"]
+        mock_check.assert_not_called()
+        mock_run.assert_not_called()
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
     @patch("mdclaw.slurm._base.run_command")

@@ -464,11 +464,13 @@ signature, update the relevant section here and the matching skill examples.
 - `submit_job(...)`: submit one SLURM job and link it to an optional DAG node.
   When the run command requests a GPU OpenMM platform (`--platform CUDA`/
   `OpenCL`) but no `--gpus`/`--gres` is given, it auto-sets `--gpus 1` (warning
-  emitted) so a CUDA run is never scheduled on a CPU-only node.
+  emitted) so a CUDA run is never scheduled on a CPU-only node. Container
+  runtime commands in the payload are refused unless `allow_container_command`
+  is explicitly set; `configure_container` normally owns that wrapper.
 - `submit_array_job(...)`: submit one SLURM array where each task maps to a DAG
   node command. Shares the same `--platform`-driven GPU autodetection as
   `submit_job`; a single GPU-platform task command flips the whole array to
-  `--gpus 1`.
+  `--gpus 1`, and it applies the same container-command guard.
 - `check_job(...)`: sync SLURM state and reflect failures into linked nodes.
 - `list_jobs(...)`, `cancel_job(...)`, `check_job_log(...)`: operational
   helpers.

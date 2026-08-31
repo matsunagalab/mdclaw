@@ -11,6 +11,8 @@ these tools only handle the SLURM layer.
 from __future__ import annotations
 
 import json
+import re
+import shlex
 import subprocess
 import uuid
 from datetime import datetime, timezone
@@ -37,6 +39,91 @@ from mdclaw.slurm.sbatch import _generate_array_sbatch_script, _generate_sbatch_
 from mdclaw.slurm.tracker import _append_job_record
 
 
+_CONTAINER_RUNTIME_ACTIONS = {
+    "singularity": {"exec", "run", "shell"},
+    "apptainer": {"exec", "run", "shell"},
+    "docker": {"run"},
+}
+_CONTAINER_COMMAND_PREFIXES = {
+    "command", "do", "elif", "else", "env", "exec", "if", "nohup",
+    "srun", "sudo", "then", "time", "until", "while",
+}
+
+
+def _find_container_command(command: str) -> Optional[tuple[str, bool]]:
+    """Return an invoked container command and whether it uses bare ``-nv``."""
+    for line in command.replace("\\\n", " ").splitlines():
+        for segment in re.split(r"(?:&&|\|\||[;&|()])", line):
+            try:
+                tokens = shlex.split(segment, comments=True)
+            except ValueError:
+                continue
+
+            index = 0
+            while index < len(tokens):
+                token = tokens[index]
+                name, separator, _value = token.partition("=")
+                if (
+                    (separator and name.isidentifier())
+                    or token in _CONTAINER_COMMAND_PREFIXES
+                    or token.startswith("-")
+                ):
+                    index += 1
+                    continue
+                break
+            if index >= len(tokens):
+                continue
+
+            runtime = Path(tokens[index]).name
+            actions = _CONTAINER_RUNTIME_ACTIONS.get(runtime)
+            action_index = index + 1
+            while action_index < len(tokens) and tokens[action_index].startswith("-"):
+                action_index += 1
+            if actions and action_index < len(tokens) and tokens[action_index] in actions:
+                action = tokens[action_index]
+                uses_single_hyphen_nv = (
+                    runtime in {"singularity", "apptainer"}
+                    and "-nv" in tokens[index + 1:]
+                )
+                return f"{runtime} {action}", uses_single_hyphen_nv
+
+    return None
+
+
+def _check_container_command(
+    field: str,
+    command: str,
+    *,
+    allow_container_command: bool,
+) -> tuple[Optional[dict], Optional[str]]:
+    """Reject a container runtime in a submitted payload unless explicitly allowed."""
+    detected = _find_container_command(command)
+    if not detected:
+        return None, None
+
+    offending, uses_single_hyphen_nv = detected
+    if not allow_container_command:
+        return create_validation_error(
+            field,
+            f"container runtime command '{offending}' is not allowed in the submitted payload",
+            expected="a payload command without its own container runtime wrapper",
+            actual=f"offending token: {offending}",
+            hints=[
+                "Pass only the payload command because configure_container supplies "
+                "the container image and execution flags.",
+                "For a deliberate custom invocation, pass --allow-container-command.",
+            ],
+            code="container_command_in_script",
+        ), None
+
+    if uses_single_hyphen_nv:
+        return None, (
+            f"Allowed custom container command '{offending}', but it contains '-nv' "
+            "(single hyphen); Singularity/Apptainer GPU passthrough uses '--nv'."
+        )
+    return None, None
+
+
 def submit_job(
     script: str,
     job_name: Optional[str] = None,
@@ -57,6 +144,7 @@ def submit_job(
     environment: Optional[str] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
+    allow_container_command: bool = False,
 ) -> dict:
     """Submit a job to SLURM via sbatch.
 
@@ -102,6 +190,9 @@ def submit_job(
             submission is not rolled back.
         node_id: Optional node ID within ``job_dir`` whose ``node.json``
             receives the SLURM metadata.
+        allow_container_command: Permit a deliberate container runtime command
+            in ``script``. By default it is refused because
+            ``configure_container`` owns the container wrapper and flags.
 
     Returns:
         dict with:
@@ -147,6 +238,18 @@ def submit_job(
         if node_error:
             return {**result, **node_error}
 
+    command = _resolve_job_command(script)
+    container_error, container_message = _check_container_command(
+        "script",
+        command,
+        allow_container_command=allow_container_command,
+    )
+    if container_error:
+        return {**result, **container_error}
+    if container_message:
+        result["message"] = container_message
+        result["warnings"].append(container_message)
+
     if not _base.check_external_tool("sbatch"):
         return {**result, **create_tool_not_available_error(
             "sbatch", "SLURM is not installed or not in PATH."
@@ -177,10 +280,6 @@ def submit_job(
     if not qos and defaults.get("qos"):
         qos = defaults["qos"]
         result["warnings"].append(f"Using policy default qos: {qos}")
-
-    # Resolve the command early so GPU-platform autodetection can drive both
-    # partition selection and policy validation below.
-    command = _resolve_job_command(script)
 
     # Auto-request a GPU when the run command asks for a GPU OpenMM platform
     # but no GPU resource was specified. Keeps --platform CUDA and --gpus in
@@ -439,6 +538,7 @@ def submit_array_job(
     qos: Optional[str] = None,
     extra_sbatch: Optional[str] = None,
     environment: Optional[str] = None,
+    allow_container_command: bool = False,
 ) -> dict:
     """Submit a SLURM job array where each task maps 1:1 to a DAG node.
 
@@ -483,6 +583,9 @@ def submit_array_job(
         output_dir: Directory for logs and the generated sbatch script.
             Log files use ``%A_%a`` so each task lands in its own file.
         account, qos, extra_sbatch, environment: Same as ``submit_job``.
+        allow_container_command: Permit deliberate container runtime commands
+            in task payloads. By default they are refused because
+            ``configure_container`` owns the container wrapper and flags.
 
     Returns:
         dict with:
@@ -532,6 +635,17 @@ def submit_array_job(
                         hints=["Provide all three fields for every task."],
                     ),
                 }
+        container_error, container_message = _check_container_command(
+            f"tasks[{idx}].command",
+            str(task["command"]),
+            allow_container_command=allow_container_command,
+        )
+        if container_error:
+            return {**result, **container_error}
+        if container_message:
+            scoped_message = f"tasks[{idx}].command: {container_message}"
+            result["message"] = scoped_message
+            result["warnings"].append(scoped_message)
 
     if not _base.check_external_tool("sbatch"):
         return {**result, **create_tool_not_available_error(
