@@ -7,6 +7,22 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-08-31 — SLURM submit rejects container commands inside payloads
+
+`submit_job` and `submit_array_job` now refuse payloads that invoke
+Singularity/Apptainer `exec`, `run`, or `shell`, or `docker run`, before checking
+or calling `sbatch`. The structured failure uses
+`container_command_in_script`, names the offending command, and directs the
+caller to pass the payload alone because `configure_container` owns the image
+and flags. A deliberate caller can opt out with `--allow-container-command`;
+if that command contains the campaign's erroneous single-hyphen `-nv`, the
+successful result explicitly warns that GPU passthrough is `--nv`.
+
+The existing HPC skill already states the same host/container ownership rule,
+so it was left unchanged. SIF-overlay verification passed the SLURM and
+guardrail-registry tests (125 passed), full ruff, and the full non-slow suite
+(1783 passed, 7 skipped, 96 deselected).
+
 ## 2026-08-30 — Image and SIF rebuilt; the bundled membrane patches are actually in them now
 
 `ghcr.io/matsunagalab/mdclaw:{latest,0.6.8,e92bbe80da5b}`, digest
