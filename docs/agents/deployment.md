@@ -115,36 +115,12 @@ scripts/install-agent-skills.sh
 scripts/mdclaw-doctor.sh
 ```
 
-The mirrors are written into the directory you run the script from. Run it in
-the checkout to wire up the checkout itself, or in another project — or pass
-that project as an argument — to serve that project from this checkout:
-
-```bash
-cd ~/work/other-project
-/path/to/mdclaw/scripts/install-agent-skills.sh
-# or, from anywhere:
-/path/to/mdclaw/scripts/install-agent-skills.sh ~/work/other-project
-```
-
-`--user` installs the same mirrors under `$HOME` (`~/.agents/skills`,
-`~/.claude/skills`, `~/.codex/skills`) instead, making the skills visible to
-every project of that user:
-
-```bash
-/path/to/mdclaw/scripts/install-agent-skills.sh --user
-```
-
-Default mode creates symlinks, relative inside the checkout and absolute when
-installing into another project:
+Default mode creates relative symlinks:
 
 ```text
-# inside the checkout
 .agents/skills/md-prepare -> ../../skills/md-prepare
 .claude/skills/md-prepare -> ../../skills/md-prepare
 .codex/skills/md-prepare -> ../../skills/md-prepare
-
-# in another project
-.claude/skills/md-prepare -> /path/to/mdclaw/skills/md-prepare
 ```
 
 If symlinks are not supported:

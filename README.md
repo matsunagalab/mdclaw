@@ -82,12 +82,9 @@ from `ghcr.io/matsunagalab/mdclaw` using Singularity/Apptainer or Docker.
 | Direct CLI or development | Skills are optional | Use Conda or a packaged runtime below |
 
 The installer creates discovery mirrors under `.agents/skills`,
-`.claude/skills`, and `.codex/skills` of the directory you run it from, so
-running it inside another project installs the skills there; `skills/` in this
-checkout remains the only source of truth. Pass a directory
-(`scripts/install-agent-skills.sh ~/work/other-project`) to install elsewhere,
-`--user` to install user-level mirrors under `$HOME` for every project, and
-`--copy` on filesystems that do not support symlinks.
+`.claude/skills`, and `.codex/skills`; `skills/` remains the only source of
+truth. Use `scripts/install-agent-skills.sh --copy` on filesystems that do not
+support symlinks.
 
 ### Choose One Runtime
 
