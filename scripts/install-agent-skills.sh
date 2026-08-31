@@ -12,10 +12,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MODE="symlink"
 TARGET=""
+# Dropped into every copied skill so a later run can tell its own copies apart
+# from a same-named directory that belongs to someone else.
+MARKER=".mdclaw-installed"
 
 usage() {
     cat <<'USAGE'
-Usage: scripts/install-agent-skills.sh [--copy] [--user | --target DIR | DIR]
+Usage: scripts/install-agent-skills.sh [--copy] [--user | DIR]
 
 Installs the skills from this checkout into a project directory: DIR if given,
 otherwise the current working directory. Mirrors are written to
@@ -40,12 +43,6 @@ while [ $# -gt 0 ]; do
             [ -z "$TARGET" ] || { echo "Target directory given twice" >&2; exit 2; }
             TARGET="$HOME"
             ;;
-        --target)
-            [ $# -ge 2 ] || { echo "--target needs a directory" >&2; exit 2; }
-            [ -z "$TARGET" ] || { echo "Target directory given twice" >&2; exit 2; }
-            TARGET="$2"
-            shift
-            ;;
         --help | -h)
             usage
             exit 0
@@ -68,16 +65,39 @@ done
 INSTALL_ROOT="$(cd "$TARGET" && pwd)"
 
 SRC_ROOT="$REPO_ROOT/skills"
+# Links inside this checkout are relative so the committed mirrors stay valid in
+# every clone; links into another project must be absolute.
+if [ "$INSTALL_ROOT" = "$REPO_ROOT" ]; then
+    LINK_ROOT="../../skills"
+else
+    LINK_ROOT="$SRC_ROOT"
+fi
+# True when the path is a mirror this installer made: a link into this checkout's
+# skills/, or a copied directory carrying the marker. Anything else belongs to
+# whoever put it there -- destinations can be shared (--user, another project).
+is_ours() {
+    if [ -L "$1" ]; then
+        case "$(readlink "$1")" in
+            "$SRC_ROOT"/* | ../../skills/*) return 0 ;;
+        esac
+        return 1
+    fi
+    [ -e "$1/$MARKER" ]
+}
+
 DST_ROOTS=(
     "$INSTALL_ROOT/.agents/skills"
     "$INSTALL_ROOT/.claude/skills"
     "$INSTALL_ROOT/.codex/skills"
 )
 
+# Drop links to skills that no longer exist, left by earlier runs.
 for dst_root in "${DST_ROOTS[@]}"; do
     mkdir -p "$dst_root"
     while IFS= read -r link; do
-        [ -e "$link" ] || rm -f "$link"
+        if [ ! -e "$link" ] && is_ours "$link"; then
+            rm -f "$link"
+        fi
     done < <(find "$dst_root" -maxdepth 1 -type l -print)
 done
 
@@ -86,14 +106,19 @@ for skill_dir in "$SRC_ROOT"/*; do
     name="$(basename "$skill_dir")"
     for dst_root in "${DST_ROOTS[@]}"; do
         dst="$dst_root/$name"
+        if [ -e "$dst" ] || [ -L "$dst" ]; then
+            is_ours "$dst" || {
+                echo "Refusing to replace $dst: not installed by this script" >&2
+                exit 2
+            }
+        fi
         rm -rf "$dst"
         if [ "$MODE" = "copy" ]; then
             mkdir -p "$dst"
             cp -R "$skill_dir"/. "$dst"/
-        elif [ "$INSTALL_ROOT" = "$REPO_ROOT" ]; then
-            ln -s "../../skills/$name" "$dst"
+            : > "$dst/$MARKER"
         else
-            ln -s "$SRC_ROOT/$name" "$dst"
+            ln -s "$LINK_ROOT/$name" "$dst"
         fi
     done
 done
