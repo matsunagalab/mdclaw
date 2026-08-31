@@ -579,6 +579,51 @@ reported component sizes and OpenMM chain residue counts were `[190, 79]`, the
 173C-183N peptide bond was present, and no 227-365 bond was present. Focused
 SIF-overlay tests passed 38 cases; full ruff passed; the full non-slow suite
 passed 1789 tests with 7 skipped and 96 deselected.
+## 2026-09-01 — PR #15 merged: the skill installer targets $PWD, with a known ownership gap
+
+`scripts/install-agent-skills.sh` used to hardcode the checkout's own mirrors as
+the destination, so one checkout could only wire up itself. It now installs into
+the directory it is run from, letting one checkout serve several projects. Links
+stay relative when the destination is the checkout (those mirrors are committed
+and must resolve in every clone) and are absolute elsewhere. `--copy` unchanged.
+Squash-merged as `69bb055` rather than a merge commit because two of the four
+branch commits reverted the other two.
+
+Verified before merging, on a fake checkout with the real `skills/` and a
+separate project:
+
+```
+in-checkout links   byte-identical to the committed .agents/.claude mirrors (20/20)
+cross-project       10/10 absolute links resolve, SKILL.md readable through them
+--copy              10 real directories, 0 symlinks
+reinstall           idempotent
+tests               tests/test_deployment_scripts.py 6 passed
+merge               clean against main
+```
+
+**Known gap, accepted at merge time.** In a shared destination the installer
+still `rm -rf`s a same-named foreign skill directory and prunes broken symlinks
+it did not create — silently, exit 0, no warning. Reproduced: a project-level
+`.claude/skills/common/SKILL.md` belonging to another skill source was replaced
+by an MDClaw symlink and its content lost. Scope is narrow and worth stating
+precisely: **settings are never touched** (`settings.json`, `CLAUDE.md`,
+`agents/`, `plugins/` all survived a run with `$PWD = $HOME`); only
+`.agents|.claude|.codex/skills/` entries are at risk, and of the ten skills only
+`common` is a realistic collision. Broken links are removed regardless of name.
+
+None of this was possible on main, where the destination was always inside the
+checkout and every entry there was this script's own output. The branch's third
+commit (`e28c6221`) added exactly the right guard — `is_ours()`: a link into this
+checkout's `skills/`, or a copied directory carrying `.mdclaw-installed` — and
+the fourth commit dropped it along with `--user`. **Bringing `is_ours()` back is
+the follow-up**, together with a test for the cross-project path: both installer
+tests run with `cwd` at the fake checkout root, so `INSTALL_ROOT == REPO_ROOT`
+and the new absolute-link path has no coverage. `docs/agents/deployment.md` also
+still says "Default mode creates relative symlinks", now only true inside the
+checkout, and does not mention the project-level install at all.
+
+Direction for the next rework of skill deployment: follow what
+https://github.com/mattpocock/skills does.
 
 ## 2026-08-31 — SLURM submit rejects container commands inside payloads
 
@@ -616,6 +661,50 @@ package resolves its own `data/membrane_patches` and both `DPPC+tip3p` and
 `DPPC+opc` probe as cache hits. This image also carries every MDClaw fix from
 `580d80d` through `d105ea0` (ion intent, range-piece components, insertion-code
 solvation, glycan classification, thiol rebuild, piece-aware remap).
+## 2026-08-30 — Rikyu 用 SIF を d105ea0ef8cb で焼き直し。SIF 内 pytest は HOME を与えないと 2 本落ちる
+
+```
+image   ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev-d105ea0ef8cb  (未 push)
+sif     ~/Downloads/mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-d105ea0ef8cb.sif
+        6,883,450,880 bytes
+        SHA-256 b0b701ef4382395026566ca6f8941f190531ca82d138465721e7a6db193ae30b
+smoke   Docker 24/24、SIF からも 24/24 (GPU は SKIP)
+tests   SIF 内で prepare_complex / phosphorylation / disulfide 4 本 / solvation /
+        membrane orientation / sidechain packer / chain identity / registry / cli /
+        guardrails = 482 passed
+```
+
+`~/Downloads` にあった `94eb819acd5e` は HEAD の祖先で、間に `mdclaw/` が 46 ファイル
+(membrane, water, pdb_identity, disulfide, phosphorylation, prepare_complex, split,
+sidechain_packer, prod_chain, node/inputs) 変わっていたので焼き直した。ホストは Mac
+(Apple Silicon / Docker Desktop 14 CPU / 7.7 GB、`BUILD_JOBS=6`)。実測はビルド ~13 分、
+`docker save` ~1 分、SIF 変換 ~4 分、`limactl copy` ~2 分。変換経路は 2026-08-19 以降と
+同じ (`docker save` した tar を Lima の `singularity-ce` に `docker-archive:` で読ませる)。
+
+### SIF から checkout のテストを回すときは HOME を明示する
+
+VM から `/Users/yasu` が ro で見えるので、SIF 内でそのリビジョンのテストを回せる:
+
+```
+singularity exec --no-home --bind <checkout>:/work --bind /var/tmp/fakehome:/fakehome \
+  <sif> bash -c "cd /tmp && HOME=/fakehome PYTHONPATH=/work \
+    python -m pytest /work/tests/... -q -p no:cacheprovider"
+```
+
+`HOME=/fakehome` を落とすと **2 本落ちる**。`--no-home` だと `$HOME` が存在しないか
+read-only になり、
+
+- `test_guardrails.py::test_build_amber_system_pins_exact_multistate_ion_templates`
+  → `OSError: [Errno 30] Read-only file system: '/home/yasu.linux'`
+- `test_membrane_orientation.py::test_packing_receives_an_already_oriented_structure`
+
+**これはテスト呼び出し側の欠陥で、SIF やコードの欠陥ではない。** 書き込み可能な HOME を
+与えれば同じ SIF で両方通る (2 passed)。`-p no:cacheprovider` も同様に必須で、rootdir が
+ro なので pytest が `.pytest_cache` を掘れない。SIF 検証でこの 2 本が落ちたら、まず
+HOME を疑うこと。
+
+未実施: GHCR への push と、Rikyu 実機での `test-rikyu-gpu.sh` (SIF からでないと FUSE
+経路を踏まないので実機必須)。
 
 ## 2026-08-30 — Range-piece chain remapping preserves residue identity
 
