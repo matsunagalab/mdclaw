@@ -23,8 +23,8 @@ add `--source-candidate-id <candidate_id>` to the validated
 For NMR-style model numbering, `--source-model-index 2` selects the second
 model-derived candidate.
 
-`--residue-ranges A:16-214 A:380-458` keeps the pieces as separate chains, like
-the reference; `--join-range-pieces` only for "join the pieces"/"single continuous chain".
+Expand every omission into effective `--residue-ranges` first. All resulting ranges are separate components by default, including pieces created by "leave it out"; an enclosing range, shared source chain, nearby residue numbers, or physical plausibility never implies a peptide bond.
+Use `--join-range-pieces` only when the request explicitly says the pieces form one continuous chain. Before topology, verify the returned component sizes match the requested construct.
 
 For chain-associated ligands, use `inspect_molecules.associated_ligand_candidates`.
 If the task names a target residue/cofactor such as `NDP`, `ATP`, or `AP5`,
