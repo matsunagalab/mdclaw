@@ -1750,6 +1750,20 @@ class TestNodeCLIParameters:
         assert args.assembly_ids == ["1", "2"]
         assert args.assembly_chain_naming == "short"
 
+    def test_prepare_complex_accepts_repeated_join_range_groups(self):
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        parser = _build_parser(_discover_tools())
+        args = parser.parse_args([
+            "--job-dir", "/tmp/job",
+            "--node-id", "prep_001",
+            "prepare_complex",
+            "--join-range-groups", "A:1-2,A:4-5",
+            "--join-range-groups", "A:8-9,A:11-12",
+        ])
+
+        assert args.join_range_groups == ["A:1-2,A:4-5", "A:8-9,A:11-12"]
+
 
 class TestStudyAndEvidenceCLIParameters:
     """Argparse-level guards for optional study/evidence tools."""

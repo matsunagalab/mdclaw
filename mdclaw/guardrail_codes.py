@@ -121,6 +121,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "residue_range_chain_not_found": "The range names a chain that is not in the selection; pass it to select_chains as well.",
     "residue_range_selects_nothing": "The range lies outside the chain's own numbering; write it inside the span the error reports.",
     "residue_range_not_delivered": "The prepared chain holds fewer residues than the range asked for; narrow the range or enable missing-residue building.",
+    "invalid_join_range_groups": "Use either --join-range-pieces or disjoint same-chain groups drawn exactly from --residue-ranges.",
     "invalid_disulfide_pairing": "A sulfur holds one disulfide; drop the duplicate pairing.",
     "associated_ligands_require_selection": "Say which ligands to keep: --include-ligand-ids with the reported candidates keeps them, and excluding them changes the system being simulated.",
     "unparametrizable_ligand_selected": "Placeholder residue (UNX/UNL/UNK) has no chemistry; drop it or predict a real ligand.",

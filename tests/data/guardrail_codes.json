@@ -81,6 +81,7 @@
   "invalid_constraints",
   "invalid_coordinate_frame",
   "invalid_disulfide_pairing",
+  "invalid_join_range_groups",
   "invalid_json_input",
   "invalid_ligand_chemistry",
   "invalid_missing_residue_method",

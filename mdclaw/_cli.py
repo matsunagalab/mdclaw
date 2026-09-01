@@ -449,6 +449,7 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
                 sub.add_argument(
                     spec.cli_flag,
                     nargs="+",
+                    action="extend",
                     default=default,
                     help="(list of str, required)" if spec.required else "(list of str)",
                 )

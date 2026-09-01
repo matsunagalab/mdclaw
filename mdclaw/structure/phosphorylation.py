@@ -183,14 +183,20 @@ def _build_source_to_merged_chain_map(
             continue
         source_info = _source_info_for_protein(chain_file_info, p)
         author = source_info.get("author_chain") or p.get("author_chain") or cid
-        residue_range = p.get("residue_range") or source_info.get("residue_range")
+        residue_ranges = (
+            p.get("residue_ranges")
+            or source_info.get("residue_ranges")
+            or [p.get("residue_range") or source_info.get("residue_range")]
+        )
         per_file = (merge_chain_mapping or {}).get(cleaned_file) or {}
         if not per_file:
             continue
         # split_molecules emits one chain per cleaned file, so the per-file
         # mapping has exactly one entry. Take its value (the merged id).
         merged_id = next(iter(per_file.values()))
-        grouped.setdefault(author, []).append((residue_range, merged_id))
+        grouped.setdefault(author, []).extend(
+            (residue_range, merged_id) for residue_range in residue_ranges
+        )
     return _collapse_piece_mappings(grouped)
 
 
@@ -230,10 +236,14 @@ def _build_source_to_topology_index_map(
         if topo is not None:
             source_info = _source_info_for_protein(chain_file_info, p)
             author = source_info.get("author_chain") or p.get("author_chain") or cid
-            residue_range = p.get("residue_range") or source_info.get(
-                "residue_range"
+            residue_ranges = (
+                p.get("residue_ranges")
+                or source_info.get("residue_ranges")
+                or [p.get("residue_range") or source_info.get("residue_range")]
             )
-            grouped.setdefault(author, []).append((residue_range, topo))
+            grouped.setdefault(author, []).extend(
+                (residue_range, topo) for residue_range in residue_ranges
+            )
     return _collapse_piece_mappings(grouped)
 
 

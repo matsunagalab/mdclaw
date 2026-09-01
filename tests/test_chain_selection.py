@@ -236,21 +236,23 @@ def test_split_multiple_ranges_are_separate_components_unless_joined(tmp_path):
 
     from mdclaw.structure.split import split_molecules
 
-    source = _write_numbered_chain(tmp_path / "six_residues.pdb")
+    source = _write_numbered_chain(tmp_path / "nine_residues.pdb", count=9)
+    ranges = ["A:1-2", "A:4-5", "A:8-9"]
     separate = split_molecules(
         structure_file=source,
         output_dir=str(tmp_path / "separate"),
         select_chains=["A"],
         include_types=["protein"],
-        residue_ranges=["A:1-2", "A:5-6"],
+        residue_ranges=ranges,
     )
 
     assert separate["success"] is True, separate.get("errors")
-    assert len(separate["protein_files"]) == 2
+    assert len(separate["protein_files"]) == 3
     assert [
         [res.seqid.num for res in gemmi.read_structure(path)[0][0]]
         for path in separate["protein_files"]
-    ] == [[1, 2], [5, 6]]
+    ] == [[1, 2], [4, 5], [8, 9]]
+    assert separate["residue_ranges"]["component_sizes"] == [2, 2, 2]
     pieces = next(iter(separate["residue_ranges"]["resolved"].values()))["pieces"]
     assert [piece["delivered_component"] for piece in pieces] == separate[
         "protein_files"
@@ -261,14 +263,70 @@ def test_split_multiple_ranges_are_separate_components_unless_joined(tmp_path):
         output_dir=str(tmp_path / "joined"),
         select_chains=["A"],
         include_types=["protein"],
-        residue_ranges=["A:1-2", "A:5-6"],
+        residue_ranges=ranges,
         join_range_pieces=True,
     )
     assert joined["success"] is True, joined.get("errors")
     assert len(joined["protein_files"]) == 1
     assert [res.seqid.num for res in gemmi.read_structure(joined["protein_files"][0])[0][0]] == [
-        1, 2, 5, 6,
+        1, 2, 4, 5, 8, 9,
     ]
+    assert joined["residue_ranges"]["component_sizes"] == [6]
+
+    grouped = split_molecules(
+        structure_file=source,
+        output_dir=str(tmp_path / "grouped"),
+        select_chains=["A"],
+        include_types=["protein"],
+        residue_ranges=ranges,
+        join_range_groups=["A:1-2,A:4-5"],
+    )
+    assert grouped["success"] is True, grouped.get("errors")
+    assert [
+        [res.seqid.num for res in gemmi.read_structure(path)[0][0]]
+        for path in grouped["protein_files"]
+    ] == [[1, 2, 4, 5], [8, 9]]
+    range_result = grouped["residue_ranges"]
+    assert range_result["join_range_groups"] == [["A:1-2", "A:4-5"]]
+    assert range_result["component_sizes"] == [4, 2]
+    assert [group["ranges"] for group in range_result["resolved_groups"]] == [
+        ["A:1-2", "A:4-5"],
+        ["A:8-9"],
+    ]
+
+
+@pytest.mark.parametrize(
+    "residue_ranges,join_range_pieces,join_range_groups",
+    [
+        (["A:1-2", "A:4-5"], True, ["A:1-2,A:4-5"]),
+        (["A:1-2", "A:4-5"], False, ["A:1-2,A:8-9"]),
+        (["A:1-2", "A:4-5"], False, ["A:1-2,A:4-5", "A:4-5"]),
+        (["A:1-2", "B:4-5"], False, ["A:1-2,B:4-5"]),
+    ],
+)
+def test_split_rejects_invalid_join_range_groups(
+    tmp_path,
+    residue_ranges,
+    join_range_pieces,
+    join_range_groups,
+):
+    from mdclaw.structure.split import split_molecules
+
+    source = _write_numbered_chain(tmp_path / "six_residues.pdb")
+    result = split_molecules(
+        structure_file=source,
+        output_dir=str(tmp_path / "invalid_group"),
+        select_chains=["A"],
+        include_types=["protein"],
+        residue_ranges=residue_ranges,
+        join_range_pieces=join_range_pieces,
+        join_range_groups=join_range_groups,
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "invalid_join_range_groups"
+    assert result["errors"]
+    assert result["hints"]
 
 
 def test_split_molecules_matches_label_asym_id(cif_label_ne_auth, tmp_path):

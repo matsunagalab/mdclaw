@@ -673,6 +673,76 @@ def _carry_reference_sequence(
         )
 
 
+def _parse_join_range_groups(
+    join_range_groups: Optional[List[str]],
+    parsed_ranges: list,
+    join_range_pieces: bool,
+) -> list[tuple[str, ...]]:
+    """Normalize explicit same-chain range groups or raise one stable error."""
+    from mdclaw.structure.residue_range import (
+        ResidueRangeError,
+        parse_residue_ranges,
+    )
+
+    def invalid(message: str, hints: list[str]) -> None:
+        raise ResidueRangeError(
+            message,
+            code="invalid_join_range_groups",
+            hints=hints,
+        )
+
+    if join_range_pieces and join_range_groups:
+        invalid(
+            "join_range_pieces and join_range_groups cannot be used together",
+            ["Use --join-range-pieces for join-all, or --join-range-groups for named groups."],
+        )
+    if not join_range_groups:
+        return []
+
+    raw_groups = [join_range_groups] if isinstance(join_range_groups, str) else join_range_groups
+    requested = {entry.spelled() for entry in parsed_ranges}
+    seen: set[str] = set()
+    groups = []
+    for raw_group in raw_groups:
+        parts = [part.strip() for part in str(raw_group).split(",") if part.strip()]
+        if not parts:
+            invalid(
+                "join_range_groups contains an empty group",
+                ["Write each group as comma-separated ranges, for example A:29-173,A:183-227."],
+            )
+        entries = []
+        for part in parts:
+            try:
+                entries.append(parse_residue_ranges([part])[0])
+            except ResidueRangeError as exc:
+                invalid(f"Cannot read join range group {raw_group!r}: {exc}", exc.hints)
+        spellings = tuple(entry.spelled() for entry in entries)
+        absent = [spelling for spelling in spellings if spelling not in requested]
+        if absent:
+            invalid(
+                f"Join range group names range(s) absent from residue_ranges: {absent}",
+                ["Every grouped range must also appear exactly in --residue-ranges."],
+            )
+        duplicates = sorted(
+            {spelling for spelling in spellings if spellings.count(spelling) > 1}
+            | {spelling for spelling in spellings if spelling in seen}
+        )
+        if duplicates:
+            invalid(
+                f"Join range group repeats range membership: {duplicates}",
+                ["List each requested range in at most one --join-range-groups value."],
+            )
+        chains = {entry.chain for entry in entries}
+        if len(chains) != 1:
+            invalid(
+                f"Join range group spans different source chains: {sorted(chains)}",
+                ["Each group may contain ranges from one source chain only."],
+            )
+        seen.update(spellings)
+        groups.append(spellings)
+    return groups
+
+
 def split_molecules(
     structure_file: str,
     output_dir: Optional[str] = None,
@@ -685,6 +755,7 @@ def split_molecules(
     include_associated_ligands: bool = False,
     residue_ranges: Optional[List[str]] = None,
     join_range_pieces: bool = False,
+    join_range_groups: Optional[List[str]] = None,
 ) -> dict:
     """Split an mmCIF or PDB structure file into separate chain files.
 
@@ -781,10 +852,15 @@ def split_molecules(
                            instead of silently dropping associated ligands.
         residue_ranges: Polymer residue ranges to retain. Multiple ranges from
                            one chain are written as separate components unless
-                           ``join_range_pieces`` is true.
+                           a join option groups them.
         join_range_pieces: Bond the ranges of one chain into a single chain
                            across the omitted span (default: False). Only for
                            an explicit "join the pieces" request.
+        join_range_groups: Comma-separated groups of ranges to bond into one
+                           component, for example
+                           ``["A:29-173,A:183-227"]``. Ungrouped ranges stay
+                           separate. Mutually exclusive with
+                           ``join_range_pieces``.
 
     Returns:
         Dict with:
@@ -861,6 +937,9 @@ def split_molecules(
             "resolved": {},
             "delivered": {},
             "join_range_pieces": bool(join_range_pieces),
+            "join_range_groups": [],
+            "resolved_groups": [],
+            "component_sizes": [],
         },
         "errors": [],
         "warnings": []
@@ -876,12 +955,25 @@ def split_molecules(
     )
     try:
         parsed_ranges = parse_residue_ranges(residue_ranges)
+        parsed_join_groups = _parse_join_range_groups(
+            join_range_groups,
+            parsed_ranges,
+            join_range_pieces,
+        )
     except ResidueRangeError as exc:
         result["errors"].append(str(exc))
         result["code"] = exc.code
         result["hints"] = exc.hints
         return result
     result["residue_ranges"]["requested"] = [entry.spelled() for entry in parsed_ranges]
+    result["residue_ranges"]["join_range_groups"] = [
+        list(group) for group in parsed_join_groups
+    ]
+    join_group_by_range = {
+        spelling: group
+        for group in parsed_join_groups
+        for spelling in group
+    }
 
     if (
         "ligand" not in include_types
@@ -1646,13 +1738,38 @@ def split_molecules(
                     piece["selection_mode"] = resolution.get("selection_mode")
                     piece["start_observed"] = resolution.get("start_observed")
                     piece["end_observed"] = resolution.get("end_observed")
-            separate_range_pieces = bool(
-                chain_ranges and len(chain_ranges) > 1 and not join_range_pieces
-            )
-            component_keys = (
-                [entry.spelled() for entry in chain_ranges]
-                if separate_range_pieces
-                else [None]
+            range_spellings = [entry.spelled() for entry in chain_ranges or []]
+            if not chain_ranges or join_range_pieces:
+                component_keys = [None]
+                component_ranges = {None: range_spellings}
+            elif parsed_join_groups:
+                grouped_ranges = []
+                seen_groups = set()
+                for spelling in range_spellings:
+                    group = join_group_by_range.get(spelling, (spelling,))
+                    if group not in seen_groups:
+                        grouped_ranges.append(group)
+                        seen_groups.add(group)
+                component_keys = [
+                    group[0] if len(group) == 1 else group
+                    for group in grouped_ranges
+                ]
+                component_ranges = {
+                    key: list(group)
+                    for key, group in zip(component_keys, grouped_ranges)
+                }
+            else:
+                component_keys = range_spellings
+                component_ranges = {
+                    spelling: [spelling] for spelling in range_spellings
+                }
+            component_key_by_range = {
+                spelling: key
+                for key, spellings in component_ranges.items()
+                for spelling in spellings
+            }
+            multiple_range_components = bool(
+                chain_ranges and len(component_keys) > 1
             )
             component_chains = {
                 key: gemmi.Chain(pdb_chain_name) for key in component_keys
@@ -1719,7 +1836,11 @@ def split_molecules(
                             new_residue.add_atom(new_atom)
                             seen_atom_names.add(atom.name)
                 if len(list(new_residue)) > 0:
-                    component_key = held.spelled() if separate_range_pieces else None
+                    component_key = (
+                        component_key_by_range[held.spelled()]
+                        if held is not None
+                        else None
+                    )
                     component_chains[component_key].add_residue(new_residue)
                     component_residue_counts[component_key] += 1
 
@@ -1791,7 +1912,7 @@ def split_molecules(
                 elif chain_type == "glycan":
                     if resnum is not None:
                         out_file = out_dir / f"glycan_{res_name}_{author_chain_id}{resnum}.pdb"
-                        if separate_range_pieces:
+                        if multiple_range_components:
                             out_file = out_dir / (
                                 f"glycan_{res_name}_{author_chain_id}{resnum}_"
                                 f"piece{component_index}.pdb"
@@ -1843,24 +1964,28 @@ def split_molecules(
                     "file": str(out_file),
                     "residue_count": residue_count
                 }
+                delivered_ranges = component_ranges[component_key]
                 if component_key is not None:
-                    resolved_piece = next(
-                        piece
-                        for piece in result["residue_ranges"]["resolved"][chain_id]["pieces"]
-                        if piece["range"] == component_key
-                    )
-                    file_info["residue_range"] = dict(resolved_piece)
+                    resolved_pieces = [
+                        next(
+                            piece
+                            for piece in result["residue_ranges"]["resolved"][chain_id]["pieces"]
+                            if piece["range"] == spelling
+                        )
+                        for spelling in delivered_ranges
+                    ]
+                    if len(resolved_pieces) == 1:
+                        file_info["residue_range"] = dict(resolved_pieces[0])
+                    else:
+                        file_info["residue_ranges"] = [
+                            dict(piece) for piece in resolved_pieces
+                        ]
                 chain_file_info.append(file_info)
 
                 if chain_ranges:
                     delivered = result["residue_ranges"]["delivered"][
                         f"{rr.spelled(chain_ranges)}@{chain_id}"
                     ]
-                    delivered_ranges = (
-                        [component_key]
-                        if component_key is not None
-                        else [entry.spelled() for entry in chain_ranges]
-                    )
                     for spelling in delivered_ranges:
                         delivered["ranges"][spelling]["delivered_component"] = str(
                             out_file
@@ -1871,6 +1996,13 @@ def split_molecules(
                             if piece["range"] == spelling
                         )
                         resolved_piece["delivered_component"] = str(out_file)
+                    result["residue_ranges"]["resolved_groups"].append({
+                        "chain_id": chain_id,
+                        "author_chain": author_chain,
+                        "ranges": delivered_ranges,
+                        "residue_count": residue_count,
+                        "delivered_component": str(out_file),
+                    })
         
         result["protein_files"] = protein_files
         result["nucleic_files"] = nucleic_files
@@ -1879,6 +2011,10 @@ def split_molecules(
         result["ion_files"] = ion_files
         result["water_files"] = water_files
         result["chain_file_info"] = chain_file_info
+        result["residue_ranges"]["component_sizes"] = [
+            group["residue_count"]
+            for group in result["residue_ranges"]["resolved_groups"]
+        ]
         
         # Warn if no files were generated
         total_files = (

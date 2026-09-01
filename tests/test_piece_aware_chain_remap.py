@@ -136,3 +136,74 @@ def test_two_range_pieces_remap_sites_and_cyx_to_their_merged_chains(tmp_path):
         ("B", 413, "CYX"),
         ("B", 416, "CYX"),
     }
+
+
+def test_joined_range_group_maps_each_piece_to_the_same_merged_chain():
+    first_range = _range(29, 173)
+    second_range = _range(183, 227)
+    third_range = _range(365, 443)
+    chain_file_info = [
+        {
+            "chain_id": "A",
+            "author_chain": "A",
+            "file": "/x/A_joined.pdb",
+            "residue_ranges": [first_range, second_range],
+        },
+        {
+            "chain_id": "A",
+            "author_chain": "A",
+            "file": "/x/A_365_443.pdb",
+            "residue_range": third_range,
+        },
+    ]
+    proteins = [
+        {
+            "success": True,
+            "chain_id": "A",
+            "input_file": "/x/A_joined.pdb",
+            "output_file": "/x/A_joined.amber.pdb",
+            "residue_ranges": [first_range, second_range],
+        },
+        {
+            "success": True,
+            "chain_id": "A",
+            "input_file": "/x/A_365_443.pdb",
+            "output_file": "/x/A_365_443.amber.pdb",
+            "residue_range": third_range,
+        },
+    ]
+    chain_map = _build_source_to_merged_chain_map(
+        chain_file_info,
+        proteins,
+        {
+            "/x/A_joined.amber.pdb": {"A": "A"},
+            "/x/A_365_443.amber.pdb": {"A": "B"},
+        },
+    )
+    topology_map = _build_source_to_topology_index_map(
+        chain_file_info,
+        proteins,
+        [
+            {"source_file": "/x/A_joined.amber.pdb", "topology_chain_index": 0},
+            {"source_file": "/x/A_365_443.amber.pdb", "topology_chain_index": 1},
+        ],
+    )
+
+    bonds = [
+        {
+            "cys1": {"chain": "A", "resnum": 106},
+            "cys2": {"chain": "A", "resnum": 188},
+        }
+    ]
+    _remap_disulfide_chains(bonds, chain_map)
+
+    assert bonds[0]["cys1"]["chain"] == "A"
+    assert bonds[0]["cys2"]["chain"] == "A"
+    remapped_ptms, dropped = _remap_detected_ptm_chains(
+        [{"chain": "A", "resnum": 400, "name": "SEP"}],
+        chain_map,
+        topology_map,
+    )
+    assert dropped == []
+    assert remapped_ptms[0]["chain"] == "B"
+    assert remapped_ptms[0]["topology_chain_index"] == 1

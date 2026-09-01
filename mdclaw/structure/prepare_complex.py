@@ -218,7 +218,8 @@ def _remap_missing_residue_record(
     """Make merged.pdb chain identity primary while retaining provenance."""
     source_chain = protein.get("chain_id")
     author_chain = protein.get("author_chain") or source_chain
-    piece = protein.get("residue_range") or {}
+    pieces = protein.get("residue_ranges") or [protein.get("residue_range") or {}]
+    piece = pieces[0]
     merged_chain = _resolve_source_site_mapping(
         chain_map,
         author_chain,
@@ -908,6 +909,9 @@ def _window_for_chain(split_result, chain_id):
 
 def _window_for_component(split_result, chain_info):
     """Return the build window for one split file/component."""
+    pieces = (chain_info or {}).get("residue_ranges") or []
+    if pieces:
+        return [(piece["start"], piece["end"]) for piece in pieces]
     piece = (chain_info or {}).get("residue_range")
     if piece:
         return [(piece["start"], piece["end"])]
@@ -991,6 +995,7 @@ def prepare_complex(
     build_terminal_missing_residues: bool = False,
     residue_ranges: Optional[List[str]] = None,
     join_range_pieces: bool = False,
+    join_range_groups: Optional[List[str]] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
@@ -1051,6 +1056,10 @@ def prepare_complex(
             the pieces" / "single continuous chain". "Chain A residues 16-214
             and 380-458" or "without the fusion" means separate components
             (the default), which the reference keeps as separate molecules.
+        join_range_groups: Comma-separated groups of selected ranges to bond
+            into one component, for example
+            ``["A:29-173,A:183-227"]``. Ranges not named in a group remain
+            separate. Mutually exclusive with ``join_range_pieces``.
         build_terminal_missing_residues: Also rebuild residues missing from a
             chain's termini (default: False). An unresolved terminus is
             disorder rather than a gap to bridge, and a simulation normally
@@ -1575,6 +1584,7 @@ def prepare_complex(
             keep_crystal_waters=keep_crystal_waters,
             residue_ranges=residue_ranges,
             join_range_pieces=join_range_pieces,
+            join_range_groups=join_range_groups,
         )
         if glycan_selection_adjustment is not None:
             split_result.setdefault("selection_adjustments", []).append(
@@ -1976,6 +1986,7 @@ def prepare_complex(
                         or chain_id
                     ),
                     "residue_range": component_info.get("residue_range"),
+                    "residue_ranges": component_info.get("residue_ranges"),
                     "input_file": protein_file,
                     "output_file": None,
                     "success": False,
@@ -2700,6 +2711,14 @@ def prepare_complex(
         if result.get("source_structure_id"):
             preparation_summary["source_structure_id"] = result["source_structure_id"]
             preparation_summary["source_selection"] = result.get("source_selection") or {}
+        range_result = ((result.get("split") or {}).get("residue_ranges") or {})
+        if range_result.get("requested"):
+            preparation_summary["residue_range_groups"] = range_result.get(
+                "resolved_groups", []
+            )
+            preparation_summary["residue_range_component_sizes"] = range_result.get(
+                "component_sizes", []
+            )
         preparation_summary["disulfide_pairs"] = result.get("disulfide_bonds", [])
         # Surface the caps the input arrived with on the node itself, not only
         # inside the per-chain records, so `inspect_job` shows them.

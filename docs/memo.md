@@ -7,6 +7,25 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-01 — Named residue-range groups preserve requested components
+
+The preparation skill now treats every effective range, including ranges made
+by "leave it out", as a separate component unless the prompt explicitly joins
+it. `prepare_complex` and `split_molecules` add repeatable
+`--join-range-groups`: each comma-separated group is one component, unlisted
+ranges stay separate, and `--join-range-pieces` remains the join-all shorthand.
+Invalid flag combinations, absent ranges, duplicate membership, and
+cross-chain groups return `invalid_join_range_groups`. Results report each
+resolved group and its residue count before topology.
+
+Grouped components also carry all of their source ranges through missing-
+residue handling and source-to-merged-chain remapping. A one-call RCSB 6KUX
+replay joined A:29-173 to A:183-227 while leaving A:365-443 separate: the
+reported component sizes and OpenMM chain residue counts were `[190, 79]`, the
+173C-183N peptide bond was present, and no 227-365 bond was present. Focused
+SIF-overlay tests passed 38 cases; full ruff passed; the full non-slow suite
+passed 1789 tests with 7 skipped and 96 deselected.
+
 ## 2026-08-31 — SLURM submit rejects container commands inside payloads
 
 `submit_job` and `submit_array_job` now refuse payloads that invoke
