@@ -47,6 +47,20 @@ Completed windows are immutable; add a later window as another child of the
 same completed eq node. Use `submit_array_job` when submitting many independent
 window nodes.
 
+### Seeding (required when running umbrella sampling)
+
+**When you are running umbrella sampling, seed every window with a staircase
+slow pull first; do not branch all windows from one shared `eq` state.**
+Branching every window off the same `eq` node applies the full
+restraint instantly, so the CV reaches its target within ~1 ps while the slow
+degrees of freedom (backbone dihedrals, secondary structure) cannot follow;
+every window then carries the same starting conformation and the PMF is
+systematically distorted. Instead chain short biased runs with
+`--continue-from`, advancing `target_distance_nm` one window spacing per step
+(e.g. 0.04 nm / 500 ps), and seed each window from the pull step at its own
+`r0`. Each step's end state is already a valid restart state for that window,
+so no artifact is moved outside the DAG.
+
 ## Outputs and continuation
 
 The prod node records `metadata.distance_restraints`,
