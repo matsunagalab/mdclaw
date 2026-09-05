@@ -478,6 +478,9 @@ signature, update the relevant section here and the matching skill examples.
 - `list_tracked_jobs(...)`: read `.mdclaw_jobs.jsonl` history and optionally
   sync state.
 - `configure_container(...)`: configure Singularity wrapping for SLURM jobs.
+  Use `--extra-flags=--nv` for GPU passthrough. The invalid `-nv` flag is
+  rejected with `container_extra_flags_invalid` when configuring or submitting
+  a container job (including arrays), also for previously saved settings.
   `source_mode` chooses which mdclaw the compute node runs. `image` (default)
   runs the package baked into the `.sif`, so a queued job is unaffected by later
   edits to a checkout. `overlay` binds the checkout and puts it on `PYTHONPATH`,

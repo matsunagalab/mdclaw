@@ -17,6 +17,25 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("flag,success", [("--nv", True), ("-nv", False)])
+def test_configure_container_gpu_flags_cli(tmp_path, flag, success):
+    completed = subprocess.run(
+        [sys.executable, "-m", "mdclaw._cli", "configure_container",
+         "--image", "/opt/mdclaw.sif", f"--extra-flags={flag}"],
+        cwd=tmp_path, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        capture_output=True, text=True, timeout=60,
+    )
+    result = json.loads(completed.stdout)
+    assert result["success"] is success
+    assert (completed.returncode == 0) is success
+    config = tmp_path / ".mdclaw_cluster.json"
+    if success:
+        assert json.loads(config.read_text())["container"]["extra_flags"] == "--nv"
+    else:
+        assert result["code"] == "container_extra_flags_invalid"
+        assert not config.exists()
+
+
 def _pick_existing_tool(tools, *preferred_names):
     """Return the first preferred tool present in the discovered tool set."""
     for name in preferred_names:

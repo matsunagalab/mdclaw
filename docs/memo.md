@@ -7,6 +7,27 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-05 — Reject invalid GPU flags in container configuration and submission
+
+The full98 handover attributed six `-nv` failures to container commands in
+submitted payloads. The retained `.mdclaw_cluster.json` files instead contain
+`extra_flags: "-nv"` for 031, 034, 053, 066, 079 and 091; MDClaw's wrapper
+inserted that value into generated scripts. The payload-only guard from
+`09352d0` did not cover this route.
+
+Shared flag validation now rejects the bare `-nv` token (including quoted
+tokens) and malformed shell quoting with `container_extra_flags_invalid`.
+`configure_container` validates merged settings before saving; both submit
+tools validate existing settings before generating scripts or submitting jobs.
+The error supplies the argparse-safe correction `--extra-flags=--nv`. An
+explicit environment still bypasses an unused container configuration.
+
+SIF-overlay validation: 274 tests passed across SLURM, guardrail registry, CLI
+and registry suites, plus two new CLI subprocess smoke cases passed. Regression
+coverage verifies saved settings and node state remain unchanged on rejection,
+legacy settings can be repaired, and ordinary and array jobs both reject them.
+No campaign settings were rewritten and no SLURM jobs were submitted.
+
 ## 2026-09-01 — Named residue-range groups preserve requested components
 
 The preparation skill now treats every effective range, including ranges made

@@ -22,7 +22,7 @@ from mdclaw._common import (
 )
 
 from mdclaw.slurm import _base
-from mdclaw.slurm.config import CONTAINER_SOURCE_MODES, _is_partition_allowed, _load_cluster_config, _save_cluster_config
+from mdclaw.slurm.config import CONTAINER_SOURCE_MODES, _is_partition_allowed, _load_cluster_config, _save_cluster_config, validate_container_flags
 
 
 def _parse_sinfo_text(stdout: str) -> list[dict]:
@@ -380,7 +380,7 @@ def configure_container(
             container.  Output directories and file arguments are
             auto-detected.
         extra_flags: Extra flags for singularity exec (e.g., ``--nv``
-            for GPU support).
+            for GPU support; CLI: ``--extra-flags=--nv``).
         source_mode: Which mdclaw the compute node runs. ``"image"``
             (default) runs the package baked into the .sif, so a queued job
             is unaffected by later edits. ``"overlay"`` binds this checkout
@@ -433,6 +433,9 @@ def configure_container(
         container["bind_paths"] = bind_paths
     if extra_flags is not None:
         container["extra_flags"] = extra_flags
+    flags_error = validate_container_flags(container)
+    if flags_error:
+        return {**result, **flags_error}
     if source_mode is not None:
         mode = str(source_mode).strip().lower()
         if mode not in CONTAINER_SOURCE_MODES:

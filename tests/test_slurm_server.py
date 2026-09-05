@@ -1165,6 +1165,26 @@ class TestBuildSingularityCommand:
 class TestConfigureContainer:
     """Test configure_container tool."""
 
+    @pytest.mark.parametrize("flags", ["-nv", "--cleanenv -nv", "'-nv'", "'--nv"])
+    def test_invalid_flags_leave_saved_config_unchanged(self, tmp_path, monkeypatch, flags):
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".mdclaw_cluster.json"
+        original = json.dumps({"container": {"image": "/opt/mdclaw.sif", "extra_flags": "--nv"}})
+        path.write_text(original)
+        result = configure_container(extra_flags=flags)
+        assert result["success"] is False
+        assert result["code"] == "container_extra_flags_invalid"
+        assert "--extra-flags=--nv" in " ".join(result["hints"])
+        assert path.read_text() == original
+
+    def test_legacy_flags_can_be_repaired(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".mdclaw_cluster.json"
+        path.write_text(json.dumps({"container": {"image": "/opt/mdclaw.sif", "extra_flags": "-nv"}}))
+        assert configure_container(bind_paths=["/scratch"])["code"] == "container_extra_flags_invalid"
+        assert configure_container(extra_flags="--nv")["success"] is True
+        assert json.loads(path.read_text())["container"]["extra_flags"] == "--nv"
+
     def test_set_image(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".mdclaw_cluster.json").write_text(json.dumps({}))
@@ -1238,6 +1258,39 @@ class TestConfigureContainer:
 
 class TestContainerExecution:
     """Test that submit_job wraps commands with singularity when configured."""
+
+    @pytest.mark.parametrize("array", [False, True])
+    @pytest.mark.parametrize("environment", [None, "module load amber"])
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_legacy_bad_flags_block_only_container_jobs(
+        self, mock_run, mock_check, tmp_path, monkeypatch, array, environment,
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".mdclaw_cluster.json").write_text(json.dumps({
+            "partitions": [{"name": "gpu", "gpus_per_node": 4}],
+            "container": {"image": "/opt/mdclaw.sif", "extra_flags": "-nv"},
+        }))
+        jd = _make_job_with_nodes(tmp_path, "job_bad_flags", ["prod_001"])
+        node_path = jd / "nodes" / "prod_001" / "node.json"
+        original = node_path.read_bytes()
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 10001\n")
+        kwargs = dict(partition="gpu", output_dir=str(tmp_path), environment=environment)
+        if array:
+            result = submit_array_job(tasks=[{
+                "job_dir": str(jd), "node_id": "prod_001", "command": "echo test",
+            }], **kwargs)
+        else:
+            result = submit_job(script="echo test", job_dir=str(jd), node_id="prod_001", **kwargs)
+        if environment:
+            assert result["success"] is True, result
+            assert "singularity exec" not in Path(result["script_file"]).read_text()
+        else:
+            assert result["success"] is False
+            assert result["code"] == "container_extra_flags_invalid"
+            mock_run.assert_not_called()
+            assert node_path.read_bytes() == original
+            assert not list(tmp_path.glob("*.sbatch"))
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
     @patch("mdclaw.slurm._base.run_command")

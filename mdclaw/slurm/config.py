@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from pathlib import Path
 from typing import Any, Optional
 
@@ -324,6 +325,26 @@ def resolve_overlay_source_root() -> Optional[str]:
         return str(root)
     return None
 
+
+
+def validate_container_flags(container: dict) -> Optional[dict]:
+    """Validate stored flags as well as new configure_container input."""
+    flags = container.get("extra_flags", "")
+    try:
+        tokens = shlex.split(flags)
+    except ValueError as exc:
+        reason = f"Container extra_flags has invalid shell quoting: {exc}"
+    else:
+        if "-nv" not in tokens:
+            return None
+        reason = "Singularity/Apptainer GPU passthrough requires '--nv', not '-nv'."
+    return create_validation_error(
+        "extra_flags", reason,
+        actual=flags,
+        expected="shell-quoted container flags with --nv for GPU passthrough",
+        hints=["Correct the setting with: mdclaw configure_container --extra-flags=--nv"],
+        code="container_extra_flags_invalid",
+    )
 
 
 def resolve_container_source(container: Optional[dict]) -> Optional[dict]:

@@ -105,6 +105,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "terminal_cap_missing": "Add the required terminal cap before proceeding.",
     "container_command_in_script": "Pass only the payload command; configure_container supplies the container and flags, or use --allow-container-command only for a deliberate custom invocation.",
     "container_source_mode_invalid": "Use --source-mode image or overlay.",
+    "container_extra_flags_invalid": "Use valid shell quoting and --extra-flags=--nv for Singularity/Apptainer GPU passthrough; -nv is invalid.",
     "container_overlay_source_unavailable": "Overlay needs a checkout or plugin install (a directory holding both bin/mdclaw and mdclaw/); use --source-mode image, or submit from a checkout.",
     "terminal_cap_hydrogen_completion_failed": "Terminal-cap hydrogen completion failed; inspect capped residues.",
     "terminal_cap_hydrogen_completion_unavailable": "Terminal-cap hydrogen completion tool is unavailable in this runtime.",
