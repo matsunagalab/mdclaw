@@ -154,6 +154,10 @@ def submit_job(
 
     Args:
         script: Path to a script file, or a command string to execute.
+            Literal run_production commands linked to a DAG node receive a
+            read-only condition preflight before sbatch. Unsupported shell
+            forms are reported as skipped; inherited conditions remain runtime
+            checks. See condition_preflight in the result.
             If the path exists as a file, it is wrapped with SBATCH headers.
             Otherwise, a complete script is generated from the command string.
         job_name: Job name (default: mdclaw_<random>).
@@ -240,6 +244,17 @@ def submit_job(
             return {**result, **node_error}
 
     command = _resolve_job_command(script)
+    if job_dir and node_id:
+        from mdclaw.slurm.preflight import production_preflight
+
+        preflight = production_preflight(command, job_dir, node_id)
+        result["condition_preflight"] = preflight
+        if preflight["status"] == "failed":
+            return {**result, **preflight}
+        if preflight["status"] == "skipped":
+            result["warnings"].append(
+                "Production condition preflight skipped: " + preflight["reason"]
+                + "; runtime validation remains required.")
     container_error, container_message = _check_container_command(
         "script",
         command,
@@ -665,6 +680,14 @@ def submit_array_job(
         if node_error:
             node_error["message"] = f"tasks[{idx}]: {node_error.get('message', '')}"
             return {**result, **node_error}
+        from mdclaw.slurm.preflight import production_preflight
+
+        preflight = production_preflight(str(task["command"]), str(jd), nid)
+        result.setdefault("condition_preflight", []).append({"task_index": idx, **preflight})
+        if preflight["status"] == "failed":
+            return {**result, "code": preflight["code"], "errors": preflight["errors"]}
+        if preflight["status"] == "skipped":
+            result["warnings"].append(f"tasks[{idx}]: production condition preflight skipped; runtime validation required.")
         normalized_tasks.append({
             "job_dir": str(jd),
             "node_id": nid,

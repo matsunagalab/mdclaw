@@ -66,6 +66,10 @@ mdclaw create_node --job-dir <job_dir> --node-type prod \
   --conditions '{"simulation_time_ns": 100}'
 ```
 `--conditions` is one JSON string argument; quote it as shown.
+Pass the same production length to `run_production --simulation-time-ns`.
+For node-linked SLURM submissions, inspect `condition_preflight`: a skipped
+check is not validation. Keep declarations and the actual command consistent;
+see `docs/developer/tool-reference.md` for the supported submission forms.
 
 **Branching** (multiple prod from same eq):
 ```bash

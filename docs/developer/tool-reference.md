@@ -475,6 +475,12 @@ signature, update the relevant section here and the matching skill examples.
 
 - `inspect_cluster(...)`: discover partitions, GPUs, and local policy.
 - `submit_job(...)`: submit one SLURM job and link it to an optional DAG node.
+  For a linked node and a literal `mdclaw ... run_production` (or
+  `python -m mdclaw._cli ...`) command, `condition_preflight` reports the
+  declaration/argument check before sbatch, using CLI defaults and the runtime
+  comparator. Inherited conditions are deferred; shell scripts/wrappers that
+  cannot be checked are explicitly marked skipped, not validated. The runtime
+  guard remains authoritative. Neither check changes requested conditions.
   When the run command requests a GPU OpenMM platform (`--platform CUDA`/
   `OpenCL`) but no `--gpus`/`--gres` is given, it auto-sets `--gpus 1` (warning
   emitted) so a CUDA run is never scheduled on a CPU-only node. Container
@@ -484,6 +490,8 @@ signature, update the relevant section here and the matching skill examples.
   node command. Shares the same `--platform`-driven GPU autodetection as
   `submit_job`; a single GPU-platform task command flips the whole array to
   `--gpus 1`, and it applies the same container-command guard.
+  Each task also receives the same production condition preflight before any
+  task is submitted; results are indexed by `task_index`.
 - `check_job(...)`: sync SLURM state and reflect failures into linked nodes.
 - `list_jobs(...)`, `cancel_job(...)`, `check_job_log(...)`: operational
   helpers.

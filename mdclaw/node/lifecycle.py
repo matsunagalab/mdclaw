@@ -1024,9 +1024,29 @@ def validate_node_execution_context(
                 "source nodes are DAG roots and cannot have parents/dependencies",
             )
 
+    if validate_conditions:
+        checked = validate_declared_conditions(node.get("conditions"), actual_conditions)
+        errors.extend(checked["errors"])
+        blocking_codes.extend(c for c in checked["blocking_codes"] if c not in blocking_codes)
+    return {
+        "success": not errors,
+        "code": "node_execution_context_invalid" if errors else "ok",
+        "blocking_codes": blocking_codes,
+        "errors": errors,
+    }
+
+
+def validate_declared_conditions(declared_conditions, actual_conditions):
+    """Read-only condition comparison shared by runtime and submission checks."""
+    errors, blocking_codes = [], []
+
+    def add_error(code, message):
+        errors.append(message)
+        if code not in blocking_codes:
+            blocking_codes.append(code)
+
     actual_conditions = actual_conditions or {}
-    declared_conditions = node.get("conditions", {}) or {}
-    condition_items = declared_conditions.items() if validate_conditions else ()
+    condition_items = (declared_conditions or {}).items()
     # Only keys with a concrete value can actually be cross-checked; a key
     # reported as None is rejected below, so listing it as available would send
     # the caller straight back into the same failure.

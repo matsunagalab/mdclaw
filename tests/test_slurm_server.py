@@ -1533,7 +1533,7 @@ class TestSubmitJobNodeIntegration:
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 77777\n")
 
         result = submit_job(
-            script="mdclaw --job-dir /x --node-id prod_001 run_production --simulation-time-ns 0.1",
+            script=f"mdclaw --job-dir {jd} --node-id prod_001 run_production --simulation-time-ns 0.1",
             job_dir=str(jd),
             node_id="prod_001",
             partition="gpu",

@@ -7,6 +7,35 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-05 — 090 declaration mismatch checked before submission
+
+090's retained min/eq completion events are successful; production failed on
+`simulation_time_ns` declared 1.0 versus actual 2.0. The runtime guard was
+correct. Corrected the external HANDOVER.md and added the companion benchmark
+memo correction; no historical artifacts, scores or declarations were changed.
+
+Extracted the existing condition comparator for read-only reuse. Node-linked
+submit_job and submit_array_job now check literal production CLI commands
+before sbatch, using the actual CLI parser and signature defaults, including
+JSON-input precedence. A mismatched command target is refused too. Checked
+keys are time, temperature, output frequency, trajectory format, platform,
+device and seed. Inherited/derived values remain deferred; parents need not
+be completed at submission time. Shell expansions, compound scripts and
+wrappers are explicitly marked skipped, not certified. The full runtime
+guard remains unchanged in policy and still runs on the compute node.
+
+Final focused SLURM/node/condition tests plus node-server smoke: 361 passed;
+CLI/SLURM initial regression: 247 passed. Ruff passes. Tests verify no sbatch
+or node mutation on mismatch, default-time mismatch, queued-parent acceptance,
+array rejection and uncheckable-script reporting. No real SLURM submission,
+090 MD rerun or rescoring was performed.
+Read-only replay against 090's retained node declaration, with the archived
+production arguments, returns exactly `condition_mismatch` (1.0 versus 2.0)
+before any execution. The historical run directory was bound read-only.
+Normal suite: 1836 passed, 105 deselected. That run was collected before the
+last array/default-mismatch test additions; the final 361-test run covers both
+and the final array submission changes.
+
 ## 2026-09-05 — 042 root-cause repair, plan phases 1–4
 
 Added explicit `prepare_complex --ligand-components` declarations (selection,
