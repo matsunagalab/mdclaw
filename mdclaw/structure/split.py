@@ -1240,6 +1240,7 @@ def split_molecules(
             structure = gemmi.read_pdb(str(structure_path))
         structure.setup_entities()
         
+        structure.assign_label_seq_id()
         model = structure[0]  # Use first model
         
         # Build chain info lookup from analysis results
@@ -1965,6 +1966,15 @@ def split_molecules(
                     "residue_count": residue_count
                 }
                 delivered_ranges = component_ranges[component_key]
+                if chain_type == "protein" and chain_ranges:
+                    from .residue_identity import selection_identity
+
+                    file_info["residue_identity"] = selection_identity(
+                        structure, subchain,
+                        [entry for entry in chain_ranges
+                         if entry.spelled() in delivered_ranges],
+                        block if suffix == '.cif' else None,
+                    )
                 if component_key is not None:
                     resolved_pieces = [
                         next(

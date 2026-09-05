@@ -615,8 +615,8 @@ def _resolve_prepare_node_structure_file(
     structure_file: Optional[str],
     source_selection: Optional[dict] = None,
 ) -> dict:
-    """Resolve prep input structure from the DAG when not provided explicitly."""
-    if not (job_dir and node_id) or structure_file:
+    """Resolve the source even for overrides, so reinput cannot erase identity."""
+    if not (job_dir and node_id):
         return {"structure_file": structure_file}
     from mdclaw._node import resolve_node_inputs
 
@@ -630,6 +630,13 @@ def _resolve_prepare_node_structure_file(
                 selection=source_selection,
                 prep_artifacts_dir=Path(job_dir) / "nodes" / node_id / "artifacts",
             )
+            if structure_file and Path(structure_file).resolve() != Path(selected["structure_file"]).resolve():
+                from .residue_identity import checked_structure_override
+
+                selected["structure_file"] = checked_structure_override(
+                    selected["structure_file"], structure_file,
+                    Path(job_dir) / "nodes" / node_id / "artifacts" / "identity_checked_input.cif",
+                )
             return {
                 "structure_file": selected.get("structure_file"),
                 "input_resolution_error": inputs.get("input_resolution_error"),
@@ -649,8 +656,19 @@ def _resolve_prepare_node_structure_file(
                 "source_selection": source_selection,
                 "source_structure_id": inputs.get("source_structure_id"),
             }
+    if structure_file and inputs.get("structure_file"):
+        try:
+            from .residue_identity import checked_structure_override
+
+            if Path(structure_file).resolve() != Path(inputs["structure_file"]).resolve():
+                artifacts = Path(job_dir) / "nodes" / node_id / "artifacts"
+                artifacts.mkdir(parents=True, exist_ok=True)
+                structure_file = checked_structure_override(
+                    inputs["structure_file"], structure_file, artifacts / "identity_checked_input.cif")
+        except (ValueError, OSError, RuntimeError) as exc:
+            return {"structure_file": None, "input_resolution_error": str(exc)}
     return {
-        "structure_file": inputs.get("structure_file", structure_file),
+        "structure_file": structure_file or inputs.get("structure_file"),
         "input_resolution_error": inputs.get("input_resolution_error"),
         "input_resolution_errors": inputs.get("input_resolution_errors", []),
         "source_bundle_file": inputs.get("source_bundle_file"),
@@ -824,50 +842,45 @@ def _drop_detections_outside_ranges(result, split_result, disulfide_bonds, metal
 
 
 def _residue_range_coverage(split_result, protein_results):
-    """Which requested residues each cleaned chain actually delivered.
+    """Audit final components against source identity, not integer intervals."""
+    import gemmi
+    from .residue_identity import chain_residues, compare_identity
 
-    The split's own check only sees the crop; what a chain finally holds is
-    decided afterwards, when missing residues are rebuilt or left out.  Asking
-    for 4-315 and receiving 4-314 is exactly the difference this parameter
-    exists to stop going unnoticed, so the comparison is made on the cleaned
-    file rather than on the intent.
-    """
     resolved = ((split_result or {}).get("residue_ranges") or {}).get("resolved") or {}
     if not resolved:
         return {}
-    present_by_chain = {}
+    contracts = {info["file"]: info.get("residue_identity")
+                 for info in split_result.get("chain_file_info", [])}
+    coverage = {}
     for protein in protein_results:
         chain_id = protein.get("chain_id")
         entry = resolved.get(chain_id)
         output = protein.get("output_file")
         if not entry or not output or not protein.get("success"):
             continue
-        present = present_by_chain.setdefault(chain_id, set())
-        try:
-            for line in Path(output).read_text().splitlines():
-                if line.startswith(("ATOM", "HETATM")):
-                    try:
-                        present.add(int(line[22:26]))
-                    except ValueError:
-                        continue
-        except OSError:
+        record = coverage.setdefault(chain_id, {
+            "range": entry["range"], "requested": 0, "delivered": 0,
+            "missing": [], "unexpected": [], "unresolved_endpoints": [],
+            "components": [],
+        })
+        contract = contracts.get(protein.get("input_file"))
+        if contract is None:
+            record["unresolved_endpoints"].append("source identity unavailable; rerun split")
             continue
-    coverage = {}
-    for chain_id, present in present_by_chain.items():
-        entry = resolved[chain_id]
-        # The union of the chain's pieces, not the span between the first and
-        # the last: a fusion construct asks for 18-214 and 383-458 and never for
-        # the 168 residues of crystallisation partner sitting between them.
-        wanted = set()
-        for piece in _pieces(entry):
-            wanted |= set(range(piece["start"], piece["end"] + 1))
-        missing = sorted(wanted - present)
-        coverage[chain_id] = {
-            "range": entry["range"],
-            "requested": len(wanted),
-            "delivered": len(wanted & present),
-            "missing": missing,
-        }
+        try:
+            actual = [r for chain in gemmi.read_pdb(output)[0]
+                      for r in chain_residues(chain)]
+        except (OSError, RuntimeError) as exc:
+            record["unresolved_endpoints"].append(f"Cannot read prepared identity: {exc}")
+            continue
+        audit = compare_identity(contract["residues"], actual)
+        record["components"].append({"input_file": protein["input_file"],
+                                     "output_file": output, **contract, **audit})
+        for key in ("requested", "delivered"):
+            record[key] += audit[key]
+        for key in ("missing", "unexpected"):
+            record[key].extend(audit[key])
+        record["unresolved_endpoints"].extend(contract["unresolved_endpoints"])
     return coverage
 
 
@@ -2306,7 +2319,8 @@ def prepare_complex(
         coverage = _residue_range_coverage(split_result, result["proteins"])
         if coverage:
             result["residue_range_coverage"] = coverage
-        short = {chain: record for chain, record in coverage.items() if record["missing"]}
+        short = {chain: record for chain, record in coverage.items()
+                 if record["missing"] or record["unexpected"] or record["unresolved_endpoints"]}
         if short:
             for chain, record in short.items():
                 shown = record["missing"][:6]
@@ -2314,17 +2328,22 @@ def prepare_complex(
                     f"Residue range {record['range']} asked for "
                     f"{record['requested']} residues of chain {chain} and the "
                     f"prepared chain holds {record['delivered']}; "
-                    f"{len(record['missing'])} are absent: {shown}")
+                    f"{len(record['missing'])} are absent: {shown}; "
+                    f"{len(record['unexpected'])} unexpected residues; "
+                    f"unresolved endpoints: {record['unresolved_endpoints']}")
             result["code"] = "residue_range_not_delivered"
             result["hints"] = [
                 "Residues the deposit does not resolve are only built when "
                 "build_terminal_missing_residues is enabled for a terminus, or "
                 "by the missing-residue repair for an internal gap.",
-                "Otherwise narrow the range to what can be built.",
+                "Author-number gaps are not evidence of missing residues. "
+                "Use the source sequence mapping; do not renumber or add residues "
+                "to satisfy an integer interval.",
             ]
             result["next_action"] = (
-                "Enable build_terminal_missing_residues, or set residue_ranges to "
-                "a range the structure can supply.")
+                "Inspect residue_range_coverage and the source sequence mapping. "
+                "Build only confirmed missing residues; unresolved identity requires "
+                "a source with a usable sequence mapping.")
             result["overall_status"] = "failed"
             return result
 
@@ -2447,6 +2466,18 @@ def prepare_complex(
                         merge_result.get("chain_identity_map", {}),
                         prepared_source_index,
                     )
+                    if coverage:
+                        from .residue_identity import audit_merged_identity
+
+                        identity_failures = audit_merged_identity(
+                            coverage, chain_identity_map, merge_result["output_file"])
+                        if identity_failures:
+                            result["chain_identity_map"] = chain_identity_map
+                            result["errors"].append(
+                                f"Merged source identity/connectivity mismatch: {identity_failures}")
+                            result["code"] = "residue_range_not_delivered"
+                            result["overall_status"] = "failed"
+                            return result
                     result["chain_identity_map"] = chain_identity_map
                     chain_identity_map_json = base_dir / "chain_identity_map.json"
                     with open(chain_identity_map_json, "w") as f:

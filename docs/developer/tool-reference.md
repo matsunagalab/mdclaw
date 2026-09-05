@@ -31,6 +31,13 @@ signature, update the relevant section here and the matching skill examples.
   resolves the source bundle from the `source` ancestor, selects one normalized
   candidate via `source_structure_id` / `source_candidate_id` /
   `source_model_index` when needed, and records `source_selection.json`.
+  Protein `residue_ranges` select deposited polymer positions, not every integer
+  between author endpoints. Prep audits ordered residue identity against the
+  source sequence scheme (or SEQRES alignment), recording source/prepared
+  correspondence in `chain_identity_map.json`. Without sequence evidence,
+  completeness is unknown. Explicit coordinate-file overrides retain the source
+  sequence metadata and must preserve its polymer identity; use a new source
+  node for deliberate construct changes, and range/chain options for cropping.
   Standard DNA/RNA chains are hydrogen-rebuilt with OpenMM Modeller using the
   current DNA.OL15/RNA.OL3 XML libraries before topology. DNA.OL24 is deferred
   until openmmforcefields ships a released `DNA.OL24.xml`. Terminal caps can be

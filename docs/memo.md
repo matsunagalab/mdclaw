@@ -7,6 +7,66 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-05 — 088 paired agent validation completed
+
+All six pi/DeepSeek attempts completed MD and scored 20/20: baseline 3/3 and
+fixed 3/3. All preserve the correct 255-residue sequence, author IDs and PHE260;
+all 18 compute-stage import records match their frozen source. Baseline r1/r2
+hit the false missing-126 refusal then recovered; fixed attempts did not hit it.
+Both r3 agents omitted residue_ranges, so neither r3 exercised range coverage.
+Fixed r2 first used malformed `5-260` (no chain prefix), then corrected it.
+The historical artificial LYS addition did not recur. Final success-rate
+improvement is NOT demonstrated; deterministic old/new prep establishes the
+range-guard repair, and these runs show compatible end-to-end behavior.
+
+All six actual production systems explicitly bond THR125 C to LYS127 N. Prep
+retains the deposited 2.2543 A outlier; minimization gives 1.3442--1.3449 A.
+The reference has the corresponding THR121--LYS122 bond, distance 1.3149 A.
+There is no missing residue between them. Final suite: 1815 passed, 104
+deselected; focused identity/source/real-12CA tests: 23 passed. The small CIF
+entity-ID remapping amendment made after freezing has separate regression/SIF
+coverage; the frozen agent comparison does not test that later amendment.
+Details and evaluator scripts: `/home/yasu/tmp/mdclaw/validation088/REPORT.md`.
+
+## 2026-09-05 — Source-based residue identity replaces integer range coverage
+
+088's first prepared file was correct but `residue_range_not_delivered` falsely
+requested 256 sites and reported absent author 126. Author 5--260 actually has
+255 polymer positions, ending at PHE260. The agent's later renumbering and LYS
+addition followed this refusal; a stripped PDB override then bypassed source
+resolution. This corrects the earlier MDDataBench memo's denial of a tool defect.
+
+Split now retains selected polymer rows (author number/insertion code, sequence
+position, name, observedness) from mmCIF or SEQRES alignment. Coverage compares
+ordered canonical sequences per component, detecting additions, deletions and
+same-count substitutions; coordinate-only inputs explicitly have unknown
+sequence completeness. Source/prepared correspondence survives merging through
+the existing component index map. Peptide geometry is checked against the source
+or normal rebuilt geometry, not numbering gaps. 12CA's deposited C125--N127
+distance is 2.254 A and must not be falsely attributed to preparation damage.
+
+In DAG prep, explicit structure files no longer bypass source resolution.
+Coordinate overrides must preserve source polymer IDs/sequence, and source
+sequence metadata is reattached. A deliberately different construct needs a
+new source node; cropping uses selection options. Selecting an NMR model now
+keeps sequence metadata and the author/sequence scheme rather than only atoms.
+
+Validation: the existing non-slow/non-integration suite passed 1811 tests (104
+deselected); the later model-selection regression plus focused identity/source
+tests passed 19 tests. Real 12CA prep through the SIF passed with 255 delivered
+sites, no added/deleted sites and terminal author PHE260, including final merged
+identity validation. The unchanged 088 task/reference boundary regression passed.
+The initial full-suite collection hit a read-only cache directory; setting
+XDG_CACHE_HOME under /tmp resolved it. Ruff and diff checks passed.
+
+The controlled pi/DeepSeek campaign is running outside both repositories at
+`/home/yasu/tmp/mdclaw/validation088`: three baseline and three fixed attempts,
+max two concurrent, interleaved starts. Baseline is 55118c5; fixed is an isolated
+uncommitted patch snapshot of that revision, frozen tree SHA-256
+`d08fc30b545b0b2f5d2c8c54a38b35feb15c2715d7fc2630bbdaa1390812b126`.
+Skills are byte-identical; task, SIF and harness are unchanged. Agent-level
+improvement and final MD scores are not established yet. No commit/push was made.
+
 ## 2026-09-05 — Reject invalid GPU flags in container configuration and submission
 
 The full98 handover attributed six `-nv` failures to container commands in

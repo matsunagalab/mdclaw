@@ -340,14 +340,14 @@ def _write_single_model(path: Path, model_index: int, out_file: Path) -> None:
     if model_index < 0 or model_index >= len(structure):
         raise ValueError(f"model_index {model_index} outside 0..{len(structure) - 1}")
 
-    new_structure = gemmi.Structure()
-    new_structure.name = structure.name
-    new_structure.cell = structure.cell
-    new_structure.spacegroup_hm = structure.spacegroup_hm
-    model = structure[model_index].clone()
+    # Keep polymer sequence/identity metadata when selecting a coordinate model.
+    new_structure = structure.clone()
+    for index in reversed(range(len(new_structure))):
+        if index != model_index:
+            del new_structure[index]
+    model = new_structure[0]
     if hasattr(model, "num"):
         model.num = "1"
-    new_structure.add_model(model)
     try:
         new_structure.setup_entities()
     except Exception:
@@ -355,7 +355,12 @@ def _write_single_model(path: Path, model_index: int, out_file: Path) -> None:
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     if out_file.suffix.lower() == ".cif":
-        new_structure.make_mmcif_document().write_file(str(out_file))
+        document = new_structure.make_mmcif_document()
+        if path.suffix.lower() in {".cif", ".mmcif"}:
+            scheme = gemmi.cif.read(str(path)).sole_block().get_mmcif_category("_pdbx_poly_seq_scheme.")
+            if scheme:
+                document.sole_block().set_mmcif_category("_pdbx_poly_seq_scheme.", scheme)
+        document.write_file(str(out_file))
     else:
         new_structure.write_pdb(str(out_file))
 
