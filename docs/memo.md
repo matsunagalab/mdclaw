@@ -7,6 +7,28 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-05 — 042 root-cause repair, plan phases 1–4
+
+Added explicit `prepare_complex --ligand-components` declarations (selection,
+residue_name, isomeric SMILES), reusing split/clean_ligand/merge rather than a
+second preparation engine. Input chemical classification remains protein;
+requested ligand representation is separate and never inferred from length.
+Only complete source subchains are supported: partial selection, external
+LINK/CONECT bonds, conflicting chemistry and changed heavy-atom placement fail
+closed. Original-source resolution and the 088 override guard remain active.
+Heavy-atom source/prepared/merged correspondence is persisted in existing
+ligand chemistry and chain identity artifacts. Skill guidance documents this
+route and its boundary; existing positional Python arguments remain compatible.
+
+Real 4MN3 CLI/DAG preparation produces one receptor and one +1 LIG, retaining
+all 50 source heavy atoms and coordinates. This validates preparation, not a
+production topology or improved MD score. Focused tests, including real 4MN3
+and 12CA and source/guardrail regressions: 38 passed. Normal suite: 1824 passed,
+105 deselected; changed Python files pass Ruff. Companion MDDataBench changes
+validate chemical correspondence independently of these provenance artifacts.
+Historical trajectory rescoring and paired pi/DeepSeek trials (phases 5–6)
+were not requested in this implementation and have not been run.
+
 ## 2026-09-05 — 088 paired agent validation completed
 
 All six pi/DeepSeek attempts completed MD and scored 20/20: baseline 3/3 and

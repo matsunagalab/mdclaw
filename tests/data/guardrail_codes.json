@@ -104,6 +104,7 @@
   "invalid_terminal_cap",
   "ligand_chain_auto_included",
   "ligand_chemistry_load_failed",
+  "ligand_component_invalid",
   "ligand_formal_charge_mismatch",
   "ligand_id_resname_mismatch",
   "ligand_molecule_load_failed",

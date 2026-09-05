@@ -136,6 +136,8 @@ use the HPacker-based `create_mutated_structure` branch in
    Then create, explain, and run the `prep` node with `prepare_complex
    --solvent-type explicit|implicit|vacuum`. Read `inspection-and-chains.md` or
    `prepare-complex.md` when molecule selection is not trivial.
+   If a peptide must become one ligand residue, read `peptide-ligands.md`;
+   use the explicit component declaration rather than manually rewriting PDB atoms.
 5. For ions, act on `inspect_molecules.preparation_guidance.ions` rather than
    page-hunting.
 6. For explicit solvent, create, explain, and run a `solv` node using

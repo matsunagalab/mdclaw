@@ -707,6 +707,7 @@ def _validate_prepare_node_context(
     source_candidate_id: Optional[str] = None,
     source_model_index: Optional[int] = None,
     source_model_id: Optional[str] = None,
+    ligand_components: Optional[List[Dict[str, str]]] = None,
 ) -> dict:
     """Validate declared prep-node conditions against runtime parameters."""
     from mdclaw._node import validate_node_execution_context
@@ -743,6 +744,7 @@ def _validate_prepare_node_context(
             "source_candidate_id": source_candidate_id,
             "source_model_index": source_model_index,
             "source_model_id": source_model_id,
+            "ligand_components": ligand_components,
         },
     )
 
@@ -1011,6 +1013,7 @@ def prepare_complex(
     join_range_groups: Optional[List[str]] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
+    ligand_components: Optional[List[Dict[str, str]]] = None,
 ) -> dict:
     """Prepare a protein-ligand complex for MD simulation (complete workflow).
 
@@ -1103,6 +1106,12 @@ def prepare_complex(
                        SMILES will be fetched from PDB CCD and used as-is.
                        A SMILES that already carries an explicit formal charge
                        is authoritative and bypasses Dimorphite-DL protonation.
+        ligand_components: Explicit peptide-to-ligand declarations, each with
+            selection (CHAIN:START-END), residue_name and isomeric smiles.
+            Select the complete source subchain and include the protein input
+            type. The component is routed to clean_ligand, not clean_protein;
+            source heavy atoms/coordinates and chemical identity are verified.
+            This cannot cut external covalent links or implicitly cap fragments.
         ligand_ph: pH used for Dimorphite-DL ligand protonation of neutral
                    SMILES. Defaults to the protein ``ph`` when None.
         protonate_ligands: When True (default), neutral CCD/dictionary ligand
@@ -1339,6 +1348,7 @@ def prepare_complex(
             source_candidate_id=source_candidate_id,
             source_model_index=source_model_index,
             source_model_id=source_model_id,
+            ligand_components=ligand_components,
         )
         if not _ctx["success"]:
             blocked = {"success": False, "error_type": "ValidationError", **_ctx}
@@ -1609,6 +1619,21 @@ def prepare_complex(
             )
 
         # Adopt split_molecules output dir as our working dir
+        if ligand_components is not None and split_result["success"]:
+            from .ligand_components import route_ligand_components
+
+            try:
+                if not process_ligands or optimize_ligands:
+                    raise ValueError("ligand_components requires process_ligands and no ligand optimization")
+                if include_types is not None and "protein" not in include_types:
+                    raise ValueError("ligand_components requires the protein input type in include_types")
+                route_ligand_components(structure_file, split_result, ligand_components)
+                result["ligand_components"] = ligand_components
+            except ValueError as exc:
+                result["errors"].append(str(exc))
+                result["code"] = "ligand_component_invalid"
+                result["overall_status"] = "failed"
+                return result
         if split_result["success"]:
             result["output_dir"] = split_result["output_dir"]
             out_dir = Path(split_result["output_dir"])
@@ -2188,6 +2213,9 @@ def prepare_complex(
                         ligand_id = unique_residues[0]  # First residue name
                 
                 # If ligand_id not found in chain_info_map, read directly from PDB file
+                component = cinfo_for_ligand.get("ligand_component")
+                if component:
+                    ligand_id = component["residue_name"]
                 if not ligand_id:
                     try:
                         with open(ligand_file, 'r') as f:
@@ -2240,6 +2268,11 @@ def prepare_complex(
                             break
 
                     if sa_ligand_spec and not sa_ligand_spec.get("include", True):
+                        if component:
+                            result["errors"].append("a declared ligand component cannot also be excluded")
+                            result["code"] = "ligand_component_invalid"
+                            result["overall_status"] = "failed"
+                            return result
                         logger.info(f"  Skipping ligand {ligand_id} (user excluded)")
                         continue
 
@@ -2263,6 +2296,10 @@ def prepare_complex(
                                 f"{expected_net_charge} for {ligand_id}"
                             )
 
+                    if component:
+                        if user_smiles and user_smiles != component["smiles"]:
+                            raise ValueError("conflicting ligand component SMILES")
+                        user_smiles = component["smiles"]
                     # Clean ligand. Ligand protonation uses the protein pH by
                     # default; an explicit ligand_ph overrides it.
                     clean_result = clean_ligand(
@@ -2272,10 +2309,15 @@ def prepare_complex(
                         optimize=optimize_ligands,
                         expected_net_charge=expected_net_charge,
                         ligand_ph=ligand_ph if ligand_ph is not None else ph,
-                        protonate=protonate_ligands,
+                        protonate=False if component else protonate_ligands,
                     )
                     
                     if clean_result["success"]:
+                        if component:
+                            from .ligand_components import validate_ligand_conversion
+
+                            ligand_result["source_conversion"] = validate_ligand_conversion(
+                                ligand_file, clean_result, component)
                         ligand_result["sdf_file"] = clean_result["sdf_file"]
                         ligand_result["prepared_pdb_file"] = clean_result.get("pdb_file")
                         ligand_result["pdb_file"] = clean_result.get("pdb_file")
@@ -2310,6 +2352,11 @@ def prepare_complex(
                     logger.error(f"  ✗ Ligand {ligand_id} error: {e}")
                 
                 result["ligands"].append(ligand_result)
+                if component and not ligand_result["success"]:
+                    result["errors"].extend(ligand_result["errors"])
+                    result["code"] = "ligand_component_invalid"
+                    result["overall_status"] = "failed"
+                    return result
         
         # Determine overall success
         # A residue range is a request, and the answer is what the cleaned file
@@ -2466,6 +2513,10 @@ def prepare_complex(
                         merge_result.get("chain_identity_map", {}),
                         prepared_source_index,
                     )
+                    if ligand_components:
+                        from .ligand_components import audit_converted_merge
+
+                        audit_converted_merge(result["ligands"], chain_identity_map, merge_result["output_file"])
                     if coverage:
                         from .residue_identity import audit_merged_identity
 
@@ -3107,6 +3158,7 @@ def prepare_complex(
                     "protonation_ph": lig.get("protonation_ph"),
                     "smiles_protonated": lig.get("smiles_protonated"),
                     "protonation_candidates": lig.get("protonation_candidates"),
+                    "source_conversion": lig.get("source_conversion"),
                 }
                 for lig in result["ligands"]
                 if lig.get("success") and lig.get("sdf_file")

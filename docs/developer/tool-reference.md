@@ -64,6 +64,12 @@ signature, update the relevant section here and the matching skill examples.
   the source through MODELLER or Boltz-2.
 - `clean_ligand(...)`: ligand chemistry cleaning; emits charged-graph SDF/PDB
   artifacts for topology-time ligand force-field resolution.
+  Multiple input residues are unified and colliding names made unique.
+  For an explicitly requested peptide-as-ligand, use `prepare_complex`'s
+  `ligand_components=[{"selection":"B:1-7","residue_name":"LIG","smiles":"..."}]`.
+  It validates complete source-subchain selection, external covalent links,
+  exact isomeric chemistry and unchanged heavy-atom placement, then persists
+  source/prepared/merged correspondence. It cannot implicitly cut/cap a fragment.
 - `split_molecules(...)`: extract protein, nucleic, glycan, ligand, ion, and
   water components. Same-author ligand candidates are surfaced in inspection
   output. Targeted ligands can be included by exact `include_ligand_ids` or by
