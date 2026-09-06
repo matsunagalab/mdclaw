@@ -239,6 +239,13 @@
     "requires_node": false,
     "server": "md_simulation"
   },
+  "export_mddb": {
+    "job_dir_is_data": false,
+    "node_type": null,
+    "required_params": ["output_dir"],
+    "requires_node": false,
+    "server": "evidence"
+  },
   "fetch_structure": {
     "job_dir_is_data": false,
     "node_type": "source",
@@ -259,21 +266,10 @@
     "requires_node": true,
     "server": "analyze"
   },
-  "generate_md_evidence_report": {
+  "generate_md_report": {
     "job_dir_is_data": false,
     "node_type": null,
-    "required_params": [
-      "job_dir"
-    ],
-    "requires_node": false,
-    "server": "evidence"
-  },
-  "generate_study_evidence_report": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": [
-      "study_dir"
-    ],
+    "required_params": [],
     "requires_node": false,
     "server": "evidence"
   },

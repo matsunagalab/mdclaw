@@ -7,6 +7,145 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-06 — Reviewer/reporter skill and offline MDDB bundles
+
+Added the short `md-report` skill with one conditional MDDB page and both agent
+discovery mirrors. It consumes `generate_md_report` for explanation and Methods
+with selected BibTeX, retains citation/fact gaps, and asks about ambiguous leaves
+even in autonomous mode. It does not launch MD, pool replicas, or upload data.
+
+Added `export_mddb`: target-scoped, offline YAML + paired solvent-stripped PDB/DCD,
+with a manifest, report and bibliography. Replicas are separate `mds`; selected
+PDB atom/bond identities must match within a project, otherwise separate projects
+are required. Existing combined-trajectory artifacts can be exported; no implicit
+continuation concatenation occurs. Original atom/residue labels and frame order
+are retained; water and standard Na/K/Cl counter ions are removed by default,
+while lipids, ligands and other ions/metals are kept. Streaming conversion checks
+source stability, atom/frame counts, coordinates and periodic boxes; native DCD
+logs are redirected to stderr to keep CLI JSON parseable. Output cannot overwrite
+existing bundles or enter immutable node directories.
+
+Pinned the official MDDB-workflow template/schema to commit
+`4e6dceeee67ce83650eed4aa2cfffe10107e2564`; original template SHA256:
+`7278c91e564daa3aee9498fa9dd348d29666069f40805b507d21347fe53cdc82`.
+The packaged YAML is a minimal instance, not a replacement schema. PDB is explicitly
+a structure fallback (`input_topology_filepath: 'no'`), not a full force-field
+topology. Frame spacing uses ns, timestep fs, temperature K; recorded CSV/frame
+times take precedence over nominal output frequency. Author/contact/license/method
+confirmation is an exporter safeguard, not a statement of mandatory web fields.
+
+Validation: **195 passed** across `test_mddb_export.py`, `test_evidence_server.py`,
+`test_cli.py`, `test_cli_contract.py`, and `test_registry.py` using checkout code
+inside the SIF. New export tests cover synthetic multi-component PDB/DCD data,
+stride/chunk combinations, replicas/separate projects, selection, runtime settings,
+invalid/conflicting metadata, malformed sources, ancestor/combined-DCD targets,
+immutable paths, and actual CLI JSON. All **12 generated YAML files**, including
+per-MD overrides and relative file paths, passed the pinned upstream Pydantic
+schema with strict unknown-field checking (only logging/constant imports stubbed).
+Evidence/export lint and both affected skill validators passed. No MDDB ingestion,
+server acceptance, upload, real-data deposition, or new MD simulation was performed.
+The pre-existing limited deterministic citation coverage remains explicit; this
+skill does not promote the larger research bibliography into verified selections.
+
+## 2026-09-06 — Target-scoped multi-replica report CLI replaces job/study summaries
+
+Replaced both legacy evidence-summary tools with `generate_md_report`; old CLI
+names now return migration guidance instead of remaining executable aliases.
+One job, a scoped study plan, or explicit `(job_dir,node_id,label)` targets use
+the same node.json-based reader. Multiple leaves require user selection and
+replicas/separate grouping, preserving failed/pending candidates. Reports retain
+parent/dependency histories, shared ancestry, individual results, declarations,
+recorded settings, XML runtime facts and source hashes. Common production prefixes
+remain explicit; continuations or duplicate analyses of one production frontier
+cannot masquerade as separate replicas. No pooling or independence/convergence
+certification. JSON is read-only by default; optional new-directory export emits
+JSON/BibTeX without overwriting outputs or immutable node directories.
+
+The packaged 13-record verified subset supports explicit OpenMM 8, LF-middle,
+related BAOAB, MC pressure control, HMR and selected protein/water parameters.
+Other preparation/analysis/force-field/custom-method mappings and constraint
+solver identity stay unresolved; this is not a complete automatic selector for
+the 111-entry research inventory. Updated the existing analyze-skill call site,
+developer reference, historical-plan notice and CLI contract; no new reporter
+skill, MDDB exporter or LLM Methods generation is included in this CLI change.
+
+Verified the real 007 prod_001 ancestry read-only: seven selected nodes through
+prep_002, excluding failed prep branches, with serialized LF-middle and membrane
+MC barostat settings. Focused evidence/CLI/contract/registry suite passed (163 tests), as did
+lint and skill validation. The wider server-smoke invocation had 17 unrelated
+Amber/MD failures at Pablo cache creation under a read-only container home
+(188 tests passed); that broader scientific suite is not claimed green.
+No campaign reruns, commits or pushes. Existing unrelated worktree edits preserved.
+
+## 2026-09-06 — OpenMM citation evidence roles clarified
+
+Checked official barostat, integrator/API, Constraints and bibliography pages.
+Chow 1995 and Aqvist 2004 are explicit MC-barostat method references; Zhang 2019
+is the LF-middle reference, with Leimkuhler 2016 cited as related BAOAB work.
+Added the three absent records (111 keys / 110 unique DOIs total). No dedicated
+membrane-barostat paper was identified in the checked section. Constraint solver
+papers are implementation-derived supplements, not citations prescribed by the
+Constraints section, and require per-run solver evidence. Updated the audit to
+allow software/documentation provenance without a dedicated paper and distinguish
+online 8.6 documentation from the inspected SIF's 8.5.1.dev-f7fa0c2 build.
+Research documentation only; no runtime/skill changes or MD execution.
+
+## 2026-09-06 — Lipid17 / FB18 / phosaa10 citation mappings resolved
+
+Supersedes the second-pass unresolved status for these three parameter families.
+Inspected the local SIF's openmmforcefields 0.16.0 XML and Amber parameter files,
+not just web descriptions. Lipid17 v1.1 has six distribution-declared references;
+retain them with their provenance role rather than inventing a standalone paper.
+FB18 maps to Stoppelman 2021 (1c07547) plus the 2022 correction (2c06820).
+The author README's 1c10971 DOI points to an unrelated DNA paper. Local
+frcmod.phosfb18 is byte-identical to the author's fixed-commit corrected file;
+all 55 proper-torsion groups / 235 Fourier terms in phosfb18.xml match after
+unit conversion. phosaa10 requires both Homeyer 2006 charges and Steinbrecher
+2012 phosphate-oxygen vdW parameters. Added nine verified bibliography entries
+(108 unique keys, 107 unique DOIs total) and a detailed resolution note with
+artifact hashes. Other model/ion/platform and arbitrary-input provenance questions
+are separate, not retroactively closed. Research-only; no runtime code or skill
+changes and no MD execution. Brace/uniqueness/whitespace checks passed.
+
+## 2026-09-06 — Citation audit second pass: databases and algorithms
+
+The initial 59-record audit missed OPM/PPM, MDAnalysis and free-energy methods.
+Re-audited runtime imports/calls, the full force-field option catalog, membrane
+orientation provenance, and external analysis registration. Added 40
+publisher-metadata-verified DOI records: 99 unique BibTeX entries / 98 unique DOIs.
+Added operation-to-citation tables and explicit unresolved mappings to
+`docs/research/citation-audit-2026-09-06.md`; bibliography is its `.bib` companion.
+OPM donor transfer is distinct from target PPM3 execution and is not a directly
+measured experimental orientation. Built-ins use MDTraj; MDAnalysis is installed
+for external analysis, while PyMBAR is used only for equilibration/timeseries in
+the current runtime. Neither MBAR nor WHAM free-energy estimation is built in.
+PyMBAR software credit must not be turned into a false estimator-use claim.
+Also added Q, QCP/Kabsch, CCD, ETKDG/MMFF/UFF, legacy protein, DNA/RNA and GB
+references. Verified MDAnalysis 2016 author order against conference manuscript
+because its citation landing page disagrees. Lipid17/phosfb18 and several exact
+constituent/runtime-version mappings remain open; this corrects any impression
+that the first inventory covered every executable method. Unique keys/DOIs,
+balanced braces and whitespace checks passed; no bibliography rendering tested.
+Research docs only: no CLI, skill, simulation, commit or push changes.
+
+## 2026-09-06 — Reviewer/reporter bibliography audit (research only)
+
+Added `docs/research/citation-audit-2026-09-06.md` and its BibTeX companion.
+Checked all 38 non-Zenodo DOI records from the retired citation inventory against
+publisher-deposited Crossref records and added missing software/method references;
+59 bibliography records total, including PMLR H-Packer and the explicitly labeled
+AshGC working paper. Consulted Amber26 PDF sections/reference list and official
+OpenMM, PACKMOL, OpenFF, PLUMED, PROPKA, PDB2PQR and MDTraj citation instructions.
+Found GAFF's old DOI pointed to the 2005 erratum, multiple incorrect full author
+names in OpenMM8/AmberTools, incorrect PDB2PQR/modXNA titles, and incomplete method
+coverage. Corrected bibliographic records; documented NAGL versus AM1-BCC,
+monovalent versus divalent/12-6-4 ion parameters, and remaining version-specific
+mapping work. This is bibliographic verification, not full-text review of every
+paper or a completed deterministic citation selector. No CLI/skill/runtime changes.
+User accepts the obtained official MDDB-workflow YAML template as the initial
+deposition format reference; no further deposit URL needed. Multiple terminal
+nodes require asking the user about grouping/selection.
+
 ## 2026-09-06 — History-free PLUMED production, conda and container builds
 
 Added `run_production --plumed-file` as an exclusive third bias route on the

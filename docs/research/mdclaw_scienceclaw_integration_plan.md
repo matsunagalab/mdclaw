@@ -2,6 +2,10 @@
 
 作成日: 2026-05-01
 
+追記（2026-09-06）: 以下は当時の構想です。旧レポートCLIは
+`generate_md_report` に統合済みです。現行仕様は
+[tool reference](../developer/tool-reference.md#evidence) を参照してください。
+
 ## 目的
 
 MDClaw を、ScienceClaw や細胞シミュレータ foundation model エージェントから自然に呼び出せる「原子レベル evidence provider」として発展させる。

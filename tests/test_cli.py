@@ -1840,26 +1840,24 @@ class TestStudyAndEvidenceCLIParameters:
         assert args.study_dir == "/tmp/study"
         assert '"md_goal":"g"' in args.plan
 
-    def test_generate_md_evidence_report_parses_target_json(self):
+    def test_generate_md_report_parses_targets_json(self):
         from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
 
         args = parser.parse_args([
-            "generate_md_evidence_report",
-            "--job-dir", "/tmp/job",
-            "--target", '{"protein":"P12345"}',
+            "generate_md_report",
+            "--targets", '[{"job_dir":"/tmp/job","node_id":"prod_001","label":"r1"}]',
         ])
-        assert args.job_dir == "/tmp/job"
-        assert args.target == '{"protein":"P12345"}'
+        assert '"label":"r1"' in args.targets
 
-    def test_generate_study_evidence_report_accepts_plan_id(self):
+    def test_generate_md_report_accepts_plan_id(self):
         from mdclaw._cli import _build_parser, _discover_tools
 
         parser = _build_parser(_discover_tools())
         args = parser.parse_args([
-            "generate_study_evidence_report",
+            "generate_md_report",
             "--study-dir", "/tmp/study",
             "--plan-id", "revision-1",
         ])

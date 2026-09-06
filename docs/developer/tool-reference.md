@@ -593,4 +593,60 @@ signature, update the relevant section here and the matching skill examples.
 
 ## `evidence/`
 
-- `generate_md_evidence_report(...)`: JSON evidence summary for one job.
+- `generate_md_report(...)`: deterministic, read-only report for selected DAG
+  targets, replacing `generate_md_evidence_report` and
+  `generate_study_evidence_report` (removed, with CLI migration hints).
+  Pass **one** of `--job-dir`, `--study-dir` (optional `--plan-id`), or
+  `--targets '[{"job_dir":"/path/jobs/r1","node_id":"prod_001","label":"r1"}, ...]'`.
+  With no explicit targets, a unique leaf is selected. Multiple leaves, including
+  failed/pending ones, return `report_selection_required` without writing files:
+  ask which to combine as replicas, separate, or omit, then supply explicit
+  targets and `--grouping replicas|separate`. Labels and target identities must
+  be unique. Shared ancestors (including a common production prefix before
+  branching) are reported explicitly, never counted as independent samples.
+  Ancestor/descendant targets or two analyses of the same production frontier
+  cannot be grouped as replicas. Independence of distinct branches is not certified.
+  Each subject retains its parent/dependency history, declared conditions,
+  recorded metadata/results, artifact bases and node-file hashes. Runtime
+  integrator/System XML attributes are read without importing OpenMM or running
+  MD, with separate artifact hashes. Attributes retain OpenMM serialization
+  names and units (e.g. integrator `stepSize` is ps). Comparison separates
+  declarations from recorded settings and compares stage occurrences, not
+  trajectory frames. Missing versus null are distinct. The output never
+  certifies equal physical conditions, independence or convergence.
+  JSON is returned on stdout; `--output-dir <new-directory>` also writes
+  `report.json` and `references.bib`. Existing directories and paths inside
+  node directories are rejected. No DAG changes, trajectory conversion,
+  pooling, Methods prose or MDDB upload are performed.
+  Citation selection currently covers explicit OpenMM 8, LF-middle/BAOAB,
+  MC barostats, HMR, ff14SB/ff19SB and selected water-model records. It distinguishes
+  official method, related/base method and documentation-only evidence.
+  Other force fields, preparation/analysis/custom methods and constraint-solver
+  identity remain explicit unresolved items, not fabricated references.
+- `export_mddb(output_dir, ...)`: create an **offline** MDDB-workflow bundle with
+  the same target/grouping contract. Each project has `inputs.yaml`; each MD has
+  a paired `system.pdb` / `trajectory.dcd`. Replicas remain separate `mds`, never
+  concatenated; differing selected atom/bond identities require `separate`
+  projects. A completed analysis target resolves its nearest unique parent-lineage
+  DCD, recording both identities. Existing `combined_trajectory` artifacts use
+  their recorded `reference_pdb`; no new concatenation or analysis is performed.
+  Supply `--metadata '<JSON>'` with `name`, `authors`, `contact`, `license`,
+  `linkcense` (official spelling), and `method`. These are exporter safeguards,
+  not claims about mandatory website fields. Missing values return
+  `mddb_metadata_required`; never invent identity, licensing or MD methods.
+  Recorded settings cannot be overridden by conflicting metadata. MDDB units:
+  frame spacing in ns, timestep in fs, temperature in K. Missing source frame
+  spacing may be supplied as `metadata.framestep` before applying `stride`.
+  CSV/frame-time artifacts must have regular spacing and match DCD frame counts.
+  Default filtering removes water and standard Na/K/Cl counter ions, retaining
+  lipids, ligands and other ions/metals. Optional `selection` uses MDTraj syntax
+  and must exclude water. Chunked conversion preserves source PDB atom/residue
+  identifiers and paired order; no imaging or fitting occurs. `manifest.json`
+  records source/output hashes, retained atom indices, frame counts and labels;
+  `report.json` and `references.bib` accompany the bundle. PDB is a structure
+  fallback (`input_topology_filepath: 'no'`), **not** a force-field topology.
+  Output must be new and outside node directories. No upload, ingestion,
+  scientific QA or MDDB acceptance is implied. The minimal template follows the
+  [official template at pinned commit 4e6dceee](https://github.com/mmb-irb/MDDB-workflow/blob/4e6dceeee67ce83650eed4aa2cfffe10107e2564/mddb_workflow/resources/inputs_file_template.yml).
+  `skills/md-report/` routes reviews, Methods/BibTeX, and this export through
+  deterministic CLIs without reconstructing facts in LLM-generated scripts.

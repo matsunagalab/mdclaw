@@ -1,0 +1,27 @@
+# Minimal instance of the official MDDB-workflow inputs template, not a new schema.
+# Upstream commit: 4e6dceeee67ce83650eed4aa2cfffe10107e2564
+# mddb_workflow/resources/inputs_file_template.yml
+# Upstream template SHA256: 7278c91e564daa3aee9498fa9dd348d29666069f40805b507d21347fe53cdc82
+name: null
+description: null
+authors: null
+groups: null
+contact: null
+license: null
+linkcense: null
+citation: null
+thanks: null
+links: null
+pdb_ids: null
+forced_references: null
+ligands: null
+collections: null
+type: trajectory
+pbc_selection: auto
+dummy_selection: auto
+# PDB is a structure fallback, not a force-field topology. Keep "no" a string.
+input_topology_filepath: 'no'
+input_structure_filepath: null
+mds: []
+mdref: 0
+metadditions: {}

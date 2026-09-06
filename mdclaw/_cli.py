@@ -45,6 +45,8 @@ from mdclaw._tool_meta import (
 # does not share. Names whose functionality was removed outright belong in
 # neither table — they are simply unknown tools.
 _RENAMED_TOOLS = {
+    "generate_md_evidence_report": "generate_md_report --job-dir <job_dir>",
+    "generate_study_evidence_report": "generate_md_report --study-dir <study_dir>",
     "record_study_decision": "record_study_log --record-type decision",
     "record_study_question": "record_study_log --record-type question",
     "record_token_usage": "record_study_log --record-type token_usage",

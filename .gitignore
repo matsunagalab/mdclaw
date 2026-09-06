@@ -74,6 +74,7 @@ slide/
 *.dcd
 *.log
 *.yaml
+!mdclaw/evidence/mddb_template.yaml
 *.frcmod
 *.lib
 *.off

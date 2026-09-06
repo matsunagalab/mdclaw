@@ -1,294 +1,215 @@
-"""Tests for minimal MD evidence report generation."""
+"""Target selection, replica identity, provenance and read-only report contracts."""
 
 import json
+from pathlib import Path
 
-from mdclaw.evidence import (
-    generate_md_evidence_report,
-    generate_study_evidence_report,
-)
+import pytest
+
+from mdclaw.evidence import generate_md_report
 
 
-def _write_artifact(job_dir, node_id, rel_path, content="x\n"):
-    path = job_dir / "nodes" / node_id / rel_path
+def node(job, nid, kind="prod", parents=(), metadata=None, status="completed", **extra):
+    path = job / "nodes" / nid / "node.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
+    record = dict(node_id=nid, node_type=kind, parent_node_ids=list(parents),
+                  dependency_node_ids=[], metadata=metadata or {}, conditions={},
+                  artifacts={}, status=status, **extra)
+    path.write_text(json.dumps(record))
+    return path
 
 
-
-def _seed_completed_eq(job_dir):
-    """Study jobs no longer accept parentless nodes; satisfy the ancestor rule.
-
-    This is a minimal fixture ancestry, not a canonical MD chain.
-    """
-    from mdclaw._node import complete_node, create_node
-
-    create_node(str(job_dir), "source")
-    _write_artifact(job_dir, "source_001", "artifacts/candidates/candidate_001.pdb")
-    complete_node(
-        str(job_dir),
-        "source_001",
-        artifacts={"candidates": "artifacts/candidates/candidate_001.pdb"},
-    )
-    create_node(str(job_dir), "eq", parent_node_ids=["source_001"])
-    _write_artifact(job_dir, "eq_001", "artifacts/state.xml")
-    complete_node(
-        str(job_dir), "eq_001", artifacts={"state_file": "artifacts/state.xml"}
-    )
+def target(job, nid, label):
+    return dict(job_dir=str(job), node_id=nid, label=label)
 
 
-
-def test_generate_md_evidence_report_from_job(tmp_path):
-    from mdclaw._node import complete_node, create_node
-
-    job_dir = tmp_path / "job"
-    create_node(str(job_dir), "source")
-    _write_artifact(job_dir, "source_001", "artifacts/src.pdb", "HEADER\n")
-    complete_node(
-        str(job_dir),
-        "source_001",
-        artifacts={"structure_file": "artifacts/src.pdb"},
-    )
-    create_node(str(job_dir), "prep", parent_node_ids=["source_001"])
-    _write_artifact(job_dir, "prep_001", "artifacts/merged.pdb")
-    complete_node(
-        str(job_dir),
-        "prep_001",
-        artifacts={"merged_pdb": "artifacts/merged.pdb"},
-    )
-
-    result = generate_md_evidence_report(str(job_dir), question="What is present?")
-
-    assert result["success"] is True
-    report_file = job_dir / "evidence" / "md_evidence_report.json"
-    assert report_file.is_file()
-    report = json.loads(report_file.read_text())
-    assert report["schema_version"] == 1
-    assert report["question"] == "What is present?"
-    assert report["metrics"]["num_nodes"] == 2
-    assert report["metrics"]["node_type_counts"]["source"] == 1
-    assert report["metrics"]["node_type_counts"]["prep"] == 1
-    assert "No completed production nodes" in report["limitations"][0]
+def test_single_leaf_and_read_only(tmp_path):
+    node(tmp_path, "source", "source")
+    node(tmp_path, "prod", parents=["source"], metadata={"temperature_kelvin": 300})
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    result = generate_md_report(job_dir=str(tmp_path))
+    assert result["success"]
+    history = result["report"]["subjects"][0]["history"]
+    assert [r["node_id"] for r in history] == ["source", "prod"]
+    assert history[-1]["source"]["metadata_pointer"] == "/metadata"
+    assert generate_md_report(job_dir=str(tmp_path)) == result
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
 
+def test_multiple_leaves_require_selection_including_failed(tmp_path):
+    node(tmp_path, "a")
+    node(tmp_path, "b", status="failed")
+    out = tmp_path / "report"
+    result = generate_md_report(job_dir=str(tmp_path), grouping="replicas", output_dir=str(out))
+    assert result["code"] == "report_selection_required"
+    assert {t["status"] for t in result["candidates"]} == {"completed", "failed"}
+    assert not out.exists()
 
 
-
-def test_generate_study_evidence_report(tmp_path):
-    from mdclaw._node import complete_node, create_node
-    from mdclaw.study import add_study_job, init_study, record_study_plan
-
-    study_dir = tmp_path / "study"
-    init_study(str(study_dir), title="screen", objective="compare branches")
-    record_study_plan(
-        str(study_dir),
-        {
-            "question": "Does the baseline branch remain stable?",
-            "md_goal": "Summarize completed production nodes.",
-            "jobs": [{"job_id": "wt", "purpose": "baseline"}],
-            "analysis": ["production completion"],
-            "decision": {"support": "prod completed", "against": "prod failed"},
-        },
-    )
-    job_dir = study_dir / "jobs" / "wt"
-    _seed_completed_eq(job_dir)
-    create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
-    _write_artifact(job_dir, "prod_001", "artifacts/trajectory.dcd")
-    complete_node(
-        str(job_dir),
-        "prod_001",
-        artifacts={"trajectory": "artifacts/trajectory.dcd"},
-    )
-    create_node(
-        str(job_dir),
-        "analyze",
-        parent_node_ids=["prod_001"],
-        conditions={"analysis_data_scope": "segment"},
-    )
-    _write_artifact(job_dir, "analyze_001", "artifacts/rmsd.csv")
-    complete_node(
-        str(job_dir),
-        "analyze_001",
-        artifacts={"rmsd_csv": "artifacts/rmsd.csv"},
-        metadata={"analysis_type": "rmsd", "mean_rmsd_nm": 0.12},
-    )
-    add_study_job(str(study_dir), "wt", "jobs/wt", role="baseline")
-
-    result = generate_study_evidence_report(str(study_dir))
-
-    assert result["success"] is True
-    report_file = study_dir / "evidence" / "study_evidence_report.json"
-    assert report_file.is_file()
-    report = json.loads(report_file.read_text())
-    assert report["status"] == "complete"
-    assert report["question"] == "Does the baseline branch remain stable?"
-    assert report["metrics"]["num_jobs"] == 1
-    assert report["metrics"]["jobs"][0]["job_id"] == "wt"
-    assert report["metrics"]["study_plan"]["md_goal"] == "Summarize completed production nodes."
-    assert report["provenance"]["study_plan_file"].endswith("study_plan.json")
-    assert report["metrics"]["aggregate_node_type_counts"]["prod"] == 1
-    assert report["metrics"]["analyze"][0]["metrics"]["mean_rmsd_nm"] == 0.12
-    assert report["metrics"]["analyze"][0]["job_id"] == "wt"
-
-
-def test_generate_study_evidence_report_is_incomplete_without_required_nodes(tmp_path):
-    from mdclaw._node import create_node
-    from mdclaw.study import add_study_job, init_study, record_study_plan
-
-    study_dir = tmp_path / "study"
-    init_study(str(study_dir), title="screen", objective="compare branches")
-    record_study_plan(
-        str(study_dir),
-        {
-            "question": "Does the baseline branch remain stable?",
-            "md_goal": "Measure structural stability.",
-            "jobs": [{"job_id": "wt", "purpose": "baseline"}],
-            "analysis": ["RMSD"],
-            "decision": {
-                "support": "RMSD remains bounded.",
-                "against": "RMSD diverges.",
-                "inconclusive": "Sampling is insufficient.",
-            },
-        },
-    )
-    job_dir = study_dir / "jobs" / "wt"
-    _seed_completed_eq(job_dir)
-    create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
-    add_study_job(str(study_dir), "wt", "jobs/wt", role="baseline")
-
-    result = generate_study_evidence_report(str(study_dir))
-
-    assert result["success"] is True
-    assert result["report"]["status"] == "incomplete"
-    assert any("no completed production" in item for item in result["report"]["limitations"])
-    assert any("no completed analyze" in item for item in result["report"]["limitations"])
-
-
-def test_generate_study_evidence_report_tracks_missing_planned_jobs(tmp_path):
-    from mdclaw._node import complete_node, create_node
-    from mdclaw.study import add_study_job, init_study, record_study_plan
-
-    study_dir = tmp_path / "study"
-    init_study(str(study_dir), title="screen", objective="compare branches")
-    record_study_plan(
-        str(study_dir),
-        {
-            "question": "Do WT and mutant differ?",
-            "md_goal": "Compare structural dynamics.",
-            "jobs": [{"job_id": "wt"}, {"job_id": "mutant"}],
-            "analysis": [],
-            "decision": {},
-        },
-    )
-    job_dir = study_dir / "jobs" / "wt"
-    _seed_completed_eq(job_dir)
-    create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
-    _write_artifact(job_dir, "prod_001", "artifacts/trajectory.dcd")
-    complete_node(
-        str(job_dir),
-        "prod_001",
-        artifacts={"trajectory": "artifacts/trajectory.dcd"},
-    )
-    add_study_job(str(study_dir), "wt", "jobs/wt", role="baseline")
-
-    result = generate_study_evidence_report(str(study_dir))
-
-    assert result["success"] is True
-    assert result["report"]["status"] == "incomplete"
-    assert result["report"]["metrics"]["planned_job_ids"] == ["wt", "mutant"]
-    assert result["report"]["metrics"]["missing_planned_job_ids"] == ["mutant"]
-
-
-def test_generate_study_evidence_report_selects_named_plan(tmp_path):
-    from mdclaw._node import complete_node, create_node
-    from mdclaw.study import add_study_job, init_study, record_study_plan
-
-    study_dir = tmp_path / "study"
-    init_study(str(study_dir), title="screen", objective="compare branches")
-    record_study_plan(
-        str(study_dir),
-        {
-            "question": "Does the selected branch remain stable?",
-            "md_goal": "Analyze the selected branch.",
-            "jobs": [{"job_id": "selected"}],
-            "analysis": ["RMSD"],
-            "decision": {},
-        },
-        plan_id="revision-1",
-    )
-    for job_id, rmsd in (("selected", 0.2), ("unrelated", 9.0)):
-        job_dir = study_dir / "jobs" / job_id
-        _seed_completed_eq(job_dir)
-        create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
-        _write_artifact(job_dir, "prod_001", "artifacts/trajectory.dcd")
-        complete_node(
-            str(job_dir),
-            "prod_001",
-            artifacts={"trajectory": "artifacts/trajectory.dcd"},
-        )
-        create_node(
-            str(job_dir),
-            "analyze",
-            parent_node_ids=["prod_001"],
-            conditions={"analysis_data_scope": "segment"},
-        )
-        _write_artifact(job_dir, "analyze_001", "artifacts/rmsd.csv")
-        complete_node(
-            str(job_dir),
-            "analyze_001",
-            artifacts={"rmsd_csv": "artifacts/rmsd.csv"},
-            metadata={"analysis_type": "rmsd", "mean_rmsd_nm": rmsd},
-        )
-        add_study_job(str(study_dir), job_id, f"jobs/{job_id}")
-
-    result = generate_study_evidence_report(
-        str(study_dir),
-        plan_id="revision-1",
-        output_name="revision-1.json",
-    )
-
-    assert result["success"] is True
+def test_same_job_replicas_preserve_shared_eq_and_differences(tmp_path):
+    node(tmp_path, "eq", "eq")
+    node(tmp_path, "a", parents=["eq"], metadata={"temperature_kelvin": 300, "random_seed": 1})
+    node(tmp_path, "b", parents=["eq"], metadata={"temperature_kelvin": 300, "random_seed": 2})
+    node(tmp_path, "ignored", metadata={"temperature_kelvin": 999})
+    targets = [target(tmp_path, "a", "r1"), target(tmp_path, "b", "r2")]
+    assert generate_md_report(targets=targets)["code"] == "report_selection_required"
+    result = generate_md_report(targets=targets, grouping="replicas")
+    assert result["success"]
     report = result["report"]
-    assert report["status"] == "complete"
-    assert report["metrics"]["registered_job_ids"] == ["selected", "unrelated"]
-    assert report["metrics"]["planned_job_ids"] == ["selected"]
-    assert [job["job_id"] for job in report["metrics"]["jobs"]] == ["selected"]
-    assert report["metrics"]["analyze"][0]["metrics"]["mean_rmsd_nm"] == 0.2
-    assert report["metadata"]["study_plan_id"] == "revision-1"
-    assert report["provenance"]["study_plan_file"].endswith(
-        "plans/revision-1.json"
-    )
+    assert report["relationships"][0]["shared_ancestors"] == ["eq"]
+    assert report["relationships"][0]["shared_production"] == []
+    assert report["comparison"]["common_recorded_settings"]["prod/1/recorded/temperature_kelvin"] == 300
+    assert "prod/1/recorded/random_seed" in report["comparison"]["differences"]
+    assert "ignored" not in json.dumps(report)
 
 
-def test_generate_study_evidence_report_rejects_missing_named_plan(tmp_path):
-    from mdclaw.study import init_study
-
-    study_dir = tmp_path / "study"
-    init_study(str(study_dir), title="screen", objective="compare branches")
-
-    result = generate_study_evidence_report(str(study_dir), plan_id="missing")
-
-    assert result["success"] is False
-    assert "study plan 'missing' not found" in result["errors"][0]
+def test_cross_job_replicas_missing_not_equal_null(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    node(a, "prod", metadata={"random_seed": None})
+    node(b, "prod")
+    result = generate_md_report(targets=[target(a, "prod", "a"), target(b, "prod", "b")], grouping="replicas")
+    assert result["success"]
+    rows = result["report"]["comparison"]["differences"]["prod/1/recorded/random_seed"]
+    assert [r["present"] for r in rows] == [True, False]
 
 
-def test_generate_study_evidence_report_rejects_unreadable_active_plan(tmp_path):
-    from mdclaw.study import init_study
-
-    study_dir = tmp_path / "study"
-    init_study(str(study_dir), title="screen", objective="compare branches")
-    (study_dir / "study_plan.json").write_text("{")
-
-    result = generate_study_evidence_report(str(study_dir))
-
-    assert result["success"] is False
-    assert "study plan is unreadable" in result["errors"][0]
+def test_continuations_and_duplicate_analyses_are_not_replicas(tmp_path):
+    node(tmp_path, "p1")
+    node(tmp_path, "p2", parents=["p1"])
+    node(tmp_path, "a1", "analyze", ["p2"])
+    node(tmp_path, "a2", "analyze", ["p2"])
+    for left, right in (("p1", "p2"), ("a1", "a2")):
+        targets = [target(tmp_path, left, "a"), target(tmp_path, right, "b")]
+        assert not generate_md_report(targets=targets, grouping="replicas")["success"]
+        assert generate_md_report(targets=targets, grouping="separate")["success"]
 
 
+@pytest.mark.parametrize("parents", [["missing"], ["a"]])
+def test_broken_lineage_fails(tmp_path, parents):
+    node(tmp_path, "a", parents=parents)
+    assert not generate_md_report(targets=[target(tmp_path, "a", "a")])["success"]
 
-def test_generate_study_evidence_report_registered_as_tool():
-    from mdclaw._cli import _discover_tools
-    from mdclaw.evidence import TOOLS
 
-    assert "generate_study_evidence_report" in TOOLS
-    assert callable(TOOLS["generate_study_evidence_report"])
-    assert "generate_study_evidence_report" in _discover_tools()
+def test_dependencies_are_recorded_but_not_production_ancestors(tmp_path):
+    node(tmp_path, "dep")
+    path = node(tmp_path, "a")
+    data = json.loads(path.read_text())
+    data["dependency_node_ids"] = ["dep"]
+    path.write_text(json.dumps(data))
+    subject = generate_md_report(targets=[target(tmp_path, "a", "a")])["report"]["subjects"][0]
+    assert len(subject["history"]) == 2
+    assert subject["production_node_ids"] == ["a"]
+
+
+def test_production_forks_retain_shared_prefix_without_pooling(tmp_path):
+    node(tmp_path, "shared")
+    node(tmp_path, "a", parents=["shared"])
+    node(tmp_path, "b", parents=["shared"])
+    result = generate_md_report(targets=[target(tmp_path, "a", "a"), target(tmp_path, "b", "b")], grouping="replicas")
+    assert result["success"]
+    assert result["report"]["relationships"][0]["shared_production"] == ["shared"]
+    assert [s["production_frontier"] for s in result["report"]["subjects"]] == [["a"], ["b"]]
+
+
+def test_runtime_citations_not_from_declarations(tmp_path):
+    path = node(tmp_path, "p", metadata={"integrator_signature": {"integrator": "LangevinMiddleIntegrator"}})
+    data = json.loads(path.read_text())
+    data["conditions"] = {"method": "SHAKE WHAM MBAR"}
+    data["artifacts"] = {"runtime_system": "system.xml", "integrator": "integrator.xml"}
+    path.write_text(json.dumps(data))
+    (path.parent / "system.xml").write_text('<System openmmVersion="8.5.1"><Constraints><Constraint/></Constraints><Forces><Force type="MonteCarloMembraneBarostat" pressure="1"/></Forces></System>')
+    (path.parent / "integrator.xml").write_text('<Integrator type="LangevinMiddleIntegrator" temperature="300"/>')
+    result = generate_md_report(job_dir=str(tmp_path), output_dir=str(tmp_path / "report"))
+    assert result["success"]
+    citations = result["report"]["citations"]
+    assert len(citations["selected"]) == 5
+    middle = next(c for c in citations["selected"] if c["key"] == "Zhang2019LFMiddle")
+    assert middle["reasons"][0]["evidence_file"] == str(path.parent / "integrator.xml")
+    assert middle["reasons"][0]["evidence_field"] == "/Integrator/@type"
+    assert citations["documentation"][0]["dedicated_paper"] is None
+    assert any(x["method"] == "constraint_solver" for x in citations["unresolved"])
+    assert "SHAKE" not in citations["bibtex"]
+    assert Path(result["files"]["bibtex"]).read_text() == citations["bibtex"]
+    assert not generate_md_report(job_dir=str(tmp_path), output_dir=str(tmp_path / "report"))["success"]
+    assert not generate_md_report(job_dir=str(tmp_path), output_dir=str(path.parent / "report"))["success"]
+
+
+def test_study_named_plan_and_missing_jobs(tmp_path):
+    (tmp_path / "study.json").write_text(json.dumps({"jobs": [{"job_id": "a", "job_dir": "jobs/a"}, {"job_id": "b", "job_dir": "jobs/b"}]}))
+    (tmp_path / "plans").mkdir()
+    plan = tmp_path / "plans" / "selected.json"
+    plan.write_text(json.dumps({"plan": {"jobs": [{"job_id": "a"}]}}))
+    node(tmp_path / "jobs/a", "p")
+    result = generate_md_report(study_dir=str(tmp_path), plan_id="selected")
+    assert result["success"]
+    assert len(result["report"]["subjects"]) == 1
+    assert result["report"]["study"]["plan_file"] == str(plan)
+    plan.write_text(json.dumps({"plan": {"jobs": [{"job_id": "missing"}]}}))
+    assert not generate_md_report(study_dir=str(tmp_path), plan_id="selected")["success"]
+    assert not generate_md_report(study_dir=str(tmp_path), plan_id="absent")["success"]
+
+
+def test_duplicate_and_invalid_inputs(tmp_path):
+    node(tmp_path, "a")
+    t = target(tmp_path, "a", "a")
+    for kwargs in ({}, {"targets": []}, {"targets": [t, t], "grouping": "separate"},
+                   {"job_dir": str(tmp_path), "targets": [t]}, {"job_dir": str(tmp_path), "plan_id": "x"}):
+        assert not generate_md_report(**kwargs)["success"]
+
+
+def test_corrupt_node_and_study_plan_fail_closed(tmp_path):
+    path = node(tmp_path, "p")
+    path.write_text("{")
+    assert not generate_md_report(job_dir=str(tmp_path))["success"]
+    (tmp_path / "study.json").write_text('{"jobs": []}')
+    (tmp_path / "study_plan.json").write_text("{")
+    assert not generate_md_report(study_dir=str(tmp_path))["success"]
+
+
+def test_cli_discovery_and_retirement():
+    from mdclaw._cli import _discover_tools, _missing_tool_error
+    tools = _discover_tools()
+    assert "generate_md_report" in tools
+    for old in ("generate_md_evidence_report", "generate_study_evidence_report"):
+        assert old not in tools
+        assert "generate_md_report" in _missing_tool_error(old, tools)["message"]
+
+
+def test_missing_runtime_and_failed_analysis_stay_explicit(tmp_path):
+    path = node(tmp_path, "a", "analyze", status="failed")
+    data = json.loads(path.read_text())
+    data["artifacts"] = {"integrator": "absent.xml"}
+    data["metadata"] = {"integrator_signature": {"integrator": "LangevinMiddleIntegrator"}}
+    path.write_text(json.dumps(data))
+    report = generate_md_report(job_dir=str(tmp_path))["report"]
+    assert report["subjects"][0]["analysis_results"] == []
+    assert report["subjects"][0]["history"][0]["warnings"]
+    assert report["citations"]["selected"] == []
+
+
+def test_recorded_parameters_not_inferred_from_label(tmp_path):
+    node(tmp_path, "p", label="ff19SB OPC HMR", metadata={"effective_forcefield": "ff14SB", "water_model": "tip3p", "hmr": True})
+    refs = generate_md_report(job_dir=str(tmp_path))["report"]["citations"]["selected"]
+    assert {r["key"] for r in refs} == {"Maier2015ff14SB", "Jorgensen1983TIP3P", "Hopkins2015HMR"}
+
+
+def test_packaged_bibliography_matches_verified_audit():
+    import re
+    from mdclaw.evidence import citations
+    audit = Path(__file__).parents[1] / "docs/research/citation-audit-2026-09-06.bib"
+    source = audit.read_text()
+    packaged = Path(citations.__file__).with_name("references.bib").read_text()
+    entries = list(re.finditer(r"@\w+\{([^,]+),\n.*?^\}", packaged, re.M | re.S))
+    assert len(entries) == len({m[1] for m in entries}) == 13
+    assert all(m[0] in source for m in entries)
+
+
+def test_cli_execution_with_json_targets(tmp_path, capsys):
+    from mdclaw._cli import main
+    node(tmp_path, "a")
+    targets = [target(tmp_path, "a", "r1")]
+    with pytest.raises(SystemExit) as exc:
+        main(["generate_md_report", "--targets", json.dumps(targets)])
+    assert exc.value.code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["success"]
+    assert result["report"]["subjects"][0]["label"] == "r1"
