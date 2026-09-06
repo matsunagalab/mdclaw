@@ -1124,6 +1124,24 @@ class TestExtractBindPaths:
 class TestBuildSingularityCommand:
     """Test _build_singularity_command helper."""
 
+    def test_plumed_input_and_source_overlay_are_preserved(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        inputs = tmp_path / "inputs"
+        inputs.mkdir()
+        script = inputs / "plumed.dat"
+        script.write_text("d: DISTANCE ATOMS=1,2\n")
+        source = tmp_path / "source"
+        source.mkdir()
+        command = f"mdclaw run_production --plumed-file {script} --steering-time-ns 0.002"
+        result = _build_singularity_command(command, {
+            "image": "/opt/mdclaw-plumed.sif", "extra_flags": "--nv",
+            "source_mode": "overlay", "source_root": str(source),
+        }, str(tmp_path / "output"))
+        assert command in result
+        assert str(inputs) in result.split("--bind ")[1].split()[0].split(",")
+        assert f"--env PYTHONPATH={source}" in result
+        assert "--nv" in result and "/opt/mdclaw-plumed.sif" in result
+
     def test_basic_wrap(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         container = {"image": "/opt/mdclaw.sif"}

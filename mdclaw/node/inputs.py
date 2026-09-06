@@ -696,6 +696,13 @@ def resolve_node_inputs(
         result.update(_resolve_md_restart(job_dir, node_id))
         result.update(_resolve_prod_custom_force(job_dir, node_id))
         result.update(_resolve_prod_distance_restraints(job_dir, node_id))
+        continued_from = _read_continued_from(job_dir, node_id)
+        if continued_from:
+            plumed_file = _read_artifact_from_node(job_dir, continued_from, "plumed_input")
+            if plumed_file:
+                result["plumed_file"] = plumed_file
+            elif _read_metadata_field(job_dir, continued_from, "plumed"):
+                result["input_resolution_error"] = "PLUMED continuation is missing its recorded input."
 
         # Surface the eq ancestor's ensemble as a default-pressure hint
         # so a prod that omits ``--pressure-bar`` still defaults to NPT

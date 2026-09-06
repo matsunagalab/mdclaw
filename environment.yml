@@ -49,6 +49,15 @@ dependencies:
   # this conda package mainly pulls a matching openmm+pytorch ABI for local
   # dev, where the custom-force path is skipped until PythonTorchForce exists.
   - openmm-torch>=1.5
+  # openmm-plumed 2.1 conda binaries constrain OpenMM below 8.5. Keep our
+  # modern OpenMM and source-build PLUMED 2.9.4 + its plugin into this prefix:
+  # bash container/scripts/build-plumed.sh "$CONDA_PREFIX" /tmp/new-plumed-build
+  - cmake>=3.18,<4
+  - swig
+  - patch
+  - make
+  - cxx-compiler
+  - git
   # --- pip dependencies (delegated to pyproject.toml) ---
   - pip
   - pip:

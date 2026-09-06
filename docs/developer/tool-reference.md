@@ -435,6 +435,12 @@ signature, update the relevant section here and the matching skill examples.
   log includes reserved `steering_progress`; CV metadata carries the protocol
   separately from user parameters. Ordinary scripts see `ctx.steering=None`.
   See `skills/md-production/custom-force.md` for an angular steering example.
+  `plumed_file` selects the mutually exclusive, history-free PLUMED route.
+  The original input, resolved runtime input, protocol, COLVAR and native log
+  are node artifacts; `continue_from` inherits them without modifying parents.
+  PLUMED drives its own per-step schedule; `steering_time_ns` validates its end,
+  not a second clock. See `skills/md-production/plumed.md` and
+  `docs/developer/plumed.md` for the supported subset and conda/container builds.
 
 ## `analyze/`
 

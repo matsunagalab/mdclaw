@@ -27,6 +27,7 @@ from mdclaw.simulation.custom_forces import CUSTOM_FORCE_GROUP, CustomForceError
 from mdclaw.simulation.integrator_plan import _compute_step_plan, _record_production_node_result  # noqa: E402
 from mdclaw.simulation.restraints import DistanceRestraintError, load_distance_restraints, normalize_distance_restraints  # noqa: E402
 from mdclaw.simulation.steering import PROTOCOL_PARAMETER, DistanceSteering, TorchSteering, check_steering_handoff, prepare_torch_steering, validate_steering  # noqa: E402
+from mdclaw.simulation.plumed import PlumedRun, native_log, validate_run as validate_plumed  # noqa: E402
 from mdclaw.simulation.restart import _close_reporter_stream, _count_state_data_rows, _detect_ensemble_mismatch, _flush_reporter_stream, _load_state_into_simulation, _resolve_dcd_append_mode, _resolve_restart_node_id_for_run, _restart_random_seed, _restart_source_metadata, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _effective_pressure_bar, _integrator_signature, _load_xml_topology_inputs, _signature_mismatches, _system_signature, _validate_xml_system_contract  # noqa: E402
 
@@ -90,6 +91,7 @@ def run_production(
     node_id: Optional[str] = None,
     steering_time_ns: Optional[float] = None,
     steering_update_interval_ps: float = 1.0,
+    plumed_file: Optional[str] = None,
 ) -> dict:
     """Run MD simulation using OpenMM.
 
@@ -155,6 +157,15 @@ def run_production(
                      custom steering also requires steering_initial.npz. After a
                      completed custom ramp, omitting steering_time_ns freezes
                      progress at 1, including subsequent umbrella continuations.
+        plumed_file: Optional bounded history-free PLUMED input (basic CVs,
+                     RESTRAINT or MOVINGRESTRAINT, one PRINT FILE=COLVAR).
+                     Mutually exclusive with distance_restraints/custom_force_script.
+                     Uses nm, ps, kJ/mol, radians and 1-based atom indices.
+                     MOVINGRESTRAINT STEP values are relative to protocol origin;
+                     declare matching steering_time_ns when starting/resuming a ramp.
+                     Completed ramps continue unchanged at their final restraint.
+                     PLUMED updates every MD step, not steering_update_interval_ps.
+                     See skills/md-production/plumed.md for the supported subset.
         name: Optional name prefix for output files
         output_dir: Output directory. If None, creates output/{job_id}/
         is_membrane: Set True for membrane systems to use MonteCarloMembraneBarostat
@@ -217,6 +228,8 @@ def run_production(
     if job_dir and node_id:
         from mdclaw._node import resolve_node_inputs, validate_node_execution_context
         _inputs = resolve_node_inputs(job_dir, node_id, "prod")
+        if not plumed_file:
+            plumed_file = _inputs.get("plumed_file")
         if not is_membrane and _inputs.get("is_membrane"):
             is_membrane = True
         hmr, implicit_solvent, timestep_fs = _resolve_topology_run_settings(
@@ -407,14 +420,20 @@ def run_production(
                 code="production_bias_conflict",
             )
 
+    if plumed_file and (custom_force_script or distance_restraints):
+        return create_validation_error("plumed_file", "Choose exactly one production bias route.",
+                                       code="production_bias_conflict")
     try:
-        validate_steering(steering_time_ns, steering_update_interval_ps,
-                          distance_restraints, timestep_fs, custom_force_script)
+        _plumed_validated = validate_plumed(plumed_file, restart_from, steering_time_ns,
+                                            steering_update_interval_ps, timestep_fs)
+        if not plumed_file:
+            validate_steering(steering_time_ns, steering_update_interval_ps,
+                              distance_restraints, timestep_fs, custom_force_script)
         check_steering_handoff(restart_from, steering_time_ns)
-    except DistanceRestraintError as exc:
+    except (DistanceRestraintError, CustomForceError) as exc:
         return create_validation_error(
-            "steering_time_ns", str(exc), code=exc.code,
-            expected="valid distance steering schedule", actual=steering_time_ns,
+            "plumed_file" if plumed_file else "steering_time_ns", str(exc), code=exc.code,
+            expected="valid production bias/restart protocol", actual=plumed_file or steering_time_ns,
         )
 
     if not (system_xml_file and topology_pdb_file):
@@ -551,6 +570,9 @@ def run_production(
         "GBn2": GBn2,   # igb=8 (recommended by Amber manual)
     }
     
+    _plumed_run = None
+    _plumed_log = None
+    simulation = None
     try:
         # Load topology + initial positions / box vectors from the XML
         # triple. The build-time forcefield, constraints, and HMR are
@@ -663,6 +685,16 @@ def run_production(
                 "Custom force loaded (kind=%s, cv=%s)",
                 _custom_force_loaded["kind"], _custom_force_loaded["cv_names"],
             )
+        elif plumed_file:
+            _plumed_run = PlumedRun(
+                _plumed_validated, system=system, topology=xml_inputs.topology,
+                restart_from=restart_from, timestep_fs=timestep_fs,
+                time_ns=steering_time_ns, output_dir=out_dir,
+                report_interval=int(output_frequency_ps * 1000 / timestep_fs),
+                temperature_kelvin=temperature_kelvin,
+            )
+            _plumed_log = native_log(out_dir / "plumed.log")
+            _plumed_log.__enter__()
         elif distance_restraints:
             try:
                 _distance_restraint_loaded = load_distance_restraints(
@@ -975,8 +1007,10 @@ def run_production(
                 if xml_inputs.box_vectors is not None:
                     simulation.context.setPeriodicBoxVectors(*xml_inputs.box_vectors)
 
+        if _plumed_run is not None:
+            _plumed_run.restore_clock(simulation)
         steering = None
-        if steering_time_ns is not None or _torch_steering is not None:
+        if not plumed_file and (steering_time_ns is not None or _torch_steering is not None):
             schedule_args = dict(
                 time_ns=steering_time_ns, update_ps=steering_update_interval_ps,
                 timestep_fs=timestep_fs, restart_from=restart_from, output_dir=out_dir,
@@ -1110,10 +1144,12 @@ def run_production(
         )
         start_step = plan["start_step"]
         steps_to_run = plan["steps_to_run"]
+        if _plumed_run is not None and start_step + steps_to_run >= 2**31 - 1:
+            raise CustomForceError(code="plumed_input_invalid", message="PLUMED plugin's 32-bit step counter would overflow.")
         simulation_steps = plan["num_steps"]
         result["num_steps"] = simulation_steps
         result["start_step"] = start_step
-        result["start_time_ns"] = plan["start_time_ns"]
+        result["start_time_ns"] = _plumed_run.start_time / 1000 if _plumed_run else plan["start_time_ns"]
 
         if steps_to_run <= 0:
             result["errors"].append(
@@ -1165,6 +1201,10 @@ def run_production(
         state = simulation.context.getState(getEnergy=True, getPositions=True)
         final_energy = state.getPotentialEnergy()
         result["final_energy_kj_mol"] = float(final_energy._value)
+        if _plumed_run is not None:
+            result.update(_plumed_run.finish(simulation))
+            if result["sampling_role"] == "steered":
+                result["warnings"].append("PLUMED steering is non-equilibrium initialization; check actual target attainment and fixed-window relaxation.")
         logger.info(f"Final energy: {final_energy}")
 
         expected_reports = steps_to_run // report_interval if report_interval > 0 else 0
@@ -1259,6 +1299,10 @@ def run_production(
     except Exception as e:
         logger.error(f"MD simulation failed: {e}")
         result["errors"].append(f"MD simulation failed: {type(e).__name__}: {str(e)}")
+    finally:
+        if _plumed_log is not None:
+            simulation = None  # PLUMED finalization/logging precedes stdout restore
+            _plumed_log.__exit__(None, None, None)
 
     # Node state update
     if _node_mode:

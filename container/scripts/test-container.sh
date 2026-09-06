@@ -173,6 +173,39 @@ assert shim in Path('/proc/self/maps').read_text()
 print('cuFFT FUSE preload shim active')
 "
 
+check_declared MDCLAW_PLUMED_VERSION "PLUMED actual CPU energy and force" python -c "
+import json, os, sys
+from pathlib import Path
+import openmm as mm
+from openmmplumed import PlumedForce
+
+build = json.loads((Path(sys.prefix) / 'share/mdclaw/plumed-build.json').read_text())
+assert build['plumed'] == os.environ['MDCLAW_PLUMED_VERSION'], build
+assert build.get('plugin_patch') == 'box-pointer-lifetime-v1', build
+system = mm.System()
+system.addParticle(12)
+system.addParticle(12)
+force = PlumedForce('d: DISTANCE ATOMS=1,2 NOPBC\\nb: RESTRAINT ARG=d AT=1 KAPPA=100')
+system.addForce(force)
+context = mm.Context(system, mm.VerletIntegrator(0.002), mm.Platform.getPlatformByName('CPU'))
+context.setPositions([[0,0,0], [1.5,0,0]])
+state = context.getState(getEnergy=True, getForces=True)
+assert abs(state.getPotentialEnergy()._value - 12.5) < 1e-6
+assert abs(state.getForces()[1][0]._value + 50) < 1e-6
+del context
+system.setDefaultPeriodicBoxVectors([3,0,0], [0,3,0], [0,0,3])
+periodic = mm.CustomBondForce('0')
+periodic.setUsesPeriodicBoundaryConditions(True)
+periodic.addBond(0, 1, [])
+system.addForce(periodic)
+system.removeForce(0)
+system.addForce(PlumedForce('d: DISTANCE ATOMS=1,2\\nb: RESTRAINT ARG=d AT=1 KAPPA=100'))
+context = mm.Context(system, mm.VerletIntegrator(0.002), mm.Platform.getPlatformByName('CPU'))
+context.setPositions([[0,0,0], [4.5,0,0]])
+assert abs(context.getState(getEnergy=True).getPotentialEnergy()._value - 12.5) < 1e-6
+print('PLUMED CPU force and energy verified')
+"
+
 # --- AmberTools ---
 echo ""
 echo "[AmberTools]"

@@ -206,6 +206,10 @@ RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c "import pathlib, torch; print(pa
 # Verify the openmm-torch plugin imports and provides PythonTorchForce
 RUN /opt/mdclaw/bin/python -c "import openmmtorch; assert hasattr(openmmtorch, 'PythonTorchForce'), 'PythonTorchForce missing'; print('openmm-torch OK (PythonTorchForce present)')"
 
+# Build both PLUMED and its plugin against our OpenMM, never a conda OpenMM ABI.
+COPY container/scripts/build-plumed.sh /build/build-plumed.sh
+RUN bash /build/build-plumed.sh /opt/mdclaw /build/plumed-stack 8
+
 # =============================================================================
 # Stage 3: Slim runtime
 # =============================================================================
@@ -236,6 +240,7 @@ COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc.so* /opt/mdclaw/lib/
 COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc-builtins.so* /opt/mdclaw/lib/
 
 # Set environment variables
+ENV MDCLAW_PLUMED_VERSION=2.9.4
 ENV PATH="/opt/mdclaw/bin:$PATH"
 ENV AMBERHOME="/opt/mdclaw"
 ENV PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages"

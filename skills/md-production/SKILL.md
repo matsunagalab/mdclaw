@@ -100,6 +100,8 @@ preparing distance-based umbrella sampling windows, **read and follow
 `skills/md-production/distance-restraints.md`**. For an arbitrary potential or
 steering another CV (e.g. an angle or an ML-defined coordinate), **read and follow
 `skills/md-production/custom-force.md`**.
+For **PLUMED CV recording, steering or fixed umbrellas**, follow
+**`skills/md-production/plumed.md`**; this requires a PLUMED-capable runtime.
 
 ## Handoff
 

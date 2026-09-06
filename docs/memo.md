@@ -7,6 +7,64 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-06 — History-free PLUMED production, conda and container builds
+
+Added `run_production --plumed-file` as an exclusive third bias route on the
+existing prod DAG. PLUMED owns its per-step MOVINGRESTRAINT schedule; MDClaw
+owns original/runtime inputs, protocol hashes, node-local logs/COLVAR, normalized
+CV CSV and XML clock restoration. Partial ramps cannot become fixed umbrellas;
+completed ramps inherit unchanged through fixed continuations. No new node
+type, second schedule engine, arbitrary input-file resolver or history store.
+The documented first subset is scalar distance/angle/torsion, COM/CENTER/GROUP,
+WHOLEMOLECULES, RESTRAINT/MOVINGRESTRAINT and PRINT in nm/ps/kJ/mol. Unsupported
+I/O, metadynamics/history and work-accumulation claims are explicitly excluded.
+
+Both Dockerfiles and conda use the same pinned PLUMED 2.9.4/openmm-plumed 2.1
+source-build helper, against the installed OpenMM prefix. Prebuilt conda plugin
+constraints would downgrade OpenMM below the modern topology floor; they are
+not used. Actual x86_64 validation built on the full 0.6.8 runtime and generated
+a new SIF, without replacing the existing image. This is not a full rebuild of
+all canonical Dockerfile layers; arm64 was updated but not built/run here.
+
+A new periodic-image regression exposed upstream plugin 2.1's dangling
+`setBox` pointer: its block-local array dies before calculation. The optimized
+conda build failed COM/angle/torsion image invariance; moving that array to the
+enclosing scope (two changed lines) made all three pass. The helper applies and
+records `box-pointer-lifetime-v1`. Initial container tests happened to pass
+without this patch; that compiler-dependent success was not treated as proof
+that upstream was safe. Conda CPU production/DAG/geometry tests passed after
+the patch; conda CUDA cannot run with this host's CUDA-12.4-capable driver and
+the selected OpenMM 8.5.1 CUDA-12.9 build (unsupported PTX). Container CUDA works.
+
+Validation includes real forces/finite-difference gradients, physical-element
+COM masses despite HMR, periodic image invariance, interrupted XML restart,
+two fixed continuations, nonzero origin and independent State-time offsets,
+CLI JSON purity, hash tampering, unsupported inputs and SLURM generated binds.
+The final patched validation image (`mdclaw:plumed-validation-fixed`, image ID
+`3e3720a4feb8476b3612e9fe23731cff8cc6515cbf232b41db46a0cf55f36430`) passed all
+619 focused tests, including the extended 21-test CPU/CUDA PLUMED suite.
+Final container checks passed 25/25, and the unchanged 1AKE
+continuation pipeline passed 7/7 (one existing pytest fixture deprecation).
+The broader production smoke selection passed 15/15 (five registry/CLI cases
+and ten scientific server cases, including native/TorchForce steering).
+Final Ruff, shell syntax and diff-whitespace checks passed. No commit, push or
+image publication was performed. The initial SIF remains explicitly pre-patch
+validation evidence, not the final deployment image.
+
+Live pi + DeepSeek completed five 2 ps CUDA CLI nodes: eq_001 → steered_X
+(prod_002) → umbrella_X (prod_003) → umbrella_X_extra (prod_005), independently
+eq_001 → steered_Y (prod_001) → umbrella_Y (prod_004). Independent audit checked
+all 20 CV rows, harmonic energies, protocol/XML hashes, fixed centers (2.7/2.8
+rad), exact step chains 100→1100→2100→3100, analysis-chain exclusion of steering,
+and byte-identical source eq. The live run preceded the native lifetime patch
+and the final `start_time_ns` metadata correction; these are covered by the
+subsequent targeted tests. Actual XML times were already restored correctly.
+Last CSV rows can precede a non-grid-aligned endpoint: schedule completion is
+checked using XML/metadata, not the last sampled center. No equilibration,
+target attainment or PMF convergence is inferred from this functional smoke.
+Local evidence: `../validation_plumed/agent_study/report.md`, `audit.py`,
+`agent.jsonl`, isolated conda prefix, validation Docker image and SIF.
+
 ## 2026-09-06 — Custom TorchForce steering on the existing production DAG
 
 Extended the existing steering flags to `custom_force_script`. Distance and

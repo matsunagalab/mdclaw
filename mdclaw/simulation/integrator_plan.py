@@ -147,6 +147,13 @@ def _record_production_node_result(
             "integrator_signature": result.get("integrator_signature"),
         }
         custom_force = result.get("custom_force")
+        if result.get("plumed"):
+            metadata["plumed"] = result["plumed"]
+            metadata["sampling_role"] = result["sampling_role"]
+            for key, filename in {"plumed_input": "plumed.dat", "plumed_runtime": "plumed.runtime.dat",
+                                  "plumed_protocol": "plumed.json", "plumed_colvar": "plumed.COLVAR",
+                                  "plumed_log": "plumed.log"}.items():
+                artifacts[key] = _node_artifact_path(str(Path(result["output_dir"]) / filename))
         if custom_force:
             metadata["custom_force"] = custom_force
             metadata["custom_force_signature"] = custom_force.get("signature")
