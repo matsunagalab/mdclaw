@@ -7,6 +7,46 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-06 — Native distance steering as independent production nodes
+
+Implemented `run_production --steering-time-ns` with a separate
+`--steering-update-interval-ps` (default 1 ps). Each branch starts from the
+common eq's measured COM distance, follows a right-endpoint staircase
+approximation to a linear ramp, then holds the target. Existing fixed biases
+are unchanged. Use `prod` labels `steered_X → umbrella_X`; no new node type,
+PLUMED dependency, TorchForce extension or sequential-window seeding.
+
+The XML state's exact step counter and matching immutable `steering.json`
+recover progress, including interruption inside an update interval. An XML
+Context parameter binds the state to the protocol digest; missing/mismatched
+sidecars and changed schedules are refused. Unfinished steering cannot silently
+become fixed umbrella. Applied centers and bias/CVs are logged; metadata reports
+schedule completion separately from actual target errors. Runtime System
+serialization retains the final centers. Umbrella continuation rebuilds from
+the topo ancestor, so no duplicate restraint accumulates. Both analysis lineage
+collectors stop at the steered/fixed boundary (explicit steering diagnostics
+remain possible); umbrella burn-in still requires scientific judgment.
+
+Validation: focused CLI/registry/guardrail/restraint/node/SLURM suite 596 passed;
+native-distance server smoke 2 passed (fixed baseline and steering/resume/
+umbrella plus independent sibling); existing 1AKE continuation pipeline 7
+passed. Ruff and diff whitespace checks pass. Tests include deterministic
+uninterrupted vs segmented and interrupted XML restarts, incomplete-handoff
+refusal, protocol mismatch, analysis exclusion and submission-condition checks.
+
+Live pi + `deepseek-cloudflare/deepseek-v4-flash` ran the updated CLI/skill on
+CUDA in an isolated small-protein study: eq_001 → steered_X (prod_002) →
+umbrella_X (prod_003), and eq_001 → steered_Y (prod_001) → umbrella_Y (prod_004).
+All four 0.002 ns nodes completed. Independent artifact audit verifies shared
+initial distance (0.72772484 nm), distinct target-center traces, exactly one
+native bias per runtime System, fixed umbrella handoff and analysis exclusion.
+Targets were 0.50/0.55 nm; actual end-of-steering distances 0.73128/0.72512 nm
+(errors +0.23128/+0.17512 nm). This deliberately tiny test establishes CLI/DAG
+functionality, **not target attainment, equilibration or PMF convergence**.
+Artifacts, raw agent log, independent audit and source hashes are retained at
+`/home/yasu/tmp/mdclaw/validation_distance_steering/`; `audit.json` is the concise
+record. No real SLURM submission or PR modification was performed.
+
 ## 2026-09-05 — 090 declaration mismatch checked before submission
 
 090's retained min/eq completion events are successful; production failed on

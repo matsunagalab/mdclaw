@@ -61,7 +61,8 @@ def production_preflight(command, job_dir, node_id):
         # These parameters reach actual_conditions unchanged. Never pre-judge
         # topology-inherited timestep/HMR, pressure, membrane state or bias.
         keys = {"simulation_time_ns", "temperature_kelvin", "output_frequency_ps",
-                "trajectory_format", "platform", "device_index", "random_seed"}
+                "trajectory_format", "platform", "device_index", "random_seed",
+                "steering_time_ns", "steering_update_interval_ps"}
         defaults = inspect.signature(run_production).parameters
         actual = {k: values.get(k, defaults[k].default) for k in keys}
         declared = read_node(job_dir, node_id).get("conditions") or {}

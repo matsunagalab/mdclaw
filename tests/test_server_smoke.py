@@ -1044,11 +1044,13 @@ class TestMDSimulationServer:
         copied = job_dir / "nodes" / prod["node_id"] / "artifacts" / "custom_force_script.py"
         assert copied.is_file()
 
+    @pytest.mark.parametrize("steering_time_ns", [None, 0.002])
     def test_run_production_native_distance_restraint_records_cv_and_metadata(
         self,
         small_pdb,
         tmp_path,
         openmm_cpu_platform,
+        steering_time_ns,
     ):
         """Native COM-distance bias is serializable and records exact CVs."""
         import json
@@ -1113,6 +1115,7 @@ class TestMDSimulationServer:
             conditions={
                 "simulation_time_ns": 0.001,
                 "distance_restraints": restraints,
+                **({"steering_time_ns": steering_time_ns} if steering_time_ns else {}),
             },
         )
 
@@ -1126,6 +1129,8 @@ class TestMDSimulationServer:
             job_dir=str(job_dir),
             node_id=prod["node_id"],
             distance_restraints=restraints,
+            steering_time_ns=steering_time_ns,
+            steering_update_interval_ps=0.1,
         )
 
         assert result["success"] is True, result["errors"]
@@ -1135,6 +1140,7 @@ class TestMDSimulationServer:
         cv_rows = Path(result["collective_variables_file"]).read_text().splitlines()
         assert cv_rows[0] == (
             "step,time_ps,bias_energy_kj_mol,atom_distance"
+            + (",atom_distance_center_nm" if steering_time_ns else "")
         )
         assert cv_rows[1:] and float(cv_rows[1].split(",")[-1]) >= 0.0
         runtime_system = XmlSerializer.deserialize(
@@ -1147,7 +1153,8 @@ class TestMDSimulationServer:
         cv_meta = json.loads(
             Path(result["collective_variables_meta_file"]).read_text()
         )
-        assert cv_meta["parameters"] == {"distance_restraints": restraints}
+        assert cv_meta["parameters"]["distance_restraints"] == restraints
+        assert ("steering" in cv_meta["parameters"]) == bool(steering_time_ns)
 
         prod_node = read_node(str(job_dir), prod["node_id"])
         assert prod_node["metadata"]["distance_restraints"] == restraints
@@ -1157,6 +1164,40 @@ class TestMDSimulationServer:
         assert prod_node["artifacts"]["collective_variables"] == (
             "artifacts/collective_variables.csv"
         )
+        if steering_time_ns:
+            assert not result["steering"]["schedule_complete"]
+            assert prod_node["metadata"]["sampling_role"] == "steered"
+            continued = create_node(str(job_dir), "prod", continue_from=prod["node_id"], label="steered_resume")
+            blocked = run_production(job_dir=str(job_dir), node_id=continued["node_id"],
+                                     simulation_time_ns=0.001, output_frequency_ps=0.5,
+                                     timestep_fs=2, platform=openmm_cpu_platform)
+            assert blocked["code"] == "distance_steering_incomplete"
+            resumed = run_production(job_dir=str(job_dir), node_id=continued["node_id"],
+                                     simulation_time_ns=0.001, output_frequency_ps=0.5,
+                                     timestep_fs=2, platform=openmm_cpu_platform,
+                                     steering_time_ns=steering_time_ns, steering_update_interval_ps=0.1)
+            assert resumed["success"], resumed
+            assert resumed["steering"]["schedule_complete"]
+            assert resumed["steering"]["initial_distances_nm"] == result["steering"]["initial_distances_nm"]
+            assert resumed["steering"]["elapsed_steps"] == 1000
+            umbrella = create_node(str(job_dir), "prod", continue_from=continued["node_id"], label="umbrella_X")
+            sampled = run_production(job_dir=str(job_dir), node_id=umbrella["node_id"],
+                                     simulation_time_ns=0.001, output_frequency_ps=0.5,
+                                     timestep_fs=2, platform=openmm_cpu_platform)
+            assert sampled["success"], sampled
+            assert "steering" not in sampled
+            fixed_system = XmlSerializer.deserialize(Path(sampled["runtime_system_file"]).read_text())
+            forces = [f for f in fixed_system.getForces() if isinstance(f, CustomCentroidBondForce)]
+            assert len(forces) == 1  # topology source, never accumulate parent bias
+            assert forces[0].getBondParameters(0)[1][1] == 0.15
+            sibling = create_node(str(job_dir), "prod", parent_node_ids=[eq["node_id"]], label="steered_Y")
+            other = run_production(job_dir=str(job_dir), node_id=sibling["node_id"],
+                                   simulation_time_ns=0.001, output_frequency_ps=0.5,
+                                   timestep_fs=2, platform=openmm_cpu_platform,
+                                   distance_restraints=[{**restraints[0], "target_distance_nm": 0.2}],
+                                   steering_time_ns=0.001, steering_update_interval_ps=0.1)
+            assert other["success"], other
+            assert other["steering"]["initial_distances_nm"] == result["steering"]["initial_distances_nm"]
 
     def test_run_md_with_platform_cpu(
         self,

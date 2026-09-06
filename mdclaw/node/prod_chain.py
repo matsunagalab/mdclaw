@@ -136,6 +136,7 @@ def _walk_prod_chain_from(
     are skipped silently; non-prod ancestors (typically eq) end the walk.
     """
     reversed_chain: list[str] = []
+    leaf_role = (_read_node_json(job_dir, leaf_prod_id) or {}).get("metadata", {}).get("sampling_role")
     current: Optional[str] = leaf_prod_id
     seen: set[str] = set()
     while current and current not in seen:
@@ -143,6 +144,8 @@ def _walk_prod_chain_from(
         cur_data = _read_node_json(job_dir, current)
         if cur_data is None or cur_data.get("node_type") != "prod":
             break
+        if (cur_data.get("metadata", {}).get("sampling_role") == "steered") != (leaf_role == "steered"):
+            break  # Never concatenate non-equilibrium initialization into umbrella samples.
         art = _read_artifact_from_node(job_dir, current, artifact_key)
         if art is not None:
             reversed_chain.append(art)
@@ -165,12 +168,15 @@ def _walk_prod_trajectory_records_from(
     out of alignment with the trajectory chain.
     """
     reversed_records: list[dict] = []
+    leaf_role = (_read_node_json(job_dir, leaf_prod_id) or {}).get("metadata", {}).get("sampling_role")
     current: Optional[str] = leaf_prod_id
     seen: set[str] = set()
     while current and current not in seen:
         seen.add(current)
         cur_data = _read_node_json(job_dir, current)
         if cur_data is None or cur_data.get("node_type") != "prod":
+            break
+        if (cur_data.get("metadata", {}).get("sampling_role") == "steered") != (leaf_role == "steered"):
             break
         trajectory = _read_artifact_from_node(
             job_dir, current, "trajectory"

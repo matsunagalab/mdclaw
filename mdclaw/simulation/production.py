@@ -26,6 +26,7 @@ from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fai
 from mdclaw.simulation.custom_forces import CUSTOM_FORCE_GROUP, CustomForceError, CustomForceReporter, custom_force_signature, load_custom_forces, write_cv_metadata  # noqa: E402
 from mdclaw.simulation.integrator_plan import _compute_step_plan, _record_production_node_result  # noqa: E402
 from mdclaw.simulation.restraints import DistanceRestraintError, load_distance_restraints, normalize_distance_restraints  # noqa: E402
+from mdclaw.simulation.steering import PROTOCOL_PARAMETER, DistanceSteering, check_steering_handoff, validate_steering  # noqa: E402
 from mdclaw.simulation.restart import _close_reporter_stream, _count_state_data_rows, _detect_ensemble_mismatch, _flush_reporter_stream, _load_state_into_simulation, _resolve_dcd_append_mode, _resolve_restart_node_id_for_run, _restart_random_seed, _restart_source_metadata, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _effective_pressure_bar, _integrator_signature, _load_xml_topology_inputs, _signature_mismatches, _system_signature, _validate_xml_system_contract  # noqa: E402
 
@@ -87,6 +88,8 @@ def run_production(
     random_seed: Optional[int] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
+    steering_time_ns: Optional[float] = None,
+    steering_update_interval_ps: float = 1.0,
 ) -> dict:
     """Run MD simulation using OpenMM.
 
@@ -138,6 +141,15 @@ def run_production(
                      ``force_constant_kj_mol_nm2``, and ``target_distance_nm``.
                      Selections use the mdtraj DSL. This native OpenMM route is
                      mutually exclusive with ``custom_force_script``.
+        steering_time_ns: Optional total distance-steering duration. Move each
+                     center from its measured input distance to target_distance_nm.
+                     Label this independent prod node steered_X; continue from it
+                     without this flag for fixed-center umbrella_X. May span calls;
+                     repeat the same duration to resume, not the remaining time.
+        steering_update_interval_ps: Center update interval (default 1 ps).
+                     Uses a right-endpoint staircase approximation to a linear
+                     ramp. Unrelated to trajectory output frequency. XML restart
+                     requires the companion steering.json file to preserve progress.
         name: Optional name prefix for output files
         output_dir: Output directory. If None, creates output/{job_id}/
         is_membrane: Set True for membrane systems to use MonteCarloMembraneBarostat
@@ -303,6 +315,8 @@ def run_production(
                     custom_force_script, custom_force_parameters,
                 ),
                 "distance_restraints": distance_restraints,
+                "steering_time_ns": steering_time_ns,
+                "steering_update_interval_ps": steering_update_interval_ps,
             },
         )
         if not _ctx["success"]:
@@ -387,6 +401,16 @@ def run_production(
                 actual="both provided",
                 code="production_bias_conflict",
             )
+
+    try:
+        validate_steering(steering_time_ns, steering_update_interval_ps,
+                          distance_restraints, timestep_fs)
+        check_steering_handoff(restart_from, steering_time_ns)
+    except DistanceRestraintError as exc:
+        return create_validation_error(
+            "steering_time_ns", str(exc), code=exc.code,
+            expected="valid distance steering schedule", actual=steering_time_ns,
+        )
 
     if not (system_xml_file and topology_pdb_file):
         return create_validation_error(
@@ -639,6 +663,8 @@ def run_production(
                 result["code"] = exc.code
                 return _fail_node_if_running(job_dir, node_id, result)
             for _f in _distance_restraint_loaded["forces"]:
+                if steering_time_ns is not None:
+                    _f.addGlobalParameter(PROTOCOL_PARAMETER, 0.0)
                 _f.setForceGroup(CUSTOM_FORCE_GROUP)
                 system.addForce(_f)
             result["distance_restraints"] = _distance_restraint_loaded[
@@ -936,6 +962,16 @@ def run_production(
                 if xml_inputs.box_vectors is not None:
                     simulation.context.setPeriodicBoxVectors(*xml_inputs.box_vectors)
 
+        steering = None
+        if steering_time_ns is not None:
+            steering = DistanceSteering(
+                simulation, _distance_restraint_loaded,
+                time_ns=steering_time_ns, update_ps=steering_update_interval_ps,
+                timestep_fs=timestep_fs, restart_from=restart_from, output_dir=out_dir,
+            )
+            result["steering_file"] = str(steering.path)
+            result["sampling_role"] = "steered"
+
         # Setup output file paths
         trajectory_file = out_dir / f"{pref}trajectory.{trajectory_format}"
         energy_file = out_dir / f"{pref}energy.dat"
@@ -1020,7 +1056,8 @@ def run_production(
                 parameters=(
                     custom_force_parameters
                     if _custom_force_loaded is not None
-                    else {"distance_restraints": _bias["restraints"]}
+                    else {"distance_restraints": _bias["restraints"],
+                          **({"steering": steering.protocol} if steering else {})}
                 ),
             )
             result["collective_variables_meta_file"] = str(meta_file)
@@ -1082,7 +1119,17 @@ def run_production(
         )
 
         if steps_to_run > 0:
-            simulation.step(steps_to_run)
+            if steering:
+                steering.step(steps_to_run)
+                result["steering"] = steering.summary()
+                # Per-bond centers have changed since Context construction.
+                runtime_system_file.write_text(XmlSerializer.serialize(system))
+                result["warnings"].append(
+                    "Steered trajectories are non-equilibrium initialization, not umbrella samples. "
+                    "Check final distance errors and equilibrate at the fixed target before analysis."
+                )
+            else:
+                simulation.step(steps_to_run)
 
         # Save final checkpoint + state (periodic reporter may not have
         # fired for short runs). Both formats so downstream can choose.
@@ -1184,7 +1231,7 @@ def run_production(
 
         logger.info(f"Simulation complete. Trajectory saved: {trajectory_file}")
 
-    except _ModernSystemContractError as exc:
+    except (_ModernSystemContractError, DistanceRestraintError) as exc:
         logger.error("Production aborted by modern-system contract: %s", exc)
         result["errors"].append(str(exc))
         result["code"] = exc.code

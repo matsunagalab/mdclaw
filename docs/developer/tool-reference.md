@@ -416,6 +416,15 @@ signature, update the relevant section here and the matching skill examples.
   and the same collective-variable artifacts. It is
   mutually exclusive with `custom_force_script`; biased restarts require an
   XML state rather than a binary checkpoint.
+  `steering_time_ns` optionally ramps those centers from measured input
+  distances, with `steering_update_interval_ps=1` controlling a right-endpoint
+  staircase approximation to a linear ramp. Use independent `prod` nodes
+  labeled `steered_X` from a common eq, followed by `umbrella_X` via
+  `continue_from` without the steering flag. XML + matching `steering.json`
+  preserve interrupted progress; repeat the original schedule to resume.
+  Metadata records schedule completion separately from actual target errors;
+  the CV log includes applied centers. Analysis lineage collection stops at
+  the steered/fixed boundary. See `skills/md-production/distance-restraints.md`.
 
 ## `analyze/`
 

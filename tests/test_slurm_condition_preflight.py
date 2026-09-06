@@ -66,6 +66,17 @@ def test_omitted_time_uses_cli_default_not_declared_time(job):
     assert "declared 2.0, actual 1.0" in result["errors"][0]
 
 
+def test_steering_declaration_checked_before_submission(job):
+    path = job / "nodes/prod_001/node.json"
+    node = json.loads(path.read_text())
+    node["conditions"].update(steering_time_ns=0.5, steering_update_interval_ps=2)
+    path.write_text(json.dumps(node))
+    assert not production_preflight(command(job), str(job), "prod_001")["success"]
+    checked = production_preflight(command(job, "--steering-time-ns 0.5 --steering-update-interval-ps 2"), str(job), "prod_001")
+    assert checked["success"]
+    assert "steering_time_ns" in checked["checked_conditions"]
+
+
 @pytest.mark.parametrize("payload", ["echo test", "mdclaw run_production --simulation-time-ns $TIME",
                                       "mdclaw run_production && echo done", "bash run.sh"])
 def test_shell_or_unknown_payload_is_not_claimed_as_validated(job, payload):
