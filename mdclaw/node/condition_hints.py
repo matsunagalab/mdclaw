@@ -3,9 +3,8 @@
 A declared condition is a contract: the stage tool must report the same key
 back in ``actual_conditions`` or the node fails, and a failed node is terminal.
 The accepted vocabulary is therefore something the caller has to know in
-advance, and it is not discoverable from the tool signature -- 12 of
-``prepare_complex``'s 37 parameters, ``residue_ranges`` among them, are
-parameters but not conditions. Measured over a 300-attempt campaign, 16
+advance, and it is not discoverable from the tool signature: not every
+parameter is reported as a condition. Measured over a 300-attempt campaign, 16
 attempts lost a node this way; the keys were semantically right and lexically
 wrong (``chains`` for ``select_chains``, ``ligands`` for
 ``include_ligand_ids``), and the agent that recovered did so by declaring no
@@ -40,8 +39,7 @@ def suggest_condition_keys(
     ``include_ligand_resnames``, ``exclude_ligand_ids`` or ``process_ligands``,
     and naming a single one would send the caller to the wrong flag as often as
     the right one. An empty list means nothing looked close, which is a more
-    useful answer than a guess -- ``residue_ranges`` has no counterpart at all
-    and must not be pointed at one.
+    useful answer than a guess; unsupported keys must not be pointed at one.
 
     Similarity alone cannot do this. Measured against the real vocabularies,
     ``chains`` scores 0.632 on ``select_chains`` while ``mutations`` scores

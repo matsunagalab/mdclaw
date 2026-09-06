@@ -7,6 +7,24 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-07 — Review and validate the pending 007 preparation fixes
+
+Reviewed the two previously uncommitted changes: automatic forwarding of prep
+arguments into declared-condition validation (including range spelling comparison
+without flattening join-group membership), and protonation/histidine override
+routing by each retained component's build window. File locations remain outside
+scientific condition comparisons; source identity and normalized execution modes
+remain explicit. Missing-in-window residues are left for the existing rebuild/
+protonation checks; targets outside all selected components are rejected.
+
+No additional code correction was needed in this review. Current-source SIF
+validation: **525 passed** (120 preparation/protonation/condition-hint tests,
+255 node/range/chain/metal/disulfide-handoff tests, 145 CLI/contract/registry tests,
+5 real preparation/cleaning server smoke tests). Ruff and diff checks passed.
+Also read the preserved successful 007 probe JSONs; these are historical evidence,
+not a new 007 MD run. Commit scope includes only the two fixes, their tests and
+the corresponding memo records; unrelated scratch files are excluded.
+
 ## 2026-09-07 — Reproduce direct clean_protein disulfide inconsistencies
 
 Investigated the team report without its original input, commands or SIF digest.
@@ -221,6 +239,49 @@ paper or a completed deterministic citation selector. No CLI/skill/runtime chang
 User accepts the obtained official MDDB-workflow YAML template as the initial
 deposition format reference; no further deposit URL needed. Multiple terminal
 nodes require asking the user about grouping/selection.
+
+## 2026-09-06 — Prep condition checks consume actual arguments, not an allowlist
+
+The next 007 agent declared and passed the same residue_ranges, but the prep
+guard's hand-maintained argument list omitted that key. The previous direct
+preparation probe did not exercise this DAG guard. Remove the duplicate
+parameter lists: capture prepare_complex's input arguments on entry, preserve
+resolved source identity and normalized modes, and exclude only DAG/file
+locations. A signature-coverage regression ensures future scientific arguments
+are forwarded too. Shared condition comparison accepts CSV/list range spellings
+while preserving distinct join-group boundaries and rejecting mismatches.
+No new CLI flags, schema, registry or skill prose.
+
+The actual 007 input now completes through the CLI and a real source/prep DAG
+with the original range/HIP conditions retained in the completed node. Evidence:
+../validation007_conditions/probe_cli.py and probe_result.json. The previous
+007 eq/prod/scorer jobs 137207/137208/137209 were cancelled at user request;
+other tasks continue unchanged. Preserve both prior attempts. A fresh isolated
+007-only pi attempt will use both fixes, not a modified in-flight source.
+
+## 2026-09-06 — Protonation overrides routed to retained protein components
+
+007's fresh pi run exposed a CLI bug: A:264 HIP was forwarded to both
+A:-1-208 and A:219-305, so cleaning the first fragment failed with target not
+found. Extend the existing chain filter with the component build window;
+normalize legacy HIS overrides through the same route. Reject requests that
+match no selected component before cleaning, rather than silently dropping
+them. Within-window missing or wrong-residue targets retain clean_protein's
+existing validation. No new CLI options or skill prose.
+
+Validation: 165 related tests passed (routing, protonation, metal sites, range
+selection and chain identity), 5 preparation/cleaning server smoke tests passed,
+Ruff and diff checks passed. Repeating preparation on the actual 007 source
+with its original ranges and A:264 HIP succeeds; the second fragment has HD1
+and HE2, and the merged summary records B:264 HIP with original_chain A.
+Evidence: ../validation_membrane_failures/probe_007{.py,_fixed.json}.
+
+The user authorized stopping old 007 and rerunning with the fix. Old 007/009
+agents and the campaign launcher/monitor were stopped; already-submitted 004
+MD/scoring remains historical evidence. A separate frozen-source campaign
+is prepared at ../validation_membrane_failures_routing_fix for all five tasks.
+No benchmark PASS claim yet. The altloc bug was in the agent's ad-hoc recovery
+script and was self-corrected; no evidence warrants lengthening the skill.
 
 ## 2026-09-06 — History-free PLUMED production, conda and container builds
 

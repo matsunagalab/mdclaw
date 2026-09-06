@@ -18,6 +18,7 @@ from mdclaw.structure.prepare_complex import (
     _has_unmodeled_terminal_residues,
     _missing_residue_confirmation_block,
     _remap_missing_residue_record,
+    _states_for_chain,
     _validate_prepare_node_context,
     prepare_complex,
 )
@@ -104,6 +105,59 @@ def test_confirmation_source_reports_mixed_entry_provenance():
     assert _confirmation_source_from_entries([
         {"source": "user_override"},
     ]) == "user_override"
+
+
+def test_prepare_forwards_all_scientific_arguments_to_condition_guard(monkeypatch, mini_pdb):
+    import importlib
+    import inspect
+
+    pc = importlib.import_module("mdclaw.structure.prepare_complex")
+    captured = {}
+    monkeypatch.setattr(pc, "_resolve_prepare_node_structure_file", lambda *a: {
+        "structure_file": str(mini_pdb), "source_structure_id": "candidate_001",
+    })
+    def guard(*args, actual_conditions):
+        captured.update(actual_conditions)
+        return {"success": False, "code": "test_stop", "errors": ["stop before chemistry"]}
+    monkeypatch.setattr("mdclaw._node.validate_node_execution_context", guard)
+    monkeypatch.setattr("mdclaw._node.fail_node_from_result", lambda *a, **k: a[2])
+    prepare_complex(job_dir="job", node_id="prep_001",
+                    residue_ranges=["A:-1-208", "A:219-305"], join_range_pieces=True)
+    expected = set(inspect.signature(prepare_complex).parameters) - {
+        "job_dir", "node_id", "structure_file", "output_dir",
+    }
+    assert set(captured) == expected  # New parameters must not silently go unchecked.
+    assert captured["residue_ranges"] == ["A:-1-208", "A:219-305"]
+    assert captured["join_range_pieces"] is True
+    assert captured["source_structure_id"] == "candidate_001"
+
+
+@pytest.mark.parametrize("key,declared,actual,ok", [
+    ("residue_ranges", "A:-1-208,A:219-305", ["A:-1-208", "A:219-305"], True),
+    ("residue_ranges", ["A:219-305", " A:-1-208 "], ["A:-1-208,A:219-305"], True),
+    ("residue_ranges", "A:-1-208,A:219-305", ["A:-1-208", "A:219-304"], False),
+    ("residue_ranges", "A:-1-208", [], False),
+    ("residue_ranges", {"A:-1-208": True}, ["A:-1-208"], False),
+    ("join_range_groups", "A:1-10,A:20-30", ["A:1-10,A:20-30"], True),
+    ("join_range_groups", ["A:1-10,A:20-30"], ["A:1-10", "A:20-30"], False),
+    ("join_range_pieces", True, False, False),
+    ("build_terminal_missing_residues", True, False, False),
+    ("protonate_ligands", True, False, False),
+])
+def test_prep_declared_conditions_on_real_node(tmp_path, mini_pdb, key, declared, actual, ok):
+    from mdclaw._node import create_node
+    from mdclaw.research.source_node import register_local_structure
+    from mdclaw.study.workflow import bootstrap_md_workflow
+
+    study = bootstrap_md_workflow(str(tmp_path / "study"), question="condition test")
+    job = study["job_dir"]
+    source = create_node(job, "source")
+    assert register_local_structure(str(mini_pdb), job, source["node_id"])["success"]
+    prep = create_node(job, "prep", conditions={key: declared})
+    result = _validate_prepare_node_context(job_dir=job, node_id=prep["node_id"], **{key: actual})
+    assert result["success"] is ok, result
+    if not ok:
+        assert "condition_mismatch" in result["blocking_codes"]
 
 
 def test_terminal_omission_detection_requires_a_nonzero_residue_count():
@@ -225,6 +279,58 @@ def _short_circuit_heavy_steps(monkeypatch):
     monkeypatch.setattr(_pc, "clean_protein", fake_clean)
     monkeypatch.setattr(_pc, "merge_structures", fake_merge)
     return _pc
+
+
+@pytest.mark.parametrize("number", [-1, 0, 208, 219, 264, 305])
+def test_protonation_routing_uses_component_window(number):
+    state = {"chain": "A", "resnum": str(number), "icode": "B", "state": "HIP"}
+    for window in ([(-1, 208)], [(219, 305)], [(-1, 208), (219, 305)]):
+        expected = [state] if any(lo <= number <= hi for lo, hi in window) else None
+        assert _states_for_chain([state], "A", "label_A", window) == expected
+    assert _states_for_chain([state], "B", "label_B", [(-1, 305)]) is None
+
+
+@pytest.mark.parametrize("argument", ["protonation_states", "histidine_states"])
+@pytest.mark.parametrize("target", ["A:264", "A:210", "A:999", "Z:264"])
+def test_prepare_routes_overrides_between_same_chain_fragments(
+    mini_pdb, monkeypatch, tmp_path, argument, target,
+):
+    pc = _short_circuit_heavy_steps(monkeypatch)
+    files = [str(tmp_path / f"fragment_{i}.pdb") for i in range(2)]
+    for name in files:
+        Path(name).write_text(SSBOND_MINI_PDB)
+    infos = [
+        {"file": name, "chain_id": "A", "author_chain": "A", "type": "protein",
+         "residue_range": {"start": lo, "end": hi}}
+        for name, (lo, hi) in zip(files, [(-1, 208), (219, 305)])
+    ]
+    monkeypatch.setattr(pc, "split_molecules", lambda *a, **k: {
+        "success": True, "output_dir": str(tmp_path),
+        "protein_files": files, "chain_file_info": infos,
+        "all_chains": [{"chain_id": "A", "author_chain": "A"}],
+        "ligand_files": [], "ion_files": [], "water_files": [], "errors": [],
+    })
+    monkeypatch.setattr(pc, "repair_complex_missing_residues", lambda *a, **k: {
+        "success": True, "applied": False, "outputs_by_source": {}, "warnings": [],
+    })
+    clean = MagicMock(return_value={
+        "success": True, "output_file": None, "statistics": {}, "errors": [],
+    })
+    monkeypatch.setattr(pc, "clean_protein", clean)
+    result = prepare_complex(
+        structure_file=str(mini_pdb), output_dir=str(tmp_path / "out"),
+        select_chains=["A"], protonation_method="standard", **{argument: {target: "HIP"}},
+    )
+    if target == "A:264":
+        assert clean.call_count == 2
+        assert clean.call_args_list[0].kwargs["protonation_states"] is None
+        assert clean.call_args_list[1].kwargs["protonation_states"] == [
+            {"chain": "A", "resnum": "264", "icode": "", "state": "HIP"}
+        ]
+    else:
+        clean.assert_not_called()
+        assert result["code"] == "invalid_protonation_state"
+        assert target in " ".join(result["errors"])
 
 
 class TestDisulfideOverride:
@@ -894,7 +1000,9 @@ class TestPrecedence:
         # The direct pair (99/100) reached clean_protein; the structure_analysis
         # pair (1/2) did not.
         assert [(p["resnum1"], p["resnum2"]) for p in handed] == [(99, 100)]
-        assert mock_clean.call_args.kwargs["histidine_states"] == {"A:99": "HIP"}
+        assert mock_clean.call_args.kwargs["protonation_states"] == [
+            {"chain": "A", "resnum": "99", "icode": "", "state": "HIP"}
+        ]
 
 
 # ── the chemistry summary printed for the user ────────────────────────────

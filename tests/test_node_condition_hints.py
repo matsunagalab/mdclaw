@@ -22,7 +22,7 @@ PREP_REPORTED = {
     "select_chains", "ph", "solvent_type", "process_proteins", "process_ligands",
     "include_ligand_ids", "include_ligand_resnames", "exclude_ligand_ids",
     "include_types", "protonation_method", "protonation_states",
-    "missing_residue_method", "cap_termini",
+    "missing_residue_method", "cap_termini", "residue_ranges",
 }
 
 # What run_minimization reports. 'mutations' scores 0.696 against
@@ -56,7 +56,6 @@ def test_every_honest_reading_of_an_ambiguous_word_is_offered():
 
 
 @pytest.mark.parametrize("accepted,key", [
-    (PREP_REPORTED, "residue_ranges"),     # a real parameter, never a condition
     (PREP_REPORTED, "ligand_net_charge"),
     (PREP_REPORTED, "lysine"),
     (MIN_REPORTED, "mutations"),           # scores 0.696 on max_iterations

@@ -678,74 +678,19 @@ def _resolve_prepare_node_structure_file(
     }
 
 
-def _validate_prepare_node_context(
-    *,
-    job_dir: str,
-    node_id: str,
-    select_chains: Optional[List[str]],
-    ph: float,
-    cap_termini: bool,
-    n_terminal_cap: str | None,
-    c_terminal_cap: str | None,
-    terminal_cap_forcefield: str | None,
-    process_proteins: bool,
-    process_ligands: bool,
-    histidine_states: Optional[Dict[str, str]],
-    protonation_states: Optional[Dict[str, Any]],
-    protonation_method: str,
-    preserve_input_protonation: bool,
-    strip_input_caps: bool,
-    missing_residue_method: str,
-    include_types: Optional[List[str]],
-    include_ligand_ids: Optional[List[str]],
-    include_ligand_resnames: Optional[List[str]],
-    exclude_ligand_ids: Optional[List[str]],
-    include_associated_ligands: bool,
-    keep_crystal_waters: bool,
-    solvent_type: Optional[str] = "explicit",
-    source_structure_id: Optional[str] = None,
-    source_candidate_id: Optional[str] = None,
-    source_model_index: Optional[int] = None,
-    source_model_id: Optional[str] = None,
-    ligand_components: Optional[List[Dict[str, str]]] = None,
-) -> dict:
-    """Validate declared prep-node conditions against runtime parameters."""
+def _validate_prepare_node_context(*, job_dir, node_id, **parameters) -> dict:
+    """Compare the actual prep arguments, not a separately maintained allowlist."""
     from mdclaw._node import validate_node_execution_context
 
+    # File locations are resolved by the DAG, not scientific conditions.
+    for key in ("structure_file", "output_dir"):
+        parameters.pop(key, None)
+    parameters["missing_residue_method"] = str(
+        parameters.get("missing_residue_method") or "auto").strip().lower()
+    for key in ("residue_ranges", "join_range_groups"):
+        parameters[key] = parameters.get(key) or []
     return validate_node_execution_context(
-        job_dir,
-        node_id,
-        "prep",
-        actual_conditions={
-            "select_chains": select_chains,
-            "ph": ph,
-            "cap_termini": cap_termini,
-            "n_terminal_cap": n_terminal_cap,
-            "c_terminal_cap": c_terminal_cap,
-            "terminal_cap_forcefield": terminal_cap_forcefield,
-            "process_proteins": process_proteins,
-            "process_ligands": process_ligands,
-            "histidine_states": histidine_states,
-            "protonation_states": protonation_states,
-            "protonation_method": protonation_method,
-            "preserve_input_protonation": bool(preserve_input_protonation),
-            "strip_input_caps": bool(strip_input_caps),
-            "missing_residue_method": str(
-                missing_residue_method or "auto"
-            ).strip().lower(),
-            "include_types": include_types,
-            "include_ligand_ids": include_ligand_ids,
-            "include_ligand_resnames": include_ligand_resnames,
-            "exclude_ligand_ids": exclude_ligand_ids,
-            "include_associated_ligands": include_associated_ligands,
-            "keep_crystal_waters": keep_crystal_waters,
-            "solvent_type": solvent_type,
-            "source_structure_id": source_structure_id,
-            "source_candidate_id": source_candidate_id,
-            "source_model_index": source_model_index,
-            "source_model_id": source_model_id,
-            "ligand_components": ligand_components,
-        },
+        job_dir, node_id, "prep", actual_conditions=parameters,
     )
 
 
@@ -933,7 +878,7 @@ def _window_for_component(split_result, chain_info):
     return _window_for_chain(split_result, (chain_info or {}).get("chain_id"))
 
 
-def _states_for_chain(states, author_chain, chain_id):
+def _states_for_chain(states, author_chain, chain_id, window=None):
     """The protonation records that belong to one split protein file.
 
     Cleaning runs per chain, on a file containing only that chain, and
@@ -955,6 +900,11 @@ def _states_for_chain(states, author_chain, chain_id):
     matching = [state for state in states
                 if str(state.get("chain", "")).strip() in wanted
                 or str(state.get("chain", "")).strip()[:1] in wanted]
+    # Separate ranges may retain the same chain name. Route by the declared
+    # build window, not observed atoms: missing residues can still be rebuilt.
+    if window is not None:
+        matching = [state for state in matching if any(
+            start <= int(state["resnum"]) <= end for start, end in window)]
     return matching or None
 
 
@@ -1247,6 +1197,9 @@ def prepare_complex(
         >>> for lig in result['ligands']:
         ...     print(f"  {lig['ligand_id']}: {lig['sdf_file']}")
     """
+    # Capture before introducing locals: future CLI arguments automatically
+    # participate in declared-condition checks too.
+    _runtime_conditions = locals().copy()
     from mdclaw.source_bundle import source_selection_from_values
 
     _source_selection = source_selection_from_values(
@@ -1320,36 +1273,11 @@ def prepare_complex(
         return blocked
 
     if job_dir and node_id:
-        _ctx = _validate_prepare_node_context(
-            job_dir=job_dir,
-            node_id=node_id,
-            select_chains=select_chains,
-            ph=ph,
-            cap_termini=cap_termini,
-            n_terminal_cap=n_terminal_cap,
-            c_terminal_cap=c_terminal_cap,
-            terminal_cap_forcefield=terminal_cap_forcefield,
-            process_proteins=process_proteins,
-            process_ligands=process_ligands,
-            histidine_states=histidine_states,
-            protonation_states=protonation_states,
-            protonation_method=protonation_method,
-            preserve_input_protonation=preserve_input_protonation,
-            strip_input_caps=strip_input_caps,
-            missing_residue_method=missing_residue_method,
-            include_types=include_types,
-            include_ligand_ids=include_ligand_ids,
-            include_ligand_resnames=include_ligand_resnames,
-            exclude_ligand_ids=exclude_ligand_ids,
-            include_associated_ligands=include_associated_ligands,
-            keep_crystal_waters=keep_crystal_waters,
-            solvent_type=solvent_type,
+        _runtime_conditions.update(
+            solvent_type=solvent_type, missing_residue_method=missing_residue_method,
             source_structure_id=_resolved_structure.get("source_structure_id"),
-            source_candidate_id=source_candidate_id,
-            source_model_index=source_model_index,
-            source_model_id=source_model_id,
-            ligand_components=ligand_components,
         )
+        _ctx = _validate_prepare_node_context(**_runtime_conditions)
         if not _ctx["success"]:
             blocked = {"success": False, "error_type": "ValidationError", **_ctx}
             from mdclaw._node import fail_node_from_result
@@ -1973,6 +1901,30 @@ def prepare_complex(
                     )
                     result.setdefault("metal_protonation_applied", []).extend(pending)
 
+            # Route both override spellings once, before any component is cleaned.
+            # A target outside every retained component must not silently vanish.
+            try:
+                requested_states = _normalize_protonation_state_overrides(
+                    protonation_states=sa_protonation_states,
+                    histidine_states=sa_histidine_states,
+                )
+                states_by_file = {}
+                for protein_file in split_result["protein_files"]:
+                    info = chain_info_by_file.get(protein_file, {})
+                    states_by_file[protein_file] = _states_for_chain(
+                        requested_states, info.get("author_chain"),
+                        info.get("chain_id"), _window_for_component(split_result, info))
+                for state in requested_states:
+                    if not any(state in (states or []) for states in states_by_file.values()):
+                        raise ValueError(
+                            f"Protonation target not in any selected protein component: "
+                            f"{state['chain']}:{state['resnum']}:{state['icode']}")
+            except ValueError as exc:
+                result["errors"].append(str(exc))
+                result["code"] = "invalid_protonation_state"
+                result["overall_status"] = "failed"
+                return result
+
             # Rebuild internal gaps for the whole complex before the per-chain
             # pass. A gap at a chain-chain interface modeled one chain at a time
             # is built into space the partner chain occupies; the chains about
@@ -2053,10 +2005,7 @@ def prepare_complex(
                         protonation_method=protonation_method,
                         preserve_input_protonation=preserve_input_protonation,
                         strip_input_caps=strip_input_caps,
-                        histidine_states=sa_histidine_states,
-                        protonation_states=_states_for_chain(
-                            sa_protonation_states, protein_result["author_chain"],
-                            chain_id),
+                        protonation_states=states_by_file[protein_file],
                         missing_residue_method=missing_residue_method,
                     )
                     escalation_warnings = [

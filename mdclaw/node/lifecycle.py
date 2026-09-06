@@ -1083,7 +1083,28 @@ def validate_declared_conditions(declared_conditions, actual_conditions):
                 + branch_advice
             )
             continue
-        if not _values_match(expected, actual):
+        # CLI accepts comma-separated ranges or a list. Preserve join-group
+        # boundaries: two groups must never compare equal to one joined group.
+        def range_tokens(value):
+            if not isinstance(value, (str, list, tuple)):
+                raise TypeError("ranges must be strings or lists")
+            items = [value] if isinstance(value, str) else value
+            return sorted(part.strip() for item in items
+                          for part in item.split(",") if part.strip())
+
+        comparable_expected, comparable_actual = expected, actual
+        if key in {"residue_ranges", "join_range_groups"}:
+            try:
+                if key == "residue_ranges":
+                    comparable_expected, comparable_actual = map(range_tokens, (expected, actual))
+                else:
+                    def groups(value):
+                        return sorted(range_tokens(item) for item in
+                                      ([value] if isinstance(value, str) else value))
+                    comparable_expected, comparable_actual = map(groups, (expected, actual))
+            except (TypeError, AttributeError):
+                pass  # Malformed values still fail the ordinary strict comparison.
+        if not _values_match(comparable_expected, comparable_actual):
             add_error(
                 "condition_mismatch",
                 f"Node condition mismatch for '{key}': declared {expected!r}, "
