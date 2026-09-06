@@ -7,6 +7,12 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-06 — Make steering discoverable from the production skill entry
+
+The production SKILL.md now explicitly routes distance steering and umbrella
+window preparation to distance-restraints.md. Documentation-only change;
+verified the linked page and checked diff whitespace, with no MD rerun.
+
 ## 2026-09-06 — Native distance steering as independent production nodes
 
 Implemented `run_production --steering-time-ns` with a separate
