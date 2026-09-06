@@ -130,6 +130,39 @@ def test_bias_progress_and_artifact_locations_remain_history_only(tmp_path):
             for s in report["subjects"]] == [10, 20]
 
 
+@pytest.mark.parametrize("change", ["measurement", "progress", "target", "force_constant"])
+def test_distance_steering_summary_separates_results_from_protocol(tmp_path, change):
+    from mdclaw.simulation.steering import DistanceSteering
+
+    summaries = []
+    for nid in ("a", "b"):
+        # Exercise the real summary serializer without starting a simulation.
+        steering = object.__new__(DistanceSteering)
+        restraint = {"name": "d", "target_distance_nm": 3 if nid == "b" and change == "target" else 2,
+                     "force_constant_kj_mol_nm2": 200 if nid == "b" and change == "force_constant" else 100}
+        steering.protocol = {"duration_steps": 100, "update_steps": 10,
+                             "signature": {"restraints": [restraint]},
+                             "initial_distances_nm": {"d": 1}}
+        steering.loaded = {"restraints": [restraint]}
+        steering.fixed = False
+        steering.elapsed = 50 if nid == "b" and change == "progress" else 100
+        steering.centers = {"d": 1.5 if steering.elapsed == 50 else restraint["target_distance_nm"]}
+        distance = 2.1 if nid == "b" and change == "measurement" else 1.9
+        steering.distances = lambda distance=distance: {"d": distance}
+        summaries.append(steering.summary())
+        node(tmp_path, nid, metadata={"steering": summaries[-1]})
+    result = generate_md_report(
+        targets=[target(tmp_path, "a", "a"), target(tmp_path, "b", "b")], grouping="replicas")
+    assert result["success"]
+    report = result["report"]
+    differences = report["comparison"]["differences"]
+    if change in ("measurement", "progress"):
+        assert differences == {}
+    else:
+        assert set(differences) == {"prod/1/recorded/steering/signature/restraints"}
+    assert [s["history"][0]["recorded_metadata"]["steering"] for s in report["subjects"]] == summaries
+
+
 @pytest.mark.parametrize("parameter", ["center", "force_constant", "group_weight"])
 def test_nested_runtime_force_parameters_are_compared(tmp_path, parameter):
     openmm = pytest.importorskip("openmm")

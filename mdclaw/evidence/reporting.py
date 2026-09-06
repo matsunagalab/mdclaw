@@ -162,7 +162,8 @@ def _recorded_settings(metadata):
             # locators. Compare the protocol, retaining the complete summary in history.
             selected[key] = {k: v for k, v in selected[key].items()
                              if k not in ("elapsed_steps", "schedule_complete", "progress",
-                                          "initial_file")}
+                                          "initial_file", "final_distances_nm", "target_errors_nm",
+                                          "final_centers_nm")}
     return selected
 
 

@@ -7,6 +7,21 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-07 — Keep steering outcomes out of protocol comparisons
+
+Corrects the incomplete completion-metric filtering in 6a1d727. Exclude
+final_distances_nm, target_errors_nm and progress-dependent final_centers_nm
+from recorded-setting comparisons; all remain unchanged in each target's history.
+Target distance and force constant in the protocol signature are still compared.
+The regression exercises DistanceSteering.summary() directly without starting MD:
+measurement changes and partial progress are not condition differences, while
+target/force-constant changes remain detectable and complete summaries survive.
+
+Validation: the new regression reproduced three failures before the fix; after
+the fix, all **220 tests passed** across evidence, MDDB export, CLI, CLI contract
+and registry in the SIF. Focused ruff and diff checks passed. No MD or upload.
+Unrelated preparation fixes and their existing memo entries are left uncommitted.
+
 ## 2026-09-06 — Fix selected PDB connectivity and runtime bias comparison
 
 Fixed both P2 review findings in the evidence tools. MDDB export now inserts TER
