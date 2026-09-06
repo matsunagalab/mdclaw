@@ -141,6 +141,104 @@ def test_explicit_selection(tmp_path, selection, success):
         assert not (tmp_path / "bundle").exists()
 
 
+def peptide_job(job):
+    top = md.Topology()
+    chain = top.add_chain("A")
+    for number in (1, 5, 9):  # PDB numbering gaps are not chain breaks.
+        residue = top.add_residue("GLY", chain, resSeq=number)
+        for name, element in [("N", md.element.nitrogen), ("CA", md.element.carbon),
+                              ("C", md.element.carbon), ("O", md.element.oxygen)]:
+            top.add_atom(name, element, residue)
+    top.create_standard_bonds()
+    xyz = np.arange(7 * top.n_atoms * 3, dtype=np.float32).reshape(7, top.n_atoms, 3) / 1000
+    traj = md.Trajectory(xyz, top)
+    topo = node(job, "topo", "topo", artifacts={"topology_pdb": "system.pdb"})
+    traj[0].save_pdb(str(topo / "system.pdb"))
+    add_prod(job, traj, "prod")
+    return traj
+
+
+def bond_pairs(topology):
+    return {tuple(sorted((a.index, b.index))) for a, b in topology.bonds}
+
+
+@pytest.mark.parametrize("selection,chains", [
+    ("resid 0 or resid 2", 2),
+    ("resid 0 or resid 1", 1),
+    ("name CA or name C or name N", 1),
+])
+def test_selected_peptide_preserves_bonds_and_chain_breaks(tmp_path, selection, chains):
+    job = tmp_path / "job"
+    traj = peptide_job(job)
+    source = md.load_topology(str(job / "nodes/topo/system.pdb"))
+    indices = source.select(selection)
+    result = export(tmp_path, job_dir=str(job), selection=selection)
+    assert result["success"], result
+    pdb = tmp_path / "bundle/project/md_001/system.pdb"
+    converted = md.load(str(pdb))
+    assert bond_pairs(converted.topology) == bond_pairs(source.subset(indices))
+    assert converted.topology.n_chains == chains
+    assert [r.resSeq for r in converted.topology.residues] == [
+        r.resSeq for r in source.subset(indices).residues]
+    np.testing.assert_allclose(converted.xyz, traj.xyz[:1, indices], atol=0.0001)
+
+
+@pytest.mark.parametrize("source_case", ["crosslink", "existing_break", "insertion_codes"])
+def test_discontinuous_selection_preserves_pdb_topology_details(tmp_path, source_case):
+    job = tmp_path / "job"
+    peptide_job(job)
+    source_pdb = job / "nodes/topo/system.pdb"
+    lines = source_pdb.read_text().splitlines(keepends=True)
+    atoms = [line for line in lines if line.startswith(("ATOM  ", "HETATM"))]
+    if source_case == "crosslink":
+        lines.insert(-1, "CONECT" + atoms[0][6:11] + atoms[8][6:11] + "\n")
+    elif source_case == "existing_break":
+        lines.insert(lines.index(atoms[8]), "TER\n")
+    else:
+        for i, atom in enumerate(atoms):
+            lines[lines.index(atom)] = atom[:22] + "   1" + " AB"[i // 4] + atom[27:]
+    source_pdb.write_text(''.join(lines))
+    source = md.load_topology(str(source_pdb))
+    indices = source.select("resid 0 or resid 2")
+    result = export(tmp_path, job_dir=str(job), selection="resid 0 or resid 2")
+    assert result["success"], result
+    pdb = tmp_path / "bundle/project/md_001/system.pdb"
+    converted = md.load_topology(str(pdb))
+    assert bond_pairs(converted) == bond_pairs(source.subset(indices))
+    assert converted.n_chains == 2
+    output_lines = pdb.read_text().splitlines()
+    assert sum(line.startswith("TER") for line in output_lines) == 2
+    output_atoms = [line for line in output_lines if line.startswith(("ATOM  ", "HETATM"))]
+    source_atoms = [line for line in lines if line.startswith(("ATOM  ", "HETATM"))]
+    assert [line[:30] for line in output_atoms] == [source_atoms[i][:30] for i in indices]
+
+
+@pytest.mark.parametrize("damage", ["add_bond", "remove_bond"])
+def test_export_rejects_changed_roundtrip_bonds(tmp_path, monkeypatch, damage):
+    from mdclaw.evidence import mddb
+
+    job = tmp_path / "job"
+    peptide_job(job)
+    write_pdb = mddb._write_pdb
+
+    def damage_pdb(path, *args, **kwargs):
+        write_pdb(path, *args, **kwargs)
+        lines = path.read_text().splitlines(keepends=True)
+        atoms = [line for line in lines if line.startswith(("ATOM  ", "HETATM"))]
+        if damage == "add_bond":
+            # An explicit N-N bond absent from the selected source topology.
+            lines.insert(-1, "CONECT" + atoms[0][6:11] + atoms[4][6:11] + "\n")
+        else:
+            lines.insert(lines.index(atoms[4]), "TER\n")
+        path.write_text(''.join(lines))
+
+    monkeypatch.setattr(mddb, "_write_pdb", damage_pdb)
+    result = export(tmp_path, job_dir=str(job))
+    assert not result["success"], result
+    assert "bond" in str(result).lower()
+    assert not (tmp_path / "bundle").exists()
+
+
 @pytest.mark.parametrize("damage", ["atom_count", "topology_hash", "energy_count", "irregular", "frame_count", "empty", "multimodel"])
 def test_invalid_sources_fail_without_bundle(tmp_path, damage):
     job = tmp_path / "job"

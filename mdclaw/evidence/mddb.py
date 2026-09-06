@@ -180,9 +180,10 @@ def _selection(topology, selection):
     return indices
 
 
-def _write_pdb(path, source_lines, indices, xyz, lengths, angles):
-    """Keep source atom/residue identities and CONECT, replace only coordinates/box."""
+def _write_pdb(path, source_lines, topology, indices, xyz, lengths, angles):
+    """Keep source identities/CONECT and mark selection-created residue gaps with TER."""
     atoms = [line for line in source_lines if line.startswith(("ATOM  ", "HETATM"))]
+    residue_indices = [atom.residue.index for atom in topology.atoms]
     serials = {atoms[int(i)][6:11].strip() for i in indices}
     if len(serials) != len(indices):
         raise ValueError("PDB atom serials are not unique; cannot safely retain CONECT")
@@ -192,14 +193,23 @@ def _write_pdb(path, source_lines, indices, xyz, lengths, angles):
                      ''.join(f"{x:7.2f}" for x in angles) + " P 1           1\n")
     chosen = {int(i): position for i, position in zip(indices, xyz)}
     index, retained = 0, False
+    previous_residue = None
     for line in source_lines:
         if line.startswith(("ATOM  ", "HETATM")):
             if index in chosen:
+                residue = residue_indices[index]
+                # Removing whole residues makes non-neighbors adjacent in the
+                # PDB. A TER prevents readers from inventing a polymer bond.
+                # Source indices, unlike resSeq labels, include insertion codes
+                # and do not mistake a numbering gap for an omitted residue.
+                if retained and residue > previous_residue + 1:
+                    lines.append("TER\n")
                 coords = ''.join(f"{x:8.3f}" for x in chosen[index])
                 if len(coords) != 24:
                     raise ValueError("Coordinates exceed PDB field width")
                 lines.append(line[:30] + coords + line[54:].rstrip() + "\n")
                 retained = True
+                previous_residue = residue
             index += 1
         elif line.startswith("TER") and retained:
             lines.append("TER\n")
@@ -250,8 +260,9 @@ def _convert(topology_path, trajectory, out, selection, stride, chunk):
                 frame_count += len(xyz)
     if frame_count != (source_frames + stride - 1) // stride:
         raise ValueError("Exported frame count does not match source/stride")
-    _write_pdb(out / "system.pdb", source_lines, indices, *first)
-    # Round-trip paired atom count and first coordinates. PDB precision is 0.001 A.
+    _write_pdb(out / "system.pdb", source_lines, topology, indices, *first)
+    # Round-trip paired atom count, coordinates, and selected bond connectivity.
+    # PDB precision is 0.001 A.
     pdb = md.load(str(out / "system.pdb"))
     with DCDTrajectoryFile(str(out / "trajectory.dcd")) as check:
         xyz, _, _ = check.read(n_frames=1)
@@ -261,6 +272,9 @@ def _convert(topology_path, trajectory, out, selection, stride, chunk):
     atom_map = {int(old): new for new, old in enumerate(indices)}
     bonds = sorted(sorted([atom_map[a.index], atom_map[b.index]]) for a, b in topology.bonds
                    if a.index in atom_map and b.index in atom_map)
+    exported_bonds = sorted(sorted([a.index, b.index]) for a, b in pdb.topology.bonds)
+    if exported_bonds != bonds:
+        raise ValueError("Exported PDB bond round-trip validation failed: selected source bonds differ")
     if original_hashes != (_hash(topology_path), _hash(trajectory)):
         raise ValueError("Source artifacts changed during export; retry from immutable inputs")
     return {"n_atoms_original": topology.n_atoms, "n_atoms": len(indices), "n_frames": frame_count,

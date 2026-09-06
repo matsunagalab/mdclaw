@@ -69,6 +69,14 @@ def _ancestors(nodes, target):
     return found
 
 
+def _force_settings(force):
+    # Per-bond/particle parameters and nested forces live below Force attributes.
+    # Keep the report bounded while comparing their complete serialized definition;
+    # canonical XML ignores indentation and attribute order.
+    definition = ET.canonicalize(ET.tostring(force, encoding="unicode"), strip_text=True)
+    return {**force.attrib, "definition_sha256": hashlib.sha256(definition.encode()).hexdigest()}
+
+
 def _runtime(node_dir, artifacts):
     facts, sources, warnings = {}, {}, []
     for key in ("integrator", "runtime_system"):
@@ -96,7 +104,7 @@ def _runtime(node_dir, artifacts):
             facts[key] = {
                 "openmm_version": root.get("openmmVersion"),
                 "constraint_count": len(root.findall("./Constraints/Constraint")),
-                "forces": [dict(force.attrib) for force in root.findall("./Forces/Force")],
+                "forces": [_force_settings(force) for force in root.findall("./Forces/Force")],
             }
     return facts, sources, warnings
 
@@ -137,7 +145,25 @@ _SETTINGS = (
     "protein_forcefield", "water_model", "forcefield", "is_membrane",
     "integrator_signature", "implicit_solvent", "nonbonded_cutoff_nm",
     "effective_forcefield", "forcefield_provenance",
+    "restraint_atoms", "restraint_force_constant", "restraint_count",
+    "restraint_counts_by_component", "restraint_selection_source",
+    "lipid_restraint_force_constant", "lipid_headgroup_restraint_force_constant",
+    "lipid_headgroup_restraint_count", "distance_restraints", "distance_restraint_signature",
+    "custom_force", "custom_force_signature", "custom_force_parameters",
+    "steering_time_ns", "steering_update_interval_ps", "steering", "sampling_role", "plumed",
 )
+
+
+def _recorded_settings(metadata):
+    selected = {key: metadata[key] for key in _SETTINGS if key in metadata}
+    for key in ("steering", "plumed"):
+        if isinstance(selected.get(key), dict):
+            # Runtime summaries mix the protocol with completion metrics and file
+            # locators. Compare the protocol, retaining the complete summary in history.
+            selected[key] = {k: v for k, v in selected[key].items()
+                             if k not in ("elapsed_steps", "schedule_complete", "progress",
+                                          "initial_file")}
+    return selected
 
 
 def _flatten(value, prefix):
@@ -158,8 +184,7 @@ def _comparison(subjects):
             counts[stage] = counts.get(stage, 0) + 1
             prefix = f"{stage}/{counts[stage]}"
             values.update(_flatten(record["declared_conditions"], prefix + "/declared"))
-            selected = {k: record["recorded_metadata"][k] for k in _SETTINGS
-                        if k in record["recorded_metadata"]}
+            selected = _recorded_settings(record["recorded_metadata"])
             values.update(_flatten(selected, prefix + "/recorded"))
             values.update(_flatten(record["runtime"], prefix + "/runtime"))
         settings.append(values)

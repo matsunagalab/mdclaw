@@ -7,6 +7,34 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-06 — Fix selected PDB connectivity and runtime bias comparison
+
+Fixed both P2 review findings in the evidence tools. MDDB export now inserts TER
+at gaps created by removing whole residues, using source topology indices so
+PDB numbering gaps and insertion codes are not mistaken for cuts. Existing TER
+and retained CONECT records survive. Reloaded PDB bond pairs must exactly match
+the retained source topology; a mismatch aborts export before publishing a bundle.
+The original three-GLY noncontiguous selection reproduced the invented peptide
+bond before the fix. Regression tests also cover contiguous/partial selections,
+crosslinks, existing breaks, insertion codes, and added/removed output bonds.
+
+Report comparisons now include recorded positional/distance restraints, custom
+force definitions and parameters, steering, and PLUMED protocols even when node
+conditions are empty. Canonical per-Force XML hashes include nested parameters
+while keeping report size bounded and preserving the existing attribute facts.
+Protocol completion metrics and the steering initial-file locator remain in
+history without becoming condition differences. Tests cover metadata-only bias
+changes, biased versus unbiased nodes, actual OpenMM serialized bond centers,
+force constants and group weights, and equal XML with different formatting or
+artifact locations.
+
+Validation: **216 passed** across `test_mddb_export.py`, `test_evidence_server.py`,
+`test_cli.py`, `test_cli_contract.py`, and `test_registry.py`, including 21 new
+regression cases, using checkout source inside the existing SIF. Focused ruff,
+diff whitespace checks, and CLI tool discovery passed. The fixtures use
+synthetic trajectories and OpenMM 8.5.1 System serialization; no new MD,
+GPU/TorchForce dynamics, upload, or MDDB ingestion was performed.
+
 ## 2026-09-06 — Reviewer/reporter skill and offline MDDB bundles
 
 Added the short `md-report` skill with one conditional MDDB page and both agent

@@ -608,11 +608,14 @@ signature, update the relevant section here and the matching skill examples.
   cannot be grouped as replicas. Independence of distinct branches is not certified.
   Each subject retains its parent/dependency history, declared conditions,
   recorded metadata/results, artifact bases and node-file hashes. Runtime
-  integrator/System XML attributes are read without importing OpenMM or running
-  MD, with separate artifact hashes. Attributes retain OpenMM serialization
-  names and units (e.g. integrator `stepSize` is ps). Comparison separates
-  declarations from recorded settings and compares stage occurrences, not
-  trajectory frames. Missing versus null are distinct. The output never
+  integrator/System XML attributes and canonical per-Force definition hashes
+  are read without importing OpenMM or running MD, with separate artifact hashes.
+  Force hashes include nested bond/particle/group parameters. Attributes retain
+  OpenMM serialization names and units (e.g. integrator `stepSize` is ps). Comparison separates
+  declarations from recorded settings, including runtime restraints, custom
+  forces, steering and PLUMED protocols, and compares stage occurrences, not
+  trajectory frames. Steering progress and its file locator remain in history.
+  Missing versus null are distinct. The output never
   certifies equal physical conditions, independence or convergence.
   JSON is returned on stdout; `--output-dir <new-directory>` also writes
   `report.json` and `references.bib`. Existing directories and paths inside
@@ -641,7 +644,9 @@ signature, update the relevant section here and the matching skill examples.
   Default filtering removes water and standard Na/K/Cl counter ions, retaining
   lipids, ligands and other ions/metals. Optional `selection` uses MDTraj syntax
   and must exclude water. Chunked conversion preserves source PDB atom/residue
-  identifiers and paired order; no imaging or fitting occurs. `manifest.json`
+  identifiers and paired order; omitted residue gaps receive TER records, and
+  reloaded PDB bonds must match the selected source topology. No imaging or
+  fitting occurs. `manifest.json`
   records source/output hashes, retained atom indices, frame counts and labels;
   `report.json` and `references.bib` accompany the bundle. PDB is a structure
   fallback (`input_topology_filepath: 'no'`), **not** a force-field topology.
