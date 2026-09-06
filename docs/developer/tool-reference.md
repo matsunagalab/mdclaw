@@ -425,6 +425,16 @@ signature, update the relevant section here and the matching skill examples.
   Metadata records schedule completion separately from actual target errors;
   the CV log includes applied centers. Analysis lineage collection stops at
   the steered/fixed boundary. See `skills/md-production/distance-restraints.md`.
+  The same steering flags also work with `custom_force_script`: the unchanged
+  `energy(positions, ctx)` function receives read-only `ctx.steering` containing
+  `progress`, `initial_positions` and `initial_box`. It defines its own CV and
+  schedule shape; no CV registry or callback API is required. The initial input
+  is saved as `steering_initial.npz` and hash-checked with the script/parameters
+  on restart. Completed custom steering continues with progress fixed at 1,
+  including further umbrella extensions (`sampling_role=fixed_bias`). The CV
+  log includes reserved `steering_progress`; CV metadata carries the protocol
+  separately from user parameters. Ordinary scripts see `ctx.steering=None`.
+  See `skills/md-production/custom-force.md` for an angular steering example.
 
 ## `analyze/`
 

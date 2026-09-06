@@ -950,11 +950,13 @@ class TestMDSimulationServer:
         data_rows = cv_csv.read_text().splitlines()[1:]
         assert data_rows and float(data_rows[0].split(",")[-1]) >= 0.0
 
+    @pytest.mark.parametrize("steering_time_ns", [None, 0.002])
     def test_run_production_custom_force_node_artifacts(
         self,
         small_pdb,
         tmp_path,
         openmm_cpu_platform,
+        steering_time_ns,
     ):
         """Node-mode custom force records script + CV artifacts and signature."""
         _ot = pytest.importorskip("openmmtorch")
@@ -1016,8 +1018,9 @@ class TestMDSimulationServer:
             "import torch\n"
             "def energy(positions, ctx):\n"
             "    sel = ctx.select('name CA')\n"
+            "    scale = ctx.steering.progress if ctx.steering else 1.0\n"
             "    return 0.5 * ctx.params['k'] * "
-            "((positions[sel] - ctx.reference[sel]) ** 2).sum()\n"
+            "scale * ((positions[sel] - ctx.reference[sel]) ** 2).sum()\n"
         )
         prod = create_node(str(job_dir), "prod", parent_node_ids=[eq["node_id"]])
         result = run_production(
@@ -1030,6 +1033,9 @@ class TestMDSimulationServer:
             node_id=prod["node_id"],
             custom_force_script=str(script),
             custom_force_parameters={"k": 500.0},
+            steering_time_ns=steering_time_ns,
+            steering_update_interval_ps=0.1,
+            timestep_fs=2,
         )
         assert result["success"] is True, result["errors"]
 
@@ -1043,6 +1049,34 @@ class TestMDSimulationServer:
         # The script was copied into the node artifacts directory.
         copied = job_dir / "nodes" / prod["node_id"] / "artifacts" / "custom_force_script.py"
         assert copied.is_file()
+
+        if steering_time_ns:
+            import csv
+            assert prod_node["metadata"]["sampling_role"] == "steered"
+            assert "steering_initial" in prod_node["artifacts"]
+            assert not result["steering"]["schedule_complete"]
+            initial_hash = result["steering"]["initial_sha256"]
+            resumed_node = create_node(str(job_dir), "prod", continue_from=prod["node_id"])
+            common = dict(job_dir=str(job_dir), simulation_time_ns=0.001,
+                          output_frequency_ps=0.5, timestep_fs=2, platform=openmm_cpu_platform)
+            blocked = run_production(node_id=resumed_node["node_id"], **common)
+            assert blocked["code"] == "distance_steering_incomplete"
+            resumed = run_production(node_id=resumed_node["node_id"], **common,
+                                     steering_time_ns=steering_time_ns, steering_update_interval_ps=0.1)
+            assert resumed["success"], resumed
+            assert resumed["steering"]["schedule_complete"]
+            parent = resumed_node["node_id"]
+            for i in range(2):
+                child = create_node(str(job_dir), "prod", continue_from=parent, label=f"umbrella_{i}")
+                fixed = run_production(node_id=child["node_id"], **common)
+                assert fixed["success"], fixed
+                assert fixed["steering"]["progress"] == 1
+                assert fixed["steering"]["initial_sha256"] == initial_hash
+                assert read_node(str(job_dir), child["node_id"])["metadata"]["sampling_role"] == "fixed_bias"
+                with open(fixed["collective_variables_file"]) as handle:
+                    rows = list(csv.DictReader(handle))
+                assert rows and all(float(row["steering_progress"]) == 1 for row in rows)
+                parent = child["node_id"]
 
     @pytest.mark.parametrize("steering_time_ns", [None, 0.002])
     def test_run_production_native_distance_restraint_records_cv_and_metadata(

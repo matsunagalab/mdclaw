@@ -7,6 +7,48 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-06 — Custom TorchForce steering on the existing production DAG
+
+Extended the existing steering flags to `custom_force_script`. Distance and
+TorchForce now share one step-grid/restart controller; no new node type, CLI
+schedule language, integrator or plugin registry. `energy(positions, ctx)`,
+user parameters and the topo-based `ctx.reference` retain their meanings.
+`ctx.steering` adds applied progress and frozen actual input positions/box;
+scripts still define arbitrary CVs, nonlinear schedules and potentials.
+OpenMM global parameters drive both force evaluation and CV reporting.
+
+XML + `steering.json` + hash-checked `steering_initial.npz` preserve the clock
+and input geometry. Partial ramps refuse fixed handoff. Completed custom
+ramps continue the same script/parameters at progress 1, including subsequent
+umbrella extensions (`sampling_role=fixed_bias`). Script/parameter/reference
+changes are refused within this managed lineage; ordinary static scripts are
+unchanged. Python globals, online training state and external model weights
+are not checkpointed. The production skill now includes an angular example
+and independent common-eq → steered_X → umbrella_X instructions.
+
+Validation: 608 focused tests passed, including real PythonTorchForce CPU/CUDA
+energy/force/CV parameter propagation, nonlinear progress, interrupted XML
+restart, two fixed continuations, invalid endpoints and provenance rejection.
+Four server smokes passed (static/custom steering and fixed/native steering);
+the existing 1AKE continuation pipeline passed all 7 steps: 619 tests total.
+Ruff and diff whitespace checks passed. The pipeline retains one existing
+pytest class-fixture deprecation warning.
+
+Live pi + `deepseek-cloudflare/deepseek-v4-flash` completed five 2 ps CUDA
+nodes through the source-overlay CLI: eq_001 → steered_X (prod_002) →
+umbrella_X (prod_004) → umbrella_X_cont (prod_005), and eq_001 → steered_Y
+(prod_001) → umbrella_Y (prod_003). Independent artifact audit verified equal
+initial geometry/box, hashes, exact applied progress/centers, bias energy
+against the logged angular potential, and both analysis collectors excluding
+steered ancestors. Source digests, runner, raw agent log and audit are retained
+under `/home/yasu/tmp/mdclaw/validation_torch_steering/`.
+
+Functional smoke only: the 2.55/2.85 rad steering centers completed, but actual
+angles at steering end were 2.530014/2.733168 rad. This is not target-attainment,
+equilibration, overlap or PMF convergence evidence. The existing Python closure
+runtime-System serialization warning remains; portable continuation rebuilds
+from the topo triple, recorded script/parameters, XML state and sidecars.
+
 ## 2026-09-06 — Make steering discoverable from the production skill entry
 
 The production SKILL.md now explicitly routes distance steering and umbrella

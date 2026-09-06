@@ -97,8 +97,8 @@ with `mdclaw update_workflow_state --params ...` before creating new prod nodes.
 
 For a harmonic atom/center-of-mass distance bias, distance steering, or
 preparing distance-based umbrella sampling windows, **read and follow
-`skills/md-production/distance-restraints.md`**. For an arbitrary potential
-that the declarative distance route cannot express, **read and follow
+`skills/md-production/distance-restraints.md`**. For an arbitrary potential or
+steering another CV (e.g. an angle or an ML-defined coordinate), **read and follow
 `skills/md-production/custom-force.md`**.
 
 ## Handoff

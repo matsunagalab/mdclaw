@@ -160,8 +160,10 @@ def _record_production_node_result(
             )
         if result.get("steering"):
             metadata["steering"] = result["steering"]
-            metadata["sampling_role"] = "steered"
+            metadata["sampling_role"] = result.get("sampling_role", "steered")
             artifacts["steering"] = _node_artifact_path(result["steering_file"])
+            if result.get("steering_initial_file"):
+                artifacts["steering_initial"] = _node_artifact_path(result["steering_initial_file"])
         # Passed on, so a run whose residue names were not restored says so in
         # node.json. Under SLURM the tool's stdout is only captured on failure,
         # so a warned-but-successful run left the message nowhere anyone reads.

@@ -38,7 +38,7 @@ import re
 import runpy
 import sys
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import setup_logger, sha256_file  # noqa: E402
@@ -65,6 +65,12 @@ class CustomForceError(RuntimeError):
         self.code = code
 
 
+class _SteeringContext(NamedTuple):
+    progress: float
+    initial_positions: Any
+    initial_box: Any
+
+
 class _EvalContext:
     """The ``ctx`` handed to a user ``energy(positions, ctx)`` function.
 
@@ -74,10 +80,10 @@ class _EvalContext:
     """
 
     __slots__ = ("_positions", "_mdtraj_top", "_reference_np", "params", "box",
-                 "_atomic_numbers", "_collapsed_resnames")
+                 "_atomic_numbers", "_collapsed_resnames", "steering")
 
     def __init__(self, *, positions, mdtraj_top, reference_np, params, box=None,
-                 collapsed_resnames=None):
+                 collapsed_resnames=None, steering=None, progress=0.0):
         self._positions = positions
         self._mdtraj_top = mdtraj_top
         self._reference_np = reference_np
@@ -87,6 +93,15 @@ class _EvalContext:
         # Residue names topology.pdb spells that mdtraj collapsed on load, with
         # what it collapsed each onto. See ``_collapsed_resnames``.
         self._collapsed_resnames = dict(collapsed_resnames or {})
+        self.steering = None
+        if steering is not None:
+            import torch
+            self.steering = _SteeringContext(
+                progress,
+                torch.as_tensor(steering["initial_positions"], dtype=positions.dtype, device=positions.device),
+                torch.as_tensor(steering["initial_box"], dtype=positions.dtype, device=positions.device)
+                if steering["initial_box"] is not None else None,
+            )
 
     def select(self, selection: str):
         """Resolve a mdtraj VMD-style selection string to a ``long`` tensor of
@@ -348,6 +363,7 @@ def _build_python_torch_force(
     reference_np,
     params: dict,
     collapsed_resnames: dict | None = None,
+    steering: dict | None = None,
 ):
     """Wrap a user ``energy(positions, ctx)`` in a PythonTorchForce whose
     compute function returns ``(energy, forces=-dE/dx)`` via autograd.
@@ -359,8 +375,10 @@ def _build_python_torch_force(
 
     openmmtorch = _import_openmmtorch()
     uses_pbc = bool(params.get("pbc", False))
+    from mdclaw.simulation.steering import PROGRESS_PARAMETER, PROTOCOL_PARAMETER
+    default_progress = 1.0 if steering and steering["fixed"] else 0.0
 
-    def _evaluate(positions_tensor, box_tensor):
+    def _evaluate(positions_tensor, box_tensor, progress=default_progress):
         """Run the user function and return (E_scalar_tensor, cv_dict)."""
         ctx = _EvalContext(
             positions=positions_tensor,
@@ -369,15 +387,23 @@ def _build_python_torch_force(
             params=params,
             box=box_tensor,
             collapsed_resnames=collapsed_resnames,
+            steering=steering, progress=progress,
         )
         out = energy_fn(positions_tensor, ctx)
         energy_value, cv_dict = _split_energy_output(out)
+        if steering is not None:
+            if "steering_progress" in cv_dict:
+                raise CustomForceError("custom_force_contract_error", "steering_progress is reserved for the applied schedule.")
+            cv_dict = {**cv_dict, "steering_progress": progress}
         return _as_scalar_energy(energy_value), cv_dict
 
     # ---- build-time validation: one autograd pass on the reference geometry.
-    ref_pos = torch.as_tensor(reference_np, dtype=torch.double).requires_grad_(True)
+    validation_positions = steering["initial_positions"] if steering is not None else reference_np
+    validation_box = (torch.as_tensor(steering["initial_box"], dtype=torch.double)
+                      if uses_pbc and steering is not None and steering["initial_box"] is not None else None)
+    ref_pos = torch.as_tensor(validation_positions, dtype=torch.double).requires_grad_(True)
     try:
-        E0, cv0 = _evaluate(ref_pos, None)
+        E0, cv0 = _evaluate(ref_pos, validation_box)
         grad0 = torch.autograd.grad(E0, ref_pos, allow_unused=True)[0]
     except CustomForceError:
         raise
@@ -393,6 +419,16 @@ def _build_python_torch_force(
             "Gradient of energy w.r.t. positions is non-finite (NaN/Inf).",
         )
     cv_names = sorted(str(k) for k in cv0.keys())
+    if steering is not None and not steering["fixed"]:
+        try:
+            E1, cv1 = _evaluate(ref_pos, validation_box, 1.0)
+            grad1 = torch.autograd.grad(E1, ref_pos, allow_unused=True)[0]
+        except CustomForceError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise CustomForceError("custom_force_script_error", f"Steering endpoint validation failed: {exc}") from exc
+        if sorted(str(k) for k in cv1) != cv_names or (grad1 is not None and not torch.isfinite(grad1).all()):
+            raise CustomForceError("custom_force_contract_error", "Steering endpoints must have finite gradients and the same CV columns.")
 
     def _box_from_state(state, pos):
         if not uses_pbc:
@@ -413,7 +449,8 @@ def _build_python_torch_force(
         with torch.enable_grad():
             pos = positions.detach().requires_grad_(True)
             box_tensor = _box_from_state(state, pos)
-            energy_value, _cv = _evaluate(pos, box_tensor)
+            progress = state.getParameters()[PROGRESS_PARAMETER] if steering is not None else default_progress
+            energy_value, _cv = _evaluate(pos, box_tensor, progress)
             grad = torch.autograd.grad(energy_value, pos, allow_unused=True)[0]
             if grad is None:
                 forces = torch.zeros_like(pos)
@@ -431,20 +468,23 @@ def _build_python_torch_force(
             "Install an openmm-torch built from master (the MDClaw container "
             "source-builds it) to use custom forces.",
         )
-    force = openmmtorch.PythonTorchForce(_compute)
+    force = (openmmtorch.PythonTorchForce(_compute, {
+        PROGRESS_PARAMETER: default_progress, PROTOCOL_PARAMETER: 0.0,
+    }) if steering is not None else openmmtorch.PythonTorchForce(_compute))
     try:
         force.setUsesPeriodicBoundaryConditions(uses_pbc)
     except Exception:  # noqa: BLE001 - older API may differ
         pass
 
-    def _evaluator(positions_np, box_np):
+    def _evaluator(positions_np, box_np, parameters=None):
         """CPU re-evaluation used by the reporter to log CV values."""
         pos = torch.as_tensor(positions_np, dtype=torch.double)
         box_tensor = (
             torch.as_tensor(box_np, dtype=torch.double) if box_np is not None else None
         )
         with torch.no_grad():
-            _E, cv_dict = _evaluate(pos, box_tensor)
+            progress = parameters[PROGRESS_PARAMETER] if steering is not None else default_progress
+            _E, cv_dict = _evaluate(pos, box_tensor, progress)
         return {str(k): float(v) for k, v in cv_dict.items()}
 
     return force, _evaluator, cv_names
@@ -473,10 +513,12 @@ class CustomForceReporter:
         evaluator: Optional[Callable],
         cv_names: list,
         append: bool = False,
+        global_parameters: Optional[list[str]] = None,
     ):
         self._interval = int(report_interval)
         self._force_group = int(force_group)
         self._evaluator = evaluator
+        self._global_parameters = global_parameters or []
         self._cv_names = list(cv_names or [])
         self._needs_positions = bool(self._evaluator and self._cv_names)
         mode = "a" if append else "w"
@@ -514,8 +556,14 @@ class CustomForceReporter:
             except Exception:  # noqa: BLE001 - non-periodic systems
                 box_np = None
             try:
-                cv_values = self._evaluator(positions_np, box_np)
-            except Exception as exc:  # noqa: BLE001 - never abort MD for logging
+                if self._global_parameters:
+                    parameters = {key: simulation.context.getParameter(key) for key in self._global_parameters}
+                    cv_values = self._evaluator(positions_np, box_np, parameters)
+                else:
+                    cv_values = self._evaluator(positions_np, box_np)
+            except Exception as exc:  # noqa: BLE001 - managed schedules require valid logs
+                if self._global_parameters:
+                    raise CustomForceError("custom_force_contract_error", f"Steering CV reporting failed: {exc}") from exc
                 logger.warning("CV evaluation failed at step %s: %s", step, exc)
                 cv_values = {}
 
@@ -541,6 +589,7 @@ def write_cv_metadata(
     cv_names: list,
     temperature_kelvin: float,
     parameters: Optional[dict],
+    steering: Optional[dict] = None,
 ) -> None:
     """Write the sidecar ``collective_variables.meta.json`` used to
     reconstruct pymbar/MBAR inputs across nodes."""
@@ -553,6 +602,8 @@ def write_cv_metadata(
         "parameters": parameters or {},
         "bias_energy_unit": "kJ/mol",
     }
+    if steering is not None:
+        payload["steering"] = steering
     Path(meta_path).write_text(json.dumps(payload, indent=2, default=str))
 
 
@@ -583,6 +634,7 @@ def load_custom_forces(
     reference_positions,
     custom_force_script: Optional[str] = None,
     custom_force_parameters: Optional[dict] = None,
+    steering: Optional[dict] = None,
 ) -> dict:
     """Resolve a custom force from a user ``energy(positions, ctx)`` script.
 
@@ -623,6 +675,7 @@ def load_custom_forces(
         reference_np=reference_np,
         params=params,
         collapsed_resnames=collapsed,
+        steering=steering,
     )
 
     signature = custom_force_signature(
@@ -636,4 +689,5 @@ def load_custom_forces(
         "has_cv": bool(cv_names),
         "kind": "torch_script_energy",
         "signature": signature,
+        "global_parameters": ["mdclaw_steering_progress"] if steering is not None else [],
     }

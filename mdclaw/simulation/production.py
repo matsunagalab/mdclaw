@@ -26,7 +26,7 @@ from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fai
 from mdclaw.simulation.custom_forces import CUSTOM_FORCE_GROUP, CustomForceError, CustomForceReporter, custom_force_signature, load_custom_forces, write_cv_metadata  # noqa: E402
 from mdclaw.simulation.integrator_plan import _compute_step_plan, _record_production_node_result  # noqa: E402
 from mdclaw.simulation.restraints import DistanceRestraintError, load_distance_restraints, normalize_distance_restraints  # noqa: E402
-from mdclaw.simulation.steering import PROTOCOL_PARAMETER, DistanceSteering, check_steering_handoff, validate_steering  # noqa: E402
+from mdclaw.simulation.steering import PROTOCOL_PARAMETER, DistanceSteering, TorchSteering, check_steering_handoff, prepare_torch_steering, validate_steering  # noqa: E402
 from mdclaw.simulation.restart import _close_reporter_stream, _count_state_data_rows, _detect_ensemble_mismatch, _flush_reporter_stream, _load_state_into_simulation, _resolve_dcd_append_mode, _resolve_restart_node_id_for_run, _restart_random_seed, _restart_source_metadata, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _effective_pressure_bar, _integrator_signature, _load_xml_topology_inputs, _signature_mismatches, _system_signature, _validate_xml_system_contract  # noqa: E402
 
@@ -141,15 +141,20 @@ def run_production(
                      ``force_constant_kj_mol_nm2``, and ``target_distance_nm``.
                      Selections use the mdtraj DSL. This native OpenMM route is
                      mutually exclusive with ``custom_force_script``.
-        steering_time_ns: Optional total distance-steering duration. Move each
-                     center from its measured input distance to target_distance_nm.
+        steering_time_ns: Optional total steering duration. Native distance bias
+                     moves its centers from measured input distances to targets;
+                     custom scripts receive ctx.steering.progress (0 to 1) and
+                     frozen initial_positions / initial_box, with arbitrary CVs.
                      Label this independent prod node steered_X; continue from it
                      without this flag for fixed-center umbrella_X. May span calls;
                      repeat the same duration to resume, not the remaining time.
         steering_update_interval_ps: Center update interval (default 1 ps).
                      Uses a right-endpoint staircase approximation to a linear
                      ramp. Unrelated to trajectory output frequency. XML restart
-                     requires the companion steering.json file to preserve progress.
+                     requires the companion steering.json file to preserve progress;
+                     custom steering also requires steering_initial.npz. After a
+                     completed custom ramp, omitting steering_time_ns freezes
+                     progress at 1, including subsequent umbrella continuations.
         name: Optional name prefix for output files
         output_dir: Output directory. If None, creates output/{job_id}/
         is_membrane: Set True for membrane systems to use MonteCarloMembraneBarostat
@@ -404,7 +409,7 @@ def run_production(
 
     try:
         validate_steering(steering_time_ns, steering_update_interval_ps,
-                          distance_restraints, timestep_fs)
+                          distance_restraints, timestep_fs, custom_force_script)
         check_steering_handoff(restart_from, steering_time_ns)
     except DistanceRestraintError as exc:
         return create_validation_error(
@@ -624,14 +629,22 @@ def run_production(
         # energy can be logged in isolation for CV analysis / reweighting.
         _custom_force_loaded = None
         _distance_restraint_loaded = None
+        _torch_steering = None
         if custom_force_script:
             try:
+                _torch_steering = prepare_torch_steering(
+                    restart_from=restart_from, time_ns=steering_time_ns,
+                    signature=_safe_custom_force_signature(custom_force_script, custom_force_parameters),
+                    positions=xml_inputs.positions, box=xml_inputs.box_vectors,
+                    is_periodic=is_periodic, output_dir=out_dir,
+                )
                 _custom_force_loaded = load_custom_forces(
                     system=system,
                     topology_pdb_file=str(topology_pdb_path),
                     reference_positions=xml_inputs.positions,
                     custom_force_script=custom_force_script,
                     custom_force_parameters=custom_force_parameters,
+                    steering=_torch_steering,
                 )
             except CustomForceError as exc:
                 result["errors"].append(str(exc))
@@ -963,14 +976,18 @@ def run_production(
                     simulation.context.setPeriodicBoxVectors(*xml_inputs.box_vectors)
 
         steering = None
-        if steering_time_ns is not None:
-            steering = DistanceSteering(
-                simulation, _distance_restraint_loaded,
+        if steering_time_ns is not None or _torch_steering is not None:
+            schedule_args = dict(
                 time_ns=steering_time_ns, update_ps=steering_update_interval_ps,
                 timestep_fs=timestep_fs, restart_from=restart_from, output_dir=out_dir,
             )
+            if _torch_steering is not None:
+                steering = TorchSteering(simulation, _custom_force_loaded, _torch_steering, **schedule_args)
+                result["steering_initial_file"] = str(_torch_steering["initial_file"])
+            else:
+                steering = DistanceSteering(simulation, _distance_restraint_loaded, **schedule_args)
             result["steering_file"] = str(steering.path)
-            result["sampling_role"] = "steered"
+            result["sampling_role"] = "fixed_bias" if steering.fixed else "steered"
 
         # Setup output file paths
         trajectory_file = out_dir / f"{pref}trajectory.{trajectory_format}"
@@ -1044,6 +1061,7 @@ def run_production(
                 evaluator=_bias.get("evaluator"),
                 cv_names=_bias["cv_names"],
                 append=do_append,
+                global_parameters=_bias.get("global_parameters"),
             )
             simulation.reporters.append(_cv_reporter)
             result["collective_variables_file"] = str(cv_file)
@@ -1059,6 +1077,7 @@ def run_production(
                     else {"distance_restraints": _bias["restraints"],
                           **({"steering": steering.protocol} if steering else {})}
                 ),
+                steering=steering.protocol if steering and _custom_force_loaded else None,
             )
             result["collective_variables_meta_file"] = str(meta_file)
 
@@ -1123,11 +1142,13 @@ def run_production(
                 steering.step(steps_to_run)
                 result["steering"] = steering.summary()
                 # Per-bond centers have changed since Context construction.
-                runtime_system_file.write_text(XmlSerializer.serialize(system))
-                result["warnings"].append(
-                    "Steered trajectories are non-equilibrium initialization, not umbrella samples. "
-                    "Check final distance errors and equilibrate at the fixed target before analysis."
-                )
+                if _distance_restraint_loaded is not None:
+                    runtime_system_file.write_text(XmlSerializer.serialize(system))
+                if not steering.fixed:
+                    result["warnings"].append(
+                        "Steered trajectories are non-equilibrium initialization, not umbrella samples. "
+                        "Check actual CV target attainment and equilibrate at the fixed target before analysis."
+                    )
             else:
                 simulation.step(steps_to_run)
 
@@ -1231,7 +1252,7 @@ def run_production(
 
         logger.info(f"Simulation complete. Trajectory saved: {trajectory_file}")
 
-    except (_ModernSystemContractError, DistanceRestraintError) as exc:
+    except (_ModernSystemContractError, DistanceRestraintError, CustomForceError) as exc:
         logger.error("Production aborted by modern-system contract: %s", exc)
         result["errors"].append(str(exc))
         result["code"] = exc.code
