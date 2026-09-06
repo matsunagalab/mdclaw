@@ -7,6 +7,39 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-07 — Reproduce direct clean_protein disulfide inconsistencies
+
+Investigated the team report without its original input, commands or SIF digest.
+On current checkout source overlaid into the SIF, a synthetic two-CYS/HG input
+reproduced two failures through real clean_protein/PDBFixer/pdb4amber calls:
+flat declared pairs returned success with CYX still carrying HG; nested cys1/cys2
+pairs triggered an internally caught exception and returned CYS with success.
+Both new regression cases failed before changing production code.
+
+Reuse the existing pair-shape resolver in the direct cleanup stage. Explicit
+pairs now add the S-S topology bond (without duplicates), and CYX conversion
+removes thiol HG atoms/bonds with Modeller. No new CLI flags or chemistry defaults.
+Regression checks retained residues, CYX names, absent HG and an S-S bond in the
+intermediate topology; explicitly disabled pairs retain CYS/HG. These are synthetic
+cleanup tests, not a full physical-system/topology/minimization validation.
+
+A separate actual PDBFixer reader/removal-boundary test retained all 29 synthetic
+residues (8 HID, 18 CYX, 3 acid variants or their standard-state equivalents).
+Thus the reported 29/26-residue dropping and downstream hard geometry error
+remain unreproduced; no speculative fix was made to those paths.
+
+History matters: 3a233da (Aug 27) already addressed non-mutated ASH restoration in
+the HPacker wrapper, and b592611 (Aug 30) updated merged-PDB CYX/HG reconciliation.
+Both are ancestors of HEAD; the latter does not fix direct clean_protein's stage.
+Their existing tests passed, but this is not a replay of Zhang's original system
+or the entire supplied report. No wishlist/new-feature work was attempted.
+
+Validation: **199 passed** across the new reproduction/disulfide/cap/prepare suite
+(110), protonation/variant/selected server smoke checks (59), and existing
+CYX-HG/sidechain-packer/PDB2PQR-variant regressions (30). Ruff and diff checks passed.
+Only clean_protein and the new reproduction tests were changed for this fix;
+pre-existing preparation edits remain untouched. No commit/push or MD run.
+
 ## 2026-09-07 — Keep steering outcomes out of protocol comparisons
 
 Corrects the incomplete completion-metric filtering in 6a1d727. Exclude

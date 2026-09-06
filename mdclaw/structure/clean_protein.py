@@ -3097,19 +3097,19 @@ def clean_protein(
                         logger.info(f"Skipping user-excluded disulfide: {pair}")
                         continue
 
-                    chain1 = pair.get("chain1")
-                    resnum1 = pair.get("resnum1")
-                    chain2 = pair.get("chain2")
-                    resnum2 = pair.get("resnum2")
+                    sites = _disulfide_pair_sites(pair)
+                    if sites is None:
+                        raise ValueError(f"Invalid disulfide pair: {pair}")
+                    (chain1, resnum1, icode1), (chain2, resnum2, icode2) = sites
 
                     # Shared resolver, so an artifact written without insertion
                     # codes still resolves wherever only one residue answers to
                     # the number, and an ambiguous one is refused rather than
                     # guessed at.
                     site1, why1 = resolve_residue_site(
-                        cys_by_chain_resnum, chain1, resnum1, pair.get("icode1"))
+                        cys_by_chain_resnum, chain1, resnum1, icode1)
                     site2, why2 = resolve_residue_site(
-                        cys_by_chain_resnum, chain2, resnum2, pair.get("icode2"))
+                        cys_by_chain_resnum, chain2, resnum2, icode2)
                     for problem in (why1, why2):
                         if problem:
                             result["warnings"].append(
@@ -3118,6 +3118,10 @@ def clean_protein(
                     res2 = cys_by_chain_resnum.get(site2) if site2 else None
 
                     if res1 and res2:
+                        sg1 = next(a for a in res1.atoms() if a.name == "SG")
+                        sg2 = next(a for a in res2.atoms() if a.name == "SG")
+                        if not any({a, b} == {sg1, sg2} for a, b in fixer.topology.bonds()):
+                            fixer.topology.addBond(sg1, sg2)
                         bond_info = {
                             "residue1": {
                                 "name": res1.name,
@@ -3200,6 +3204,14 @@ def clean_protein(
             # Rename CYS -> CYX for Amber compatibility
             for res in cyx_residues:
                 res.name = 'CYX'
+            # Renaming alone leaves an impossible CYX with a thiol proton.
+            # Remove both HG atoms and their bonds, retaining the new S-S bond.
+            thiol_hydrogens = [a for res in cyx_residues for a in res.atoms() if a.name == "HG"]
+            if thiol_hydrogens:
+                from openmm.app import Modeller
+                modeller = Modeller(fixer.topology, fixer.positions)
+                modeller.delete(thiol_hydrogens)
+                fixer.topology, fixer.positions = modeller.topology, modeller.positions
 
             if disulfide_info:
                 result["disulfide_bonds"] = disulfide_info
