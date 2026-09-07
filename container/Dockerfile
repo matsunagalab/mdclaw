@@ -108,7 +108,7 @@ FROM --platform=linux/amd64 nvidia/cuda:11.8.0-devel-ubuntu22.04 AS openmm-build
 # Build dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        cmake swig doxygen git ca-certificates && \
+        cmake swig doxygen git patch ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 # Unpack conda environment from Stage 1
@@ -118,8 +118,31 @@ RUN tar -xzf /tmp/mdclaw_env.tar.gz -C /opt/mdclaw && \
     rm /tmp/mdclaw_env.tar.gz && \
     /opt/mdclaw/bin/python /opt/mdclaw/bin/conda-unpack
 
-# Add conda env to PATH so pip/python scripts resolve correctly
-ENV PATH="/opt/mdclaw/bin:$PATH"
+# The packed environment goes LAST on PATH here. environment.yml carries a build
+# toolchain (cmake, swig, patch, make, cxx-compiler, git) so a local conda prefix
+# can run build-plumed.sh, but conda-pack cannot relocate tools that compile their
+# data directory in: `git --exec-path` and `swig -swiglib` still name the build
+# prefix, so https fetches die with "remote-https is not a git command" and
+# wrapper generation with "Unable to find 'std_vector.i'". This stage installs its
+# own apt toolchain and every conda use below is an absolute /opt/mdclaw/bin/...
+# path, so put the env behind it. Measured on the arm64 image, whose stage 2 has
+# the same shape; this amd64 mirror of the fix has not been built end to end.
+ENV PATH="$PATH:/opt/mdclaw/bin"
+
+# Fail here, not 20 minutes into the OpenMM build, if the env ever shadows the
+# toolchain again. swig is checked by resolving a library include, which is the
+# exact operation a stale swiglib breaks.
+RUN for tool in git swig cmake patch; do \
+        resolved=$(command -v "$tool") || { echo "$tool not found" >&2; exit 1; }; \
+        case "$resolved" in \
+            /usr/*) ;; \
+            *) echo "$tool resolves to $resolved, not this stage's toolchain" >&2; exit 1 ;; \
+        esac; \
+    done && \
+    printf '%%module t\n%%include "std_vector.i"\n' > /tmp/swigcheck.i && \
+    swig -python -o /tmp/swigcheck.cpp /tmp/swigcheck.i && \
+    rm -f /tmp/swigcheck.i /tmp/swigcheck.cpp && \
+    git ls-remote https://github.com/openmm/openmm.git HEAD > /dev/null
 
 # Rebuild PPM3 (immers), the membrane orientation code bundled with
 # packmol-memgen. The shipped binary computes the orientation correctly and then

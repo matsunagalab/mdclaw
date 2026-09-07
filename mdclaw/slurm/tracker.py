@@ -173,11 +173,14 @@ def _find_job_metadata(job_id: str) -> Optional[dict]:
 
     for d in search_dirs:
         meta_path = d / "job_metadata.json"
-        if meta_path.exists():
-            try:
-                meta = json.loads(meta_path.read_text())
-                if str(meta.get("slurm_job_id")) == str(job_id):
-                    return meta
-            except (json.JSONDecodeError, OSError):
-                continue
+        # One guarded read rather than exists() plus read: Path.exists() turns a
+        # missing file into False but re-raises EACCES, so a single unreadable
+        # sibling directory -- another user's 700 scratch on a shared login node
+        # -- used to abort the whole search.
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if str(meta.get("slurm_job_id")) == str(job_id):
+            return meta
     return None

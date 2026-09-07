@@ -90,6 +90,7 @@ RUN test "$(dpkg --print-architecture)" = "arm64" && \
       gfortran \
       git \
       ninja-build \
+      patch \
       swig && \
     rm -rf /var/lib/apt/lists/*
 
@@ -99,8 +100,32 @@ RUN tar -xzf /tmp/mdclaw_env.tar.gz -C /opt/mdclaw && \
     rm /tmp/mdclaw_env.tar.gz && \
     /opt/mdclaw/bin/python /opt/mdclaw/bin/conda-unpack
 
-ENV PATH="/opt/mdclaw/bin:$PATH" \
+# The packed environment goes LAST on PATH here. environment.yml carries a build
+# toolchain (cmake, swig, patch, make, cxx-compiler, git) so a local conda prefix
+# can run build-plumed.sh, but conda-pack cannot relocate tools that compile their
+# data directory in: in this image `git --exec-path` and `swig -swiglib` still say
+# /opt/conda/envs/mdclaw, so every https fetch dies with "remote-https is not a
+# git command" and every wrapper generation with "Unable to find 'std_vector.i'".
+# This stage installs its own apt toolchain for exactly this work and every conda
+# use below is an absolute /opt/mdclaw/bin/... path, so put the env behind it —
+# which is also the toolchain every image before PLUMED was built with.
+ENV PATH="$PATH:/opt/mdclaw/bin" \
     CUDA_HOME="/usr/local/cuda"
+
+# Fail here, not 20 minutes into the OpenMM build, if the env ever shadows the
+# toolchain again. swig is checked by resolving a library include, which is the
+# exact operation a stale swiglib breaks.
+RUN for tool in git swig cmake make patch gcc g++; do \
+        resolved=$(command -v "$tool") || { echo "$tool not found" >&2; exit 1; }; \
+        case "$resolved" in \
+            /usr/*) ;; \
+            *) echo "$tool resolves to $resolved, not this stage's toolchain" >&2; exit 1 ;; \
+        esac; \
+    done && \
+    printf '%%module t\n%%include "std_vector.i"\n' > /tmp/swigcheck.i && \
+    swig -python -o /tmp/swigcheck.cpp /tmp/swigcheck.i && \
+    rm -f /tmp/swigcheck.i /tmp/swigcheck.cpp && \
+    git ls-remote https://github.com/openmm/openmm.git HEAD > /dev/null
 
 # The packed conda environment includes CUDA 13.1 user-space tools. Always use
 # the base image compiler explicitly so OpenMM/NVRTC stay on the 13.0 contract.

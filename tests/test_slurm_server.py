@@ -4,6 +4,7 @@ All SLURM commands are mocked — no actual SLURM installation required.
 """
 
 import json
+import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -38,6 +39,7 @@ from mdclaw.slurm.submit import (
 )
 from mdclaw.slurm.tracker import (
     _append_job_record,
+    _find_job_metadata,
     _read_job_records,
     _update_job_record,
 )
@@ -621,6 +623,38 @@ class TestCancelJob:
 # ---------------------------------------------------------------------------
 # check_job_log
 # ---------------------------------------------------------------------------
+
+
+class TestFindJobMetadata:
+    """Test the metadata search that check_job and check_job_log rely on."""
+
+    def test_finds_metadata_in_subdirectory(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        output_dir = tmp_path / "job_output"
+        output_dir.mkdir()
+        meta = {"slurm_job_id": "12345", "stderr_log": "job_12345.err"}
+        (output_dir / "job_metadata.json").write_text(json.dumps(meta))
+
+        assert _find_job_metadata("12345") == meta
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads unreadable directories")
+    def test_unreadable_sibling_directory_does_not_abort_the_search(
+        self, tmp_path, monkeypatch
+    ):
+        """A shared login node's /tmp holds other users' 700 directories."""
+        monkeypatch.chdir(tmp_path)
+        unreadable = tmp_path / "someone_elses_scratch"
+        unreadable.mkdir(mode=0o700)
+        os.chmod(unreadable, 0o000)
+        output_dir = tmp_path / "job_output"
+        output_dir.mkdir()
+        meta = {"slurm_job_id": "12345"}
+        (output_dir / "job_metadata.json").write_text(json.dumps(meta))
+        try:
+            assert _find_job_metadata("12345") == meta
+            assert _find_job_metadata("99999") is None
+        finally:
+            os.chmod(unreadable, 0o700)
 
 
 class TestCheckJobLog:
