@@ -7,6 +7,22 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-07 — Fresh 007 pi/DeepSeek run at committed source 9d769f0
+
+User requested another 007 execution after the preparation fixes were committed.
+The prior validation007_conditions result is already 20/20 PASS; preserve it.
+Initialized exactly one new attempt in ../validation007_20260907_9d769f0/campaign,
+using the same fda021e evaluator, task, SIF, pi/DeepSeek-v4-flash model, 5400-second
+agent limit, 8-hour MD limit and n2/n4 allocation. No solver prompt coaching.
+Source/skills come from a clean committed 9d769f0 clone, frozen by init_experiment;
+tree SHA256 84aca23a86df3cbfc39beeadbc0d5f51a27bcd53f1b9c497c4520c6f97240d51.
+Manifest requires the source overlay and cluster config selects overlay mode.
+Runner PID 3621102 and 600-second file-monitor PID 3621104 were verified alive;
+agent_start recorded at 2026-09-06T15:40:15Z (Sep 7 JST). No MD job submitted yet
+at this initial check and no result claimed. Monitoring writes progress.json /
+monitor.jsonl, not automatic chat messages; it stops when this attempt is scored.
+All older runs and unrelated scheduler jobs were left untouched.
+
 ## 2026-09-07 — Review and validate the pending 007 preparation fixes
 
 Reviewed the two previously uncommitted changes: automatic forwarding of prep
