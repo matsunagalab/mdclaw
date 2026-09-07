@@ -88,6 +88,28 @@ support symlinks.
 
 ### Choose One Runtime
 
+**Shared lab SIF: no user checkout required**
+
+If the administrator provides `/data/mdclaw.sif`,
+install the Claude Code/Pi skills above and put these in `~/.bashrc`:
+
+```bash
+export MDCLAW_SIF=/data/mdclaw.sif
+export MDCLAW_RUNTIME=singularity
+```
+
+Work in your own directory, e.g. `~/work`, and invoke the installed SIF CLI:
+
+```bash
+singularity exec --env PYTHONPATH= --env PYTHONHOME= "$MDCLAW_SIF" mdclaw --version
+```
+
+No external launcher, user checkout, or host Python packages are required.
+For SLURM tools, the agent adds standard `--bind` options for the host clients,
+libraries, configuration and authentication socket. See
+[direct SIF/SLURM invocation](skills/hpc-run/sif-slurm.md) for the tested lab
+command and how to keep submission-host binds out of queued jobs.
+
 **Conda: local development or a controlled workstation**
 
 ```bash

@@ -53,6 +53,11 @@ Notes:
 - `MDCLAW_MODXNA_DIR` is a legacy/experimental modXNA hook only. Modified
   DNA/RNA is not supported by the standard MD-ready topology path.
 - `MDCLAW_MODULE_LOADS` and `MDCLAW_MODULE_INIT` are used for HPC module setup.
+- Slurm clients are resolved from `PATH`, without an installation-prefix
+  assumption. `MDCLAW_SLURM_PATH` optionally supplies a separate search path
+  (e.g. the host PATH for clients bound into a SIF); when explicitly set it
+  does not fall back to a different installation. It selects executables,
+  not mounts: files and their dependencies must already be visible.
 - `MDCLAW_SURROGATE_DIR` controls where isolated model backend venvs are
   stored (`$MDCLAW_SURROGATE_DIR/<model>/venv`). BioEmu and Boltz-2 are never
   installed into the conda `mdclaw` environment.

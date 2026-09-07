@@ -140,7 +140,7 @@ RUN for tool in git swig cmake patch; do \
         esac; \
     done && \
     printf '%%module t\n%%include "std_vector.i"\n' > /tmp/swigcheck.i && \
-    swig -python -o /tmp/swigcheck.cpp /tmp/swigcheck.i && \
+    swig -c++ -python -o /tmp/swigcheck.cpp /tmp/swigcheck.i && \
     rm -f /tmp/swigcheck.i /tmp/swigcheck.cpp && \
     git ls-remote https://github.com/openmm/openmm.git HEAD > /dev/null
 

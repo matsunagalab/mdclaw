@@ -11,6 +11,17 @@
 #   MDCLAW_SIF=/custom/path.sif ./scripts/setup-container.sh  # custom SIF destination
 set -euo pipefail
 
+# An explicit existing SIF is an operator-managed runtime, not an auto-update
+# destination. In particular, never replace a shared SIF from an agent hook.
+if [ -n "${MDCLAW_SIF:-}" ] && [ -f "$MDCLAW_SIF" ]; then
+    if [ ! -r "$MDCLAW_SIF" ]; then
+        echo "MDClaw SIF is not readable: $MDCLAW_SIF" >&2
+        exit 1
+    fi
+    echo "Using configured MDClaw SIF: $MDCLAW_SIF" >&2
+    exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REGISTRY="ghcr.io/matsunagalab/mdclaw"

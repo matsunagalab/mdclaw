@@ -26,11 +26,12 @@ its inputs from the DAG.
   and `mdclaw show_policy`; when policy is missing or the user gives limits,
   set it explicitly with `mdclaw set_policy` (partitions, GPU/time/memory
   caps, default partition). For containerized compute nodes, run
-  `mdclaw configure_container --image /abs/path/mdclaw.sif --extra-flags "--nv"`;
+  `mdclaw configure_container --image /abs/path/mdclaw.sif --extra-flags=--nv`;
   submission tools then auto-bind each task's `job_dir`.
 
 ## Route To The Right Guidance
 
+- Shared SIF with no host MDClaw installation: [direct SIF invocation](sif-slurm.md).
 - One DAG node as one SLURM job:
   `skills/hpc-run/submit-single.md`
 - Homogeneous batches or replicate arrays:
@@ -46,17 +47,16 @@ its inputs from the DAG.
 ## Critical Rules
 
 - **Immediately after topology exists, submit the whole `min -> eq -> prod`
-  chain, then stop.** Invoke `submit_job` through the host-side `mdclaw`
-  launcher for minimization, equilibration with
+  chain, then stop.** Invoke `submit_job` through the selected MDClaw runtime
+  for minimization, equilibration with
   `--dependency afterok:<min_slurm_id>`, and production with
   `--dependency afterok:<eq_slurm_id>`. Production must be the final `sbatch`.
   Report all three job IDs and the DAG handoff, then exit without polling unless
   the caller explicitly asked you to see the run finish.
-- The host launcher and configured cluster policy own the SIF and keep
-  `sbatch`, `squeue`, and related control-plane commands on the host. Never
-  invent an in-container `sbatch` bridge, invoke SLURM tools with
-  `singularity exec`, or export `APPTAINER_*` / `SINGULARITY*` variables into
-  the submit shell. Use `bin/mdclaw` from a repository checkout.
+- A shared-SIF deployment calls host SLURM clients through standard binds;
+  follow [sif-slurm.md](sif-slurm.md), including bind-environment cleanup.
+  A checkout deployment may instead use its existing `bin/mdclaw`. Do not
+  create a host launcher or clone a checkout for the shared-SIF route.
 - Always pass both `--job-dir` and `--node-id` when submitting or running a DAG
   workflow node.
 - Do not pass `--system-xml-file`, `--topology-pdb-file`, `--state-xml-file`, or `--restart-from` in normal

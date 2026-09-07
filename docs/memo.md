@@ -7,6 +7,96 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-07 — Correct shared-SIF deployment: no external launcher, dynamic Slurm paths
+
+This supersedes the launcher design in the preceding shared-SIF entry. The user
+required SIF plus existing system Slurm, rejected `/data/bin/mdclaw`, then rejected
+a long bind recipe in the skill and required flexible executable discovery.
+The Slurm CLI now resolves clients with `shutil.which`: current PATH by default,
+or an explicitly supplied MDCLAW_SLURM_PATH, without falling back to another
+installation. The same absolute executable is used for checks and execution.
+Only container-origin sbatch calls clear inherited Singularity/Apptainer bind
+and mount environment variables; native host calls and unrelated environment
+variables remain intact. Mounts themselves still require standard launch flags;
+the CLI cannot discover files hidden by the container namespace.
+
+Removed the uncommitted external launcher, site-config file and launcher-only
+tests. Replaced the 70-line skill draft with a 26-line conditional reference,
+removed the old hpc-run prohibition on SIF-side Slurm, and corrected its existing
+`--extra-flags "--nv"` example (reproduced parser error) to `--extra-flags=--nv`.
+README, configuration reference and Notion now describe direct SIF invocation.
+No host wrapper/function, Slurm path constants, SSH bridge or Slurm installation
+inside the image was added. No system-wide Singularity settings were changed.
+
+Validation: 166 relevant tests passed (26 new runtime cases, 132 existing Slurm
+tests, 8 deployment tests); the installed Docker package separately passed all
+26 runtime cases. Tests cover arbitrary/space-containing locations, PATH order,
+explicit-path failure without fallback, argument preservation, both container
+runtimes, native Slurm and preservation of other environment variables. Ruff,
+skill validation and diff checks passed. Independent review found no additional
+core regression. This is not a full autonomous Claude/Pi MD campaign.
+
+Published the CLI-only update as GHCR `amd64-1689f1307992-build2`, digest
+`sha256:cd98368175cba64dc7a99be49dcfd248081a64310e518d8a23223d90b9a412d5`.
+Scientific dependencies are unchanged from build1. The changed installed file
+`mdclaw/slurm/_base.py` has SHA256
+`3fcd1b0cca4e58b95dd5c364c66791ef8e1f5f8ca0b1ab21c04ffb67cc9c8594`.
+Built the SIF locally (no GHCR re-download), then validated actual host resources
+discovered from PATH, Slurm config, ldd and the MUNGE socket. No outside `env -u`
+or source overlay was used: submit/check/cancel passed (137245), and n2 GPU job
+137246 completed with ExitCode=0:0, the installed CLI hash verified and all four
+OpenMM/PLUMED/TorchForce force/energy/integration checks passing.
+
+`/data/mdclaw.sif` now points to
+`/data/mdclaw/mdclaw-amd64-1689f1307992-build2.sif`, SHA256
+`8d73bb8d060641383123aaac3e0386f51c3057ace1ea39d8032fc9913565aa97`.
+The immutable manifest is beside the versioned SIF. Build1 and the original
+local-image backup are preserved. The two files formerly in `/data/bin` were
+moved to `/data/mdclaw/retired-launcher-20260907` (recoverable, not used).
+Logs and generated scripts are in
+../container_build_20260907_1689f13/runtime-cli-smoke; the controller completion
+record was captured immediately after completion. Existing accounting/text-summary
+limitations remain as described below. Source changes are not yet committed.
+
+## 2026-09-07 — Clone-free shared SIF deployment and real Slurm/CUDA validation
+
+Added a standalone site launcher (`scripts/mdclaw-shared`) and reviewed lab
+Slurm/MUNGE binds. Installed as `/data/bin/mdclaw`; users need no checkout or
+host Python. The launcher imports the SIF package with Python isolation and
+removes inherited Singularity bind lists before Slurm exports its environment.
+Real job 137238 exposed why that removal is necessary: floyd's library path
+was otherwise propagated into n2. Setup now preserves an explicit existing SIF;
+README/admin docs and the short common skill preamble describe image-mode use.
+
+Built source 1689f13079920480eb87c08258cc63a004565c55 with one build-only repair:
+the SWIG std_vector check requires `-c++` (reproduced before changing it).
+Pushed `ghcr.io/matsunagalab/mdclaw:amd64-1689f1307992-build1`, OCI digest
+`sha256:ef2e0ad0d26a24e2433ba5e6fd8c3eab4b364a379836ecea063ce666da3fc147`.
+Per user request, generated the SIF locally instead of downloading it again.
+Published `/data/mdclaw.sif` ->
+`/data/mdclaw/mdclaw-amd64-1689f1307992-build1.sif` (read-only), SHA256
+`2839e3daaa8ad4c02fec8fc25eab33ea06d8de9ef4942311db463cfe8c74a71c`.
+The previous local image is preserved as `mdclaw.sif.20260907-pre-shared.bak`;
+local `mdclaw.sif` now links to the shared image. Provenance manifest is beside
+the versioned SIF; build/test logs are in ../container_build_20260907_1689f13.
+
+Validation: Docker and SIF basic runtime checks each 23/23; installed-package
+MDDB/report/PLUMED CPU regression 95 passed, 1 CUDA case deselected; launcher and
+deployment regression 13 passed. Real SIF submit/check/cancel passed (137240).
+Final GPU job 137242 on n2's GTX 1080 Ti passed OpenMM, PLUMED with/without PBC,
+and TorchForce energy/force assertions and short integrations, using installed
+MDClaw's TorchForce preload helper. Initial GPU probes also corrected a test's
+half-box force ambiguity and missing MDClaw preload, not scientific source.
+No full Claude/Pi autonomous MD campaign was executed for this deployment.
+
+Limits: accounting is disabled, so archived check_job cannot prove completion;
+the controller had already purged 137242 at publication recheck, while its
+four successful GPU assertions remain in the saved output. Inspect-cluster's
+existing text fallback misaggregates heterogeneous GPU types; use per-node
+sinfo for that detail. These pre-existing limitations were documented, not
+expanded into unrelated code fixes. Notion's lab guide now uses ~/work, two
+bashrc variables, the shared launcher, and one MD-through-MDDB-export prompt.
+
 ## 2026-09-07 — Fresh 007 pi/DeepSeek run at committed source 9d769f0
 
 User requested another 007 execution after the preparation fixes were committed.
