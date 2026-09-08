@@ -265,6 +265,12 @@ GUARDRAIL_CODES: dict[str, str] = {
     # --- topology / system build ---
     "missing_xml_topology_inputs": "Run or repair the topo node that emits the XML triple.",
     "topology_pdb_not_found": "topology.pdb not found; rebuild the topo node.",
+    "mddb_export_failed": "MDDB export failed; inspect the export error.",
+    "mddb_metadata_required": "Supply the missing MDDB deposit metadata.",
+    "report_invalid_input": "Report input is invalid; inspect the reported error.",
+    "report_selection_required": "Select the report target before combining jobs.",
+    "net_charge_invalid": "NonbondedForce net charge is missing, nonfinite or nonintegral.",
+    "disulfide_chemistry_conflict": "Declared sulfur chemistry conflicts with prepared atoms or bonds; create a corrected prep branch.",
     "topology_validation_failed": "Topology validation failed; inspect the structured error.",
     "amber_variant_restore_incomplete": "Inspect topology_validation.protonation_variants; fix duplicate, missing, or atom-inconsistent ASH/GLH/LYN/CYM/CYX residues and rebuild topology.",
     "missing_forcefield_xml": "Supply at least one OpenMM ForceField XML in forcefield_xml.",

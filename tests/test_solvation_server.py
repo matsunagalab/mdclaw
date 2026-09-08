@@ -2299,7 +2299,7 @@ def test_embed_in_membrane_patch_tile_neutralizes_net_charge(tmp_path, monkeypat
     monkeypatch.setattr("mdclaw.solvation.membrane._equilibrate_membrane_patch", None)
 
     # Stub the exact-charge evaluation to report a +2 net charge.
-    def fake_charge(pdb_file, box_dims, water_model):
+    def fake_charge(pdb_file, box_dims, water_model, disulfide_bonds, ligand_chemistry):
         return {"success": True, "net_charge": 2, "warnings": [], "errors": []}
 
     monkeypatch.setattr("mdclaw.solvation.membrane._compute_membrane_net_charge", fake_charge)
@@ -2352,7 +2352,7 @@ def test_embed_in_membrane_patch_tile_rejects_charge_evaluation_failure(
     )
     monkeypatch.setattr("mdclaw.solvation.membrane._equilibrate_membrane_patch", None)
 
-    def failed_charge(pdb_file, box_dims, water_model):
+    def failed_charge(pdb_file, box_dims, water_model, disulfide_bonds, ligand_chemistry):
         return {
             "success": False,
             "code": "net_charge_exception",

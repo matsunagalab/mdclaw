@@ -381,7 +381,8 @@ def _resolve_topo_inputs(job_dir: str, node_id: str) -> dict:
             result["pdb_file"] = v
             result["pdb_resolved_from_node_id"] = prep_id
 
-    value = find_ancestor_artifact(job_dir, node_id, "prep", "ligand_chemistry")
+    prep_anc = _find_ancestor_node_id(job_dir, node_id, "prep")
+    value = _read_artifact_from_node(job_dir, prep_anc, "ligand_chemistry") if prep_anc else None
     if value:
         result["ligand_chemistry"] = value
 
@@ -391,7 +392,7 @@ def _resolve_topo_inputs(job_dir: str, node_id: str) -> dict:
         ("glycan_metadata", "glycan_metadata", dict),
         ("glycan_linkages", "glycan_linkages", list),
     ):
-        value = find_ancestor_artifact(job_dir, node_id, "prep", artifact_key)
+        value = _read_artifact_from_node(job_dir, prep_anc, artifact_key) if prep_anc else None
         loaded = _load_json_artifact(value, expected_type)
         if loaded is not None:
             result[result_key] = loaded
@@ -647,9 +648,19 @@ def resolve_node_inputs(
         if v:
             result["pdb_file"] = v
             result["pdb_resolved_from_node_id"] = prep_id
-        value = find_ancestor_artifact(job_dir, node_id, "prep", "ligand_chemistry")
-        if value:
-            result["ligand_chemistry"] = value
+        if prep_id:
+            for key in ("ligand_chemistry", "chain_identity_map"):
+                value = _read_artifact_from_node(job_dir, prep_id, key)
+                if value:
+                    result[key] = value
+            value = _read_artifact_from_node(job_dir, prep_id, "disulfide_bonds")
+            if value:
+                loaded = _load_json_artifact(value, list)
+                if loaded is None:
+                    _record_input_resolution_error(result, "Invalid prep disulfide_bonds artifact")
+                else:
+                    result["disulfide_bonds"] = loaded
+                    result["disulfide_bonds_resolved_from_node_id"] = prep_id
 
     elif node_type == "topo":
         result.update(_resolve_topo_inputs(job_dir, node_id))

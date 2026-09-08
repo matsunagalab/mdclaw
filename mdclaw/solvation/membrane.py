@@ -1233,6 +1233,8 @@ def _compute_membrane_net_charge(
     pdb_file: Path,
     box_dims: dict,
     water_model: str = "opc",
+    disulfide_bonds: Optional[list[dict]] = None,
+    ligand_chemistry: Optional[list[dict]] = None,
 ) -> dict:
     """Return the exact integer net charge of an assembled membrane system.
 
@@ -1251,6 +1253,8 @@ def _compute_membrane_net_charge(
         with tempfile.TemporaryDirectory(prefix="mdclaw_charge_") as tmp:
             built = build_amber_system(
                 pdb_file=str(pdb_file),
+                disulfide_bonds=disulfide_bonds,
+                ligand_chemistry=ligand_chemistry,
                 box_dimensions=box_dims,
                 forcefield=patch_equilibration_forcefield(water_model),
                 water_model=water_model,
@@ -1268,13 +1272,22 @@ def _compute_membrane_net_charge(
             system = XmlSerializer.deserialize(
                 Path(built["system_xml"]).read_text()
             )
+            import math
+
             total = 0.0
+            found = False
             for force in system.getForces():
                 if isinstance(force, NonbondedForce):
+                    found = True
                     for i in range(force.getNumParticles()):
                         charge, _sigma, _eps = force.getParticleParameters(i)
                         total += charge.value_in_unit(charge.unit)
                     break
+            if not found or not math.isfinite(total) or abs(total - round(total)) > 1e-4:
+                result["code"] = "net_charge_invalid"
+                result["errors"].append(f"Invalid NonbondedForce net charge: {total!r}, found={found}")
+                return result
+            result["disulfide_validation"] = built.get("topology_validation", {}).get("disulfides")
             result["success"] = True
             result["net_charge"] = int(round(total))
             result["net_charge_raw"] = total
@@ -1978,7 +1991,9 @@ def embed_in_membrane(
     membrane_patch_builder_timeout: Optional[int] = None,
     membrane_geometry_validation: bool = True,
     job_dir: Optional[str] = None,
-    node_id: Optional[str] = None
+    node_id: Optional[str] = None,
+    disulfide_bonds: Optional[list[dict]] = None,
+    ligand_chemistry: Optional[list[dict]] = None,
 ) -> dict:
     """Embed a protein in a lipid bilayer membrane using packmol-memgen.
     
@@ -2317,6 +2332,17 @@ def embed_in_membrane(
             from mdclaw._node import fail_node_from_result
             return fail_node_from_result(job_dir, node_id, blocked)
         pdb_file = _inputs.get("pdb_file")
+        canonical_pairs = _inputs.get("disulfide_bonds")
+        if disulfide_bonds is not None and disulfide_bonds != canonical_pairs:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(job_dir, node_id, {
+                "success": False, "code": "input_resolution_blocked",
+                "errors": ["Disulfide plan must match the selected prep ancestor."],
+            })
+        disulfide_bonds = canonical_pairs
+        ligand_path = _inputs.get("ligand_chemistry")
+        if ligand_path:
+            ligand_chemistry = json.loads(Path(ligand_path).read_text())
 
     if not pdb_file:
         result["errors"].append(
@@ -2328,6 +2354,10 @@ def embed_in_membrane(
         return result
 
     result["input_file"] = str(pdb_file)
+    result["parameters"]["disulfide_bonds"] = disulfide_bonds
+    result["parameters"]["disulfide_bonds_source"] = (
+        _inputs.get("disulfide_bonds_resolved_from_node_id") if job_dir and node_id else "explicit_argument"
+    )
     
     # Validate input file (resolve to absolute path for conda run compatibility)
     pdb_path = Path(pdb_file).resolve()
@@ -2553,6 +2583,8 @@ def embed_in_membrane(
                         pdb_file=pdb_file,
                         box_dims=box_dims,
                         water_model=water_model,
+                        disulfide_bonds=disulfide_bonds,
+                        ligand_chemistry=ligand_chemistry,
                     )
                 )
                 if salt and _compute_membrane_net_charge is not None

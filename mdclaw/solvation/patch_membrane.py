@@ -2606,7 +2606,7 @@ def embed_with_membrane_patch_tiles(
                              membrane=retained, box_dims=total_box)
         charge_result = net_charge_fn(pdb_file=provisional, box_dims=total_box)
         if charge_result.get("success"):
-            net_charge = int(round(charge_result.get("net_charge", 0)))
+            net_charge = charge_result["net_charge"]
             retained, neutralization = _apply_neutralizing_swap(
                 retained,
                 net_charge=net_charge,
@@ -2618,6 +2618,7 @@ def embed_with_membrane_patch_tiles(
                 protein_grid=grid,
                 carve_cutoff=cutoff,
             )
+            neutralization["charge_evaluation"] = charge_result
             if not neutralization.get("complete"):
                 return {
                     "success": False,
@@ -2893,6 +2894,7 @@ def _apply_neutralizing_swap(
         "anions_requested": n_anion,
         "cations_added": placed_cations,
         "anions_added": placed_anions,
+        "net_charge_after_swap": net_charge + placed_cations - placed_anions,
         "existing_cations": existing_cations,
         "existing_anions": existing_anions,
         "cation_resname": cation_res,

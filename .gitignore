@@ -154,3 +154,6 @@ scripts/umbrella_equilibration.py
 /.mdclaw_jobs.jsonl
 /.mdclaw_cluster.json
 /job_metadata.json
+
+# Local acceptance studies contain user fixture copies and MD output.
+/.validation/

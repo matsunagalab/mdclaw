@@ -201,7 +201,7 @@ def test_add_disulfide_bonds_accepts_prepare_complex_schema():
     assert {bonds[0][0], bonds[0][1]} == set(sgs)
 
 
-def test_add_disulfide_bonds_silently_skips_unresolvable_pairs():
+def test_add_disulfide_bonds_rejects_unresolvable_pairs():
     """Non-existent residue numbers must not raise — return 0 added."""
     from openmm.app import Topology
 
@@ -212,7 +212,9 @@ def test_add_disulfide_bonds_silently_skips_unresolvable_pairs():
             "residue_b": {"chain_id": "A", "residue_number": 100},
         }
     ]
-    assert tp.add_disulfide_bonds(top, pairs) == 0
+    from mdclaw.amber.disulfide_contract import DisulfidePlanError
+    with pytest.raises(DisulfidePlanError, match="resolves to 0"):
+        tp.add_disulfide_bonds(top, pairs)
 
 
 def test_add_disulfide_bonds_with_empty_input():

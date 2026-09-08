@@ -160,6 +160,11 @@ signature, update the relevant section here and the matching skill examples.
   `--salt_override` to satisfy neutralization. Results expose the prepared
   `solute_net_charge_e` and output-PDB `ion_counts` at top level.
 - `embed_in_membrane(...)`: membrane embedding and solvation.
+  Optional `disulfide_bonds` and `ligand_chemistry` describe standalone inputs;
+  node mode resolves chemistry from the same nearest prep as `merged_pdb`.
+  Patch-tile charge evaluation builds a force-field System with that bond plan,
+  rejects incompatible sulfur chemistry and invalid charge sums, and records
+  `neutralization.charge_evaluation` and `net_charge_after_swap`.
   Defaults to `membrane_backend="patch-tile"`: build a small composition-keyed
   lipid patch once, equilibrate it under PBC (`build_amber_system` +
   `run_minimization` + `run_equilibration`, called in non-node mode), cache it
@@ -655,3 +660,11 @@ signature, update the relevant section here and the matching skill examples.
   [official template at pinned commit 4e6dceee](https://github.com/mmb-irb/MDDB-workflow/blob/4e6dceeee67ce83650eed4aa2cfffe10107e2564/mddb_workflow/resources/inputs_file_template.yml).
   `skills/md-report/` routes reviews, Methods/BibTeX, and this export through
   deterministic CLIs without reconstructing facts in LLM-generated scripts.
+
+Topology validation distinguishes `input_conservation` (prepared heavy-atom
+identities across loading) from `core.atom_count_preserved` (output artifact
+consistency). S–S validation checks specific atom pairs in Topology and System
+(bond force or constraints), and checks CYX connectivity even without a plan.
+`disulfide_chemistry_conflict` fails before System generation. Inspection and
+split share AMBER sequence aliases; `cap_count` reports ACE/NME separately
+from `sequence_length`.

@@ -59,6 +59,37 @@ AMBER_RESTORED_VARIANT_BASES = {
 PROTEIN_RESNAMES = set(AMINO_ACIDS) | set(AMBER_PROTEIN_RESIDUES)
 PROTEIN_RESNAMES |= {f"N{aa}" for aa in AMINO_ACIDS} | {f"C{aa}" for aa in AMINO_ACIDS}
 
+# Sequence symbols are separate from classification: caps have no sequence position.
+AMINO_ACID_CODES = dict(zip(
+    "ALA ARG ASN ASP CYS GLN GLU GLY HIS ILE LEU LYS MET PHE PRO SER THR TRP TYR VAL SEC PYL".split(),
+    "ARNDCQEGHILKMFPSTWYVUO",
+))
+_PROTEIN_SEQUENCE_BASES = {
+    **AMBER_RESTORED_VARIANT_BASES,
+    "MSE": "MET", "SEP": "SER", "TPO": "THR", "PTR": "TYR",
+    **dict.fromkeys(("HID", "HIE", "HIP", "HSD", "HSE", "HSP"), "HIS"),
+}
+
+
+# Inspection classification does not imply force-field support for a modification.
+INSPECTED_PROTEIN_RESNAMES = PROTEIN_RESNAMES | set(_PROTEIN_SEQUENCE_BASES) | {"UNK"}
+
+
+def protein_sequence_symbol(resname: str) -> str:
+    """Return a protein position's symbol; caps contribute no position.
+
+    Callers classify components separately. Unknown modifications on an
+    established protein chain may use X, but this helper never classifies
+    ligands, nucleic acids or glycans as protein.
+    """
+    name = resname.strip().upper()
+    if name in {"ACE", "NME"}:
+        return ""
+    if len(name) == 4 and name[0] in {"N", "C"} and name[1:] in AMINO_ACIDS:
+        name = name[1:]
+    return AMINO_ACID_CODES.get(_PROTEIN_SEQUENCE_BASES.get(name, name), "X")
+
+
 # Water residue names (light and deuterated variants).
 WATER_NAMES = {"HOH", "WAT", "H2O", "DOD", "D2O"}
 

@@ -1,0 +1,365 @@
+{
+  "upstream_main": "fce3dbcd14d0e4ab5e6c84a8275b5801580a2213",
+  "user_checkout_head": "1689f13079920480eb87c08258cc63a004565c55",
+  "runtime": {
+    "sif": "/data1/rkp00079/mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-6f171d2f0fa5.sif",
+    "mdclaw_version": "0.6.8",
+    "openff_pablo_version": "0.2.2",
+    "python_files_compared": 141,
+    "differences_against_upstream": [
+      "slurm/_base.py"
+    ]
+  },
+  "saved_artifact_audit": [
+    {
+      "node": "topo_001",
+      "atoms": 157518,
+      "particles": 157518,
+      "protein_residues": 481,
+      "variants": {
+        "PRO": 27,
+        "LEU": 48,
+        "SER": 29,
+        "HID": 8,
+        "CYX": 18,
+        "GLY": 37,
+        "ARG": 25,
+        "ALA": 37,
+        "GLU": 21,
+        "TYR": 18,
+        "ASN": 19,
+        "VAL": 39,
+        "THR": 30,
+        "ASP": 15,
+        "GLN": 14,
+        "LYS": 13,
+        "TRP": 12,
+        "ILE": 25,
+        "MET": 9,
+        "GLH": 2,
+        "PHE": 31,
+        "CYS": 3,
+        "ASH": 1
+      },
+      "q": 3.9999999999999547,
+      "protein_q": 2.0000000000000226,
+      "ss_bonds": 9,
+      "backbone_gaps": [],
+      "ss_lengths_A": [
+        2.03,
+        2.033,
+        2.024,
+        3.156,
+        3.855,
+        2.03,
+        2.026,
+        2.025,
+        2.032
+      ]
+    },
+    {
+      "node": "topo_005",
+      "atoms": 157616,
+      "particles": 157616,
+      "protein_residues": 476,
+      "variants": {
+        "HID": 8,
+        "CYX": 18,
+        "GLY": 37,
+        "ARG": 25,
+        "ALA": 37,
+        "PRO": 24,
+        "GLU": 21,
+        "LEU": 47,
+        "TYR": 18,
+        "ASN": 19,
+        "VAL": 39,
+        "SER": 28,
+        "THR": 30,
+        "ASP": 15,
+        "GLN": 14,
+        "LYS": 13,
+        "TRP": 12,
+        "ILE": 25,
+        "MET": 9,
+        "GLH": 2,
+        "PHE": 31,
+        "CYS": 3,
+        "ASH": 1
+      },
+      "q": -4.5685352202673446e-14,
+      "protein_q": 2.000000000000022,
+      "ss_bonds": 9,
+      "backbone_gaps": [],
+      "ss_lengths_A": [
+        2.032,
+        3.345,
+        2.024,
+        2.032,
+        2.03,
+        2.029,
+        2.028,
+        2.032,
+        2.025
+      ]
+    },
+    {
+      "node": "topo_006",
+      "atoms": 157628,
+      "particles": 157628,
+      "protein_residues": 476,
+      "variants": {
+        "HID": 8,
+        "CYS": 21,
+        "GLY": 37,
+        "ARG": 25,
+        "ALA": 37,
+        "PRO": 24,
+        "GLU": 23,
+        "LEU": 47,
+        "TYR": 18,
+        "ASN": 19,
+        "VAL": 39,
+        "SER": 28,
+        "THR": 30,
+        "ASP": 16,
+        "GLN": 14,
+        "LYS": 13,
+        "TRP": 12,
+        "ILE": 25,
+        "MET": 9,
+        "PHE": 31
+      },
+      "q": -4.615719698813914e-14,
+      "protein_q": -0.9999999999999784,
+      "ss_bonds": 0,
+      "backbone_gaps": [],
+      "ss_lengths_A": []
+    },
+    {
+      "node": "topo_007",
+      "atoms": 157616,
+      "particles": 157616,
+      "protein_residues": 476,
+      "variants": {
+        "HIS": 8,
+        "CYS": 21,
+        "GLY": 37,
+        "ARG": 25,
+        "ALA": 37,
+        "PRO": 24,
+        "GLU": 23,
+        "LEU": 47,
+        "TYR": 18,
+        "ASN": 19,
+        "VAL": 39,
+        "SER": 28,
+        "THR": 30,
+        "ASP": 16,
+        "GLN": 14,
+        "LYS": 13,
+        "TRP": 12,
+        "ILE": 25,
+        "MET": 9,
+        "PHE": 31
+      },
+      "q": -4.5685352202673446e-14,
+      "protein_q": 2.000000000000022,
+      "ss_bonds": 9,
+      "backbone_gaps": [],
+      "ss_lengths_A": [
+        2.032,
+        3.375,
+        2.024,
+        2.031,
+        2.03,
+        2.029,
+        2.028,
+        2.032,
+        2.025
+      ]
+    }
+  ],
+  "controlled_rebuilds": {
+    "without_disulfide_plan": {
+      "success": true,
+      "system_net_charge_e": -1.6209256159527285e-14,
+      "statistics": {
+        "num_atoms": 157452,
+        "num_residues": 31247
+      },
+      "loader": {
+        "used_pablo": false,
+        "guardrail_codes": [
+          "pablo_topology_fallback"
+        ],
+        "status": "fallback_validated"
+      },
+      "disulfides": {
+        "status": "not_requested",
+        "expected_count": 0,
+        "manual_added_count": 0,
+        "observed_topology_sg_sg_bond_count": 8,
+        "observed_system_harmonic_sg_sg_bond_count": 8,
+        "non_authoritative_notes": []
+      },
+      "protonation_variants": {
+        "status": "passed",
+        "expected_count": 21,
+        "restored_count": 21,
+        "validated_count": 21
+      }
+    },
+    "with_disulfide_plan": {
+      "success": true,
+      "system_net_charge_e": 1.999999999999593,
+      "statistics": {
+        "num_atoms": 157452,
+        "num_residues": 31247
+      },
+      "loader": {
+        "used_pablo": false,
+        "guardrail_codes": [
+          "pablo_topology_fallback"
+        ],
+        "status": "fallback_validated"
+      },
+      "disulfides": {
+        "status": "passed",
+        "expected_count": 9,
+        "manual_added_count": 1,
+        "observed_topology_sg_sg_bond_count": 9,
+        "observed_system_harmonic_sg_sg_bond_count": 9,
+        "non_authoritative_notes": [
+          "Manual disulfide add count differed from the requested count, but final topology/System validation observed the requested SG-SG bonds; the manual-add count is non-authoritative."
+        ]
+      },
+      "protonation_variants": {
+        "status": "passed",
+        "expected_count": 21,
+        "restored_count": 21,
+        "validated_count": 21
+      }
+    }
+  },
+  "inspection_cli_reproductions": {
+    "topo_005": {
+      "inspect_molecules": [
+        {
+          "num_residues": 476,
+          "sequence_length": 476,
+          "chain_id": "Axp",
+          "author_chain": "A"
+        }
+      ],
+      "split_molecules_all_chains": [
+        {
+          "num_residues": 476,
+          "sequence_length": 447,
+          "chain_id": "Axp",
+          "author_chain": "A"
+        }
+      ],
+      "split_output_CA_count": 476
+    },
+    "topo_006": {
+      "inspect_molecules": [
+        {
+          "num_residues": 476,
+          "sequence_length": 476,
+          "chain_id": "Axp",
+          "author_chain": "A"
+        }
+      ],
+      "split_molecules_all_chains": [
+        {
+          "num_residues": 476,
+          "sequence_length": 468,
+          "chain_id": "Axp",
+          "author_chain": "A"
+        }
+      ],
+      "split_output_CA_count": 476
+    },
+    "topo_007": {
+      "inspect_molecules": [
+        {
+          "num_residues": 476,
+          "sequence_length": 476,
+          "chain_id": "Axp",
+          "author_chain": "A"
+        }
+      ],
+      "split_molecules_all_chains": [
+        {
+          "num_residues": 476,
+          "sequence_length": 476,
+          "chain_id": "Axp",
+          "author_chain": "A"
+        }
+      ],
+      "split_output_CA_count": 476
+    }
+  },
+  "skill_audit": {
+    "markdown_files_compared": 55,
+    "user_checkout_differences": [
+      "hpc-run/SKILL.md",
+      "hpc-run/sif-slurm.md",
+      "common/preamble.md"
+    ],
+    "actual_session_loaded_skill_version": "unavailable; user home not readable"
+  },
+  "final_sweep": {
+    "inventory_excluding_git_and_membrane_cache": {
+      "current_project": 6079,
+      "older_project": 5114
+    },
+    "older_failure_reproduction": {
+      "declared": {
+        "success": false,
+        "code": "openmmforcefields_build_failed",
+        "errors": [
+          "SystemGenerator.create_system failed: ValueError: No template found for residue 6 (CYS).  The atoms and bonds in the residue match CYS, but the set of externally bonded atoms has 1 S atom too many.  For more information, see https://github.com/openmm/openmm/wiki/Frequently-Asked-Questions#template"
+        ],
+        "statistics": {},
+        "system_net_charge_e": null,
+        "plan_statuses": [
+          "skipped_cys_protonated",
+          "skipped_cys_protonated",
+          "skipped_cys_protonated",
+          "skipped_cys_protonated",
+          "skipped_cys_protonated",
+          "skipped_cys_protonated",
+          "skipped_cys_protonated",
+          "skipped_cys_protonated",
+          "skipped_cys_protonated"
+        ]
+      },
+      "none": {
+        "success": true,
+        "code": null,
+        "errors": [],
+        "statistics": {
+          "num_atoms": 157532,
+          "num_residues": 31374
+        },
+        "system_net_charge_e": -4.034550471487819e-13,
+        "plan_statuses": []
+      }
+    },
+    "mechanism": {
+      "pdbfile_initial_sg_sg_bonds": 0,
+      "raw_plan_bonds_added": 9,
+      "hg_retained": true,
+      "source": "topo_004/artifacts/system.prepared.pdb",
+      "same_error_as_saved_20260903": true,
+      "present_before_and_after_8e703ed": true
+    },
+    "closed_for_insufficient_evidence": [
+      "Which inspection command or agent produced the reported residue-loss diagnosis",
+      "Which skill installation was actually loaded in the reporting conversation",
+      "Why the reporter concluded the already-implemented lipid21 fallback was unavailable"
+    ]
+  }
+}

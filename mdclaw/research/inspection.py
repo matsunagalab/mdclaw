@@ -18,7 +18,8 @@ from mdclaw.chemistry_constants import (  # noqa: E402
     classify_glycan_residues,
     MULTIVALENT_METAL_IONS,
     PHOSPHO_RESNAMES,
-    PROTEIN_RESNAMES,
+    INSPECTED_PROTEIN_RESNAMES,
+    protein_sequence_symbol,
     WATER_NAMES,
     is_standard_bare_ion_resname,
 )
@@ -404,13 +405,7 @@ def inspect_molecules(
         result["entities"] = entities_info
 
         # One-letter amino acid code mapping (canonical residues)
-        AA_CODE = {
-            "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
-            "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
-            "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
-            "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
-            "SEC": "U", "PYL": "O",
-        }
+
 
         model = structure[0]
 
@@ -453,7 +448,8 @@ def inspect_molecules(
 
                 if res_name in PHOSPHO_RESNAMES:
                     # Capture before falling through to ligand classification —
-                    # SEP/TPO/PTR are not in PROTEIN_RESNAMES, but they live on
+                    # SEP/TPO/PTR also contribute their base amino acid to the
+                    # sequence. Keep their chemistry annotation distinct on
                     # protein chains and we want them on the PTM list with the
                     # author chain id (resolved a few lines below).
                     ptm_residues.append({
@@ -461,22 +457,9 @@ def inspect_molecules(
                         "resnum": res.seqid.num,
                         "name": res_name,
                     })
-                if res_name in PROTEIN_RESNAMES:
+                if res_name in INSPECTED_PROTEIN_RESNAMES:
                     has_protein = True
-                    base = res_name
-                    # Map terminal variants (Nxxx/Cxxx) to canonical three-letter codes
-                    if (
-                        len(base) == 4
-                        and base[0] in ("N", "C")
-                        and base[1:] in AA_CODE
-                    ):
-                        base = base[1:]
-                    # Map protonation variants to canonical residues for 1-letter output
-                    if base in ("HID", "HIE", "HIP", "HSD", "HSE", "HSP"):
-                        base = "HIS"
-                    elif base in ("CYX", "CYM"):
-                        base = "CYS"
-                    sequence_parts.append(AA_CODE.get(base, "X"))
+                    sequence_parts.append(protein_sequence_symbol(res_name))
                 elif res_name in WATER_NAMES:
                     has_water = True
                 elif len(res_atoms) == 1 and is_standard_bare_ion_resname(res_name):
@@ -590,7 +573,12 @@ def inspect_molecules(
                 "num_residues": len(res_list),
                 "num_atoms": num_atoms,
                 "resnum": first_resnum,
-                "sequence_length": len(sequence_parts) if has_protein else 0,
+                "sequence": "".join(sequence_parts) if has_protein else None,
+                "sequence_length": len("".join(sequence_parts)) if has_protein else 0,
+                "cap_count": sum(r.name.strip() in {"ACE", "NME"} for r in res_list),
+                "sequence_unmapped_residue_names": (
+                    sorted(residue_names - INSPECTED_PROTEIN_RESNAMES) if has_protein else []
+                ),
             }
             if chain_type in ("protein", "nucleic", "glycan"):
                 chain_info["residue_numbering"] = residue_numbering_summary(

@@ -7,6 +7,159 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-08 — SMO chemistry fixes implemented, tested and shared SIF switched
+
+Implemented the [approved plan](developer/smo-root-cause-fix-plan.md): shared exact disulfide resolution, nearest-prep chemistry handoff into membrane charge calculation, Topology/System pair and input-conservation checks, common variant sequence classification, and skill diagnostics. Non-SMO GLYCAM testing exposed cpptraj renumbering; unique heavy-atom identity mapping now preserves the disulfide plan through it.
+
+Normal CLI/DAG SMO acceptance on **rkp00079** (87152, observation branch 87258) completed minimization, 0.1 ns NVT and 2 ns NPT, plus the normal 2 ps warmup. All 476 residues, 3,738 protein heavy atoms, 9 exact S–S pairs and 475 peptide bonds survived; 105 saved frames passed independent geometry/finite checks. Automatic ions are Na82/Cl84, final charge −4.82e−14 e. Total 157,610 atoms is the expected −6 difference from replacing two more OPC waters with ions. NPT last 10%: 300.200 K and 1.028664 g/mL.
+
+Regression: 639 broad tests passed; non-SMO pipelines 25 passed followed by 3 passing GLYCAM retests; 111 boundary tests passed, and the final 3 lipid tests passed (87560). BPTI old/new System XML is byte-identical and Reference energy/force differences at a common state are zero. Candidate standalone SMO checks passed, container smoke 27/27, shared-image GPU smoke passed (87562), lint and three skill validators passed. Counts overlap and are not a unique total. POPG fixture failures were traced to Packmol output assumptions, including automatic K+ neutralization, and corrected in the test.
+
+At user request, the shared `6f171d2f0fa5.sif` compatibility path was atomically switched to `...sulfur-561049fe8254.sif`; the original is preserved as `...6f171d2f0fa5.pre-sulfur-fix-20260908.sif`. Active SHA-256: `c4073304b856f66fc322f1a0e5c497441fab5d645c6760df04b18a5d9583cd8a`. This is a manifest-identified cluster-local hotfix, not a new tagged/GHCR release. The user's old wrapper sets checkout PYTHONPATH and will override SIF code, so their checkout/skills must also be updated or the SIF CLI invoked without that overlay. Their repository and simulation artifacts remain untouched.
+
+This does **not** overturn the investigation's finding that physical residue deletion was unconfirmed. The proven inspection inconsistency is fixed; all three original SMO topology files now report and split 476 residues consistently. Full evidence, limits, failed-fixture explanations and deployment/rollback paths: [validation report](research/smo-20260908-fix-validation.md).
+
+
+## 2026-09-08 — Make non-SMO regression coverage a mandatory fix-plan gate
+
+User required avoiding SMO-specific overfitting. Expanded the
+[fix plan](developer/smo-root-cause-fix-plan.md) with explicit prohibitions on
+SMO IDs/counts/charges and distance tuning in implementation, independent
+expected-value checks, and a required non-SMO matrix. Coverage includes BPTI,
+reduced cysteines, metal-coordinating sulfur, Amber variants/termini/caps,
+2LOP membrane pipeline, supported lipid mixtures/charges/representations,
+ff19SB-OPC and ff14SB-TIP3P, nonprotein components, neutralization intent,
+ID collisions/insertion codes, and HMR/constraints. Identity-transform tests
+must preserve chemistry without confusing legitimate protonation changes.
+
+Freeze fixtures/baselines before implementation, run small contract/System tests
+and existing pipelines, then require short non-SMO min/eq before the full SMO
+2.1 ns test. Mandatory skips do not count as passes. The distributed SIF must
+also pass representative non-SMO smoke tests. SMO-only success is explicitly
+insufficient for release. Planning only; no product changes or tests launched.
+
+## 2026-09-08 — Require the same SMO system through 2.1 ns equilibration in the fix plan
+
+User required actual same-system execution tests in the implementation plan.
+Expanded [the fix plan](developer/smo-root-cause-fix-plan.md) with fixed prep_008
+coordinates/disulfide/identity artifacts, checksummed old/new controls, normal
+embed_in_membrane -> build_amber_system -> minimization, then 0.1 ns NVT and
+2.0 ns NPT at 300 K/1 bar, 2 fs, hmr=False as in the reported successful run.
+The automatic ion correction must succeed without the user's patched solv_006
+or direct OpenMM builder. Required results include 476 residues, nine exact SS
+partners, +2e pre-ion and neutral final charge, peptide continuity, lipid bonds,
+and trajectory/thermodynamic checks. Original nodes stay read-only in an
+isolated fixture-based test study. The earlier optional-equilibration wording
+is superseded: all three control/build/equilibration stages must pass before
+claiming same-system verification. Planning only; no new computation launched.
+
+## 2026-09-08 — Plan root-cause fixes for the confirmed SMO defects
+
+Prepared an implementation plan, without changing product code or skills:
+[SMO root-cause fix plan](developer/smo-root-cause-fix-plan.md). The plan unifies
+resolved disulfide plans and execution, propagates prep chemistry into membrane
+charge construction, validates exact SG-SG partners and assigned chemistry,
+and shares residue classification/sequence generation between public and
+internal inspection. Template-aware charge validation must account for terminal
+states; it must not hard-code every CYX residue to zero charge. Diagnostic skill
+instructions will consume the implemented structured results in one common leaf.
+
+Four review units and acceptance tests are defined, including small negative
+fixtures, DAG handoff, actual CLI consistency, SIF-overlay smoke checks, and a
+final isolated SMO solv/topo/min validation. No Pablo replacement, automatic
+repair of existing DAGs, or long production reruns are planned. Missing report
+history remains closed as insufficient evidence, not an assumed design input.
+
+## 2026-09-08 — Final SMO sweep identifies the old disulfide failure and closes missing history
+
+Expanded the search to both rkp00079/rku00140 and the older rkp00048/rku00140
+area (11,193 indexed files excluding git and membrane caches), all 6XBL failure
+results/topology metadata/events, related old SMO trials, and skill/code history.
+No original residue-loss measurement script or conversation transcript surfaced.
+The owner-only home remains unreadable; missing-history attribution is now
+closed as insufficient evidence per user instruction, not repeatedly deferred.
+
+This corrects the preceding investigation's unresolved-old-Bug-3 assessment:
+9/3 topo_004 records nine skipped_cys_protonated pairs, yet build_system forwards
+the original unfiltered list to add_disulfide_bonds. On the exact saved PDB,
+PDBFile initially has zero SS bonds; the raw adder adds nine while HG remains.
+Current-source/SIF build reproduces the identical residue-6 CYS external-S
+mismatch with the nine declarations; the same PDB with an empty list succeeds
+(157,532 atoms). The skip/execution contradiction is present before and after
+8e703ed, which changes clean_protein, not this builder path. Valid CYX inputs
+worked in saved topo_003 on 9/2 and in current controls, so the report's stronger
+claim of no viable input is disproven.
+
+Also found current topo_001 node status completed conflicts with its preserved
+failed event and metadata (neutralization_charge_mismatch, System +4e). The
+charge guard did operate; mutable/manual status is not historical evidence.
+The final investigation distinguishes proven CLI defects, skill diagnostic gaps,
+disproven claims, and the three unavailable provenance links. No product/skill
+fixes or user-file mutations were made. All diagnostic builds are finished.
+
+See [final sweep and closure](research/smo-20260908-bug-investigation.md) and
+[structured controls](research/smo-20260908-audit.json).
+
+## 2026-09-08 — Follow the SMO residue-loss claim into CLI metadata and skills
+
+Follow-up inspection found a concrete duplicate-inspector defect: public
+inspect_molecules counts Amber variants, but structure.split's internal
+_inspect_molecules_impl (also used by prepare_complex) counts only AMINO_ACIDS
+in sequence_length. Actual split_molecules CLI runs on topo_005/006 return
+num_residues=476 with sequence_length=447/468; extracted PDBs retain all 476.
+The direct OpenMM topo_007 normalizes variant names, so the same internal
+counter returns 476. This extends the earlier hypothetical standard-only
+selection explanation to a reproduced product CLI output; it does not prove
+which counter the reporter used. Public inspect_molecules and PyMOL
+polymer.protein both count all 476 on each saved topology.
+
+The user's 55 skill Markdown files match current except three Slurm/preamble
+files. No skill directs deletion of Amber variants. Gaps: build docs omit
+PDBFile fallback/template patching; no anomaly-investigation recipe distinguishes
+sequence length, selection, residue labels, and actual input/System integrity.
+The earliest saved explicit loss allegation is topo_007's hand-written warning;
+no ordinary tool-start/completion evidence backs its alleged minimal repro.
+Home-directory conversation/shell history is inaccessible under OS permissions;
+shared files lack the measurement script. Requested a shared conversation-log
+path. Scientific code, skills, and user files remain unchanged.
+
+Details and CLI summary outputs are appended to
+[the investigation](research/smo-20260908-bug-investigation.md) and its JSON audit.
+
+## 2026-09-08 — SMO user artifacts distinguish charge handoff defect from alleged residue loss
+
+Inspected the user's SMO files under /data1/rkp00079/rku00140 read-only and
+rebuilt two ion-free topology controls in /tmp using current source and the
+user's SIF. Upstream main is fce3dbc; user checkout is 1689f13. All 141 Python
+files in both the user checkout and installed SIF match upstream except
+slurm/_base.py; the scientific implementation is current (MDClaw 0.6.8,
+Pablo 0.2.2). This extends the earlier synthetic-only disulfide investigation
+with the actual user artifacts, without asserting what an unavailable
+September 8 minimal-repro script did.
+
+Contrary to the reported deletion, ordinary topo_005 contains all 476 protein
+residues, HID x8/CYX x18/ASH x1/GLH x2, all 9 System SG-SG bonds, no peptide
+breaks, and protein charge +2. Standard-20-only selection yields 447 residues;
+topo_006 similarly has all 476 but standard-only selection yields 468. An
+analysis selection mistake fits the alleged loss counts, but its original
+script was not available. Ordinary topology construction already uses
+PDBFile fallback plus template lipid bonds (28,951 internal, 442 external).
+
+Confirmed root cause of wrong membrane neutralization: the temporary build in
+_compute_membrane_net_charge receives no explicit disulfide plan. On the same
+ion-free solv_005 input, no plan yields 8 SS bonds and charge 0; passing the
+prep_008 plan yields 9 bonds and charge +2, with 157,452 atoms in both. Without
+the plan, CYX A:490/A:507 each carry -1e despite their restored names; their
+~3.345 A initial separation defeats automatic bond detection. Both builds
+pass validation because CYX's H-pattern check does not demand an SG-SG bond.
+The existing calculation already sums force-field partial charges: replace
+neither Pablo nor a supposed charge heuristic to fix this specific defect;
+propagate the bond plan and validate CYX connectivity/charge instead.
+
+See [the investigation](research/smo-20260908-bug-investigation.md) and
+[machine-readable audit](research/smo-20260908-audit.json). Product code and
+user runs were not modified. No new MD or full equilibration analysis ran.
+
 ## 2026-09-07 — Correct shared-SIF deployment: no external launcher, dynamic Slurm paths
 
 This supersedes the launcher design in the preceding shared-SIF entry. The user

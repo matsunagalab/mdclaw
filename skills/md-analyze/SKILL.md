@@ -117,3 +117,6 @@ Follow `skills/common/visual-qa.md` when the user asks for a structural
 snapshot or a visual check. Do not render one on your own judgement that an
 artifact "would benefit" from it — previews are large images and go unused
 unless someone asked to look at them.
+
+For residue, bond, charge, or historical-status discrepancies, follow
+[chemistry diagnostics](../common/chemistry-diagnostics.md).

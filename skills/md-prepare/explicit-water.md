@@ -83,7 +83,7 @@ has failed, completed, or the user explicitly abandons it.
 
 `build_amber_system` is the curated Amber → OpenMM system builder for completed
 prep/solv DAG artifacts. It runs the resolved prepared/solvated PDB through
-OpenFF Pablo, applies the resolved Amber XML
+OpenFF Pablo (with a validated OpenMM PDBFile fallback when needed), applies the resolved Amber XML
 bundle via `openmmforcefields.SystemGenerator` (`GAFFTemplateGenerator` from
 prep's `ligand_chemistry` artifact; NAGL charges are assigned internally), and
 emits the modern artifact triple

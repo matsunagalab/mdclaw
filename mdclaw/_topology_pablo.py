@@ -186,90 +186,12 @@ def add_disulfide_bonds(
     topology: Any,
     disulfide_pairs: Sequence[dict[str, Any]],
 ) -> int:
-    """Add SG-SG covalent bonds to an OpenMM topology.
+    """Validate the complete request before adding any resolved SG-SG bonds."""
+    from mdclaw.amber.disulfide_contract import apply_resolved_disulfides, resolve_disulfides
 
-    Pablo identifies cysteine residues as such (CYS) but does not infer
-    disulfide bridges from proximity. The mdclaw prep pipeline emits a list of
-    explicit pairs as ``disulfide_bonds.json``. Current prep emits
-    ``{"cys1": {"chain": "A", "resnum": 11, ...}, "cys2": {...}}``;
-    older artifacts used ``{"residue_a": {"chain_id": "A",
-    "residue_number": 11, ...}, "residue_b": {...}}``. This function accepts
-    both shapes and adds the SG-SG bond for each pair so
-    ``SystemGenerator.create_system`` produces the crosslink in the resulting
-    System.
-
-    Returns the number of bonds actually added (silently skips pairs where one
-    side cannot be resolved — the caller can warn on a non-zero discrepancy).
-    """
-    if not disulfide_pairs:
-        return 0
-
-    # Keyed the way a bond names a residue, insertion code included. A bare
-    # (chain, number) picks whichever insertion-coded neighbour came first, so
-    # the bond could land on a different cysteine than the one MODELLER patched
-    # and the CYX naming marked.
-    sg_index: dict[tuple[str, int, str], Any] = {}
-    for residue in topology.residues():
-        if (residue.name or "").upper() not in {"CYS", "CYX"}:
-            continue
-        chain_id = getattr(residue.chain, "id", None) or ""
-        try:
-            resnum = int(residue.id)
-        except (TypeError, ValueError):
-            continue
-        icode = str(getattr(residue, "insertionCode", "") or "").strip()
-        for atom in residue.atoms():
-            if (atom.name or "").upper() == "SG":
-                sg_index[(chain_id, resnum, icode)] = atom
-                break
-
-    existing_bonds = {
-        frozenset({getattr(atom1, "index", id(atom1)), getattr(atom2, "index", id(atom2))})
-        for atom1, atom2 in topology.bonds()
-    }
-
-    def _pair_endpoint(pair: dict[str, Any], current_key: str, legacy_key: str) -> tuple | None:
-        current = pair.get(current_key)
-        if isinstance(current, dict):
-            chain = current.get("chain")
-            resnum = current.get("resnum")
-        else:
-            current = pair.get(legacy_key)
-            if not isinstance(current, dict):
-                return None
-            chain = current.get("chain_id")
-            resnum = current.get("residue_number")
-        icode = current.get("icode") if isinstance(current, dict) else None
-        try:
-            return (chain or "", int(resnum),
-                    None if icode is None else str(icode).strip())
-        except (TypeError, ValueError):
-            return None
-
-    added = 0
-    for pair in disulfide_pairs:
-        key_a = _pair_endpoint(pair, "cys1", "residue_a")
-        key_b = _pair_endpoint(pair, "cys2", "residue_b")
-        if key_a is None or key_b is None:
-            continue
-        from mdclaw.structure.pdb_utils import resolve_residue_site
-
-        site_a, _ = resolve_residue_site(sg_index, key_a[0], key_a[1], key_a[2])
-        site_b, _ = resolve_residue_site(sg_index, key_b[0], key_b[1], key_b[2])
-        sg_a = sg_index.get(site_a) if site_a else None
-        sg_b = sg_index.get(site_b) if site_b else None
-        if sg_a is None or sg_b is None:
-            continue
-        bond_key = frozenset({
-            getattr(sg_a, "index", id(sg_a)),
-            getattr(sg_b, "index", id(sg_b)),
-        })
-        if bond_key in existing_bonds:
-            continue
-        topology.addBond(sg_a, sg_b)
-        existing_bonds.add(bond_key)
-        added += 1
-    return added
+    pairs = resolve_disulfides(topology, disulfide_pairs)
+    records = apply_resolved_disulfides(topology, pairs)
+    return sum(record["status"] == "emitted" for record in records)
 
 
 __all__ = [

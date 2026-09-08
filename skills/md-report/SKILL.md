@@ -42,3 +42,6 @@ values. Do not describe a draft with unresolved essential methods as ready to su
 
 For **MDDB files**, read [mddb.md](mddb.md). Otherwise stop after the requested
 report/Methods; a reporting request does not authorize deposition or further MD.
+
+For residue, bond, charge, or historical-status discrepancies, follow
+[chemistry diagnostics](../common/chemistry-diagnostics.md).

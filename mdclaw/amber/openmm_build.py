@@ -1049,6 +1049,17 @@ def _run_openmmforcefields_build(
     omm_topology = pablo_result.topology
     omm_positions = pablo_result.positions
 
+    from openmm.app import PDBFile
+    from mdclaw.amber.topology_validation import validate_loader_conservation
+    reference = PDBFile(str(sanitized_input))
+    input_conservation = validate_loader_conservation(reference.topology, omm_topology)
+    del reference
+    if input_conservation["status"] != "passed":
+        result["code"] = "topology_validation_failed"
+        result["topology_validation"] = {"status": "failed", "input_conservation": input_conservation}
+        result["errors"].append("Topology loader changed prepared heavy-atom identities; inspect input_conservation.")
+        return result
+
     # Restore Amber HID/HIE/HIP residue names on the loaded topology so
     # ``protein.ff*.xml``'s protonation-specific templates apply. Pablo
     # loaded these as canonical HIS via the CCD; pick the variant from the
@@ -1109,11 +1120,21 @@ def _run_openmmforcefields_build(
         omm_positions = modeller.positions
 
     # --- 3. Disulfide bonds (Pablo does not auto-detect) -----------------
-    if disulfide_bonds:
-        manual_disulfide_added_count = _topology_pablo.add_disulfide_bonds(
-            omm_topology,
-            disulfide_bonds,
-        )
+    from mdclaw.amber.disulfide_contract import (
+        DisulfidePlanError, apply_resolved_disulfides, resolve_disulfides, sulfur_chemistry_errors,
+    )
+    try:
+        resolved_pairs = resolve_disulfides(omm_topology, disulfide_bonds)
+        result["disulfide_bond_plan"] = apply_resolved_disulfides(omm_topology, resolved_pairs)
+        manual_disulfide_added_count = sum(
+            record["status"] == "emitted" for record in result["disulfide_bond_plan"])
+        chemistry_errors = sulfur_chemistry_errors(omm_topology)
+        if chemistry_errors:
+            raise DisulfidePlanError("; ".join(chemistry_errors))
+    except DisulfidePlanError as exc:
+        result["code"] = "disulfide_chemistry_conflict"
+        result["errors"].append(str(exc))
+        return result
 
     # --- 4. Set unit cell for explicit solvent ---------------------------
     if not box_dimensions:
@@ -1741,6 +1762,7 @@ def _run_openmmforcefields_build(
         amber_variant_restore=amber_variant_restore,
         non_authoritative_notes=result["topology_notes"],
     )
+    topology_validation["input_conservation"] = input_conservation
     disulfide_notes = topology_validation["disulfides"].get(
         "non_authoritative_notes",
         [],

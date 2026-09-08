@@ -38,7 +38,8 @@ from mdclaw.research.nucleic import (  # noqa: E402
 )
 from mdclaw.chemistry_constants import (  # noqa: E402
     classify_glycan_residues,
-    AMINO_ACIDS,
+    INSPECTED_PROTEIN_RESNAMES,
+    protein_sequence_symbol,
     WATER_NAMES,
     is_standard_bare_ion_resname,
 )
@@ -318,13 +319,7 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
         result["entities"] = entities_info
         
         # One-letter amino acid code mapping
-        AA_CODE = {
-            'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C',
-            'GLN': 'Q', 'GLU': 'E', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
-            'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F', 'PRO': 'P',
-            'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V',
-            'SEC': 'U', 'PYL': 'O'
-        }
+
         
         # Use first model for analysis
         model = structure[0]
@@ -361,9 +356,9 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                 residue_names.add(res_name)
                 num_atoms += len(res_atoms)
                 
-                if res_name in AMINO_ACIDS:
+                if res_name in INSPECTED_PROTEIN_RESNAMES:
                     has_protein = True
-                    sequence_parts.append(AA_CODE.get(res_name, 'X'))
+                    sequence_parts.append(protein_sequence_symbol(res_name))
                 elif res_name in WATER_NAMES:
                     has_water = True
                 elif len(res_atoms) == 1 and is_standard_bare_ion_resname(res_name):
@@ -490,7 +485,12 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                 "num_residues": len(res_list),
                 "num_atoms": num_atoms,
                 "residue_names": residue_summary,
-                "sequence_length": len(sequence_parts) if has_protein else 0,
+                "sequence": "".join(sequence_parts) if has_protein else None,
+                "sequence_length": len("".join(sequence_parts)) if has_protein else 0,
+                "cap_count": sum(r.name.strip() in {"ACE", "NME"} for r in res_list),
+                "sequence_unmapped_residue_names": (
+                    sorted(residue_names - INSPECTED_PROTEIN_RESNAMES) if has_protein else []
+                ),
                 "resnum": first_resnum,
                 "unique_id": unique_id,
             }

@@ -221,3 +221,6 @@ candidate should be included.
   next action with the user: before source acquisition, chain/ligand selection,
   the initial `prepare_complex`, optional mutation/PTM branches, solvation and
   topology, and the equilibration handoff.
+
+For residue, bond, charge, or historical-status discrepancies, follow
+[chemistry diagnostics](../common/chemistry-diagnostics.md).

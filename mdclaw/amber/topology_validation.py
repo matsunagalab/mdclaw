@@ -75,21 +75,36 @@ def _validate_final_disulfides(
     manual_added_count: int,
 ) -> dict[str, Any]:
     """Validate disulfides against final topology and System, not patch logs."""
-    expected_count = _expected_disulfide_count(disulfide_bonds)
-    topology_pairs = _sg_sg_topology_bond_pairs(topology)
-    system_harmonic_count = _count_system_harmonic_bonds_for_pairs(
-        system,
-        topology_pairs,
+    from mdclaw.amber.disulfide_contract import (
+        DisulfidePlanError, resolve_disulfides, sulfur_chemistry_errors,
     )
-    if expected_count == 0:
-        status = "not_requested"
-    elif (
-        len(topology_pairs) >= expected_count
-        and system_harmonic_count >= expected_count
-    ):
+    topology_pairs = _sg_sg_topology_bond_pairs(topology)
+    errors = sulfur_chemistry_errors(topology)
+    try:
+        expected_pairs = {tuple(sorted((a.index, b.index)))
+                          for a, b in resolve_disulfides(topology, disulfide_bonds)}
+    except DisulfidePlanError as exc:
+        errors.append(str(exc))
+        expected_pairs = set()
+    expected_count = len(expected_pairs)
+    system_pairs = set()
+    for force in system.getForces():
+        if type(force).__name__ == "HarmonicBondForce":
+            for index in range(force.getNumBonds()):
+                a, b, *_ = force.getBondParameters(index)
+                system_pairs.add(tuple(sorted((int(a), int(b)))))
+    for index in range(system.getNumConstraints()):
+        a, b, _ = system.getConstraintParameters(index)
+        system_pairs.add(tuple(sorted((int(a), int(b)))))
+    system_harmonic_count = _count_system_harmonic_bonds_for_pairs(system, topology_pairs)
+    missing_topology = expected_pairs - topology_pairs
+    missing_system = (expected_pairs | topology_pairs) - system_pairs
+    if errors or missing_topology or missing_system:
+        status = "failed"
+    elif disulfide_bonds or topology_pairs:
         status = "passed"
     else:
-        status = "failed"
+        status = "not_requested"
     notes: list[str] = []
     if (
         expected_count
@@ -104,6 +119,10 @@ def _validate_final_disulfides(
     return {
         "status": status,
         "expected_count": expected_count,
+        "chemistry_errors": errors,
+        "missing_topology_pairs": sorted(missing_topology),
+        "missing_system_pairs": sorted(missing_system),
+        "requested_atom_pairs": sorted(expected_pairs),
         "manual_added_count": manual_added_count,
         "observed_topology_sg_sg_bond_count": len(topology_pairs),
         "observed_system_harmonic_sg_sg_bond_count": system_harmonic_count,
@@ -147,6 +166,9 @@ def _validate_final_protonation_variants(
             if str(getattr(residue.chain, "id", "") or "").strip()
             == str(requested.get("chain") or "").strip()
             and str(residue.id) == str(requested.get("resnum"))
+            and (requested.get("icode") is None or
+                 str(getattr(residue, "insertionCode", "") or "").strip() ==
+                 str(requested["icode"]).strip())
             and residue.name == variant
         ]
         contract = _AMBER_VARIANT_ATOM_CONTRACTS.get(
@@ -273,4 +295,44 @@ def _build_topology_validation_report(
         "disulfides": disulfides,
         "protonation_variants": protonation_variants,
         "non_authoritative_notes": _unique_messages(non_authoritative_notes),
+    }
+
+
+def heavy_atom_inventory(topology: Any):
+    """Count heavy-atom identities, including multiplicity and insertion codes."""
+    from collections import Counter
+    from mdclaw.chemistry_constants import AMBER_RESTORED_VARIANT_BASES
+
+    aliases = {**AMBER_RESTORED_VARIANT_BASES,
+               **dict.fromkeys(("HID", "HIE", "HIP", "HSD", "HSE", "HSP"), "HIS"),
+               "WAT": "HOH"}
+    return Counter(
+        (str(a.residue.chain.id or "").strip(), str(a.residue.id),
+         str(getattr(a.residue, "insertionCode", "") or "").strip(),
+         aliases.get(a.residue.name, a.residue.name), a.name)
+        for a in topology.atoms()
+        if a.element is not None and a.element.atomic_number > 1
+    )
+
+
+def validate_loader_conservation(reference: Any, loaded: Any) -> dict:
+    """Compare the effective prepared input with loader output, before patching.
+
+    PDBFile resolves altlocs and standard atom aliases on the reference side.
+    Added virtual particles and changed hydrogen patterns cannot hide heavy
+    atom or residue loss; duplicate residue IDs retain their multiplicity.
+    """
+    expected = heavy_atom_inventory(reference)
+    observed = heavy_atom_inventory(loaded)
+    missing, added = expected - observed, observed - expected
+    return {
+        "status": "passed" if (not missing and not added
+                               and reference.getNumResidues() == loaded.getNumResidues()) else "failed",
+        "source": "effective_prepared_pdb_before_loader",
+        "input_heavy_atoms": sum(expected.values()),
+        "loaded_heavy_atoms": sum(observed.values()),
+        "input_residues": reference.getNumResidues(),
+        "loaded_residues": loaded.getNumResidues(),
+        "missing_heavy_atoms": [{"site": list(k), "count": v} for k, v in missing.items()],
+        "unexpected_heavy_atoms": [{"site": list(k), "count": v} for k, v in added.items()],
     }

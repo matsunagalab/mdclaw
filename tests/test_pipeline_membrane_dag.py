@@ -18,7 +18,12 @@ class TestPipelineMembraneDag:
 
     @pytest.fixture(scope="class")
     def job_dir(self, tmp_path_factory):
-        return tmp_path_factory.mktemp("job_2lop_membrane_dag")
+        from mdclaw.study.workflow import bootstrap_md_workflow
+        boot = bootstrap_md_workflow(str(tmp_path_factory.mktemp("study_2lop_membrane_dag")),
+                                     "Non-SMO membrane chemistry regression", solvent_regime="membrane")
+        assert boot["success"], boot
+        from pathlib import Path
+        return Path(boot["job_dir"])
 
     def test_step1_fetch_and_inspect_membrane_protein(self, job_dir):
         from mdclaw.research.inspection import inspect_molecules
@@ -101,3 +106,16 @@ class TestPipelineMembraneDag:
         topo_node = read_node(str(job_dir), self.topo_id)
         assert topo_node["artifacts"]["system_xml"]
         assert topo_node["metadata"]["is_membrane"] is True
+
+    def test_step5_minimize_and_short_equilibrate(self, job_dir):
+        from mdclaw._node import create_node, read_node
+        from mdclaw.simulation.minimize import run_minimization
+        from mdclaw.simulation.equilibrate import run_equilibration
+        node = create_node(str(job_dir), 'min', parent_node_ids=[self.topo_id])
+        result = run_minimization(job_dir=str(job_dir), node_id=node['node_id'], max_iterations=500)
+        assert result['success'], result
+        eq = create_node(str(job_dir), 'eq', parent_node_ids=[node['node_id']])
+        result = run_equilibration(job_dir=str(job_dir), node_id=eq['node_id'],
+                                   nvt_time_ns=0.01, npt_time_ns=0.02, random_seed=1234)
+        assert result['success'], result
+        assert read_node(str(job_dir), eq['node_id'])['status'] == 'completed'

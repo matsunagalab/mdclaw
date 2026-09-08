@@ -161,3 +161,10 @@ AMBER/LIPID residue-name postprocessing).
 | `packmol_packing_quality_failed` + `retry_membrane_with_larger_box` | No perfect packing after bounded adaptive retry; the box is not MD-ready. | Retry only with the CLI-provided larger xy/lateral box suggestion unless geometry was explicitly fixed. |
 | `forced_output_available` metadata | A `*_FORCED` PDB was written during a failed attempt. | Keep for debugging/provenance only; do not feed to topology generation. |
 | `membrane_embedding_geometry_failed` | Protein/lipid placement failed the post-build PBC-aware bilayer-intersection check. | Retry only after fixing orientation or membrane settings; for beta barrels use `--memembed-beta-barrel` and avoid `--preoriented` unless the input is truly pre-oriented. |
+
+The selected prep also supplies the disulfide plan to the patch-tile
+neutralization System. Keep that plan attached to the same prep branch;
+standalone `embed_in_membrane` accepts `--disulfide-bonds` and
+`--ligand-chemistry` for declared chemistry. Do not replace a DAG-derived plan
+with one from another branch. See [chemistry diagnostics](../common/chemistry-diagnostics.md)
+when neutralization or a sulfur-state check fails.

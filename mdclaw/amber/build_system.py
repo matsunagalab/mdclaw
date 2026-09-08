@@ -73,7 +73,7 @@ from mdclaw.amber.forcefield_constants import CANONICAL_PROTEIN_FORCEFIELDS, GLY
 from mdclaw.amber.glycam_topology import _prepare_glycam_pdb_with_cpptraj  # noqa: E402
 from mdclaw.amber.ligand_validation import implicit_ligand_diagnostics, validate_initial_ligand_contacts, validate_ligand_chemistry, validate_ligand_template_coverage, validate_modxna_params  # noqa: E402
 from mdclaw.amber.openmm_build import _record_topology_build_stage, _run_openmmforcefields_build  # noqa: E402
-from mdclaw.amber.topology_bonds import _plan_disulfide_topology_bonds, _plan_glycan_topology_bonds  # noqa: E402
+from mdclaw.amber.topology_bonds import _plan_glycan_topology_bonds  # noqa: E402
 from mdclaw.amber.water_utils import _canonical_forcefield_name, _canonical_water_model_name, _evaluate_forcefield_water_guardrails, fix_histidine_protonation_consistency, fix_ligand_residue_names, strip_crystal_waters  # noqa: E402
 
 
@@ -437,7 +437,7 @@ def build_amber_system(
 
     # Auto-detect disulfide_bonds.json if not provided (written by prepare_complex
     # as a prep-node artifact; same parent-directory search as ligand chemistry).
-    if disulfide_bonds is None:
+    if disulfide_bonds is None and not (job_dir and node_id):
         for search_dir in [pdb_path.parent, pdb_path.parent.parent]:
             ss_json = search_dir / "disulfide_bonds.json"
             if ss_json.exists():
@@ -1146,7 +1146,6 @@ def build_amber_system(
         result["warnings"].extend(fix_lig_result["replacements"])
 
     # Fix histidine residue name consistency (HID/HIE/HIP vs HD1/HE2)
-    disulfide_plan_warnings: list[str] = []
 
     try:
         his_fix = fix_histidine_protonation_consistency(working_pdb, working_pdb)
@@ -1305,7 +1304,23 @@ def build_amber_system(
         }
         if glycam_prepare.get("glycam_bond_plan"):
             result["glycam_bond_plan"] = glycam_prepare["glycam_bond_plan"]
-        pdb_path = Path(glycam_prepare["prepared_pdb"]).resolve()
+        transformed_pdb = Path(glycam_prepare["prepared_pdb"]).resolve()
+        if disulfide_bonds:
+            from mdclaw.amber.disulfide_contract import (
+                DisulfidePlanError, remap_disulfides_after_pdb_transform,
+            )
+            try:
+                disulfide_bonds, mapping = remap_disulfides_after_pdb_transform(
+                    pdb_path, transformed_pdb, disulfide_bonds)
+                result["disulfide_identity_mapping"] = mapping
+            except DisulfidePlanError as exc:
+                result["code"] = "disulfide_chemistry_conflict"
+                result["errors"].append(str(exc))
+                if _node_mode:
+                    from mdclaw._node import fail_node_from_result
+                    return fail_node_from_result(job_dir, node_id, result)
+                return result
+        pdb_path = transformed_pdb
 
     try:
         # Implicit-solvent crystal-water cleanup (preserved from the legacy
@@ -1332,12 +1347,6 @@ def build_amber_system(
         # (``disulfide_bond_plan``, ``glycan_linkage_plan``) and the
         # per-record ``topology_residues`` field are part of the public
         # node metadata contract.
-        if disulfide_bonds:
-            ss_plan = _plan_disulfide_topology_bonds(Path(pdb_path), disulfide_bonds)
-            if ss_plan["warnings"]:
-                disulfide_plan_warnings.extend(ss_plan["warnings"])
-            result["disulfide_bond_plan"] = ss_plan["resolved"]
-
         if glycan_linkages and not glycam_prepare:
             glycan_plan = _plan_glycan_topology_bonds(Path(pdb_path), glycan_linkages)
             if glycan_plan["warnings"]:
@@ -1421,21 +1430,11 @@ def build_amber_system(
                 if _node_mode else None
             ),
         )
+        result["disulfide_bond_plan"] = om_result.get("disulfide_bond_plan", [])
         result["warnings"].extend(om_result.get("warnings", []))
         result["topology_notes"].extend(om_result.get("topology_notes", []))
         if om_result.get("topology_validation"):
             topology_validation = om_result["topology_validation"]
-            disulfide_validation = topology_validation.get("disulfides", {})
-            if disulfide_plan_warnings:
-                if disulfide_validation.get("status") == "passed":
-                    result["topology_notes"].extend(disulfide_plan_warnings)
-                    notes = topology_validation.setdefault(
-                        "non_authoritative_notes",
-                        [],
-                    )
-                    notes.extend(disulfide_plan_warnings)
-                else:
-                    result["warnings"].extend(disulfide_plan_warnings)
             result["topology_validation"] = topology_validation
         if om_result.get("glycam_bond_plan"):
             result["glycam_bond_plan"] = om_result["glycam_bond_plan"]
@@ -1603,7 +1602,8 @@ def build_amber_system(
             }
             update_job_summaries(job_dir, params=summary_params)
         else:
-            fail_node(job_dir, node_id, errors=result.get("errors", []))
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(job_dir, node_id, result)
 
     return result
 
