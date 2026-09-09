@@ -7,6 +7,15 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-08 — Bundle working mdahole2/HOLE pore analysis
+
+Added HOLE 2.3.1 to the shared conda environment definition and mdahole2 0.5 series to Python dependencies. Rebuilt the cluster ARM64 SIF with the official conda-forge HOLE binary and PyPI mdahole2 0.5.0, preserving MDAnalysis 2.10.0 and all other existing scientific dependencies. The conda interface package's Python metadata unexpectedly reported 0.0.0; used the correctly versioned official wheel instead, without modifying version strings.
+
+Added an actual two-frame HOLE test and sph_process/sos_triangle surface generation to the container smoke. Expected radii 3.15/1.15 Å yielded 3.14947/1.14955 Å; VMD surface 173,709 bytes. Final SIF standalone execution passed. Slurm job 87590 on **rkp00079** passed all 28 container checks and the OpenMM/CUDA/PME/cuFFT/PyTorch GPU smoke. Shell syntax, repository-configured Ruff and diff checks passed. No user trajectory was modified or interpreted as a validated conducting pore.
+
+HOLE bundle `b7526a99807f`, SIF SHA-256 `6c384c0ac9fb79e30e9314717e4037a2f61152498942edf6a0fd69f7ab9bbf21`. Switched the existing shared compatibility path to the new image after acceptance, preserving the immediately previous SMO-fix image and a `pre-hole-20260908.sif` rollback link. This is a cluster-local runtime rebuild, not a tagged/GHCR release; a fresh full Docker build/amd64 execution was not performed. See [implementation, tests and deployment](research/hole-20260908-runtime-validation.md).
+
+
 ## 2026-09-08 — SMO chemistry fixes implemented, tested and shared SIF switched
 
 Implemented the [approved plan](developer/smo-root-cause-fix-plan.md): shared exact disulfide resolution, nearest-prep chemistry handoff into membrane charge calculation, Topology/System pair and input-conservation checks, common variant sequence classification, and skill diagnostics. Non-SMO GLYCAM testing exposed cpptraj renumbering; unique heavy-atom identity mapping now preserves the disulfide plan through it.

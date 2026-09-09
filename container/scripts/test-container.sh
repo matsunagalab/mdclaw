@@ -101,6 +101,71 @@ assert len(universe.trajectory) == 2
 assert np.isfinite(value) and value > 0
 print(f'MDAnalysis {mda.__version__}, RMSD {value}')
 "
+# An import alone cannot detect a missing Fortran executable. Exercise both
+# trajectory frames and the sph_process/sos_triangle visualization pipeline.
+check "HOLE trajectory radii and pore surface" python - <<'PY_HOLE'
+import json
+import os
+from pathlib import Path
+import shutil
+import tempfile
+import warnings
+
+import MDAnalysis as mda
+from MDAnalysis.coordinates.memory import MemoryReader
+import mdahole2
+from mdahole2.analysis import HoleAnalysis
+import numpy as np
+
+executables = {name: shutil.which(name) for name in ("hole", "sph_process", "sos_triangle")}
+assert all(executables.values()), executables
+# A dense cylindrical wall with a known carbon VDW radius (Å). The second
+# frame narrows the pore by 2 Å; no protein download or user trajectory needed.
+angles = np.arange(32) * (2 * np.pi / 32)
+z, theta = np.meshgrid(np.arange(-12.0, 12.1, 1.5), angles, indexing="ij")
+coordinates = np.array([
+    np.column_stack((radius * np.cos(theta.ravel()),
+                     radius * np.sin(theta.ravel()), z.ravel()))
+    for radius in (5.0, 3.0)
+], dtype=np.float32)
+n_atoms = coordinates.shape[1]
+u = mda.Universe.empty(n_atoms, n_residues=n_atoms,
+                       atom_resindex=np.arange(n_atoms), trajectory=True)
+for name, values in {
+    "names": ["CA"] * n_atoms, "types": ["C"] * n_atoms,
+    "elements": ["C"] * n_atoms, "resnames": ["ALA"] * n_atoms,
+    "resids": np.arange(1, n_atoms + 1),
+}.items():
+    u.add_TopologyAttr(name, values)
+u.load_new(coordinates, format=MemoryReader)
+old_cwd = Path.cwd()
+with tempfile.TemporaryDirectory(prefix="mdclaw-hole-") as directory:
+    try:
+        os.chdir(directory)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with HoleAnalysis(u, select="all", cpoint=[0, 0, 0], cvect=[0, 0, 1],
+                              sample=0.5, end_radius=6.0) as analysis:
+                analysis.run(random_seed=31415)
+                assert set(analysis.results.profiles) == {0, 1}
+                minima = []
+                for frame, expected in enumerate((3.15, 1.15)):
+                    profile = analysis.results.profiles[frame]
+                    assert len(profile) > 10
+                    assert np.isfinite(profile.radius).all()
+                    central = profile.radius[np.abs(profile.rxn_coord) < 8.0]
+                    assert len(central) > 10
+                    value = float(np.min(central))
+                    assert abs(value - expected) < 0.15, (frame, value, expected)
+                    minima.append(value)
+                surface = Path(analysis.create_vmd_surface("pore.vmd", dot_density=5))
+                assert surface.is_file() and surface.stat().st_size > 100
+        print(json.dumps({"MDAnalysis": mda.__version__, "mdahole2": mdahole2.__version__,
+                          "executables": executables, "minimum_radii_A": minima,
+                          "surface_bytes": surface.stat().st_size, "status": "passed"}))
+    finally:
+        os.chdir(old_cwd)
+PY_HOLE
 check "pdb2pqr" python -c "import pdb2pqr; print('pdb2pqr OK')"
 check "numpy" python -c "import numpy; print(f'NumPy {numpy.__version__}')"
 check "torch" python -c "import torch; print(f'PyTorch {torch.__version__}')"

@@ -249,6 +249,48 @@ seam for that warning; it is not a supported configuration knob.
 
 ## Runtime Notes
 
+### HOLE pore analysis
+
+The runtime includes the `mdahole2` Python interface (0.5 series) and conda-forge
+`hole2` 2.3.1, including `hole`, `sph_process`, `sos_triangle` and the radius
+tables. Both container architectures inherit `hole2` from `environment.yml`;
+`pyproject.toml` installs the Python interface in their pip stage. Installing
+MDClaw with pip alone cannot install the Fortran executables: install `hole2`
+from conda-forge as well. See the upstream
+[installation](https://www.mdanalysis.org/mdahole2/getting_started.html) and
+[usage](https://www.mdanalysis.org/mdahole2/usage.html) guides.
+
+Use `from mdahole2.analysis import HoleAnalysis` rather than the deprecated
+`MDAnalysis.analysis.hole2` import. For an already prepared, consistently
+imaged trajectory, the interface is:
+
+```python
+import MDAnalysis as mda
+from mdahole2.analysis import HoleAnalysis
+
+u = mda.Universe("topology.pdb", "trajectory.dcd")
+# Choose the pore-lining selection, starting point and direction for the
+# structure being analyzed; do not reuse an arbitrary fixed axis across systems.
+with HoleAnalysis(u, select=pore_selection, cpoint=pore_start,
+                  cvect=pore_direction) as analysis:
+    analysis.run(step=10, random_seed=31415)
+    profiles = analysis.results.profiles
+    analysis.create_vmd_surface("pore.vmd")
+```
+
+Coordinates and returned radii use Å. Check periodic imaging, alignment and
+the resulting pathway before interpreting a protein cavity as a conducting
+pore. HOLE optimizes sphere positions from the supplied starting geometry;
+an executable success is not evidence of channel function.
+
+`container/scripts/test-container.sh` verifies actual two-frame pore analysis
+on synthetic cylindrical walls with expected central radii 3.15 and 1.15 Å,
+then generates a VMD surface through both helper executables. It requires no
+network or user data and fails if executables are missing. Run it on the final
+SIF as well as the container build; import-only tests are insufficient.
+
+### General runtime components
+
 - Docker image size is roughly 11.4 GB; SIF size is roughly 4.6 GB.
 - Minimum actively verified NVIDIA driver is 520.
 - PPM3 (`immers`), the membrane orientation code bundled with packmol-memgen,
