@@ -7,6 +7,16 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-09 — Direct-SIF Slurm route: what Rikyu needed beyond the skill page
+
+Verified the "skills + SIF, no checkout" route (`skills/hpc-run/sif-slurm.md`) on Rikyu with the current image. Two gaps, both fixed. First, the page's bind list was insufficient: the image's synthetic passwd lacks `SlurmUser`, so every client died with `Invalid user for SlurmUser slurm` / `Unable to process configuration file`, and the host passwd lacks the NIS account (`Invalid user: rku00161`); binding the whole plugin directory (not only `libslurmfull.so`) is also required for `auth/munge`. The page now documents augmented passwd/group binds and the plugin directory. Second, `sbatch` called from inside the image exports the image environment to the job: job 90860 failed with `singularity: command not found` and logged `ld.so` errors for the `LD_PRELOAD` fusefix on every host process; 90861 with the runtime dir on PATH completed. `run_command` in `mdclaw/slurm/_base.py` now blanks `LD_PRELOAD`, `LD_LIBRARY_PATH`, `PYTHONPATH`, `PYTHONHOME` and all `APPTAINER*`/`SINGULARITY*` variables and uses `MDCLAW_SLURM_PATH` as the job's `PATH` for in-container `sbatch`; test added (`test_container_sbatch_hands_the_worker_the_host_environment`). The shipped SIF (0.6.8) predates this fix; MDDataBench's evaluator shim applies the same sanitisation for campaigns until the image is rebuilt. Local changes only, not committed or pushed; pi installs the skill from GitHub main, so the page fix reaches agents only after a push.
+
+## 2026-09-09 — Remove superseded SIF images
+
+Deleted three obsolete SIF copies to free quota. In home: `~/mdclaw/…-fusefix-54798ff98538.sif` (2026-08-01 hackathon-era build; the truncated copy noted in RIKYU.md) and `~/…-fusefix-ef0544563bb5-dirty.sif` (2026-09-07 pre-SMO-fix local build). In the group share: `/data1/rkp00079/…-6f171d2f0fa5.pre-sulfur-fix-20260908.sif`, the two-generation-old rollback recorded as `backup` in the sulfur deployment.json and in the SMO fix validation report. That rollback target no longer exists; the SMO-fix image can only be rolled back to the HOLE bundle's `pre-hole-20260908.sif` link.
+
+Kept: current `…-hole2-b7526a99807f.sif` (target of the shared `…-6f171d2f0fa5.sif` path) and `…-fusefix-sulfur-561049fe8254.sif` (target of `…pre-hole-20260908.sif`). Both links verified to resolve after the deletion. `/data1/rkp00048` untouched.
+
 ## 2026-09-08 — Bundle working mdahole2/HOLE pore analysis
 
 Added HOLE 2.3.1 to the shared conda environment definition and mdahole2 0.5 series to Python dependencies. Rebuilt the cluster ARM64 SIF with the official conda-forge HOLE binary and PyPI mdahole2 0.5.0, preserving MDAnalysis 2.10.0 and all other existing scientific dependencies. The conda interface package's Python metadata unexpectedly reported 0.0.0; used the correctly versioned official wheel instead, without modifying version strings.

@@ -98,6 +98,36 @@ def test_only_container_sbatch_clears_bind_environment(tmp_path, monkeypatch, na
     assert supplied_env["SINGULARITY_BIND"] == "/explicit:/explicit"
 
 
+@pytest.mark.parametrize("container_variable", ["SINGULARITY_CONTAINER", "APPTAINER_CONTAINER"])
+def test_container_sbatch_hands_the_worker_the_host_environment(tmp_path, monkeypatch,
+                                                                container_variable):
+    # Measured 2026-09-09 on Rikyu: a job submitted from inside the SIF inherited
+    # the image's PATH and LD_PRELOAD, so `singularity` was not found on the
+    # worker and every host process logged an ld.so preload error.
+    host_clients = _client(tmp_path / "host clients")
+    _client(tmp_path / "host clients", "squeue")
+    monkeypatch.setenv("PATH", "/opt/mdclaw/bin:/usr/local/cuda/bin:/usr/bin")
+    monkeypatch.setenv("MDCLAW_SLURM_PATH", f"{host_clients.parent}:/shared/software/apptainer/bin")
+    monkeypatch.setenv(container_variable, "/images/mdclaw.sif")
+    monkeypatch.setenv("LD_PRELOAD", "/opt/mdclaw/lib/libmdclaw_fusefix.so")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/local/nvidia/lib64")
+    monkeypatch.setenv("PYTHONPATH", "/opt/mdclaw/lib/python3.12/site-packages")
+    monkeypatch.setenv("APPTAINERENV_EXAMPLE", "injected-into-nested-containers")
+    monkeypatch.setenv("SINGULARITY_NAME", "mdclaw.sif")
+    monkeypatch.setenv("SBATCH_ACCOUNT", "project")
+
+    result = json.loads(_base.run_command(["sbatch"]).stdout)["env"]
+    assert result["PATH"] == os.environ["MDCLAW_SLURM_PATH"]
+    for key in ("LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH",
+                "APPTAINERENV_EXAMPLE", "SINGULARITY_NAME"):
+        assert result[key] == ""
+    assert result["SBATCH_ACCOUNT"] == "project"
+
+    unchanged = json.loads(_base.run_command(["squeue"]).stdout)["env"]
+    assert unchanged["LD_PRELOAD"] == "/opt/mdclaw/lib/libmdclaw_fusefix.so"
+    assert unchanged["PATH"] == os.environ["PATH"]
+
+
 def test_native_sbatch_preserves_explicit_bind_environment(tmp_path, monkeypatch):
     selected = _client(tmp_path / "native clients")
     monkeypatch.setenv("PATH", str(selected.parent))

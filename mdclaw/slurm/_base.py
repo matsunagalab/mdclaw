@@ -26,6 +26,9 @@ _CONTAINER_BIND_ENV = (
     "SINGULARITY_BIND", "APPTAINER_BIND", "SINGULARITY_BINDPATH", "APPTAINER_BINDPATH",
     "SINGULARITY_MOUNT", "APPTAINER_MOUNT",
 )
+# Loader and interpreter settings that describe this image, not the worker.
+_IMAGE_ONLY_ENV = ("LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME")
+_CONTAINER_ENV_PREFIXES = ("SINGULARITY", "APPTAINER")
 
 
 def _slurm_executable(tool_name, env=None):
@@ -55,6 +58,19 @@ def run_command(cmd, cwd=None, timeout=None, capture_output=True, env=None, use_
             # Singularity exports active binds; workers must not inherit mounts
             # of this host's Slurm libraries. Empty values override merged env.
             env = {**(env or {}), **dict.fromkeys(_CONTAINER_BIND_ENV, "")}
+            # sbatch hands its own environment to the job (--export=ALL), and
+            # this image's environment does not exist on the worker: LD_PRELOAD
+            # names a library the host cannot open, and PATH lacks the host's
+            # container runtime. Measured 2026-09-09 on Rikyu, a job submitted
+            # from inside the SIF failed with `singularity: command not found`.
+            # The host search path handed in through MDCLAW_SLURM_PATH is what
+            # the worker's PATH should be; container bookkeeping variables
+            # (APPTAINER_*, SINGULARITYENV_*, ...) are blanked the same way.
+            env.update(dict.fromkeys(_IMAGE_ONLY_ENV, ""))
+            env.update({key: "" for key in environment
+                        if key.startswith(_CONTAINER_ENV_PREFIXES)})
+            if environment.get("MDCLAW_SLURM_PATH"):
+                env["PATH"] = environment["MDCLAW_SLURM_PATH"]
         cmd = [executable, *cmd[1:]]
     return _run_command(
         cmd, cwd=cwd, timeout=timeout, capture_output=capture_output,
