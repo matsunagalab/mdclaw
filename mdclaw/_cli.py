@@ -397,7 +397,36 @@ def _discover_tools() -> dict[str, dict]:
                 "node_type": tool_node_type(fn),
                 "job_dir_is_data": tool_job_dir_is_data(fn),
             }
+            try:
+                _tool_param_specs(fn, requires_node=tools[tool_name]["requires_node"])
+            except TypeError as exc:
+                # One tool's broken signature must not take the whole CLI down
+                # with a traceback: the tool is listed as not callable and
+                # answers with a structured error; every other tool keeps working.
+                tools[tool_name]["contract_error"] = str(exc)
+                print(f"Warning: tool '{tool_name}' has an invalid CLI contract and is "
+                      f"not callable: {exc}", file=sys.stderr)
     return tools
+
+
+def _tool_contract_error(tool_name: str, info: dict) -> dict:
+    message = (f"Tool '{tool_name}' cannot be run: its CLI contract is invalid "
+               f"({info.get('contract_error')}).")
+    return {
+        "success": False,
+        "error_type": "ValidationError",
+        "code": "tool_contract_invalid",
+        "message": message,
+        "errors": [message],
+        "warnings": [],
+        "hints": [
+            "This is a defect in the tool's signature, not in your call; report it "
+            "with the message above. Every other tool works: mdclaw --list.",
+        ],
+        "context": {"tool": tool_name, "contract_error": info.get("contract_error"),
+                    "code": "tool_contract_invalid"},
+        "recoverable": False,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -629,6 +658,8 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="tool_name", metavar="<tool>")
 
     for tool_name, info in sorted(tools.items()):
+        if info.get("contract_error"):
+            continue
         fn = info["fn"]
         desc_first_line = (info["description"].split("\n")[0].strip()
                           if info["description"] else "")
@@ -1255,6 +1286,8 @@ def _tool_list_json(
         "total": len(selected_tools),
         "tools": [],
     }
+    if requested_tool is not None and tools[requested_tool].get("contract_error"):
+        return _tool_contract_error(requested_tool, tools[requested_tool])
     for tool_name, info in sorted(selected_tools.items()):
         description = info["description"]
         summary = description.split("\n")[0].strip() if description else ""
@@ -1268,8 +1301,12 @@ def _tool_list_json(
             "requires_node": requires_node,
             "node_type": node_type,
             "job_dir_is_data": info.get("job_dir_is_data", tool_job_dir_is_data(info["fn"])),
-            "parameters": _tool_parameter_schemas(tool_name, info["fn"]),
+            "parameters": ([] if info.get("contract_error")
+                           else _tool_parameter_schemas(tool_name, info["fn"])),
         }
+        if info.get("contract_error"):
+            tool_payload["contract_error"] = info["contract_error"]
+            tool_payload["callable"] = False
         if requires_node:
             # Saying "job_dir and node_id are required" without saying where
             # they come from leaves an agent that introspects before calling —
@@ -1306,7 +1343,7 @@ def _stage_tools_by_type(tools: dict[str, dict]) -> dict[str, list[str]]:
     grouped: dict[str, list[str]] = {}
     for tool_name, info in tools.items():
         node_type = info.get("node_type")
-        if node_type:
+        if node_type and not info.get("contract_error"):
             grouped.setdefault(node_type, []).append(tool_name)
     ordered: dict[str, list[str]] = {}
     for node_type in NODE_TYPE_ORDER:
@@ -1330,13 +1367,20 @@ def _print_tool_list(tools: dict[str, dict]) -> None:
             print(f"  {node_type:<8} " + "  ".join(names))
             stage_names.update(names)
     by_server: dict[str, list[str]] = {}
+    invalid: dict[str, str] = {}
     for tool_name, info in tools.items():
-        if tool_name not in stage_names:
+        if info.get("contract_error"):
+            invalid[tool_name] = info["contract_error"]
+        elif tool_name not in stage_names:
             by_server.setdefault(info["server"], []).append(tool_name)
     print("\nOther tools by server (no node state unless the tool says otherwise):")
     for server_name in sorted(by_server):
         print(f"\n[{server_name}]")
         print("  " + "  ".join(sorted(by_server[server_name])))
+    if invalid:
+        print("\nNot callable (invalid CLI contract; a defect in the tool's signature):")
+        for tool_name in sorted(invalid):
+            print(f"  {tool_name}: {invalid[tool_name]}")
     print(f"\nTotal: {len(tools)} tools")
 
 
@@ -1422,6 +1466,8 @@ def main(argv: list[str] | None = None) -> None:
     subcommand = _detect_subcommand(raw_argv)
     if subcommand is not None and subcommand not in tools:
         _json_error_and_exit(_missing_tool_error(subcommand, tools))
+    if subcommand is not None and tools[subcommand].get("contract_error"):
+        _json_error_and_exit(_tool_contract_error(subcommand, tools[subcommand]))
 
     parser = _build_parser(tools)
     args = parser.parse_args(argv)

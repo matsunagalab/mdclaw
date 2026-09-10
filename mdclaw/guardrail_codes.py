@@ -35,6 +35,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "node_context_not_applicable": "Run this helper without --job-dir/--node-id, or run the node's stage tool instead.",
     "invalid_parameter_value": "Use one of the accepted values listed in the error.",
     "parent_not_completed": "Run or wait for the parent first; this node is not spent and the same command can be rerun.",
+    "tool_contract_invalid": "The tool's own signature is broken; report it and use the other tools, which are unaffected.",
     "parent_required": "Pass --parent-node-ids with one of the listed candidates, or create the missing parent stage first.",
     "missing_node_context": "Pass both --job-dir and --node-id for this workflow tool.",
     "node_id_requires_job_dir": "--node-id was passed without --job-dir; pass both together.",

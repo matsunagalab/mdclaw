@@ -41,9 +41,15 @@ One introspection pass (`_tool_param_specs`) feeds the argparse builder, the
   are also accepted).
 - `list[str]` uses `nargs='+'`.
 - `dict`, `list[dict]`, and `list[list]` accept JSON strings.
-- A bare `list` / `typing.List` annotation is refused at discovery time
-  (`TypeError`): it would be neither `nargs` nor JSON and the raw string would
-  reach the tool. Name the element type.
+- A bare `list` / `typing.List` annotation is refused: it would be neither
+  `nargs` nor JSON and the raw string would reach the tool. Name the element
+  type. Discovery runs the introspection pass once per tool and isolates a
+  tool whose pass raises `TypeError` (`contract_error` in its entry, a
+  one-line stderr warning): it gets no subparser, `--list` names it under
+  "Not callable", `--list-json` marks it `callable: false` with empty
+  parameters, and invoking it or `--list-json <tool>` returns the structured
+  `tool_contract_invalid` error. Every other tool and entry point keeps
+  working; the previous behaviour was a traceback from every `mdclaw` call.
 - An unhandled exception fails a node the tool had begun (`running`) before the
   process exits, whatever the tool's node contract; a `NodeSealedError` is
   reported as `node_terminal` rather than `unhandled_exception`.
@@ -187,6 +193,8 @@ job's node index (`_preflight_fix`), plus `dag` and `next`:
   `TypeError` surfaced as `unhandled_exception`.
 - `node_context_not_applicable`: `--job-dir`/`--node-id` given to a tool that
   has neither parameter; they would have been silently ignored.
+- `tool_contract_invalid`: the tool's own signature is broken (see Parameter
+  Mapping); not recoverable by the caller, and the node is never touched.
 - `node_id_requires_job_dir`: `--node-id` without `--job-dir`.
 - `node_context_required`: a node-required workflow tool (one marked with
   `@node_tool`) ran without both `--job-dir` and `--node-id`.
