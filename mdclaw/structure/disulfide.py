@@ -47,6 +47,43 @@ def disulfide_geometry(distance) -> Optional[str]:
     return "bonded"
 
 
+def validate_declared_disulfide_pairs(pairs) -> list[str]:
+    """Problems with a caller-supplied ``disulfide_pairs`` list, one line each.
+
+    The public shape is ``{"cys1": {"chain", "resnum"[, "icode"]}, "cys2": {...}
+    [, "form_bond"]}``. Nothing downstream checked it: a string became an
+    ``AttributeError`` (``unhandled_exception``) and a dict without ``cys1``
+    became a bond that silently vanished. Checked before the node is touched.
+    """
+    problems: list[str] = []
+    if not isinstance(pairs, list):
+        return [f"disulfide_pairs must be a JSON list, got {type(pairs).__name__}"]
+    for index, pair in enumerate(pairs):
+        where = f"disulfide_pairs[{index}]"
+        if not isinstance(pair, dict):
+            problems.append(f"{where}: expected an object with cys1 and cys2, got {pair!r}")
+            continue
+        for end in ("cys1", "cys2"):
+            site = pair.get(end)
+            if not isinstance(site, dict):
+                problems.append(f"{where}.{end}: expected an object with chain and resnum, got {site!r}")
+                continue
+            chain = site.get("chain")
+            if not isinstance(chain, str) or not chain.strip():
+                problems.append(f"{where}.{end}.chain: expected a chain id, got {chain!r}")
+            resnum = site.get("resnum")
+            if isinstance(resnum, bool) or not (
+                isinstance(resnum, int) or (isinstance(resnum, str) and resnum.strip().lstrip("-").isdigit())
+            ):
+                problems.append(f"{where}.{end}.resnum: expected an integer residue number, got {resnum!r}")
+            icode = site.get("icode")
+            if icode is not None and not isinstance(icode, str):
+                problems.append(f"{where}.{end}.icode: expected a string insertion code, got {icode!r}")
+        if "form_bond" in pair and not isinstance(pair["form_bond"], bool):
+            problems.append(f"{where}.form_bond: expected true or false, got {pair['form_bond']!r}")
+    return problems
+
+
 def measure_disulfide_pairs(structure_path, pairs) -> List[dict]:
     """SG-SG distance of each declared pair as it stands in ``structure_path``.
 
@@ -78,17 +115,24 @@ def measure_disulfide_pairs(structure_path, pairs) -> List[dict]:
                 if atom:
                     sg[(chain.name, res.seqid.num, (res.seqid.icode or "").strip())] = atom.pos
     out = []
+    unreadable = {"chain1": None, "resnum1": None, "icode1": None, "chain2": None,
+                  "resnum2": None, "icode2": None, "sg_sg_angstrom": None, "geometry": None}
     for pair in pairs or []:
-        if not isinstance(pair, dict):
-            continue
-        if "cys1" in pair and "cys2" in pair:
-            ends = [pair["cys1"], pair["cys2"]]
-            sites = [(str(e.get("chain", "")), int(e["resnum"]), str(e.get("icode") or "").strip())
-                     for e in ends]
-        elif "chain1" in pair and "chain2" in pair:
-            sites = [(str(pair["chain1"]), int(pair["resnum1"]), str(pair.get("icode1") or "").strip()),
-                     (str(pair["chain2"]), int(pair["resnum2"]), str(pair.get("icode2") or "").strip())]
-        else:
+        # One entry per input pair, always: callers zip this list with the
+        # declared list, and a skipped entry would shift every geometry after
+        # it onto the wrong bond.
+        try:
+            if isinstance(pair, dict) and "cys1" in pair and "cys2" in pair:
+                ends = [pair["cys1"], pair["cys2"]]
+                sites = [(str(e.get("chain", "")), int(e["resnum"]), str(e.get("icode") or "").strip())
+                         for e in ends]
+            elif isinstance(pair, dict) and "chain1" in pair and "chain2" in pair:
+                sites = [(str(pair["chain1"]), int(pair["resnum1"]), str(pair.get("icode1") or "").strip()),
+                         (str(pair["chain2"]), int(pair["resnum2"]), str(pair.get("icode2") or "").strip())]
+            else:
+                raise ValueError("unrecognised disulfide pair shape")
+        except (TypeError, ValueError, KeyError, AttributeError) as exc:
+            out.append({**unreadable, "error": str(exc)})
             continue
         one, two = sg.get(sites[0]), sg.get(sites[1])
         distance = round(one.dist(two), 3) if one is not None and two is not None else None

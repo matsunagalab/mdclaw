@@ -36,6 +36,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "invalid_parameter_value": "Use one of the accepted values listed in the error.",
     "parent_not_completed": "Run or wait for the parent first; this node is not spent and the same command can be rerun.",
     "tool_contract_invalid": "The tool's own signature is broken; report it and use the other tools, which are unaffected.",
+    "invalid_disulfide_pairs": "Pass --disulfide-pairs as a JSON list of {\"cys1\": {\"chain\": ..., \"resnum\": ...}, \"cys2\": {...}} objects; the error names the offending entry.",
     "parent_required": "Pass --parent-node-ids with one of the listed candidates, or create the missing parent stage first.",
     "missing_node_context": "Pass both --job-dir and --node-id for this workflow tool.",
     "node_id_requires_job_dir": "--node-id was passed without --job-dir; pass both together.",

@@ -1226,6 +1226,23 @@ def prepare_complex(
     # Capture before introducing locals: future CLI arguments automatically
     # participate in declared-condition checks too.
     _runtime_conditions = locals().copy()
+    if disulfide_pairs is not None:
+        # An argument error, refused before any node is touched, so the same
+        # pending node can be run again with a corrected list.
+        from mdclaw.structure.disulfide import validate_declared_disulfide_pairs
+
+        pair_problems = validate_declared_disulfide_pairs(disulfide_pairs)
+        if pair_problems:
+            return create_validation_error(
+                "disulfide_pairs",
+                "; ".join(pair_problems[:5]) + (" ..." if len(pair_problems) > 5 else ""),
+                expected=('a JSON list of {"cys1": {"chain": "A", "resnum": 6}, '
+                          '"cys2": {"chain": "A", "resnum": 127}} objects '
+                          "(icode and form_bond optional)"),
+                actual=repr(disulfide_pairs)[:200],
+                hints=["An empty list means no disulfides at all; omit the option to auto-detect."],
+                code="invalid_disulfide_pairs",
+            )
     from mdclaw.source_bundle import source_selection_from_values
 
     _source_selection = source_selection_from_values(

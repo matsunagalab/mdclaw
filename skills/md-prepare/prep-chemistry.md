@@ -51,6 +51,12 @@ The empty list is honoured rather than ignored: preparation gates on the
 argument being present, not on it being non-empty, so `'[]'` means none rather
 than falling back to detection.
 
+Each declared pair is `{"cys1": {"chain": "A", "resnum": 6}, "cys2": {"chain":
+"A", "resnum": 127}}`, with `icode` and `form_bond` optional. The list is
+checked for that shape before the node is touched: a malformed entry returns
+`invalid_disulfide_pairs` naming the entry (`disulfide_pairs[2].cys1.resnum`),
+and the node stays pending, so correct the list and run the same node again.
+
 Reach for suppression when the request asks for reduced cysteines, or names a
 reference state that has no disulfide. Do not reach for it to make a downstream
 step succeed - a disulfide that the deposit's geometry supports is part of the

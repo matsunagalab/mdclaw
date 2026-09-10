@@ -1222,3 +1222,23 @@ def test_topology_water_mismatch_names_both_ways_out(tmp_path):
     assert solv in result["message"]
     assert any("--node-type solv" in h for h in result["hints"])
     assert read_node(str(job_dir), topo)["status"] == "failed"
+
+
+def test_prepare_complex_refuses_malformed_disulfide_pairs_before_touching_the_node(tmp_path):
+    from mdclaw.structure.prepare_complex import prepare_complex
+
+    standalone = prepare_complex(structure_file="missing.pdb", disulfide_pairs=["A:1-A:2"])
+    assert standalone["success"] is False
+    assert standalone["code"] == "invalid_disulfide_pairs"
+    assert "disulfide_pairs[0]" in standalone["message"]
+
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    update_job_params(str(job_dir), {"solvent_regime": "explicit"})
+    source = create_node(str(job_dir), "source")["node_id"]
+    prep = create_node(str(job_dir), "prep", parent_node_ids=[source])["node_id"]
+    blocked = prepare_complex(job_dir=str(job_dir), node_id=prep,
+                              disulfide_pairs=[{"cys1": {"chain": "A"}, "cys2": {"chain": "A", "resnum": 4}}])
+    assert blocked["code"] == "invalid_disulfide_pairs"
+    assert "cys1.resnum" in blocked["message"]
+    assert read_node(str(job_dir), prep)["status"] == "pending"

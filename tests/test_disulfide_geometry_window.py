@@ -107,3 +107,28 @@ def test_receipt_marks_overlapping_pairs():
         ],
     })
     assert facts["disulfides"] == ["A59-A102 (overlap 1.3 A)", "B62-B103"]
+
+
+def test_measure_keeps_one_entry_per_declared_pair(tmp_path):
+    """A pair the reader cannot parse yields a None entry, never a shorter list:
+    prepare_complex zips the measurements with the declared list."""
+    path = _cys_pair_pdb(tmp_path / "input.pdb", 2.05)
+    measured = ds.measure_disulfide_pairs(path, [_pair(), {"pair": "A:59-A:102"}, "A:59-A:102", _pair()])
+    assert len(measured) == 4
+    assert measured[0]["geometry"] == "bonded" and measured[3]["geometry"] == "bonded"
+    assert measured[1]["geometry"] is None and "error" in measured[1]
+    assert measured[2]["sg_sg_angstrom"] is None
+
+
+def test_declared_pairs_are_validated_by_shape():
+    ok = [{"cys1": {"chain": "A", "resnum": 6}, "cys2": {"chain": "A", "resnum": 127, "icode": ""}},
+          {"cys1": {"chain": "B", "resnum": "12"}, "cys2": {"chain": "B", "resnum": 40}, "form_bond": False}]
+    assert ds.validate_declared_disulfide_pairs(ok) == []
+    problems = ds.validate_declared_disulfide_pairs(
+        ["A:1-A:2", {"pair": "x"}, {"cys1": {"chain": "", "resnum": "six"}, "cys2": {"chain": "A", "resnum": 4}, "form_bond": "yes"}])
+    assert problems[0].startswith("disulfide_pairs[0]: expected an object")
+    assert any("disulfide_pairs[1].cys1" in p for p in problems)
+    assert any("disulfide_pairs[2].cys1.chain" in p for p in problems)
+    assert any("disulfide_pairs[2].cys1.resnum" in p for p in problems)
+    assert any("disulfide_pairs[2].form_bond" in p for p in problems)
+    assert ds.validate_declared_disulfide_pairs({"cys1": {}}) == ["disulfide_pairs must be a JSON list, got dict"]
