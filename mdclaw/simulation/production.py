@@ -28,7 +28,7 @@ from mdclaw.simulation.integrator_plan import _compute_step_plan, _record_produc
 from mdclaw.simulation.restraints import DistanceRestraintError, load_distance_restraints, normalize_distance_restraints  # noqa: E402
 from mdclaw.simulation.steering import PROTOCOL_PARAMETER, DistanceSteering, TorchSteering, check_steering_handoff, prepare_torch_steering, validate_steering  # noqa: E402
 from mdclaw.simulation.plumed import PlumedRun, native_log, validate_run as validate_plumed  # noqa: E402
-from mdclaw.simulation.restart import _close_reporter_stream, _count_state_data_rows, _detect_ensemble_mismatch, _flush_reporter_stream, _load_state_into_simulation, _resolve_dcd_append_mode, _resolve_restart_node_id_for_run, _restart_random_seed, _restart_source_metadata, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
+from mdclaw.simulation.restart import _close_reporter_stream, _count_state_data_rows, _detect_ensemble_mismatch, _flush_reporter_stream, _integrator_restart_verdict, _load_state_into_simulation, _resolve_dcd_append_mode, _resolve_restart_node_id_for_run, _restart_random_seed, _restart_source_metadata, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _effective_pressure_bar, _integrator_signature, _load_xml_topology_inputs, _signature_mismatches, _system_signature, _validate_xml_system_contract  # noqa: E402
 
 
@@ -55,6 +55,18 @@ def _safe_custom_force_signature(
             "sha256": None,
             "parameters": custom_force_parameters or {},
         }
+
+
+def _restart_source_node_type(job_dir, node_id):
+    """Node type of the restart ancestor, or None outside node mode."""
+    if not job_dir or not node_id:
+        return None
+    try:
+        from mdclaw._node import read_node
+
+        return read_node(job_dir, node_id).get("node_type")
+    except Exception:  # noqa: BLE001 - provenance only; never blocks the run
+        return None
 
 
 @node_tool(node_type="prod")
@@ -918,18 +930,33 @@ def run_production(
                             "transfer cleanly across NPT ↔ NVT."
                         )
             if isinstance(restart_integrator_signature, dict):
-                # Integrator settings are still hard-error material — temperature,
-                # timestep, and friction must match for the saved velocities to
-                # remain physically meaningful even under XML restart.
                 mismatches = _signature_mismatches(
                     restart_integrator_signature,
                     current_integrator_signature,
                     ("integrator", "temperature_kelvin", "timestep_fs", "friction_per_ps"),
                 )
                 if mismatches:
-                    result["errors"].append(
-                        "Restart integrator signature mismatch: " + "; ".join(mismatches)
+                    restart_source_type = _restart_source_node_type(
+                        job_dir, _restart_from_node_id if _node_mode else None)
+                    hard, soft = _integrator_restart_verdict(
+                        mismatches, restart_is_xml=_restart_is_xml,
+                        source_node_type=restart_source_type,
                     )
+                    if hard:
+                        result["errors"].append(
+                            "Restart integrator signature mismatch: " + "; ".join(hard)
+                        )
+                    if soft:
+                        result["warnings"].append(
+                            "Restart integrator settings changed (XML state from "
+                            f"{restart_source_type or 'an ancestor'} node): " + "; ".join(soft)
+                            + " — positions, velocities and box are transferred as they "
+                            "are and the new Langevin integrator re-thermalizes them "
+                            "within picoseconds; this is the normal equilibration-to-"
+                            "production handoff. A prod -> prod continuation must keep "
+                            "these identical."
+                        )
+                        result["restart_integrator_changes"] = soft
             if result["errors"]:
                 return _fail_node_if_running(job_dir, node_id, result)
             # Use the ensemble-agnostic loader: XML is read via

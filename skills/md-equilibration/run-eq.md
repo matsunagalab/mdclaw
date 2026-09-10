@@ -5,7 +5,16 @@ NVT warmup, normal-temperature NVT heating, and (explicit water) NPT density
 equilibration in an `eq` node, with solute-heavy positional restraints. The
 same `min -> eq` prelude is used for explicit and implicit systems. By default,
 k=100 restraints remain active through both NVT and NPT; both stages use 4 fs +
-HMR so the final checkpoint is compatible with production settings.
+HMR so the final checkpoint is compatible with production settings. The
+low-temperature warmup itself runs at 2 fs or less. If the warmup or the NVT
+heating ends in a NaN (a strained contact that minimization did not remove),
+the tool retries that stage from its starting state with the timestep halved
+(down to 1 fs for heating) and then keeps that timestep for the rest of the
+equilibration; the result carries `warnings`, `timestep_fs_requested` and the
+timestep that ran, and the saved state records it. Production may return to
+the larger step from such a state (its restart check reports the change as a
+warning, not an error). Do not pre-empt this by lowering `--timestep-fs`
+yourself unless the user asks for it.
 
 ## Run Equilibration
 

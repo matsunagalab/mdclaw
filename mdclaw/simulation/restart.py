@@ -57,6 +57,28 @@ def _find_ancestor_for_explicit_restart(
     return None, {}
 
 
+def _integrator_restart_verdict(
+    mismatches: list[str], *, restart_is_xml: bool, source_node_type: Optional[str],
+) -> tuple[list[str], list[str]]:
+    """Split integrator-signature mismatches into hard errors and warnings.
+
+    A portable XML state carries positions, velocities and box; the new
+    Langevin integrator re-thermalizes them within picoseconds, so the
+    equilibration-to-production handoff may change the timestep (2 fs -> 4 fs
+    with HMR), the temperature or the friction. On 011_membrane_6kuy
+    (2026-09-10) the agent recovered a NaN equilibration at 2 fs and the
+    default 4 fs production was refused for exactly that difference. Two
+    things stay hard: a different integrator kind, and any change when the
+    restart continues a production chain (prod -> prod), where the trajectory
+    record must stay continuous. A binary checkpoint stays hard throughout.
+    """
+    if not restart_is_xml or source_node_type == "prod":
+        return list(mismatches), []
+    hard = [m for m in mismatches if m.startswith("integrator:")]
+    soft = [m for m in mismatches if not m.startswith("integrator:")]
+    return hard, soft
+
+
 def _restart_source_metadata(
     job_dir: Optional[str],
     node_id: Optional[str],

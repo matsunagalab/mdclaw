@@ -27,6 +27,7 @@ from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fai
 from mdclaw.simulation.integrator_plan import _resolve_equilibration_stage_steps  # noqa: E402
 from mdclaw.simulation.restraints import RESTRAINT_SELECTIONS, select_restraint_atoms  # noqa: E402
 from mdclaw.simulation.restart import _close_reporter_stream, _load_state_into_simulation, _resolve_restart_node_id_for_run, _restart_node_type_for_run, _restart_random_seed, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
+from mdclaw.simulation.nan_retry import run_with_halved_timestep  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _effective_pressure_bar, _integrator_signature, _load_xml_topology_inputs, _system_signature, _validate_xml_system_contract  # noqa: E402
 
 
@@ -772,6 +773,47 @@ def run_equilibration(
                 raise RuntimeError(f"Non-finite energy/force detected during {stage}")
             return check
 
+        def _run_warmup(warmup_steps: int, low_temperature: float, checks: list) -> dict:
+            """Low-temperature warmup at <= 2 fs, halving the step on a NaN.
+
+            The warmup is 1000 steps at most, so 2 fs costs nothing, and it is
+            where a freshly minimized system with one strained contact blows
+            up at 4 fs (011_membrane_6kuy, 2026-09-10). The stage restarts
+            from the pre-warmup coordinates on every attempt.
+            """
+            start = sim_nvt.context.getState(getPositions=True, enforcePeriodicBox=False)
+            start_positions = start.getPositions()
+            start_box = start.getPeriodicBoxVectors() if is_periodic else None
+
+            def attempt(dt_fs: float) -> None:
+                sim_nvt.context.setPositions(start_positions)
+                if start_box is not None:
+                    sim_nvt.context.setPeriodicBoxVectors(*start_box)
+                integrator_nvt.setStepSize(dt_fs * femtoseconds)
+                integrator_nvt.setTemperature(low_temperature * kelvin)
+                sim_nvt.context.setVelocitiesToTemperature(low_temperature * kelvin)
+                sim_nvt.step(warmup_steps)
+                checks.append(_finite_energy_check("low_temperature_warmup"))
+
+            logger.info(
+                f"Low-temperature NVT warmup: {warmup_steps} steps at {low_temperature:.1f} K"
+            )
+            try:
+                outcome = run_with_halved_timestep(
+                    "low_temperature_warmup", min(timestep_fs, 2.0), attempt,
+                    floor_fs=0.5, log=logger,
+                )
+            finally:
+                integrator_nvt.setStepSize(timestep_fs * femtoseconds)
+                integrator_nvt.setTemperature(temperature_kelvin * kelvin)
+            if outcome["retried"]:
+                result["warnings"].append(
+                    f"Low-temperature warmup hit a NaN at {outcome['requested_timestep_fs']} fs "
+                    f"and completed at {outcome['timestep_fs']} fs; the system carries a "
+                    "strained contact that minimization did not remove."
+                )
+            return outcome
+
         # Universal pre-NVT relaxation protocol. Legacy topo -> eq runs the
         # full prelude. New min -> eq runs only the low-temperature warmup,
         # because coordinate minimization already belongs to the min node.
@@ -794,21 +836,16 @@ def run_equilibration(
 
             warmup_steps = min(1000, max(0, nvt_steps // 20))
             low_temperature = max(10.0, min(50.0, temperature_kelvin * 0.2))
+            warmup_outcome = None
             if warmup_steps > 0:
-                logger.info(
-                    f"Low-temperature NVT warmup: {warmup_steps} steps at {low_temperature:.1f} K"
-                )
-                integrator_nvt.setTemperature(low_temperature * kelvin)
-                sim_nvt.context.setVelocitiesToTemperature(low_temperature * kelvin)
-                sim_nvt.step(warmup_steps)
-                relaxation_checks.append(_finite_energy_check("low_temperature_warmup"))
-                integrator_nvt.setTemperature(temperature_kelvin * kelvin)
+                warmup_outcome = _run_warmup(warmup_steps, low_temperature, relaxation_checks)
             result["low_temperature_warmup_steps"] = warmup_steps
             result["relaxation_protocol"] = {
                 "name": "standard_staged_minimization_low_temperature_warmup",
                 "applies_to": "all_nvt_equilibration",
                 "stages": relaxation_checks,
                 "low_temperature_kelvin": low_temperature if warmup_steps > 0 else None,
+                "warmup": warmup_outcome,
             }
             # Fresh start: reseed velocities at target temperature.
             sim_nvt.context.setVelocitiesToTemperature(temperature_kelvin * kelvin)
@@ -820,16 +857,9 @@ def run_equilibration(
             relaxation_checks = [_finite_energy_check("min_node_state")]
             warmup_steps = min(1000, max(0, nvt_steps // 20))
             low_temperature = max(10.0, min(50.0, temperature_kelvin * 0.2))
+            warmup_outcome = None
             if warmup_steps > 0:
-                logger.info(
-                    f"Low-temperature NVT warmup: {warmup_steps} steps "
-                    f"at {low_temperature:.1f} K"
-                )
-                integrator_nvt.setTemperature(low_temperature * kelvin)
-                sim_nvt.context.setVelocitiesToTemperature(low_temperature * kelvin)
-                sim_nvt.step(warmup_steps)
-                relaxation_checks.append(_finite_energy_check("low_temperature_warmup"))
-                integrator_nvt.setTemperature(temperature_kelvin * kelvin)
+                warmup_outcome = _run_warmup(warmup_steps, low_temperature, relaxation_checks)
             result["low_temperature_warmup_steps"] = warmup_steps
             result["relaxation_protocol"] = {
                 "name": "min_node_low_temperature_warmup",
@@ -837,6 +867,7 @@ def run_equilibration(
                 "stages": relaxation_checks,
                 "low_temperature_kelvin": low_temperature if warmup_steps > 0 else None,
                 "minimization_source_node_id": _restart_from_node_id,
+                "warmup": warmup_outcome,
             }
             sim_nvt.context.setVelocitiesToTemperature(temperature_kelvin * kelvin)
         else:
@@ -852,13 +883,61 @@ def run_equilibration(
                 "low_temperature_kelvin": None,
             }
 
-        # NVT run
-        sim_nvt.step(nvt_steps)
-        _finite_energy_check("normal_nvt_complete")
+        # NVT run. A NaN here is retried once per halving of the timestep from
+        # the post-warmup state; the simulated time is kept by scaling the step
+        # count, and the rest of the equilibration (NPT) then runs at the
+        # timestep that worked so the saved state is consistent.
+        requested_timestep_fs = timestep_fs
+        nvt_start = (sim_nvt.context.getState(getPositions=True, getVelocities=True,
+                                              enforcePeriodicBox=False)
+                     if nvt_steps > 0 else None)
+        nvt_steps_run = nvt_steps
+
+        def _nvt_reporter(interval_steps: int):
+            return StateDataReporter(
+                str(nvt_energy_file), max(1, interval_steps // 100), step=True, time=True,
+                potentialEnergy=True, kineticEnergy=True, totalEnergy=True,
+                temperature=True, volume=is_periodic, density=is_periodic,
+            )
+
+        def _heat(dt_fs: float) -> None:
+            nonlocal nvt_steps_run
+            steps = int(round(nvt_steps * requested_timestep_fs / dt_fs))
+            if abs(dt_fs - requested_timestep_fs) > 1e-9:
+                sim_nvt.context.setPositions(nvt_start.getPositions())
+                sim_nvt.context.setVelocities(nvt_start.getVelocities())
+                if is_periodic:
+                    sim_nvt.context.setPeriodicBoxVectors(*nvt_start.getPeriodicBoxVectors())
+                integrator_nvt.setStepSize(dt_fs * femtoseconds)
+                for reporter in list(sim_nvt.reporters):
+                    _close_reporter_stream(reporter)
+                sim_nvt.reporters.clear()
+                sim_nvt.reporters.append(_nvt_reporter(steps))
+            nvt_steps_run = steps
+            sim_nvt.step(steps)
+            _finite_energy_check("normal_nvt_complete")
+
+        if nvt_steps > 0:
+            heating = run_with_halved_timestep("nvt_heating", timestep_fs, _heat,
+                                               floor_fs=1.0, log=logger)
+            if heating["retried"]:
+                scale = requested_timestep_fs / heating["timestep_fs"]
+                timestep_fs = heating["timestep_fs"]
+                npt_steps = int(round(npt_steps * scale))
+                result["warnings"].append(
+                    f"NVT heating hit a NaN at {requested_timestep_fs} fs; the equilibration "
+                    f"continued at {timestep_fs} fs with the step counts scaled to the same "
+                    "simulated time (NPT included). The saved state records the timestep "
+                    "that ran; production may return to the larger step from it."
+                )
+                result["timestep_fs_requested"] = requested_timestep_fs
+                result["timestep_fs"] = timestep_fs
+            result["nvt_heating"] = heating
+        nvt_steps = nvt_steps_run
         for reporter in sim_nvt.reporters:
             _close_reporter_stream(reporter)
         result["nvt_steps"] = nvt_steps
-        logger.info(f"NVT heating complete ({nvt_steps} steps)")
+        logger.info(f"NVT heating complete ({nvt_steps} steps at {timestep_fs} fs)")
 
         # Save NVT state — also capture box vectors so that the NPT stage
         # inherits the box from the most-recent simulation, not the

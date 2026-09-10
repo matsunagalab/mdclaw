@@ -35,6 +35,13 @@ The Python resolver in `mdclaw/_node.py` is authoritative:
 - Fresh `eq -> prod` runs restart from the eq state. The eq state is written
   with `final_step=0`, so the requested production time remains the full first
   production length.
+- Integrator settings may differ from the eq state on a fresh `eq -> prod`
+  XML restart: a different timestep (an equilibration that ran at 2 fs after
+  a NaN retry, production at 4 fs with HMR), temperature or friction is
+  reported in `warnings` and `restart_integrator_changes`, not refused. A
+  `prod -> prod` continuation and any `checkpoint.chk` restart must match
+  exactly (`Restart integrator signature mismatch`). A different integrator
+  kind is always refused.
 
 `state.xml` is portable across nodes and GPU models — it is the
 preferred restart vehicle in every case. `checkpoint.chk` is kept on
