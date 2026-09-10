@@ -198,6 +198,12 @@ def _group_covalent_ligand_units(structure, model, chains_info: list[dict]) -> l
     groups: dict[str, list[dict]] = {}
     for entry in ligands:
         groups.setdefault(find(entry["chain_id"]), []).append(entry)
+    # Each unit's own residue name, read before the leader's residue_names is
+    # replaced by the merged set (the leader was reported as its partner's name).
+    own_resname = {
+        entry["chain_id"]: ((entry.get("residue_names") or {}).get("unique_residues") or [None])[0]
+        for entry in ligands
+    }
     dropped: set[str] = set()
     for members in groups.values():
         if len(members) < 2:
@@ -223,7 +229,7 @@ def _group_covalent_ligand_units(structure, model, chains_info: list[dict]) -> l
         leader["merged_from"] = [
             {"chain_id": entry["chain_id"], "unique_id": entry.get("unique_id"),
              "resnum": entry.get("resnum"),
-             "resname": ((entry.get("residue_names") or {}).get("unique_residues") or [None])[0],
+             "resname": own_resname.get(entry["chain_id"]),
              "link": ("leader" if entry is leader else next(
                  (how for key, how in links.items()
                   if entry["chain_id"] in key and leader["chain_id"] in key), "chained"))}
