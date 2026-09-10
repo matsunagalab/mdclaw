@@ -31,7 +31,7 @@ from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE
 from mdclaw.node.snapshot import dag_snapshot
 
 ENVELOPE_ORDER = (
-    "success", "code", "message", "node_id", "node_status", "next_action", "next",
+    "success", "code", "message", "applied", "node_id", "node_status", "next_action", "next",
     "warnings_count", "result_file", "dag",
 )
 OUTPUT_MODES = ("brief", "full", "id")

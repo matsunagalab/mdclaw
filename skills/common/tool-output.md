@@ -18,6 +18,15 @@ Every result (success or failure) starts with the same envelope keys, in this
 order: `success`, `code`, `message`, `node_id`, `node_status`, `next_action`,
 `next`, `warnings_count`, `result_file`, `dag`. Workflow results carry:
 
+- `applied`: the receipt of a completed stage. `applied.options` lists every
+  option you passed with the value the tool used (`applied`, `changed`,
+  `not_reported`) and `applied.ignored_options` the ones the DAG superseded;
+  `applied.facts` carries the stage's figures (chains, pieces and gaps,
+  ligands and charges, disulfides, water model, box, ions, force-field
+  files, HMR, atoms, net charge, timestep, restraints, restart source) and
+  `applied.summary` is the one line that also forms `message`. Read the
+  receipt before writing a script over the artifacts; it is what the tool
+  did.
 - `dag`: the job's frontier (`leaves`) and the ids per status.
 - `next`: the structurally next command (`action` = `run`, `create`, `wait`,
   `branch` or `done`, with `run_command` / `create_command` / `batch_command`

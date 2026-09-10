@@ -113,6 +113,38 @@ Every exit path of the CLI (success, refusal, crash) goes through
 - The INFO log trail is still kept in memory (`_LogTailHandler`) and stored
   with failure artifacts.
 
+## The Applied Receipt
+
+Every successful stage tool result carries `applied` (`mdclaw/_receipt.py`),
+placed directly after `message` and never stubbed by brief output:
+
+- `options`: one line per option the caller actually passed (flags seen on
+  the command line, or `--json-input` keys), with the value the tool used:
+  `applied`, `changed` (`requested` and `effective` differ) or `not_reported`
+  (the tool has no `parameters` entry or top-level key of that name). A
+  `<name>_source` entry in `parameters` (for example
+  `water_model_source: inherited from solv node solv_001`) is carried along.
+- `ignored_options`: in node mode, options the DAG supersedes (`output_dir`,
+  and the stage's resolved inputs such as `pdb_file` or the XML triple).
+- `facts`: the stage's figures, taken from the result the tool already
+  produced. prep: chains with residue counts and termini, residue-range
+  pieces, ligands with charges and protonation, disulfides, unmodeled
+  residues, the gap policy, atoms. solv: water model, box, atoms, ions and
+  salt, solute charge, lipids and orientation. topo: force-field files, water
+  model and its source, HMR, ligand parameterization, atoms, net charge,
+  validation. min: iterations, energies, max force, restraints, platform. eq:
+  stages and times, temperature, pressure, timestep (and the requested one
+  after a NaN retry), restraints, restart source, platform. prod: length,
+  ensemble, conditions, timestep, restart source and integrator changes.
+- `summary`: the one-line form; when the tool set no `message`, the result's
+  `message` becomes `<node_id> <status>: <summary>`.
+
+The receipt answers the checks agents ran by hand after every stage in the
+2026-09-10 campaign (ligands 46 of 64 attempts, node status 43, force field
+and water 38, lipids 37, atom counts 35, ions 33, disulfides 32, protonation
+27, box 26, gap bonds 18) without another tool call or a script over the
+artifacts.
+
 ## DAG Context: `dag` And `next`
 
 Whenever a job dir is known, `_emit_result` attaches `dag_context(...)`:

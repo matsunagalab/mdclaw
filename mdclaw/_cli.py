@@ -1017,6 +1017,39 @@ def _node_context_not_applicable_error(tool_name, *, job_dir=None, node_id=None)
     }
 
 
+def _explicit_parameter_names(raw_argv: list[str], specs, json_keys=()) -> set[str]:
+    """Parameters the caller actually passed (flags on the command line or JSON keys)."""
+    names = set(json_keys or ())
+    tokens = list(raw_argv)
+    for spec in specs:
+        negative = f"--no-{spec.name.replace('_', '-')}"
+        if any(token == spec.cli_flag or token.startswith(spec.cli_flag + "=") or token == negative
+               for token in tokens):
+            names.add(spec.name)
+    return names
+
+
+def _attach_receipt(result, *, tool_name: str, node_type, explicit: dict, node_mode: bool):
+    """Add the ``applied`` receipt and use its summary as the success message."""
+    if not isinstance(result, dict) or result.get("success") is False:
+        return result
+    try:
+        from mdclaw._receipt import build_receipt
+
+        receipt = build_receipt(tool_name=tool_name, node_type=node_type, result=result,
+                                explicit=explicit, node_mode=node_mode)
+    except Exception as exc:  # noqa: BLE001 - a receipt must never break a completed run
+        logging.getLogger(__name__).warning("Could not build the applied receipt: %s: %s",
+                                            type(exc).__name__, exc)
+        return result
+    result["applied"] = receipt
+    if not result.get("message"):
+        handoff = result.get("dag_handoff") if isinstance(result.get("dag_handoff"), dict) else {}
+        prefix = " ".join(str(part) for part in (handoff.get("node_id"), handoff.get("status")) if part)
+        result["message"] = f"{prefix}: {receipt['summary']}" if prefix else receipt["summary"]
+    return result
+
+
 def _load_json_cli(value: str, field: str):
     try:
         return json.loads(value)
@@ -1413,6 +1446,7 @@ def main(argv: list[str] | None = None) -> None:
                 code="invalid_json_input", actual=type(kwargs).__name__,
                 expected="JSON object",
             ))
+        json_keys = list(kwargs)
         unknown = sorted(str(k) for k in kwargs if k not in spec_by_name)
         if unknown:
             _json_error_and_exit(_unknown_parameter_error(
@@ -1437,6 +1471,7 @@ def main(argv: list[str] | None = None) -> None:
             and not spec.optional
         ]
     else:
+        json_keys = []
         kwargs = {}
         args_dict = vars(args)
         # Propagate global --job-dir/--node-id into the per-tool namespace so
@@ -1457,6 +1492,12 @@ def main(argv: list[str] | None = None) -> None:
             if _takes_json(spec.hint) and isinstance(value, str):
                 value = _load_json_cli(value, spec.cli_flag)
             kwargs[spec.name] = value
+
+    explicit_kwargs = {
+        name: kwargs.get(name)
+        for name in _explicit_parameter_names(raw_argv, specs, json_keys)
+        if name in spec_by_name
+    }
 
     # Resolve effective job_dir/node_id: global flags take precedence over
     # per-tool kwargs (which come from the subparser's --job-dir/--node-id).
@@ -1651,6 +1692,11 @@ def main(argv: list[str] | None = None) -> None:
                 result,
                 effective_job_dir,
                 effective_node_id,
+            )
+            result = _attach_receipt(
+                result, tool_name=tool_name, node_type=expected_node_type,
+                explicit=explicit_kwargs,
+                node_mode=bool(effective_job_dir and effective_node_id),
             )
         _write_benchmark_harness_record(
             tool_name=tool_name,

@@ -129,8 +129,9 @@ DAG handoff instead of claiming a scientific answer.
    returns, give the user one short block — do not wait for the end of the job:
 
    - the node ID, the stage, and whether it completed;
-   - the conditions the tool actually used, read from its `parameters` (not from
-     what you asked for): for `min` the minimizer and step/force tolerance; for
+   - the conditions the tool actually used, read from the result's `applied`
+     receipt (`applied.options` and `applied.facts`, or its one-line
+     `summary`), not from what you asked for: for `min` the minimizer and step/force tolerance; for
      `eq` and `prod` the ensemble, temperature, pressure, timestep, total time,
      thermostat/barostat, constraints, cutoff, and restraints; for `solv` the
      box dimensions, water model, ion species and concentration, and lipid
@@ -140,7 +141,10 @@ DAG handoff instead of claiming a scientific answer.
 
    Render a preview only if the user asked for one, per
    `skills/common/visual-qa.md`. Reporting the numbers above is the
-   report; a picture is not part of it unless it was requested.
+   report; a picture is not part of it unless it was requested. Do not
+   re-derive these numbers with scripts over the artifacts; the receipt
+   already states them, and a value it does not state is worth a targeted
+   check only when the request depends on it.
 
 6. **On failure, follow the structured result.**
 
