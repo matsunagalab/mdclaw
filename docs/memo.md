@@ -7,6 +7,10 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-10 — Shared SIF rebuilt with the ligand-chemistry and in-container sbatch fixes
+
+Cluster-local runtime update, same procedure as the HOLE bundle: `apptainer build` from the current hole2 image with `%files` replacing the two changed source files and adding `/opt/mdclaw/ligandfix-source-manifest.json` (142 packaged files with SHA-256, source tree `f01d177dce29…`, commit `8aa6be6`). `%labels` does not overwrite existing labels, so the labels were patched in a sandbox and the SIF rebuilt from it; `org.mdclaw.runtime.bundle_id` is now `8790442a8951` and `org.mdclaw.source.commit` records the commit. The first acceptance job failed to start because login-node `/tmp` is invisible on compute nodes; the staged shared copy passed instead (job 92899: container smoke 28/28, OpenMM CUDA/PME, cuFFT prefault, PyTorch FFT). Activated by switching the shared compatibility path to `…-ligandfix-8790442a8951.sif` (sha256 `293fb7d1…`) with rollback link `…pre-ligandfix-20260910.sif` to the HOLE bundle. Not a tagged/GHCR release. Evidence under `.validation/ligandfix-20260910` and `/tmp/mdclaw-ligandfix-candidate`. MDDataBench specs under `runs/prep` now pin the new digest.
+
 ## 2026-09-10 — embed_in_membrane crashed on every prep that carried a ligand
 
 Observed on the MDDataBench three-condition campaign (task 003_membrane_5zk8, cli_sif): `embed_in_membrane` raised `TypeError: argument should be a str or an os.PathLike object ... not 'list'` at the `ligand_chemistry` handoff. `prepare_complex` registers `artifacts["ligand_chemistry"]` as the list of ligand records itself and `solvate_structure` consumes that list directly, but the membrane path treated the resolved value as a file and called `Path(value).read_text()`. Every membrane system whose prep included a ligand therefore failed at embedding in both CLI conditions. Fixed by `_coerce_ligand_chemistry`, which accepts the records, a single record, or a JSON path; unit test added. The shipped SIF (0.6.8 HOLE bundle) still carries the defect until it is rebuilt; the campaign was stopped on 2026-09-10 pending that rebuild.
