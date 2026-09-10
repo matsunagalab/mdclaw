@@ -351,6 +351,63 @@ sees output keeps the command in the foreground; the skill can then say so.
 with `--pdb-id` runs the fetch in the same call. The skill's acquisition page
 becomes shorter, not longer.
 
+### C9. A receipt of what the run applied (added 2026-09-10 evening)
+
+Agents do not trust a stage tool's exit status; they verify. In the 64
+sealed `cli_skill_sif` attempts of the campaign, the three commands after a
+stage tool were, in most attempts, scripts reading the artifacts:
+
+| what the agent checked by hand | attempts (of 64) |
+|---|---|
+| ligand presence and charges | 46 |
+| node status and artifact files | 43 |
+| water model, force field, HMR | 38 |
+| lipids and membrane orientation | 37 |
+| atom and residue counts | 35 |
+| ion counts and salt concentration | 33 |
+| disulfides | 32 |
+| protonation states (HID/HIE) | 27 |
+| box dimensions | 26 |
+| a bond across a chain gap | 18 |
+
+The answers are in the result already, but scattered across the large
+blocks (`residue_range_coverage` 102 KB, `chain_identity_map` 78 KB,
+`split` 47 KB in one real prep result), so the agent reads files instead;
+013_membrane_6ps2 r1 wrote fourteen such scripts after `build_amber_system`
+and ran out of its budget without submitting.
+
+Proposal: every stage tool result carries an `applied` block directly after
+`message`, protected from brief stubbing, in two parts.
+
+- **Per option given by the caller: what it did.** `--residue-ranges
+  A:28-230,A:263-342 -> 2 components (203 + 80 residues); gap A:231-262
+  left open, no bond across; termini NH3+/COO-`. A value the tool changed is
+  reported as `requested -> effective (reason)`; an option that has no
+  effect in this mode (`output_dir` in node mode, a water model that the solv
+  node decides) is listed under `ignored_options` instead of silently
+  accepted. This is the generic layer: the CLI compares the kwargs it passed
+  with the tool's `parameters` block.
+- **Per stage: the facts the table above shows agents verify.** prep:
+  chains kept and dropped with residue ranges, ligands kept and dropped with
+  names, charges and protonation method, disulfides formed, gaps left open or
+  rebuilt, terminus treatment, HIS state counts, net charge. solv / embed:
+  water model, box, atom count, ion counts and concentration, neutralization
+  result, lipids per leaflet, orientation method. topo: force fields actually
+  loaded (protein, lipid, water, ligand), water model and where it came
+  from, HMR and timestep, atom count, net charge, ligand charge method,
+  disulfides in the topology, "bonds across gaps: none". min / eq / prod:
+  integrator, timestep, temperature, pressure, ensemble, restraint count,
+  platform actually used, restart source node.
+
+`message` on success becomes the one-line form of the receipt: `prep_001
+completed: chain A as 2 pieces (A:28-230, A:263-342; gap left open), 0
+ligands, 2 disulfides, net charge -3`. No new computation is needed; each
+stage tool already holds these facts (`component_disposition_summary`,
+`disulfide_bonds`, merge statistics, ion counts, `amber_metadata`,
+`integrator_signature`). Implementation: a generic requested-vs-effective
+layer in `_cli.py` / `_envelope.py`, and one `applied` builder per stage
+tool.
+
 ## 5. Skill proposals
 
 - **S1 run-loop.md.** Replace "parents resolve themselves ... only pass
@@ -426,4 +483,20 @@ source-scanning audit test now prevents the class.
 
 Validation (section 7) remains to be run: rebuild the SIF, then rerun the
 eleven membrane tasks in `cli_skill_sif` and `cli_sif`.
+
+C9 (the `applied` receipt) was added to this note in the evening from the
+campaign's verification-script counts and implemented the same night
+(`mdclaw/_receipt.py`; memo entry "C9: every completed stage returns an
+applied receipt").
+
+Evening, from the campaign's five real `cli_skill_sif` failures (memo entry
+"Restart guard relaxed ..."): the eq -> prod restart check treats timestep,
+temperature and friction changes as warnings; equilibration retries a NaN
+warmup or heating stage at a halved timestep; and the membrane topology
+build no longer asks the CCD once per lipid residue (685 HTTP requests per
+build, the contention-sensitive 395 s on 014_membrane_6zdv). Later the same
+evening, from 036_ligand_1ceb: the topology stage inherits the solv node's
+water model and pairs the force field with it, and a contradicting
+`--water-model` is refused with both ways out named (the interface had asked
+for one physical decision twice).
 
