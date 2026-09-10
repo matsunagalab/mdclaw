@@ -42,6 +42,14 @@ Guardrail handling:
 - `pdbfixer_missing_residues_out_of_scope` now means the caller deliberately
   pinned `pdbfixer`; use the same sibling-node recovery with
   `--missing-residue-method modeller`, or keep the strict failure.
+- `modeller_loop_nonpolymer_clash` means a rebuilt loop was placed through a
+  ligand or ion; the model is not usable. Create a sibling prep node and rerun
+  with `--repair-nonpolymer-context` (the default -- check it was not switched
+  off), or build the source with `modeller_from_alignment --hetatm`. Read
+  `complex_missing_residue_repair.nonpolymer_clearance` for the segment.
+- `disulfide_sg_overlap` is a warning, not a failure: the deposit overlaps two
+  bonded sulfurs (SG-SG below 1.8 A). The bond is formed; minimization relaxes
+  it. Act only if the pair itself is wrong.
 - If `forcefield_water_blocked` appears, change the incompatible pairing rather
   than retrying.
 - If ligand preparation returns `workflow_recommendation.options`, present only

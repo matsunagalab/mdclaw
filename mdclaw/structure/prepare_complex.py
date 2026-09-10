@@ -978,6 +978,7 @@ def prepare_complex(
     source_model_index: Optional[int] = None,
     source_model_id: Optional[str] = None,
     missing_residue_method: str = "auto",
+    repair_nonpolymer_context: bool = True,
     build_terminal_missing_residues: bool = False,
     residue_ranges: Optional[List[str]] = None,
     join_range_pieces: bool = False,
@@ -1017,6 +1018,10 @@ def prepare_complex(
                        gemmi's internal ``chain_id`` is an auto-generated
                        subchain label like ``Axp`` / ``Ax1`` / ``Axw`` and
                        is not user-facing. None = all chains.
+        repair_nonpolymer_context: Keep the selected ligands and ions in the MODELLER
+            template as rigid BLK residues while missing loops are rebuilt, so no loop is
+            built through them; the model is measured against them either way and a
+            loop inside 2.2 A of a ligand atom stops with modeller_loop_nonpolymer_clash.
         missing_residue_method: How requested missing residues are rebuilt.
             ``"auto"`` (default) uses PDBFixer for short gaps and MODELLER for
             out-of-scope gaps when licensed; ``"pdbfixer"`` never escalates;
@@ -1441,6 +1446,17 @@ def prepare_complex(
                 f"Disulfide pairs overridden by caller: {len(disulfide_bonds)} pair(s)"
             )
             disulfide_source = "user_override"
+            # The deposit's own SG-SG distance for every declared pair, read
+            # before anything is rebuilt: a pair that later comes back short is
+            # then attributable to the input rather than to the repair.
+            from mdclaw.structure.disulfide import measure_disulfide_pairs
+
+            input_geometry = measure_disulfide_pairs(structure_path, disulfide_bonds)
+            result["declared_disulfide_input_geometry"] = input_geometry
+            for entry, bond in zip(input_geometry, disulfide_bonds):
+                if entry.get("geometry") is not None:
+                    bond.setdefault("geometry", entry["geometry"])
+                    bond.setdefault("distance_angstrom", entry["sg_sg_angstrom"])
         else:
             from mdclaw.structure.disulfide import (
                 _detect_disulfide_candidates,
@@ -1457,6 +1473,26 @@ def prepare_complex(
                     f"(ssbond={len(ssbond_pairs)}, distance={len(distance_pairs)})"
                 )
             disulfide_source = "auto_detected"
+        # Overlapping sulfurs are reported the same way whichever route named
+        # the pair: the auto-detected 1.30 A pair and the declared one are the
+        # same atoms, and until now only the declared one was ever remarked on.
+        for bond in disulfide_bonds:
+            if bond.get("geometry") == "overlap":
+                cys1, cys2 = bond.get("cys1") or {}, bond.get("cys2") or {}
+                result.setdefault("warning_records", []).append({
+                    "code": "disulfide_sg_overlap",
+                    "pair": f"{cys1.get('chain', '')}{cys1.get('resnum')}-"
+                            f"{cys2.get('chain', '')}{cys2.get('resnum')}",
+                    "sg_sg_angstrom": bond.get("distance_angstrom"),
+                    "source": bond.get("source"),
+                })
+                result["warnings"].append(
+                    f"Disulfide {cys1.get('chain', '')}{cys1.get('resnum')}-"
+                    f"{cys2.get('chain', '')}{cys2.get('resnum')}: SG-SG "
+                    f"{bond.get('distance_angstrom')} A in the input is shorter than "
+                    "an S-S bond; the deposit overlaps the two sulfurs. The bond is "
+                    "formed and minimization relaxes it (code disulfide_sg_overlap)"
+                )
         # A sulfur holds one disulfide whatever the source. `_merge_disulfide_pairs`
         # enforces that for auto-detected pairs; a caller-supplied list bypassed it
         # entirely, so an impossible pairing reached the builder unremarked. An
@@ -1967,6 +2003,13 @@ def prepare_complex(
                 # residues in its per-chain clean step; the complex MODELLER
                 # pre-pass must make the same choice before it builds gaps.
                 replace_nonstandard_residues=True,
+                # The selected ligands and ions: loops are built around them and
+                # the result is measured against them.
+                nonpolymer_context_files=[
+                    *(split_result.get("ligand_files") or []),
+                    *(result.get("retained_ion_files") or split_result.get("ion_files") or []),
+                ],
+                nonpolymer_in_template=repair_nonpolymer_context,
             )
             result["warnings"].extend(complex_repair["warnings"])
             if not complex_repair["success"]:
@@ -1983,6 +2026,8 @@ def prepare_complex(
                     "model_file": complex_repair["model_file"],
                     "validation": complex_repair.get("validation"),
                     "operation": complex_repair.get("operation"),
+                    "nonpolymer_in_template": complex_repair.get("nonpolymer_in_template"),
+                    "nonpolymer_clearance": complex_repair.get("nonpolymer_clearance"),
                 }
 
             for protein_file in split_result["protein_files"]:
@@ -2457,6 +2502,7 @@ def prepare_complex(
                             for entry in unmapped
                         )
                     result["declared_disulfide_validation"] = merged_disulfides
+                    result["warnings"].extend(merged_disulfides.get("warnings") or [])
                     if not merged_disulfides["success"]:
                         result["errors"].extend(merged_disulfides["errors"])
                         result["code"] = "modeller_disulfide_not_formed"

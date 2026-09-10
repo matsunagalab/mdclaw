@@ -423,6 +423,13 @@ def _is_list_of_str(hint) -> bool:
     return get_origin(hint) is list and get_args(hint) == (str,)
 
 
+def _is_bare_list(hint) -> bool:
+    """True for ``list`` / ``typing.List`` with no element type."""
+    if hint is list:
+        return True
+    return get_origin(hint) is list and not get_args(hint)
+
+
 def _is_dict_type(hint) -> bool:
     """Check if hint is dict or Dict[...]."""
     return get_origin(hint) is dict or hint is dict
@@ -487,6 +494,15 @@ def _tool_param_specs(fn, *, requires_node: bool = False) -> list[_ParamSpec]:
         if hint is inspect.Parameter.empty:
             hint = str  # fallback
         inner, is_optional = _unwrap_optional(hint)
+        if _is_bare_list(inner):
+            # A bare ``list`` is neither ``list[str]`` (nargs) nor a JSON
+            # parameter, so argparse handed the raw string through and the
+            # tool unpacked its characters. Refuse the contract instead of
+            # guessing (modeller_from_alignment --disulfide-patches, 2026-09-10).
+            raise TypeError(
+                f"{getattr(fn, '__name__', fn)}.{pname}: bare list annotation; "
+                "use list[str], list[dict], list[list[...]] or dict"
+            )
         required = (
             param.default is inspect.Parameter.empty and not is_optional
         ) or (
@@ -728,6 +744,29 @@ def _build_recovery_hint(job_dir: str, node_id: str) -> dict | None:
         return input_resolution_recovery(job_dir, node_id)
     except Exception:
         return None
+
+
+def _fail_node_if_running(job_dir: str | None, node_id: str | None, errors: list[str]) -> bool:
+    """Seal a node the tool began but never finished.
+
+    A tool that calls ``begin_node`` and then raises leaves the node ``running``
+    with no ``tool_failed`` event: the next attempt starts on a node that looks
+    busy, and ``inspect_job`` reports a stage in progress that nothing is
+    running. This is the CLI's last line: whatever the tool, a node that is
+    still ``running`` when its process is about to exit with an error is
+    failed here. Returns True when a status change was made.
+    """
+    if not job_dir or not node_id:
+        return False
+    try:
+        from mdclaw._node import fail_node, read_node
+
+        if read_node(job_dir, node_id).get("status") != "running":
+            return False
+        fail_node(job_dir, node_id, errors=list(errors))
+        return True
+    except Exception:  # noqa: BLE001 - never mask the failure being reported
+        return False
 
 
 def _record_cli_node_failure(
@@ -1721,13 +1760,31 @@ def main(argv: list[str] | None = None) -> None:
             exit_code=1,
             started_at=started_at,
         )
-        error_out = finalize_error(
-            {
+        from mdclaw.node.lifecycle import NodeSealedError
+
+        if isinstance(e, NodeSealedError):
+            # Not an internal error: the caller re-ran a stage on a node that
+            # already finished. Say so with the code that names the fix.
+            error_payload = {
+                "message": f"{tool_name}: {e}",
+                "error_type": type(e).__name__,
+                "code": "node_terminal",
+                "errors": [str(e)],
+                "hints": [
+                    "Nodes run once. Create a new node with the same parents "
+                    "(mdclaw create_node --parent-node-ids <parent>) and run the "
+                    "stage there; a sealed node is never rewritten.",
+                ],
+            }
+        else:
+            error_payload = {
                 "message": f"{tool_name} raised {type(e).__name__}: {e}",
                 "error_type": type(e).__name__,
                 "code": "unhandled_exception",
                 "errors": [str(e)],
-            },
+            }
+        error_out = finalize_error(
+            error_payload,
             job_dir=effective_job_dir,
             node_id=effective_node_id,
         )
@@ -1737,7 +1794,14 @@ def main(argv: list[str] | None = None) -> None:
             if tool_stdout_tail
             else _json_stdout_tail(error_out)
         )
-        if requires_node:
+        # Whatever the tool's node contract, a node this invocation began and
+        # abandoned is failed before the process exits.
+        sealed_here = _fail_node_if_running(
+            effective_job_dir, effective_node_id, error_out.get("errors") or [str(e)]
+        )
+        if sealed_here:
+            error_out.setdefault("context", {})["node_failed_by_cli"] = True
+        if requires_node or sealed_here:
             _record_cli_node_failure(
                 job_dir=effective_job_dir,
                 node_id=effective_node_id,

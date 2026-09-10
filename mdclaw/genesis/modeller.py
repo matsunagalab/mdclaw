@@ -261,7 +261,22 @@ def _restore_template_frame(
             (str(chain)[:1], int(number), str(icode or " ")[:1])
             for chain, number, icode in target_residue_sites
         ]
-        if len(normalized) != len(model_order):
+        polymer_order = model_order
+        if len(normalized) < len(model_order):
+            # A repair template can carry a block of BLK residues after the
+            # polymer chains (ligands and ions the loops were built around).
+            # MODELLER writes them back after the last chain; they have no
+            # target identity and keep whatever it wrote. Anything else that
+            # does not add up is still refused.
+            hetero_keys = set()
+            for line in model_path.read_text().splitlines():
+                if line.startswith("HETATM"):
+                    hetero_keys.add((line[21], int(line[22:26]), line[26]))
+            trailing = model_order[len(normalized):]
+            if all(key in hetero_keys for key in trailing):
+                info["trailing_nonpolymer_residues"] = len(trailing)
+                polymer_order = model_order[:len(normalized)]
+        if len(normalized) != len(polymer_order):
             info["warnings"].append(
                 "exact target residue map has "
                 f"{len(normalized)} entries for {len(model_order)} model residues"
@@ -272,7 +287,7 @@ def _restore_template_frame(
                 "exact target residue map contains duplicate author identifiers"
             )
             return info
-        renumber = dict(zip(model_order, normalized))
+        renumber = dict(zip(polymer_order, normalized))
         info["numbering_source"] = "exact_target_residue_sites"
     else:
         # General comparative-model callers do not have a repair map. Preserve
@@ -721,8 +736,8 @@ def modeller_from_alignment(
     loop_min_length: int = 1,
     loop_max_length: int = 30,
     template_frame: bool = False,
-    disulfide_patches: Optional[list] = None,
-    target_residue_sites: Optional[list] = None,
+    disulfide_patches: Optional[list[list[int]]] = None,
+    target_residue_sites: Optional[list[dict]] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
@@ -930,13 +945,24 @@ def modeller_from_alignment(
             template_code=template_code_clean,
         )
 
-    if _node_mode:
-        begin_node(job_dir, node_id)
-
     runner_path = out_dir / "run_modeller.py"
     config_path = out_dir / "modeller_config.json"
     result_json = out_dir / "modeller_result.json"
     _write_modeller_runner(runner_path)
+    # Patch positions are validated before the node is touched: a malformed
+    # list is an argument error, and an argument error must not leave a node
+    # marked running (it did, on 2026-09-10, when the CLI handed this a string).
+    try:
+        disulfide_patches = [
+            [int(a), int(b)] for a, b in (disulfide_patches or [])
+        ]
+    except (TypeError, ValueError) as exc:
+        result["errors"].append(
+            "disulfide_patches must be a list of [position, position] integer "
+            f"pairs (0-based over the target); got {disulfide_patches!r}: {exc}"
+        )
+        result["code"] = "invalid_disulfide_patches"
+        return result
     config = {
         "alignment_file": alignment_path.name,
         "template_code": template_code_clean,
@@ -956,11 +982,92 @@ def modeller_from_alignment(
         # Integers all the way to the runner: MODELLER's ResidueList treats an
         # int as a 0-based position and a string as a PDB-style identifier like
         # "8:A", so a stringified 337 is not position 337.
-        "disulfide_patches": [
-            [int(a), int(b)] for a, b in (disulfide_patches or [])
-        ],
+        "disulfide_patches": disulfide_patches,
     }
     config_path.write_text(json.dumps(config, indent=2))
+
+    if _node_mode:
+        begin_node(job_dir, node_id)
+    try:
+        return _run_modeller_and_attach(
+            result=result,
+            out_dir=out_dir,
+            runner_path=runner_path,
+            config_path=config_path,
+            result_json=result_json,
+            template_copy=template_copy,
+            template_path=template_path,
+            alignment_path=alignment_path,
+            alignment_file=alignment_file,
+            target_code_clean=target_code_clean,
+            template_code_clean=template_code_clean,
+            template_frame=template_frame,
+            target_residue_sites=target_residue_sites,
+            target_sequence=target_sequence,
+            chain_sequences=chain_sequences,
+            template_chains_clean=template_chains_clean,
+            multichain=multichain,
+            loop_refinement=loop_refinement,
+            loop_models=loop_models,
+            auto_align=auto_align,
+            num_models=num_models,
+            hetatm=hetatm,
+            random_seed=random_seed,
+            job_dir=job_dir,
+            node_id=node_id,
+            node_mode=_node_mode,
+            job_id=job_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - the node must not stay running
+        result["errors"].append(f"MODELLER run failed unexpectedly: {type(exc).__name__}: {exc}")
+        result.setdefault("code", "modeller_execution_failed")
+        if _node_mode:
+            try:
+                fail_node(job_dir, node_id, errors=result["errors"])
+            except Exception:  # noqa: BLE001 - failing the node is best effort
+                logger.exception("Could not mark %s failed after an unexpected error", node_id)
+        return result
+
+
+def _run_modeller_and_attach(
+    *,
+    result,
+    out_dir,
+    runner_path,
+    config_path,
+    result_json,
+    template_copy,
+    template_path,
+    alignment_path,
+    alignment_file,
+    target_code_clean,
+    template_code_clean,
+    template_frame,
+    target_residue_sites,
+    target_sequence,
+    chain_sequences,
+    template_chains_clean,
+    multichain,
+    loop_refinement,
+    loop_models,
+    auto_align,
+    num_models,
+    hetatm,
+    random_seed,
+    job_dir,
+    node_id,
+    node_mode,
+    job_id,
+):
+    """Run the MODELLER subprocess, restore the frame, and attach to the node.
+
+    Split out of ``modeller_from_alignment`` so that the caller can wrap the
+    whole post-``begin_node`` stretch in one guard: an exception anywhere in
+    here used to leave the source node ``running`` with no failure event.
+    """
+    from mdclaw._node import fail_node
+
+    _node_mode = node_mode
 
     try:
         completed = subprocess.run(

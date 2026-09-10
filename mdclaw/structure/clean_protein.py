@@ -857,8 +857,15 @@ def repair_complex_missing_residues(
     build_terminal_missing_residues: bool = False,
     build_windows_by_source: dict | None = None,
     replace_nonstandard_residues: bool = True,
+    nonpolymer_context_files: list | None = None,
+    nonpolymer_in_template: bool = True,
 ) -> dict:
     """Rebuild every chain's requested gaps in one MODELLER pass over the complex.
+
+    ``nonpolymer_context_files`` are the split ligand / ion files: they ride
+    along as BLK residues in the MODELLER template (``nonpolymer_in_template``)
+    so no loop is built through them, and the model is measured against them
+    either way (``nonpolymer_clearance`` in the outcome).
 
     Repairing chain by chain models each loop as if it were alone: a gap at a
     chain-chain interface then gets built straight through space the partner
@@ -882,6 +889,8 @@ def repair_complex_missing_residues(
         "chain_ids": [],
         "summary": None,
         "model_file": None,
+        "nonpolymer_clearance": None,
+        "nonpolymer_in_template": None,
         "errors": [],
         "warnings": [],
         "code": None,
@@ -966,8 +975,12 @@ def repair_complex_missing_residues(
         build_terminal_missing_residues=build_terminal_missing_residues,
         build_windows_by_chain=windows_by_chain,
         replace_nonstandard_residues=replace_nonstandard_residues,
+        nonpolymer_context_files=nonpolymer_context_files,
+        nonpolymer_in_template=nonpolymer_in_template,
     )
     outcome["warnings"].extend(repair["warnings"])
+    outcome["nonpolymer_clearance"] = repair.get("nonpolymer_clearance")
+    outcome["nonpolymer_in_template"] = repair.get("nonpolymer_in_template")
     if not repair["success"]:
         if repair["code"] in _COMPLEX_REPAIR_PREFLIGHT_CODES:
             # Nothing was modeled: the fused complex simply did not describe
@@ -1256,8 +1269,11 @@ def _disulfide_pair_sites(pair) -> list | None:
 # A disulfide is 2.05 A; the window is wide enough for a strained but real bond
 # and narrow enough to catch the two failures actually measured -- a bond built
 # without its restraint (11.65 A) and one pulled open by refinement (3.53 A).
-DISULFIDE_BOND_MIN_ANGSTROM = 1.8
-DISULFIDE_BOND_MAX_ANGSTROM = 2.3
+from mdclaw.structure.disulfide import (  # noqa: E402
+    DISULFIDE_BOND_MAX_ANGSTROM,
+    DISULFIDE_BOND_MIN_ANGSTROM,
+    disulfide_geometry,
+)
 
 
 def _validate_declared_disulfides(model_path, disulfide_pairs, present_chains) -> dict:
@@ -1271,7 +1287,8 @@ def _validate_declared_disulfides(model_path, disulfide_pairs, present_chains) -
     """
     import math
 
-    result = {"success": True, "checked": 0, "errors": [], "distances": []}
+    result = {"success": True, "checked": 0, "errors": [], "warnings": [],
+              "warning_records": [], "distances": []}
     if not disulfide_pairs:
         return result
 
@@ -1301,18 +1318,40 @@ def _validate_declared_disulfides(model_path, disulfide_pairs, present_chains) -
             continue
         one, two = (sg[site] for site in sites)
         distance = math.dist(one, two)
+        geometry = disulfide_geometry(distance)
         result["distances"].append({
             "chain1": sites[0][0], "resnum1": sites[0][1],
             "chain2": sites[1][0], "resnum2": sites[1][1],
             "sg_sg_angstrom": round(distance, 3),
+            "geometry": geometry,
         })
-        if not DISULFIDE_BOND_MIN_ANGSTROM <= distance <= DISULFIDE_BOND_MAX_ANGSTROM:
+        label = f"{sites[0][0]}:{sites[0][1]}-{sites[1][0]}:{sites[1][1]}"
+        if geometry == "not_formed":
+            # Longer than a bond: the sulfurs were left apart, which is the
+            # failure this check exists for (MODELLER's DISU patch alone did
+            # exactly this on 9UT9).
             result["errors"].append(
-                f"declared disulfide {sites[0][0]}:{sites[0][1]}-"
-                f"{sites[1][0]}:{sites[1][1]} came back at {distance:.2f} A, "
-                f"outside {DISULFIDE_BOND_MIN_ANGSTROM}-"
-                f"{DISULFIDE_BOND_MAX_ANGSTROM} A"
+                f"declared disulfide {label} came back at {distance:.2f} A, "
+                f"longer than {DISULFIDE_BOND_MAX_ANGSTROM} A: the bond was not formed"
             )
+        elif geometry == "overlap":
+            # Shorter than a bond: the two sulfurs sit on top of each other.
+            # Loop repair keeps observed atoms fixed, so this is the deposit's
+            # geometry (9OQ1 has A59-A102 at 1.30 A and B236-B522 at 1.47 A),
+            # and auto-detection accepts the same pair without comment. The
+            # bond is declared and formed; a harmonic S-S term relaxes it at
+            # minimization. Reported, not refused.
+            result["warnings"].append(
+                f"declared disulfide {label} is {distance:.2f} A apart, shorter "
+                f"than an S-S bond ({DISULFIDE_BOND_MIN_ANGSTROM} A): the deposit "
+                "overlaps the two sulfurs; the bond is formed and minimization "
+                "relaxes it (code disulfide_sg_overlap)"
+            )
+            result["warning_records"].append({
+                "code": "disulfide_sg_overlap",
+                "pair": label,
+                "sg_sg_angstrom": round(distance, 3),
+            })
     result["success"] = not result["errors"]
     return result
 
@@ -1558,6 +1597,187 @@ def _disulfide_patch_positions(
     return {"positions": positions, "errors": problems}
 
 
+# A rebuilt loop closer than this to a ligand or ion heavy atom went through it:
+# on 9OPZ (Wang 2025, sucralose compact) the ligand-blind rebuild put the trigger
+# loop 45-57 at 0.25 A from sucralose, with twenty loop atoms inside 2.5 A, and
+# nothing reported it. Below CLASH the model is refused; below WARN it is flagged.
+MODELLER_LOOP_NONPOLYMER_CLASH_ANGSTROM = 2.2
+MODELLER_LOOP_NONPOLYMER_WARN_ANGSTROM = 3.0
+_NONPOLYMER_SKIP_RESNAMES = frozenset({"HOH", "WAT", "TIP", "TIP3", "SOL", "DOD", "H2O"})
+
+
+def _pdb_heavy_atom_records(path: Path) -> list[dict]:
+    """Every heavy atom of a PDB file with its residue identity."""
+    records = []
+    for line in Path(path).read_text(encoding="utf-8", errors="ignore").splitlines():
+        if not line.startswith(("ATOM  ", "HETATM")) or len(line) < 54:
+            continue
+        if line[16] not in (" ", "A"):
+            continue
+        element = line[76:78].strip().upper() if len(line) >= 78 else ""
+        if not element:
+            element = re.sub(r"[^A-Za-z]", "", line[12:16]).upper()[:1]
+        if element in {"H", "D"}:
+            continue
+        try:
+            records.append({
+                "resname": line[17:20].strip(),
+                "chain": line[21],
+                "resnum": int(line[22:26]),
+                "icode": line[26].strip(),
+                "name": line[12:16].strip(),
+                "element": element,
+                "xyz": tuple(float(line[start:start + 8]) for start in (30, 38, 46)),
+            })
+        except (TypeError, ValueError):
+            continue
+    return records
+
+
+def _nonpolymer_context_atoms(files, openmm_context=None) -> list[dict]:
+    """Heavy atoms of the non-polymer components a loop must be built around.
+
+    ``files`` are the split ligand / ion PDBs (heavy atoms, pre-cleaning);
+    ``openmm_context`` is the PDBFixer topology of non-polymer chains that
+    arrived inside the protein files. Waters are left out: they are removed
+    before topology and would only pad the check.
+    """
+    atoms = []
+    for path in files or []:
+        for record in _pdb_heavy_atom_records(Path(path)):
+            if record["resname"] in _NONPOLYMER_SKIP_RESNAMES:
+                continue
+            atoms.append({**record, "source": Path(path).name})
+    if openmm_context is not None:
+        from openmm import unit as _unit
+
+        positions = openmm_context.positions.value_in_unit(_unit.angstrom)
+        for atom in openmm_context.topology.atoms():
+            if atom.element is None or atom.element.symbol in {"H", "D"}:
+                continue
+            residue = atom.residue
+            if residue.name in _NONPOLYMER_SKIP_RESNAMES:
+                continue
+            pos = positions[atom.index]
+            atoms.append({
+                "resname": residue.name, "chain": str(residue.chain.id)[:1],
+                "resnum": int(residue.id), "icode": str(getattr(residue, "insertionCode", "") or "").strip(),
+                "name": atom.name, "element": atom.element.symbol.upper(),
+                "xyz": (float(pos[0]), float(pos[1]), float(pos[2])),
+                "source": "input_nonpolymer_chains",
+            })
+    return atoms
+
+
+def _spare_chain_id(taken) -> str:
+    taken = {str(t)[:1] for t in taken}
+    for candidate in "ZYXWVUTSRQPONMLKJIHGFEDCBA9876543210":
+        if candidate not in taken:
+            return candidate
+    raise RuntimeError("no spare chain id for the non-polymer block")
+
+
+def _write_template_with_nonpolymer(polymer_template_path: Path, atoms: list[dict],
+                                    chain_id: str, out_path: Path) -> int:
+    """The polymer template plus the context residues as HETATM on one spare chain.
+
+    MODELLER reads them as BLK residues (``.`` in the alignment): rigid bodies at
+    their template coordinates that every loop is built around. Returns the
+    number of residues written, which is the number of ``.`` the alignment needs.
+    """
+    lines = [
+        line for line in polymer_template_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        if not line.startswith(("END", "CONECT", "MASTER"))
+    ]
+    serial = max((int(line[6:11]) for line in lines
+                  if line.startswith(("ATOM", "HETATM")) and line[6:11].strip().isdigit()),
+                 default=0)
+    residues: dict[tuple, list[dict]] = {}
+    for atom in atoms:
+        residues.setdefault((atom["source"], atom["chain"], atom["resnum"], atom["icode"], atom["resname"]), []).append(atom)
+    for index, (key, members) in enumerate(residues.items(), start=1):
+        resname = key[4][:3].rjust(3)
+        for atom in members:
+            serial += 1
+            name = atom["name"]
+            name_field = f" {name:<3}" if len(name) < 4 else name[:4]
+            x, y, z = atom["xyz"]
+            lines.append(
+                f"HETATM{serial % 100000:5d} {name_field}{'':1}{resname} {chain_id}{index % 10000:4d}    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {atom['element'][:2]:>2}"
+            )
+    lines.append("TER")
+    lines.append("END")
+    out_path.write_text("\n".join(lines) + "\n")
+    return len(residues)
+
+
+def _nonpolymer_clearance(model_path: Path, context_atoms: list[dict], records: list[dict]) -> dict:
+    """Closest approach of every rebuilt segment to the non-polymer context.
+
+    Annotates each record in place (``min_distance_to_nonpolymer_angstrom``,
+    ``nearest_nonpolymer``, ``nearest_rebuilt_atom``, ``nonpolymer_verdict``)
+    and returns the summary. With no context atoms the check reports
+    ``checked=False`` rather than a misleading clearance.
+    """
+    import numpy as np
+
+    summary = {
+        "checked": bool(context_atoms) and bool(records),
+        "nonpolymer_atoms": len(context_atoms),
+        "clash_angstrom": MODELLER_LOOP_NONPOLYMER_CLASH_ANGSTROM,
+        "warn_angstrom": MODELLER_LOOP_NONPOLYMER_WARN_ANGSTROM,
+        "min_distance_angstrom": None,
+        "clash": False,
+        "segments": [],
+    }
+    if not summary["checked"]:
+        return summary
+    model_atoms = _pdb_heavy_atom_records(model_path)
+    context_xyz = np.array([atom["xyz"] for atom in context_atoms], dtype=float)
+    overall = None
+    for record in records:
+        sites = {
+            (str(site.get("chain"))[:1], int(site.get("resnum")), str(site.get("icode") or "").strip())
+            for site in record.get("sites") or []
+        }
+        segment_atoms = [atom for atom in model_atoms
+                         if (atom["chain"], atom["resnum"], atom["icode"]) in sites]
+        entry = {
+            "chain": record.get("chain_id"),
+            "residue_count": record.get("residue_count"),
+            "first_resnum": min((int(site.get("resnum")) for site in record.get("sites") or []), default=None),
+            "last_resnum": max((int(site.get("resnum")) for site in record.get("sites") or []), default=None),
+            "min_distance_angstrom": None,
+            "nearest_nonpolymer": None,
+            "nearest_rebuilt_atom": None,
+            "verdict": "not_checked",
+        }
+        if segment_atoms:
+            seg_xyz = np.array([atom["xyz"] for atom in segment_atoms], dtype=float)
+            dist = np.linalg.norm(seg_xyz[:, None, :] - context_xyz[None, :, :], axis=-1)
+            i, j = np.unravel_index(int(dist.argmin()), dist.shape)
+            best = float(dist[i, j])
+            near, own = context_atoms[j], segment_atoms[i]
+            entry.update({
+                "min_distance_angstrom": round(best, 2),
+                "nearest_nonpolymer": f"{near['resname']} {near['chain']}{near['resnum']} {near['name']}",
+                "nearest_rebuilt_atom": f"{own['resname']} {own['chain']}{own['resnum']} {own['name']}",
+                "verdict": ("clash" if best < MODELLER_LOOP_NONPOLYMER_CLASH_ANGSTROM
+                            else "close" if best < MODELLER_LOOP_NONPOLYMER_WARN_ANGSTROM
+                            else "clear"),
+            })
+            overall = best if overall is None else min(overall, best)
+        record["min_distance_to_nonpolymer_angstrom"] = entry["min_distance_angstrom"]
+        record["nearest_nonpolymer"] = entry["nearest_nonpolymer"]
+        record["nearest_rebuilt_atom"] = entry["nearest_rebuilt_atom"]
+        record["nonpolymer_verdict"] = entry["verdict"]
+        summary["segments"].append(entry)
+    summary["min_distance_angstrom"] = round(overall, 2) if overall is not None else None
+    summary["clash"] = any(entry["verdict"] == "clash" for entry in summary["segments"])
+    return summary
+
+
 def _repair_missing_residues_with_modeller(
     input_path: Path,
     random_seed: int = MODELLER_REPAIR_RANDOM_SEED,
@@ -1566,6 +1786,8 @@ def _repair_missing_residues_with_modeller(
     build_window=None,
     build_windows_by_chain: dict | None = None,
     replace_nonstandard_residues: bool = True,
+    nonpolymer_context_files: list | None = None,
+    nonpolymer_in_template: bool = True,
 ) -> dict:
     """Rebuild requested missing residues with MODELLER loop modeling.
 
@@ -1596,6 +1818,7 @@ def _repair_missing_residues_with_modeller(
         "detection": None,
         "template": None,
         "validation": None,
+        "nonpolymer_clearance": None,
         "random_seed": random_seed,
         "errors": [],
         "warnings": [],
@@ -1681,6 +1904,11 @@ def _repair_missing_residues_with_modeller(
 
         nonpolymer_context = _app.Modeller(probe.topology, probe.positions)
         nonpolymer_context.delete(chains)
+    # Everything a loop must not be built through: the split ligands and ions
+    # the caller handed over, plus any non-polymer chain that came in with the
+    # protein files. Used twice -- as BLK residues in the template so MODELLER
+    # builds around them, and afterwards to measure what it actually did.
+    context_atoms = _nonpolymer_context_atoms(nonpolymer_context_files, nonpolymer_context)
     if build_windows_by_chain is None and build_window is not None:
         build_windows_by_chain = {
             str(chain.id)[:1]: build_window for chain in chains
@@ -1886,49 +2114,107 @@ def _repair_missing_residues_with_modeller(
     # The row carries one '/' per chain break; the target row needs them at the
     # same columns or MODELLER reads the two rows as different lengths.
     target_row = "/".join(target_sequences)
-    _write_repair_alignment(
-        alignment_path,
-        target_code=f"{input_path.stem}_filled",
-        target_sequence=target_row,
-        template_code=input_path.stem,
-        template_row=template_row,
-        first_chain=str(chains[0].id),
-        last_chain=str(chains[-1].id),
-    )
     outcome["alignment_file"] = str(alignment_path)
 
-    model_result = modeller_from_alignment(
-        template_pdb=str(modeller_template_path),
-        alignment_file=str(alignment_path),
-        template_code=input_path.stem,
-        target_code=f"{input_path.stem}_filled",
-        num_models=1,
-        loop_refinement=True,
-        loop_models=2,
-        # The split protein file can carry polymer modifications as HETATM
-        # (1A62 has three observed MSE residues). Excluding HETATM makes
-        # MODELLER drop those template positions and reject its otherwise
-        # identical alignment before the later PDBFixer MSE->MET conversion.
-        hetatm=True,
-        # The default ceiling is 30; raise it so the largest gap present is
-        # actually refined rather than silently left as built.
-        loop_max_length=max(30, int(summary["max_segment_length"])),
-        # The repaired chain has to stay superposed on the structure it came
-        # from, or a membrane orientation or partner chain kept from the
-        # original lands in the wrong place.
-        template_frame=True,
-        # A disulfide whose cysteines fall inside a gap is invisible to MODELLER:
-        # it reads its restraints off the template, where those residues are not
-        # there at all. On 9UT9 chain A that left CYS363 and CYS366 -- bonded at
-        # 2.04 A where 9UTC resolves them -- 11.65 A apart. Declaring the bond
-        # downstream cannot undo that; it only hands minimisation a bond nine
-        # angstroms past equilibrium.
-        disulfide_patches=patch_resolution["positions"],
-        target_residue_sites=target_resolution["sites"],
-        random_seed=random_seed,
-        output_dir=str(out_dir),
-    )
-    outcome["warnings"].extend(model_result.get("warnings", []))
+    # The ligands and ions go into the template as BLK residues: one HETATM
+    # block on a spare chain, one '.' per residue on both alignment rows.
+    # MODELLER keeps BLK residues where the template has them and its
+    # non-bonded restraints keep every loop out of them. Without this the
+    # complex pass fused protein chains only, and on 9OPZ the trigger loop
+    # 45-57 was built through sucralose (0.25 A). If the run with the block
+    # fails, it is tried once more without, and the clearance check below
+    # then says whether that model is usable.
+    hetero_block = bool(nonpolymer_in_template and context_atoms)
+    hetero_chain_id = _spare_chain_id([str(chain.id) for chain in chains]) if hetero_block else None
+    outcome["nonpolymer_in_template"] = hetero_block
+    attempts = [True, False] if hetero_block else [False]
+    model_result = None
+    model_file = None
+    for with_hetero in attempts:
+        if with_hetero:
+            run_template = out_dir / f"{input_path.stem}.modeller_template_with_nonpolymer.pdb"
+            n_hetero = _write_template_with_nonpolymer(
+                modeller_template_path, context_atoms, hetero_chain_id, run_template)
+            block = "/" + "." * n_hetero
+            run_last_chain = hetero_chain_id
+        else:
+            run_template = modeller_template_path
+            block = ""
+            run_last_chain = str(chains[-1].id)
+        _write_repair_alignment(
+            alignment_path,
+            target_code=f"{input_path.stem}_filled",
+            target_sequence=target_row + block,
+            template_code=input_path.stem,
+            template_row=template_row + block,
+            first_chain=str(chains[0].id),
+            last_chain=run_last_chain,
+        )
+        model_result = modeller_from_alignment(
+            template_pdb=str(run_template),
+            alignment_file=str(alignment_path),
+            template_code=input_path.stem,
+            target_code=f"{input_path.stem}_filled",
+            num_models=1,
+            loop_refinement=True,
+            loop_models=2,
+            # The split protein file can carry polymer modifications as HETATM
+            # (1A62 has three observed MSE residues). Excluding HETATM makes
+            # MODELLER drop those template positions and reject its otherwise
+            # identical alignment before the later PDBFixer MSE->MET conversion.
+            # It is also what makes the BLK block above visible to MODELLER.
+            hetatm=True,
+            # The default ceiling is 30; raise it so the largest gap present is
+            # actually refined rather than silently left as built.
+            loop_max_length=max(30, int(summary["max_segment_length"])),
+            # The repaired chain has to stay superposed on the structure it came
+            # from, or a membrane orientation or partner chain kept from the
+            # original lands in the wrong place.
+            template_frame=True,
+            # A disulfide whose cysteines fall inside a gap is invisible to MODELLER:
+            # it reads its restraints off the template, where those residues are not
+            # there at all. On 9UT9 chain A that left CYS363 and CYS366 -- bonded at
+            # 2.04 A where 9UTC resolves them -- 11.65 A apart. Declaring the bond
+            # downstream cannot undo that; it only hands minimisation a bond nine
+            # angstroms past equilibrium.
+            disulfide_patches=patch_resolution["positions"],
+            target_residue_sites=target_resolution["sites"],
+            random_seed=random_seed,
+            output_dir=str(out_dir),
+        )
+        outcome["warnings"].extend(model_result.get("warnings", []))
+        model_file = (model_result.get("selected_model") or {}).get("path")
+        if model_result.get("success") and model_file and Path(model_file).is_file():
+            if with_hetero:
+                # The block did its job; the model keeps the BLK residues as
+                # MODELLER wrote them (on whatever chain letter it chose), and
+                # the original coordinates are put back below. Everything
+                # downstream expects a polymer-only model: after the template
+                # frame is restored the polymer residues carry exactly the
+                # target identities, so everything else is the block.
+                keep = {
+                    (str(chain)[:1], int(number), (str(icode or "").strip() or " "))
+                    for chain, number, icode in target_resolution["sites"]
+                }
+                polymer_only = Path(model_file).with_name(
+                    f"{Path(model_file).stem}.polymer.pdb")
+                kept_lines = []
+                for line in Path(model_file).read_text().splitlines():
+                    if line.startswith(("ATOM", "HETATM")) and len(line) > 26:
+                        if (line[21], int(line[22:26]), line[26] or " ") not in keep:
+                            continue
+                    kept_lines.append(line)
+                polymer_only.write_text("\n".join(kept_lines) + "\n")
+                model_file = str(polymer_only)
+            break
+        if with_hetero:
+            outcome["warnings"].append(
+                "MODELLER did not produce a model with the non-polymer block in the "
+                f"template ({'; '.join(model_result.get('errors') or ['no model'])}); "
+                "retried without it -- read nonpolymer_clearance before using the result"
+            )
+            outcome["nonpolymer_in_template"] = False
+            continue
 
     if not model_result.get("success"):
         outcome["success"] = False
@@ -1938,7 +2224,6 @@ def _repair_missing_residues_with_modeller(
         outcome["code"] = model_result.get("code") or "modeller_missing_residue_repair_failed"
         return outcome
 
-    model_file = (model_result.get("selected_model") or {}).get("path")
     if not model_file or not Path(model_file).is_file():
         outcome["success"] = False
         outcome["code"] = "modeller_missing_residue_repair_failed"
@@ -1967,11 +2252,37 @@ def _repair_missing_residues_with_modeller(
         {str(chain.id)[:1] for chain in chains},
     )
     outcome["disulfide_validation"] = disulfide_check
+    outcome["warnings"].extend(disulfide_check.get("warnings") or [])
     if not disulfide_check["success"]:
         outcome["success"] = False
         outcome["code"] = "modeller_disulfide_not_formed"
         outcome["errors"].extend(disulfide_check["errors"])
         return outcome
+
+    # Measured whether or not the block was in the template: the number is the
+    # evidence that a rebuilt loop stays out of the ligand, and it is what the
+    # receipt reports. A clash is refused -- it is not a model of the complex.
+    clearance = _nonpolymer_clearance(Path(model_file), context_atoms, records)
+    outcome["nonpolymer_clearance"] = clearance
+    if clearance["checked"]:
+        for entry in clearance["segments"]:
+            if entry["verdict"] == "close":
+                outcome["warnings"].append(
+                    f"rebuilt loop {entry['chain']}{entry['first_resnum']}-{entry['last_resnum']} "
+                    f"comes within {entry['min_distance_angstrom']} A of "
+                    f"{entry['nearest_nonpolymer']} ({entry['nearest_rebuilt_atom']})"
+                )
+        if clearance["clash"]:
+            outcome["success"] = False
+            outcome["code"] = "modeller_loop_nonpolymer_clash"
+            outcome["errors"].extend(
+                f"rebuilt loop {entry['chain']}{entry['first_resnum']}-{entry['last_resnum']} "
+                f"was built through {entry['nearest_nonpolymer']}: "
+                f"{entry['min_distance_angstrom']} A at {entry['nearest_rebuilt_atom']} "
+                f"(limit {MODELLER_LOOP_NONPOLYMER_CLASH_ANGSTROM} A)"
+                for entry in clearance["segments"] if entry["verdict"] == "clash"
+            )
+            return outcome
 
     if nonpolymer_context is not None:
         from openmm import app as _app

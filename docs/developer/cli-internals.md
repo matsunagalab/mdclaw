@@ -41,6 +41,12 @@ One introspection pass (`_tool_param_specs`) feeds the argparse builder, the
   are also accepted).
 - `list[str]` uses `nargs='+'`.
 - `dict`, `list[dict]`, and `list[list]` accept JSON strings.
+- A bare `list` / `typing.List` annotation is refused at discovery time
+  (`TypeError`): it would be neither `nargs` nor JSON and the raw string would
+  reach the tool. Name the element type.
+- An unhandled exception fails a node the tool had begun (`running`) before the
+  process exits, whatever the tool's node contract; a `NodeSealedError` is
+  reported as `node_terminal` rather than `unhandled_exception`.
 - `--json-input '{...}'` passes all parameters as JSON, with the same
   required-argument validation as flags.
 

@@ -38,6 +38,16 @@ signature, update the relevant section here and the matching skill examples.
   completeness is unknown. Explicit coordinate-file overrides retain the source
   sequence metadata and must preserve its polymer identity; use a new source
   node for deliberate construct changes, and range/chain options for cropping.
+  Missing internal loops rebuilt with MODELLER are built with the selected
+  ligands and ions in the template as rigid BLK residues
+  (`repair_nonpolymer_context`, default True) and measured against them
+  afterwards (`complex_missing_residue_repair.nonpolymer_clearance`; a segment
+  inside 2.2 A fails with `modeller_loop_nonpolymer_clash`). Declared and
+  detected disulfides carry a `geometry` (`bonded` / `overlap` / `not_formed`);
+  only `not_formed` after a repair is an error, `overlap` is the warning
+  `disulfide_sg_overlap`. Hetero residues joined by a Covale record or by a
+  heavy-atom contact within 1.9 A on the same author chain are one ligand unit
+  in inspection and splitting (sucralose from a PDB, RRY+RRJ).
   Standard DNA/RNA chains are hydrogen-rebuilt with OpenMM Modeller using the
   current DNA.OL15/RNA.OL3 XML libraries before topology. DNA.OL24 is deferred
   until openmmforcefields ships a released `DNA.OL24.xml`. Terminal caps can be

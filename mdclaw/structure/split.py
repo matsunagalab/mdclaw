@@ -105,6 +105,138 @@ def _candidate_matches_ligand_resnames(
     return bool(set(names) & requested_resnames)
 
 
+# Two hetero residues bonded to each other are one ligand. A deposit says so in
+# its ``struct_conn`` / LINK records; a PDB written by a modelling tool usually
+# says nothing, and gemmi then gives every hetero residue its own subchain, which
+# is the unit everything below works in. Sucralose is the case that found this:
+# two CCD components (RRY, RRJ) joined by a glycosidic bond, one unit from the
+# mmCIF and two from MODELLER's PDB, where the second half can match no SMILES.
+LIGAND_COVALENT_CONTACT_ANGSTROM = 1.9
+
+
+def _group_covalent_ligand_units(structure, model, chains_info: list[dict]) -> list[dict]:
+    """Merge ligand units that are covalently joined into one entry.
+
+    Units are joined when a Covale connection links them or, failing any
+    record, when heavy atoms of the two sit within
+    ``LIGAND_COVALENT_CONTACT_ANGSTROM``. Only ligand-type units on the same
+    author chain are considered: ions, waters and glycans keep their own
+    handling, and a bond to a protein chain is a different problem that is
+    reported, not merged. The first unit in file order leads; the others are
+    folded into it as ``covalent_members`` and dropped from the list.
+    """
+    ligands = [c for c in chains_info if c.get("chain_type") == "ligand"]
+    if len(ligands) < 2:
+        return chains_info
+    try:
+        import numpy as np
+    except ImportError:
+        return chains_info
+
+    residues_by_unit: dict[str, list] = {}
+    atoms_by_unit: dict[str, list] = {}
+    for entry in ligands:
+        span = model.get_subchain(entry["chain_id"])
+        residues_by_unit[entry["chain_id"]] = list(span)
+        atoms_by_unit[entry["chain_id"]] = [
+            (atom.pos.x, atom.pos.y, atom.pos.z)
+            for residue in span for atom in residue
+            if (atom.element.name or "").upper() not in {"H", "D"}
+        ]
+    unit_of_residue = {
+        (entry["author_chain"], residue.seqid.num, (residue.seqid.icode or "").strip(), residue.name.strip()): entry["chain_id"]
+        for entry in ligands
+        for residue in residues_by_unit[entry["chain_id"]]
+    }
+
+    parent = {entry["chain_id"]: entry["chain_id"] for entry in ligands}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    links: dict[frozenset, str] = {}
+    for connection in getattr(structure, "connections", []) or []:
+        if getattr(connection.type, "name", "") != "Covale":
+            continue
+        ends = []
+        for partner in (connection.partner1, connection.partner2):
+            key = (partner.chain_name, partner.res_id.seqid.num,
+                   (partner.res_id.seqid.icode or "").strip(), partner.res_id.name.strip())
+            ends.append(unit_of_residue.get(key))
+        if all(ends) and ends[0] != ends[1]:
+            union(ends[0], ends[1])
+            links[frozenset(ends)] = "record"
+    by_author: dict[str, list] = {}
+    for entry in ligands:
+        by_author.setdefault(entry["author_chain"], []).append(entry)
+    for members in by_author.values():
+        for i, first in enumerate(members):
+            xa = atoms_by_unit[first["chain_id"]]
+            if not xa:
+                continue
+            a = np.array(xa, dtype=float)
+            for second in members[i + 1:]:
+                if frozenset((first["chain_id"], second["chain_id"])) in links:
+                    continue
+                xb = atoms_by_unit[second["chain_id"]]
+                if not xb:
+                    continue
+                b = np.array(xb, dtype=float)
+                d = float(np.min(np.linalg.norm(a[:, None, :] - b[None, :, :], axis=-1)))
+                if d <= LIGAND_COVALENT_CONTACT_ANGSTROM:
+                    union(first["chain_id"], second["chain_id"])
+                    links[frozenset((first["chain_id"], second["chain_id"]))] = f"distance {d:.2f} A"
+
+    groups: dict[str, list[dict]] = {}
+    for entry in ligands:
+        groups.setdefault(find(entry["chain_id"]), []).append(entry)
+    dropped: set[str] = set()
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        leader, rest = members[0], members[1:]
+        names = set()
+        atoms = 0
+        residues = 0
+        for entry in members:
+            names.update((entry.get("residue_names") or {}).get("unique_residues") or [])
+            atoms += int(entry.get("num_atoms") or 0)
+            residues += int(entry.get("num_residues") or 0)
+        unique = sorted(names)
+        leader["residue_names"] = {
+            "unique_residues": unique[:10],
+            "total_unique_count": len(unique),
+            "truncated": len(unique) > 10,
+        }
+        leader["num_atoms"] = atoms
+        leader["num_residues"] = residues
+        leader["covalent_members"] = [entry["chain_id"] for entry in rest]
+        leader["covalent_unit_aliases"] = [entry["unique_id"] for entry in rest if entry.get("unique_id")]
+        leader["merged_from"] = [
+            {"chain_id": entry["chain_id"], "unique_id": entry.get("unique_id"),
+             "resnum": entry.get("resnum"),
+             "resname": ((entry.get("residue_names") or {}).get("unique_residues") or [None])[0],
+             "link": ("leader" if entry is leader else next(
+                 (how for key, how in links.items()
+                  if entry["chain_id"] in key and leader["chain_id"] in key), "chained"))}
+            for entry in members
+        ]
+        dropped.update(entry["chain_id"] for entry in rest)
+        logger.info(
+            "Ligand units %s are covalently joined; treated as one ligand %s",
+            [entry["chain_id"] for entry in members], leader.get("unique_id"),
+        )
+    return [c for c in chains_info if c.get("chain_id") not in dropped]
+
+
 def _inspect_molecules_impl(structure_file: str) -> dict:
     """Inspect an mmCIF or PDB structure file and return detailed molecular information.
     
@@ -506,7 +638,8 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                     ]
                 )
             chains_info.append(chain_info)
-        
+
+        chains_info = _group_covalent_ligand_units(structure, model, chains_info)
         result["chains"] = chains_info
         # Summary exposes BOTH ID systems so the caller can pick the right
         # one for `select_chains`. The contract is:
@@ -1064,6 +1197,14 @@ def split_molecules(
         requested_ligand_ids = sorted(
             {str(item).strip() for item in include_ligand_ids if str(item).strip()}
         )
+        # A covalently joined ligand answers to any of its residues' ids.
+        alias_to_unit = {
+            str(alias): str(chain["unique_id"])
+            for chain in analysis["chains"]
+            if chain.get("chain_type") == "ligand" and chain.get("unique_id")
+            for alias in chain.get("covalent_unit_aliases") or []
+        }
+        requested_ligand_ids = sorted({alias_to_unit.get(item, item) for item in requested_ligand_ids})
         requested_ligand_id_set = set(requested_ligand_ids)
         available_ligand_ids = sorted(
             {
@@ -1665,9 +1806,17 @@ def split_molecules(
         water_idx = 1
         chain_file_info = []
         
+        folded_units = {
+            member
+            for entry in chain_info.values()
+            for member in entry.get("covalent_members") or []
+        }
         for subchain in model.subchains():
             chain_id = subchain.subchain_id()  # label_asym_id
-            if chain_id not in selected_chain_ids:
+            if chain_id not in selected_chain_ids and chain_id not in folded_units:
+                continue
+            if chain_id in folded_units:
+                # Written with the unit that leads it (see _group_covalent_ligand_units).
                 continue
             
             info = chain_info.get(chain_id, {})
@@ -1776,7 +1925,12 @@ def split_molecules(
                 key: gemmi.Chain(pdb_chain_name) for key in component_keys
             }
             component_residue_counts = dict.fromkeys(component_keys, 0)
-            for residue_index, residue in enumerate(subchain):
+            unit_residues = list(subchain)
+            for member_id in info.get("covalent_members") or []:
+                member_span = model.get_subchain(member_id)
+                if len(member_span):
+                    unit_residues.extend(list(member_span))
+            for residue_index, residue in enumerate(unit_residues):
                 res_name = residue.name.strip()
                 # Skip water residues unless explicitly keeping them
                 # This ensures crystal waters are removed regardless of chain type
@@ -1963,7 +2117,9 @@ def split_molecules(
                     "resnum": resnum,
                     "unique_id": info.get("unique_id"),
                     "file": str(out_file),
-                    "residue_count": residue_count
+                    "residue_count": residue_count,
+                    "covalent_members": info.get("covalent_members") or None,
+                    "merged_from": info.get("merged_from") or None,
                 }
                 delivered_ranges = component_ranges[component_key]
                 if chain_type == "protein" and chain_ranges:

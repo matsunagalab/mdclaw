@@ -29,6 +29,16 @@ The set that was formed is reported after the fact, in the prep node's
 `disulfide_pairs`; there is no preflight that tells you first, so when the
 cysteine chemistry matters, decide before running rather than after.
 
+Every pair, detected or declared, carries a `geometry`: `bonded` (SG-SG within
+1.8-2.3 A), `overlap` (shorter -- the deposit put the two sulfurs on top of
+each other, as 9OQ1 does at 1.30 and 1.47 A) or `not_formed` (longer). Only
+`not_formed` after a MODELLER repair is an error (`modeller_disulfide_not_formed`):
+the bond was never made. `overlap` is a warning with code `disulfide_sg_overlap`
+on both routes: the bond is formed, and the harmonic S-S term relaxes it at
+minimization. A declared list is also measured on the input before anything is
+rebuilt (`declared_disulfide_input_geometry`), so a short pair after the repair
+can be read against what the deposit itself says.
+
 Suppression exists and is explicit:
 
 | what you want | how |

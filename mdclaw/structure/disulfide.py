@@ -26,6 +26,81 @@ from typing import List, Optional, Dict  # noqa: E402
 
 from mdclaw.structure.pdb_utils import resolve_residue_site  # noqa: E402
 
+# One S-S bond window for every reader of a disulfide geometry. A declared or
+# detected pair *outside* it is not the same finding on both sides: longer than
+# the window means the bond was never formed (MODELLER left the sulfurs apart);
+# shorter means the two sulfurs overlap in the deposit -- a modelling defect a
+# harmonic bond relaxes at minimization, not a missing bond. The two are told
+# apart as ``geometry`` = ``"bonded"`` / ``"overlap"`` / ``"not_formed"``.
+DISULFIDE_BOND_MIN_ANGSTROM = 1.8
+DISULFIDE_BOND_MAX_ANGSTROM = 2.3
+
+
+def disulfide_geometry(distance) -> Optional[str]:
+    """Classify an SG-SG distance against the bond window (None when unknown)."""
+    if distance is None:
+        return None
+    if distance < DISULFIDE_BOND_MIN_ANGSTROM:
+        return "overlap"
+    if distance > DISULFIDE_BOND_MAX_ANGSTROM:
+        return "not_formed"
+    return "bonded"
+
+
+def measure_disulfide_pairs(structure_path, pairs) -> List[dict]:
+    """SG-SG distance of each declared pair as it stands in ``structure_path``.
+
+    Measured on the input before anything is rebuilt, so a pair that comes back
+    short *after* MODELLER can be read against what the deposit itself says.
+    Pairs are the public nested ``cys1``/``cys2`` shape or the flat
+    ``chain1``/``resnum1`` shape; an endpoint that cannot be found yields
+    ``sg_sg_angstrom: None`` rather than being dropped.
+    """
+    try:
+        import gemmi
+    except ImportError:
+        return []
+    path = Path(structure_path)
+    try:
+        if path.suffix.lower() == ".cif":
+            st = gemmi.make_structure_from_block(gemmi.cif.read(str(path))[0])
+        else:
+            st = gemmi.read_pdb(str(path))
+    except Exception as exc:  # noqa: BLE001 - measurement is advisory
+        logger.warning(f"Could not read {path.name} to measure disulfides: {exc}")
+        return []
+    model = st[0]
+    sg: Dict[tuple, object] = {}
+    for chain in model:
+        for res in chain:
+            if res.name in ("CYS", "CYX", "CYM"):
+                atom = res.find_atom("SG", "*")
+                if atom:
+                    sg[(chain.name, res.seqid.num, (res.seqid.icode or "").strip())] = atom.pos
+    out = []
+    for pair in pairs or []:
+        if not isinstance(pair, dict):
+            continue
+        if "cys1" in pair and "cys2" in pair:
+            ends = [pair["cys1"], pair["cys2"]]
+            sites = [(str(e.get("chain", "")), int(e["resnum"]), str(e.get("icode") or "").strip())
+                     for e in ends]
+        elif "chain1" in pair and "chain2" in pair:
+            sites = [(str(pair["chain1"]), int(pair["resnum1"]), str(pair.get("icode1") or "").strip()),
+                     (str(pair["chain2"]), int(pair["resnum2"]), str(pair.get("icode2") or "").strip())]
+        else:
+            continue
+        one, two = sg.get(sites[0]), sg.get(sites[1])
+        distance = round(one.dist(two), 3) if one is not None and two is not None else None
+        out.append({
+            "chain1": sites[0][0], "resnum1": sites[0][1], "icode1": sites[0][2],
+            "chain2": sites[1][0], "resnum2": sites[1][1], "icode2": sites[1][2],
+            "sg_sg_angstrom": distance,
+            "geometry": disulfide_geometry(distance),
+        })
+    return out
+
+
 from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,
 )
@@ -312,6 +387,8 @@ def _merge_disulfide_pairs(
             existing["source"] = "pdb_ssbond+distance"
             if pair.get("distance_angstrom") is not None:
                 existing["distance_angstrom"] = pair["distance_angstrom"]
+                existing["geometry"] = pair.get("geometry") or disulfide_geometry(
+                    pair["distance_angstrom"])
         else:
             merged[k] = dict(pair)
 
@@ -398,6 +475,15 @@ def _detect_disulfide_candidates(structure_path: Path) -> list[dict]:
                         )
                         continue
                     confidence = "high" if distance < 2.5 else "medium"
+                    geometry = disulfide_geometry(distance)
+                    if geometry == "overlap":
+                        logger.warning(
+                            "Disulfide %s%s-%s%s: SG-SG %.2f A is shorter than an "
+                            "S-S bond (deposit overlap); it is formed and will relax "
+                            "at minimization",
+                            cys1["resname"], cys1["resnum"],
+                            cys2["resname"], cys2["resnum"], distance,
+                        )
                     candidates.append({
                         "cys1": {
                             "chain": cys1["chain"],
@@ -412,6 +498,7 @@ def _detect_disulfide_candidates(structure_path: Path) -> list[dict]:
                             "resname": cys2["resname"],
                         },
                         "distance_angstrom": round(distance, 2),
+                        "geometry": geometry,
                         "confidence": confidence,
                         "recommendation": "form_bond" if confidence == "high" else "review",
                         "source": "distance",

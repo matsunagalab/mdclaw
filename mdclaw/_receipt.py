@@ -191,8 +191,13 @@ def _facts_prep(result: dict) -> dict:
     for pair in result.get("disulfide_bonds") or []:
         cys1, cys2 = pair.get("cys1") or {}, pair.get("cys2") or {}
         if cys1.get("resnum") and cys2.get("resnum"):
-            disulfides.append(f"{cys1.get('chain', '')}{cys1['resnum']}-{cys2.get('chain', '')}{cys2['resnum']}")
+            label = f"{cys1.get('chain', '')}{cys1['resnum']}-{cys2.get('chain', '')}{cys2['resnum']}"
+            if pair.get("geometry") == "overlap":
+                # The deposit overlaps the two sulfurs; the bond is still formed.
+                label += f" (overlap {pair.get('distance_angstrom')} A)"
+            disulfides.append(label)
     repair = result.get("missing_residue_repair") or result.get("complex_missing_residue_repair")
+    clearance = _get(result, "complex_missing_residue_repair.nonpolymer_clearance")
     merge = _get(result, "merge_result.statistics") or {}
     facts = _compact({
         "chains": chains,
@@ -202,6 +207,7 @@ def _facts_prep(result: dict) -> dict:
         "disulfides": disulfides,
         "missing_residues": missing or None,
         "rebuilt_residues": repair if isinstance(repair, (dict, list)) and repair else None,
+        "rebuilt_loop_clearance": clearance if isinstance(clearance, dict) and clearance else None,
         "gap_policy": ("ranges are separate pieces; no bond is formed across a gap unless "
                        "--join-range-pieces or --join-range-groups was given") if (pieces or missing) else None,
         "nucleic_chains": len(result.get("nucleics") or []) or None,

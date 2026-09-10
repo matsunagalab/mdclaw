@@ -228,6 +228,15 @@
     "requires_node": false,
     "server": "node"
   },
+  "export_mddb": {
+    "job_dir_is_data": false,
+    "node_type": null,
+    "required_params": [
+      "output_dir"
+    ],
+    "requires_node": false,
+    "server": "evidence"
+  },
   "export_state_pdb": {
     "job_dir_is_data": false,
     "node_type": null,
@@ -238,13 +247,6 @@
     ],
     "requires_node": false,
     "server": "md_simulation"
-  },
-  "export_mddb": {
-    "job_dir_is_data": false,
-    "node_type": null,
-    "required_params": ["output_dir"],
-    "requires_node": false,
-    "server": "evidence"
   },
   "fetch_structure": {
     "job_dir_is_data": false,

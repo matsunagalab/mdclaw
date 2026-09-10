@@ -670,11 +670,24 @@ def test_a_bond_never_built_fails(tmp_path):
 
 
 def test_the_window_edges(tmp_path):
-    for distance, ok in ((2.30, True), (2.31, False), (1.80, True), (1.79, False)):
+    """Too long is a bond that was never formed; too short is overlapping sulfurs.
+
+    Only the first is the repair's failure. The deposit itself can put two SG
+    atoms at 1.30 A (9OQ1 A59-A102), the loop protocol keeps observed atoms
+    where they are, and the bond, once declared, relaxes at minimization -- so
+    the short side is reported (``geometry = "overlap"``), not refused.
+    """
+    for distance, ok, geometry in ((2.30, True, "bonded"), (2.31, False, "not_formed"),
+                                   (1.80, True, "bonded"), (1.79, True, "overlap")):
         path = _sg_pdb(tmp_path / f"m{distance}.pdb",
                        {("A", 1, ""): (0, 0, 0), ("A", 2, ""): (distance, 0, 0)})
         got = cp._validate_declared_disulfides(path, [_ss("A", 1, "A", 2)], {"A"})
         assert got["success"] is ok, f"{distance} A"
+        assert got["distances"][0]["geometry"] == geometry, f"{distance} A"
+        if geometry == "overlap":
+            assert got["warnings"] and got["warning_records"][0]["code"] == "disulfide_sg_overlap"
+        else:
+            assert not got["warnings"]
 
 
 def test_a_missing_sg_fails(tmp_path):

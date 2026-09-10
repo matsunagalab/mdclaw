@@ -89,8 +89,11 @@ first):
   report them to the user rather than treating them as measured.
 - `complex_missing_residue_repair`: present when the gaps of every selected
   protein chain were rebuilt in one MODELLER pass over the whole complex
-  instead of chain by chain. Carries `chain_ids`, the segment list, and the
-  total rebuilt. See "What the rebuild can and cannot see" below.
+  instead of chain by chain. Carries `chain_ids`, the segment list, the
+  total rebuilt, `nonpolymer_in_template` (whether the selected ligands and
+  ions sat in the MODELLER template as rigid blocks) and
+  `nonpolymer_clearance` (closest approach of every rebuilt segment to a
+  ligand or ion heavy atom). See "What the rebuild can and cannot see" below.
 - `residue_mapping`: source-to-merged nucleic residue mapping.
 - `glycan_metadata` and `glycan_linkages`: GLYCAM topology inputs.
 
@@ -119,13 +122,17 @@ contact and MODELLER will now respect that contact while building. Better than
 building straight through it, but not free, so the chain selection is a
 scientific choice worth stating rather than defaulting.
 
-**Ligands.** Only protein chains are fused for the rebuild; ligands, glycans and
-ions are not present while loops are built. A gap beside a binding site can
-therefore be modeled into it. Check rather than assume: measure the rebuilt
-residues against the ligand afterwards, and treat anything under about 3 A as a
-rebuild to redo with the ligand in the template. On 9UTC, chain A's 44-58 gap
-flanks the sucralose site at 6.6 A and the loop happened to build away from it,
-ending 8.8 A clear -- a measurement, not a guarantee.
+**Ligands.** The selected ligands and ions ride along in the MODELLER template
+as rigid BLK residues (`--repair-nonpolymer-context`, on by default), so a loop
+beside a binding site is built around them rather than into them. Whether or
+not the block was used, every rebuilt segment is then measured against every
+ligand and ion heavy atom: `complex_missing_residue_repair.nonpolymer_clearance`
+lists the closest approach per segment, a segment inside 3 A is a warning, and
+a segment inside 2.2 A stops the prep with `modeller_loop_nonpolymer_clash` --
+the model would be a loop threaded through the ligand (measured on 9OPZ before
+this existed: the trigger loop 45-57 at 0.25 A from sucralose, twenty loop atoms
+inside 2.5 A, no warning). Pass `--no-repair-nonpolymer-context` only to
+reproduce the old ligand-blind build; the clearance check still runs.
 
 **Comparisons.** Two deposits of the same system rarely leave the same residues
 unresolved, so the rebuilt regions differ between them. Report which residues
