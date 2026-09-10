@@ -154,12 +154,29 @@ def parse_input(text):
     return {"actions": actions, "duration_steps": duration, "stride": int(stride), "biases": biases}
 
 
-def read_protocol(restart_from):
+def read_protocol(restart_from, need_state=False):
+    """Return ``(protocol, state)`` recorded in an XML restart, or Nones.
+
+    The PLUMED marker is a context parameter named ``PARAMETER``; a state
+    without that name in its text carries no protocol, so the full State
+    (tens of MB for a membrane system) is only deserialized when the marker
+    is present or the caller needs the state itself. An XML that is not an
+    OpenMM State (a placeholder, a foreign file) is no protocol either; the
+    state loader reports it when the run gets there.
+    """
     if not restart_from or Path(restart_from).suffix.lower() != ".xml" or not Path(restart_from).is_file():
         return None, None
+    text = Path(restart_from).read_text()
+    if PARAMETER not in text and not need_state:
+        return None, None
     from openmm import XmlSerializer
-    state = XmlSerializer.deserialize(Path(restart_from).read_text())
-    marker = dict(state.getParameters()).get(PARAMETER)
+    try:
+        state = XmlSerializer.deserialize(text)
+        marker = dict(state.getParameters()).get(PARAMETER)
+    except Exception as exc:  # noqa: BLE001 - not a State: nothing PLUMED can read
+        if PARAMETER in text:
+            _error(f"PLUMED restart XML could not be read: {exc}", code="plumed_restart_mismatch")
+        return None, None
     if marker is None:
         return None, state
     try:
@@ -229,7 +246,7 @@ class PlumedRun:
         self.text, self.parsed = validated
         if self.parsed["stride"] != report_interval:
             _error("PRINT STRIDE must match output_frequency_ps / timestep_fs.")
-        previous, state = read_protocol(restart_from)
+        previous, state = read_protocol(restart_from, need_state=True)
         origin = previous["origin_step"] if previous else (state.getStepCount() if state else 0)
         self.start_step = state.getStepCount() if state else 0
         if not 0 <= self.start_step < 2**31 - 1 or origin + self.parsed["duration_steps"] >= 2**31 - 1:

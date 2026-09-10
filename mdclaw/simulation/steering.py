@@ -15,14 +15,30 @@ def _protocol_id(protocol):
     return int(hashlib.sha256(json.dumps(protocol, sort_keys=True).encode()).hexdigest()[:13], 16)
 
 
-def _restart_protocol(restart_from):
+def _restart_protocol(restart_from, need_state=False):
+    """``(protocol, state)`` recorded in an XML restart, or Nones.
+
+    The State is deserialized only when the marker parameter is in the file
+    or the caller needs the state: a plain equilibration restart is tens of
+    MB and carries no steering protocol, and an XML that is not a State (a
+    placeholder) is no protocol either.
+    """
     if (not restart_from or Path(restart_from).suffix != ".xml"
             or not Path(restart_from).is_file()):
         return None, None
+    text = Path(restart_from).read_text()
+    if PROTOCOL_PARAMETER not in text and not need_state:
+        return None, None
     from openmm import XmlSerializer
 
-    state = XmlSerializer.deserialize(Path(restart_from).read_text())
-    marker = dict(state.getParameters()).get(PROTOCOL_PARAMETER)
+    try:
+        state = XmlSerializer.deserialize(text)
+        marker = dict(state.getParameters()).get(PROTOCOL_PARAMETER)
+    except Exception as exc:  # noqa: BLE001 - not a State: nothing steering can read
+        if PROTOCOL_PARAMETER in text:
+            raise DistanceRestraintError(code="distance_steering_restart_mismatch",
+                                         message=f"Steered XML restart could not be read: {exc}")
+        return None, None
     if marker is None:
         return None, state
     sidecar = Path(restart_from).parent / "steering.json"
@@ -68,7 +84,7 @@ class SteeringSchedule:
         self.simulation = simulation
         self.elapsed = 0
         self.fixed = time_ns is None
-        previous, saved = _restart_protocol(restart_from)
+        previous, saved = _restart_protocol(restart_from, need_state=True)
         if self.fixed and previous is None:
             raise DistanceRestraintError(code="distance_steering_restart_mismatch", message="Fixed steering requires a completed steering protocol.")
         self.protocol = {
@@ -189,7 +205,7 @@ def prepare_torch_steering(*, restart_from, time_ns, signature, positions, box,
     import numpy as np
     from openmm.unit import nanometer
 
-    previous, saved = _restart_protocol(restart_from)
+    previous, saved = _restart_protocol(restart_from, need_state=True)
     if time_ns is None and previous is None:
         return None
     path = Path(output_dir) / "steering_initial.npz"

@@ -162,3 +162,20 @@ def test_analysis_chain_stops_at_steering_boundary(tmp_path):
     assert [r["node_id"] for r in _walk_prod_trajectory_records_from(job, nodes[-1])] == nodes[2:]
     assert len(_walk_prod_chain_from(job, nodes[-1], "trajectory")) == 2
     assert len(_walk_prod_chain_from(job, nodes[1], "trajectory")) == 2
+
+
+def test_restart_reader_ignores_non_steering_xml(tmp_path):
+    """A restart without the steering marker is not deserialized, and a
+    placeholder XML is no protocol (dc974d3-era readers crashed on it)."""
+    from mdclaw.simulation import steering
+
+    placeholder = tmp_path / "external.xml"
+    placeholder.write_text("<placeholder/>")
+    assert steering._restart_protocol(str(placeholder)) == (None, None)
+    assert steering._restart_protocol(str(placeholder), need_state=True) == (None, None)
+    steering.check_steering_handoff(str(placeholder), None)  # no raise
+    marked = tmp_path / "marked.xml"
+    marked.write_text(f'<placeholder {steering.PROTOCOL_PARAMETER}="1"/>')
+    with pytest.raises(Exception) as exc_info:
+        steering._restart_protocol(str(marked))
+    assert "distance_steering_restart_mismatch" in str(getattr(exc_info.value, "code", "")) + str(exc_info.value)

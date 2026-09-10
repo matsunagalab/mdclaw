@@ -256,3 +256,45 @@ def test_geometry_physical_masses_and_force_gradient(tmp_path, cv):
                     energies.append(sim.context.getState(getEnergy=True).getPotentialEnergy()._value)
                 assert forces[i, j] == pytest.approx(-(energies[1] - energies[0]) / 2e-5, abs=2e-5)
         sim = None
+
+
+def test_read_protocol_ignores_xml_that_is_not_a_plumed_state(tmp_path):
+    """A restart XML without the marker is not deserialized; a placeholder is no protocol.
+
+    dc974d3 deserialized every XML restart to look for the marker, which cost a
+    full State parse per production restart and crashed the 24 tests that use
+    ``<placeholder/>`` restart files (``Unsupported object type``)."""
+    from mdclaw.simulation import plumed
+
+    placeholder = tmp_path / "external.xml"
+    placeholder.write_text("<placeholder/>")
+    assert plumed.read_protocol(str(placeholder)) == (None, None)
+    assert plumed.read_protocol(str(placeholder), need_state=True) == (None, None)
+    assert plumed.read_protocol(None) == (None, None)
+    assert plumed.read_protocol(str(tmp_path / "missing.xml")) == (None, None)
+    binary = tmp_path / "state.chk"
+    binary.write_bytes(b"\x00")
+    assert plumed.read_protocol(str(binary)) == (None, None)
+
+    # A marker without a readable state is a PLUMED restart error, not a crash elsewhere.
+    marked = tmp_path / "marked.xml"
+    marked.write_text(f'<placeholder {plumed.PARAMETER}="1"/>')
+    with pytest.raises(Exception) as exc_info:
+        plumed.read_protocol(str(marked))
+    assert "plumed_restart_mismatch" in str(getattr(exc_info.value, "code", "")) + str(exc_info.value)
+
+
+def test_read_protocol_parses_a_real_state_only_on_request(tmp_path):
+    from openmm import Context, Platform, System, VerletIntegrator, XmlSerializer
+
+    from mdclaw.simulation import plumed
+
+    system = System()
+    system.addParticle(12.0)
+    context = Context(system, VerletIntegrator(0.001), Platform.getPlatformByName("Reference"))
+    context.setPositions([[0.0, 0.0, 0.0]])
+    xml = tmp_path / "equilibrated.xml"
+    xml.write_text(XmlSerializer.serialize(context.getState(getPositions=True, getParameters=True)))
+    assert plumed.read_protocol(str(xml)) == (None, None)
+    protocol, state = plumed.read_protocol(str(xml), need_state=True)
+    assert protocol is None and state is not None and state.getStepCount() == 0
