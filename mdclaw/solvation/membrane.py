@@ -1945,6 +1945,22 @@ def _run_membrane_packmol_race(
 
 
 @node_tool(node_type="solv")
+def _coerce_ligand_chemistry(value):
+    """Ligand chemistry as records, whether resolved as records or as a file.
+
+    ``prepare_complex`` registers ``artifacts["ligand_chemistry"]`` as the list
+    of records itself and ``solvate_structure`` consumes that list directly.
+    ``embed_in_membrane`` read it as a path and crashed with ``TypeError``
+    on every membrane system whose prep carried a ligand (observed on the
+    2026-09-10 MDDataBench campaign, task 003_membrane_5zk8).
+    """
+    if isinstance(value, (str, Path)):
+        return json.loads(Path(value).read_text())
+    if isinstance(value, dict):
+        return [value]
+    return list(value)
+
+
 def embed_in_membrane(
     pdb_file: Optional[str] = None,
     output_dir: Optional[str] = None,
@@ -2340,9 +2356,8 @@ def embed_in_membrane(
                 "errors": ["Disulfide plan must match the selected prep ancestor."],
             })
         disulfide_bonds = canonical_pairs
-        ligand_path = _inputs.get("ligand_chemistry")
-        if ligand_path:
-            ligand_chemistry = json.loads(Path(ligand_path).read_text())
+        if ligand_chemistry is None and _inputs.get("ligand_chemistry"):
+            ligand_chemistry = _coerce_ligand_chemistry(_inputs["ligand_chemistry"])
 
     if not pdb_file:
         result["errors"].append(

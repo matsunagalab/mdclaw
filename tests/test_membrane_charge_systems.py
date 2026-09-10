@@ -80,3 +80,15 @@ def test_anionic_lipid_charge_is_included(tmp_path):
     result = _compute_membrane_net_charge(pdb_file=noions, box_dims=box, water_model="opc")
     assert result["success"], result
     assert result["net_charge"] == -phosphorus
+
+
+def test_embed_in_membrane_accepts_ligand_chemistry_records_or_a_file(tmp_path):
+    """prep registers the records themselves; a path must keep working too."""
+    from mdclaw.solvation.membrane import _coerce_ligand_chemistry
+
+    records = [{"name": "LIG", "net_charge": -1}]
+    assert _coerce_ligand_chemistry(records) == records
+    assert _coerce_ligand_chemistry(records[0]) == records
+    path = tmp_path / "ligand_chemistry.json"
+    path.write_text(json.dumps(records))
+    assert _coerce_ligand_chemistry(str(path)) == records
