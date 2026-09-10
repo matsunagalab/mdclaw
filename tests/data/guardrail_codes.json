@@ -290,6 +290,7 @@
   "slurm_node_already_submitted",
   "slurm_node_submission_in_progress",
   "slurm_node_unavailable",
+  "slurm_status_unavailable",
   "solute_identity_not_preserved",
   "solvation_topology_water_model_mismatch",
   "source_already_exists",

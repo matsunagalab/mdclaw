@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -25,6 +27,45 @@ from mdclaw.slurm import _base
 from mdclaw.slurm.config import _validate_slurm_job_id
 from mdclaw.slurm.node_sync import _sync_slurm_state_to_node
 from mdclaw.slurm.tracker import _candidate_job_paths, _find_job_metadata, _find_record_by_job_id, _get_jobs_path, _read_job_records, _update_job_record
+
+
+_STATUS_QUERY_ERRORS = (subprocess.SubprocessError, OSError, ValueError, TypeError, AttributeError)
+
+
+def _controller_job(stdout: str, job_id: str) -> dict:
+    """Read only the requested allocation, including Slurm's array-task identity."""
+    for line in stdout.splitlines():
+        fields = dict(re.findall(r"(?:^|\s)(\w+)=([^\s]+)", line))
+        identity = fields.get("JobId")
+        if fields.get("ArrayJobId") and fields.get("ArrayTaskId"):
+            identity = f"{fields['ArrayJobId']}_{fields['ArrayTaskId']}"
+        if identity != job_id or not fields.get("JobState"):
+            continue
+        return {
+            "state": fields["JobState"], "elapsed": fields.get("RunTime"),
+            "node": fields.get("NodeList"), "exit_code": fields.get("ExitCode"),
+        }
+    raise ValueError(f"No matching controller record for job {job_id}")
+
+
+def _status_unavailable(result: dict, job_id: str, *, clients: dict, job_dir, output_dir) -> dict:
+    if any(clients.values()):
+        message = f"Cannot determine current Slurm state for job {job_id}; no usable scheduler record."
+        next_action = "Retry if Slurm is unavailable; if records expired, inspect DAG and logs separately."
+    else:
+        message = f"Cannot determine Slurm state for job {job_id}; no Slurm client (squeue/scontrol/sacct) is available."
+        next_action = "Run on a Slurm host, or point MDCLAW_SLURM_PATH at the site's Slurm clients."
+    result.update(success=False, state=None, state_source=None, exit_code=None, node=None,
+                  elapsed=None, code="slurm_status_unavailable", message=message, next_action=next_action,
+                  checked_at=datetime.now(timezone.utc).isoformat())
+    result["errors"] = result["errors"] or [message]
+    rec = _find_record_by_job_id(job_id, job_dir=job_dir, output_dir=output_dir)
+    if rec and rec.get("checked_at"):
+        result["last_observation"] = {
+            "state": rec.get("status"), "exit_code": rec.get("exit_code"),
+            "checked_at": rec["checked_at"], "state_source": rec.get("state_source"),
+        }
+    return result
 
 
 def _read_tail(path: str | Path | None, *, lines: int = 50) -> Optional[str]:
@@ -82,7 +123,9 @@ def check_job(
 ) -> dict:
     """Check the status of a SLURM job.
 
-    Queries squeue for running/pending jobs and sacct for completed jobs.
+    Queries squeue, then scontrol, then sacct. Controller records permit
+    completed-job lookup without accounting, but expire under MinJobAge.
+    Unavailable records never imply completion; last_observation is historical.
     For terminal jobs, automatically retrieves stdout/stderr log tails when
     the tracker, metadata, or standard SLURM log names reveal the files.
 
@@ -101,6 +144,8 @@ def check_job(
           - elapsed: str - Elapsed time
           - node: str - Node(s) allocated
           - exit_code: str - Exit code (for completed jobs)
+          - state_source: str - squeue, scontrol or sacct
+          - checked_at: str - UTC observation time
           - stdout_tail: str - Last 50 lines of stdout for terminal jobs
           - stderr_tail: str - Last 50 lines of stderr for terminal jobs
           - errors: list[str]
@@ -113,6 +158,7 @@ def check_job(
         "elapsed": None,
         "node": None,
         "exit_code": None,
+        "state_source": None,
         "stdout_tail": None,
         "stderr_tail": None,
         "errors": [],
@@ -122,115 +168,99 @@ def check_job(
     if job_id_error:
         return {**result, **job_id_error}
 
-    if not _base.check_external_tool("squeue"):
-        return {**result, **create_tool_not_available_error("squeue", "SLURM is not installed.")}
-
     timeout = get_timeout("slurm")
+    clients = {name: _base.check_external_tool(name) for name in ("squeue", "scontrol", "sacct")}
+
+    def query(command):
+        if not clients[command[0]]:
+            raise FileNotFoundError(f"Slurm client {command[0]} is not available in the configured search path")
+        return _base.run_command(command, timeout=timeout)
+
+    # Each lookup only collects an observation; the tracker/DAG finalizer runs
+    # once, outside the query error handling, so its own failures surface
+    # instead of being mistaken for an unavailable scheduler.
+    observation: Optional[dict] = None
 
     # Try squeue first (running/pending jobs)
     try:
-        proc = _base.run_command(["squeue", "--json", "-j", str(job_id)], timeout=timeout)
+        proc = query(["squeue", "--json", "-j", str(job_id)])
         data = json.loads(proc.stdout)
         jobs = data.get("jobs", [])
         if jobs:
             job = jobs[0]
-            result["state"] = job.get("job_state", ["UNKNOWN"])
-            if isinstance(result["state"], list):
-                result["state"] = result["state"][0] if result["state"] else "UNKNOWN"
-            result["state"] = str(result["state"])
-            result["node"] = str(job.get("nodes", ""))
-
-            # Elapsed time
+            state = job.get("job_state", ["UNKNOWN"])
+            if isinstance(state, list):
+                state = state[0] if state else "UNKNOWN"
             time_info = job.get("time", {})
-            if isinstance(time_info, dict):
-                result["elapsed"] = str(time_info.get("elapsed", ""))
-            else:
-                result["elapsed"] = str(time_info)
+            elapsed = time_info.get("elapsed", "") if isinstance(time_info, dict) else time_info
+            observation = {"state": str(state), "node": str(job.get("nodes", "")),
+                           "elapsed": str(elapsed), "state_source": "squeue"}
 
-            result["success"] = True
-            _check_job_finalize(
-                result, str(job_id), job_dir=job_dir, output_dir=output_dir,
-            )
-            return result
-
-    except (subprocess.CalledProcessError, json.JSONDecodeError):
+    except _STATUS_QUERY_ERRORS:
         # squeue --json may fail on old SLURM or if job is completed
         try:
-            proc = _base.run_command(
-                ["squeue", "-j", str(job_id), "-o", "%T %M %N"],
-                timeout=timeout,
-            )
+            proc = query(["squeue", "-j", str(job_id), "-o", "%T %M %N"])
             lines = proc.stdout.strip().splitlines()
             if len(lines) > 1:
                 parts = lines[1].split()
-                result["state"] = parts[0] if parts else "UNKNOWN"
-                result["elapsed"] = parts[1] if len(parts) > 1 else None
-                result["node"] = parts[2] if len(parts) > 2 else None
-                result["success"] = True
-                _check_job_finalize(
-                    result, str(job_id), job_dir=job_dir, output_dir=output_dir,
-                )
-                return result
-        except subprocess.CalledProcessError:
-            pass  # Job not in queue, try sacct
+                observation = {"state": parts[0] if parts else "UNKNOWN",
+                               "elapsed": parts[1] if len(parts) > 1 else None,
+                               "node": parts[2] if len(parts) > 2 else None,
+                               "state_source": "squeue"}
+        except _STATUS_QUERY_ERRORS as exc:
+            result["warnings"].append(f"squeue lookup unavailable: {exc}")
+
+    # The controller retains recently completed jobs even without accounting.
+    if observation is None:
+        try:
+            proc = query(["scontrol", "--oneliner", "show", "job", str(job_id)])
+            observation = {**_controller_job(proc.stdout, str(job_id)), "state_source": "scontrol"}
+        except _STATUS_QUERY_ERRORS as exc:
+            result["warnings"].append(f"scontrol lookup unavailable: {exc}")
 
     # Try sacct for completed jobs
-    if _base.check_external_tool("sacct"):
+    if observation is None and not clients["sacct"]:
+        result["errors"].append(f"Job {job_id} not in queue and sacct not available")
+        return _status_unavailable(result, str(job_id), clients=clients, job_dir=job_dir, output_dir=output_dir)
+    if observation is None:
         try:
-            proc = _base.run_command(
-                ["sacct", "--json", "-j", str(job_id)],
-                timeout=timeout,
-            )
+            proc = query(["sacct", "--json", "-j", str(job_id)])
             data = json.loads(proc.stdout)
             jobs = data.get("jobs", [])
             if jobs:
                 job = jobs[0]
-                result["state"] = job.get("state", {}).get("current", ["UNKNOWN"])
-                if isinstance(result["state"], list):
-                    result["state"] = result["state"][0] if result["state"] else "UNKNOWN"
-                result["state"] = str(result["state"])
-                result["node"] = str(job.get("nodes", ""))
-
+                state = job.get("state", {}).get("current", ["UNKNOWN"])
+                if isinstance(state, list):
+                    state = state[0] if state else "UNKNOWN"
                 exit_info = job.get("exit_code", {})
-                if isinstance(exit_info, dict):
-                    result["exit_code"] = str(exit_info.get("return_code", ""))
-                else:
-                    result["exit_code"] = str(exit_info)
-
+                exit_code = exit_info.get("return_code", "") if isinstance(exit_info, dict) else exit_info
                 time_info = job.get("time", {})
-                if isinstance(time_info, dict):
-                    result["elapsed"] = str(time_info.get("elapsed", ""))
-
-                result["success"] = True
+                observation = {"state": str(state), "node": str(job.get("nodes", "")),
+                               "exit_code": str(exit_code), "state_source": "sacct",
+                               "elapsed": str(time_info.get("elapsed", "")) if isinstance(time_info, dict) else None}
             else:
                 result["errors"].append(f"No records found for job {job_id}")
-                return result
+                return _status_unavailable(result, str(job_id), clients=clients, job_dir=job_dir, output_dir=output_dir)
 
-        except (subprocess.CalledProcessError, json.JSONDecodeError):
+        except _STATUS_QUERY_ERRORS:
             # Fallback to text sacct
             try:
-                proc = _base.run_command(
-                    ["sacct", "-j", str(job_id), "-o", "State,Elapsed,NodeList,ExitCode", "-n", "-P"],
-                    timeout=timeout,
-                )
+                proc = query(["sacct", "-j", str(job_id), "-o", "State,Elapsed,NodeList,ExitCode", "-n", "-P"])
                 lines = proc.stdout.strip().splitlines()
                 if lines:
                     parts = lines[0].split("|")
-                    result["state"] = parts[0] if parts else "UNKNOWN"
-                    result["elapsed"] = parts[1] if len(parts) > 1 else None
-                    result["node"] = parts[2] if len(parts) > 2 else None
-                    result["exit_code"] = parts[3] if len(parts) > 3 else None
-                    result["success"] = True
+                    if len(parts) < 4 or not re.fullmatch(r"[A-Z_]+(?: .*|\+)?", parts[0]):
+                        raise ValueError("Malformed sacct status record")
+                    observation = {"state": parts[0], "elapsed": parts[1], "node": parts[2],
+                                   "exit_code": parts[3], "state_source": "sacct"}
                 else:
                     result["errors"].append(f"No sacct records for job {job_id}")
-                    return result
-            except subprocess.CalledProcessError as e:
+                    return _status_unavailable(result, str(job_id), clients=clients, job_dir=job_dir, output_dir=output_dir)
+            except _STATUS_QUERY_ERRORS as e:
                 result["errors"].append(f"sacct failed: {e}")
-                return result
-    else:
-        result["errors"].append(f"Job {job_id} not in queue and sacct not available")
-        return result
+                return _status_unavailable(result, str(job_id), clients=clients, job_dir=job_dir, output_dir=output_dir)
 
+    result.update(observation, success=True)
     _check_job_finalize(result, str(job_id), job_dir=job_dir, output_dir=output_dir)
     return result
 
@@ -246,7 +276,7 @@ def _check_job_finalize(
     update the JSONL tracker, and reflect SLURM state onto any linked DAG
     node. Called from every exit point of :func:`check_job` so queue-hit
     (RUNNING/PENDING via squeue) and archive-hit (COMPLETED/FAILED via
-    sacct) paths both sync consistently.
+    scontrol/sacct) paths both sync consistently.
     """
     rec = _find_record_by_job_id(job_id, job_dir=job_dir, output_dir=output_dir)
 
@@ -261,6 +291,9 @@ def _check_job_finalize(
         "PREEMPTED",
         "TIMEOUT",
     }
+    result["checked_at"] = datetime.now(timezone.utc).isoformat()
+    if result.get("state") not in terminal_states:
+        result["exit_code"] = None
     if result.get("state") in terminal_states:
         if not result.get("stderr_tail"):
             result["stderr_tail"] = _find_log_tail(
@@ -281,13 +314,12 @@ def _check_job_finalize(
     if not (result.get("success") and result.get("state")):
         return
 
-    updates = {"status": result["state"]}
+    updates = {"status": result["state"], "state_source": result.get("state_source"),
+               "exit_code": result.get("exit_code")}
     if result.get("node"):
         updates["node"] = result["node"]
     if result.get("elapsed"):
         updates["elapsed"] = result["elapsed"]
-    if result.get("exit_code"):
-        updates["exit_code"] = result["exit_code"]
     _update_job_record(
         job_id,
         updates,

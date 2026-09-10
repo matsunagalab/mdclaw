@@ -492,6 +492,7 @@ class TestCheckJob:
         }
         mock_run.side_effect = [
             _mock_run_command(stdout=json.dumps(squeue_json)),
+            _mock_run_command(stdout=""),  # controller record expired
             _mock_run_command(stdout=json.dumps(sacct_json)),
         ]
 
@@ -522,6 +523,7 @@ class TestCheckJob:
         }
         mock_run.side_effect = [
             _mock_run_command(stdout=json.dumps(squeue_json)),
+            _mock_run_command(stdout=""),  # controller record expired
             _mock_run_command(stdout=json.dumps(sacct_json)),
         ]
 
@@ -534,6 +536,9 @@ class TestCheckJob:
     def test_squeue_not_available(self, mock_check):
         result = check_job("99999")
         assert result["success"] is False
+        assert result["code"] == "slurm_status_unavailable"
+        assert "no Slurm client" in result["message"]
+        assert "MDCLAW_SLURM_PATH" in result["next_action"]
 
 
 # ---------------------------------------------------------------------------
