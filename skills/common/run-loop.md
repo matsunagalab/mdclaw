@@ -56,18 +56,22 @@ DAG handoff instead of claiming a scientific answer.
    repeat `inspect_job` before every node; the state-changing core is
    `create_node` -> `explain_node` -> stage tool.
 
-2. **Create the node (parents resolve themselves).**
+2. **Create the node.**
 
    ```bash
    mdclaw create_node --job-dir <job_dir> --node-type <next_node_type>
    ```
 
-   When you omit `--parent-node-ids`, `create_node` auto-attaches the single
-   completed frontier node of the correct parent type and reports it as
-   `auto_resolved_parent`. Only pass `--parent-node-ids` explicitly when you are
-   branching (replicates, mutations, multi-parent analyze) or when `inspect_job`
-   shows an ambiguous frontier. `create_node` returns the new `node_id`; use that
-   exact value next. Never copy a literal example node ID into a real command.
+   When you omit `--parent-node-ids`, `create_node` attaches the single open
+   frontier node of the correct parent type (completed, or still pending or
+   running when you are building a chain to submit with Slurm dependencies)
+   and reports it as `auto_resolved_parent`. When no such parent exists or
+   several qualify, the result is `code=parent_required` with
+   `candidate_parents` and `candidate_commands`: pick one and pass
+   `--parent-node-ids`. Pass it explicitly anyway when branching (replicates,
+   mutations, multi-parent analyze). `create_node` returns the new `node_id`
+   and a `next` block naming the stage tool to run on it; use that exact id.
+   Never copy a literal example node ID into a real command.
 
    For `prep`, `solv`, `topo`, `min`, `eq` and `prod`, `--conditions` is
    optional and each key is a contract: the stage tool must report that key
@@ -93,14 +97,27 @@ DAG handoff instead of claiming a scientific answer.
 4. **Run the stage tool with node context.**
 
    ```bash
-   mdclaw --job-dir <job_dir> --node-id <new_node_id> <suggested_tool> ...
+   mdclaw --job-dir <job_dir> --node-id <new_node_id> <stage_tool> ...
    ```
 
+   `<stage_tool>` is the tool this skill names for the stage; the previous
+   result's `next.stage_tools[0]` and `mdclaw --workflow` name the same tool.
    Workflow tools require both `--job-dir` and `--node-id`. Running them without
    node context returns `code=node_context_required` (structured JSON, not a
    shell error) — create the node first, then run the tool. Let the tool
    auto-resolve ancestor artifacts (topology XML triple, restart state,
    trajectories); do not wire those paths by hand.
+
+   Run the tool in the foreground and wait for its JSON; do not background it
+   and poll. Progress appears on stderr as `[mdclaw] <tool> still running after
+   Ns`. Typical wall time on a login node: `prepare_complex` 1-10 min (longer
+   with MODELLER loop rebuilding), `solvate_structure` 1-5 min,
+   `embed_in_membrane` 10-40 min, `build_amber_system` 1-10 min (up to 30 min
+   when a ligand needs charge fitting).
+
+   If the node's parent is not completed yet, the CLI refuses with
+   `code=parent_not_completed` before the tool starts; the node is not spent.
+   Run the parent named in `next` first, then rerun the same command.
 
    On a batch cluster, `min`, `eq` and `prod` are *submitted*, not run here:
    follow `skills/hpc-run/SKILL.md` and use `submit_job`, which owns the sbatch
@@ -141,6 +158,13 @@ DAG handoff instead of claiming a scientific answer.
 ## Node CLI Invariants
 
 - Never pass `--node-id` without `--job-dir`.
+- Read a tool's JSON from stdout as a whole. Keep stderr separate (no `2>&1`);
+  it carries warnings and the heartbeat, not the result. Do not truncate stdout
+  with `head` or redirect it to a file: the default `--output brief` already
+  keeps the envelope short (`success`, `code`, `message`, `node_id`,
+  `node_status`, `next_action`, `next`, `dag`, `warnings_count`,
+  `result_file`) and stubs large values as `{"_omitted": true, "see":
+  "<result_file>#<key>"}`; the full result is `<job_dir>/nodes/<node_id>/result.json`.
 - Do not pass artifact paths between nodes. Workflow tools resolve inputs from
   completed DAG ancestors.
 - Start new scientific work from a `study_dir`; a simple run can use one job such

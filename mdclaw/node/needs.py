@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from mdclaw.node.io import _atomic_write_json  # noqa: E402
 from mdclaw.node.progress import _sync_progress_node_entry  # noqa: E402
+from mdclaw.node.snapshot import node_missing_error  # noqa: E402
 from mdclaw.node.validation import _node_is_terminal, _terminal_node_sealed_response  # noqa: E402
 
 
@@ -67,16 +68,12 @@ def add_node_need(job_dir: str, node_id: str, need: dict) -> dict:
     node_dir = jd / "nodes" / node_id
     node_json = node_dir / "node.json"
     if not node_json.exists():
-        return {
-            "success": False,
-            "code": "node_missing",
-            "error": f"Node '{node_id}' does not exist under {job_dir}",
-        }
+        return node_missing_error(job_dir, node_id)
 
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
         if _node_is_terminal(data):
-            return _terminal_node_sealed_response(node_id, data.get("status"))
+            return _terminal_node_sealed_response(node_id, data.get("status"), node=data, job_dir=str(job_dir))
         metadata = data.setdefault("metadata", {})
         open_needs = metadata.setdefault("open_needs", [])
         if not isinstance(open_needs, list):
@@ -117,16 +114,12 @@ def clear_node_need(
     node_dir = jd / "nodes" / node_id
     node_json = node_dir / "node.json"
     if not node_json.exists():
-        return {
-            "success": False,
-            "code": "node_missing",
-            "error": f"Node '{node_id}' does not exist under {job_dir}",
-        }
+        return node_missing_error(job_dir, node_id)
 
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
         if _node_is_terminal(data):
-            return _terminal_node_sealed_response(node_id, data.get("status"))
+            return _terminal_node_sealed_response(node_id, data.get("status"), node=data, job_dir=str(job_dir))
         metadata = data.setdefault("metadata", {})
         open_needs = metadata.get("open_needs", [])
         if not isinstance(open_needs, list):
@@ -190,16 +183,12 @@ def record_node_need_attempt(
     node_dir = jd / "nodes" / node_id
     node_json = node_dir / "node.json"
     if not node_json.exists():
-        return {
-            "success": False,
-            "code": "node_missing",
-            "error": f"Node '{node_id}' does not exist under {job_dir}",
-        }
+        return node_missing_error(job_dir, node_id)
 
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
         if _node_is_terminal(data):
-            return _terminal_node_sealed_response(node_id, data.get("status"))
+            return _terminal_node_sealed_response(node_id, data.get("status"), node=data, job_dir=str(job_dir))
         metadata = data.setdefault("metadata", {})
         open_needs = metadata.get("open_needs", [])
         if not isinstance(open_needs, list):

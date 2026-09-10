@@ -14,6 +14,7 @@ from mdclaw.node.io import _load_json_artifact, _read_artifact_from_node, _read_
 from mdclaw.node.lifecycle import read_node, validate_node_execution_context  # noqa: E402
 from mdclaw.node.prod_chain import _find_ancestor_node_id, _select_md_restart_ancestor, _walk_prod_trajectory_records_from  # noqa: E402
 from mdclaw.node.progress import _load_progress_v3  # noqa: E402
+from mdclaw.node.snapshot import node_missing_error  # noqa: E402
 
 
 def explain_node(
@@ -26,13 +27,7 @@ def explain_node(
     jd = Path(job_dir).resolve()
     node_json = jd / "nodes" / node_id / "node.json"
     if not node_json.exists():
-        return {
-            "success": False,
-            "code": "node_missing",
-            "message": f"Node '{node_id}' does not exist under {jd}",
-            "job_dir": str(jd),
-            "node_id": node_id,
-        }
+        return node_missing_error(str(jd), node_id, expected_type=expected_node_type)
 
     node = read_node(str(jd), node_id)
     node_type = node.get("node_type")

@@ -25,6 +25,9 @@ export MDCLAW_CHARGE_FIT_TIMEOUT=1800
 export MDCLAW_MD_SIMULATION_TIMEOUT=3600
 export MDCLAW_VISUALIZATION_TIMEOUT=300
 export MDCLAW_LOG_LEVEL=WARNING
+export MDCLAW_OUTPUT=brief
+export MDCLAW_LOG_FILE="$PWD/mdclaw.log"
+export MDCLAW_HEARTBEAT_SECONDS=30
 export MDCLAW_CACHE_DIR="$HOME/.cache/mdclaw"
 export MDCLAW_SLURM_TIMEOUT=120
 export MDCLAW_MODULE_LOADS="cuda/12.0 amber/24"
@@ -34,6 +37,14 @@ export MDCLAW_SURROGATE_DIR="$HOME/.cache/mdclaw/surrogates"
 
 Notes:
 
+- `MDCLAW_LOG_LEVEL` sets what the CLI writes to stderr; the default is
+  `WARNING` so that a successful call prints only its JSON on stdout.
+  `MDCLAW_LOG_FILE` (or `--log-file`) additionally writes INFO logs to a file.
+- `MDCLAW_OUTPUT` selects the default result mode (`brief`, `full`, `id`);
+  `--output` overrides it per call. See "Result Envelope And Output Modes" in
+  `cli-internals.md`.
+- `MDCLAW_HEARTBEAT_SECONDS` sets the interval of the `still running` line on
+  stderr while a tool runs (`0` disables it; `--heartbeat-seconds` overrides).
 - `MDCLAW_AMBER_TIMEOUT` controls the `build_amber_system` wall-time budget for
   the openmmforcefields `SystemGenerator` build + initial `LocalEnergyMinimizer`
   pass (no tleap is invoked); raise it for very large fusions and glycoproteins.

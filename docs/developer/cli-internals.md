@@ -85,21 +85,102 @@ registered under a `study_dir`; relative paths such as `jobs/wt` must remain
 relative to the study. It carries the `@job_dir_data_tool` marker so the CLI
 treats `job_dir` as data rather than execution context.
 
+## Result Envelope And Output Modes
+
+Every exit path of the CLI (success, refusal, crash) goes through
+`_emit_result` in `mdclaw/_cli.py`, which applies `mdclaw/_envelope.py`:
+
+- The first keys of every result are `success`, `code`, `message`, `node_id`,
+  `node_status`, `next_action`, `next`, `warnings_count`, `result_file`, `dag`
+  (`ENVELOPE_ORDER`). A success without a message gets `"<node_id> <status>"`
+  or `"ok"`.
+- `--output brief` (default, `MDCLAW_OUTPUT`) replaces top-level values whose
+  JSON exceeds `BRIEF_LIMIT` (4000 chars) with
+  `{"_omitted": true, "chars": N, "see": "<result_file>#<key>", "keys"|"items"}`.
+  `PROTECTED_KEYS` (errors, hints, guidance, confirmations, resolved inputs,
+  ...) never shrink. `--output full` prints everything; `--output id` prints
+  only the node id (for `create_node`) or the job dir.
+- Node tools also write the complete, ordered result to
+  `<job_dir>/nodes/<node_id>/result.json` and report it as `result_file`.
+- stderr carries WARNING and above by default (`MDCLAW_LOG_LEVEL` raises or
+  lowers it; `--log-file` / `MDCLAW_LOG_FILE` writes INFO to a file). A
+  heartbeat line `[mdclaw] <tool> still running after Ns` is written every
+  `--heartbeat-seconds` (`MDCLAW_HEARTBEAT_SECONDS`, default 30, 0 disables)
+  once a tool has run for 20 s. When stderr had output, the line
+  `--- mdclaw result follows on stdout ---` precedes the JSON so a parser that
+  merged both streams can split them. A closed stdout (`| head`) is handled:
+  the result file is already written and the process exits cleanly.
+- The INFO log trail is still kept in memory (`_LogTailHandler`) and stored
+  with failure artifacts.
+
+## DAG Context: `dag` And `next`
+
+Whenever a job dir is known, `_emit_result` attaches `dag_context(...)`:
+
+- `dag`: `dag_snapshot(progress.nodes)` from `mdclaw/node/snapshot.py`
+  (`node_count`, `leaves`, and the ids per status, in creation order).
+- `next`: `next_step(...)`, the structurally next command. An empty job gets
+  `create source`; a pending node gets `run` with `stage_tools` (the declared
+  tools of its type, the normal-path one first, `embed_in_membrane` first
+  when `params.solvent_regime == "membrane"`) and, for `min`/`eq`/`prod`, a
+  `batch_command`; a completed node gets `create` of the canonical forward
+  type (or `run` of an already-created open child); a failed node gets
+  `branch` with `trace_command` and `create_command`. A node whose parent is
+  not completed gets the parent's step with `blocked_node_id` and `reason`
+  (`wait` for a running parent). `next` names tools and ids, never
+  scientific parameters.
+- `mdclaw --workflow` prints the same contract as text (`_workflow_text`) and
+  `mdclaw --list` groups stage tools by stage before listing the rest by
+  server. `mdclaw --help` is one screen; per-tool help is unchanged.
+
 ## Structured Preflight Errors
 
 CLI preflight failures emit the standard validation envelope on stdout (exit
 code 1) instead of an argparse stderr message, so weak agents can branch on a
-stable `code`:
+stable `code`. Each carries the fix (`hints`, `next_action`) computed from the
+job's node index (`_preflight_fix`), plus `dag` and `next`:
 
 - `missing_required_arguments`: a required tool flag was omitted; query the
-  exact contract with `mdclaw --list-json <tool>`.
+  exact contract with `mdclaw --list-json <tool>`. For a standalone helper
+  that has a stage counterpart (`HELPER_STAGE_TOOL` in `_envelope.py`, e.g.
+  `clean_protein` -> `prepare_complex`) the hint names the stage command.
+- `unknown_parameter`: `--json-input` carried keys the tool does not accept
+  (close matches and the accepted names are listed). Previously a
+  `TypeError` surfaced as `unhandled_exception`.
+- `node_context_not_applicable`: `--job-dir`/`--node-id` given to a tool that
+  has neither parameter; they would have been silently ignored.
 - `node_id_requires_job_dir`: `--node-id` without `--job-dir`.
 - `node_context_required`: a node-required workflow tool (one marked with
   `@node_tool`) ran without both `--job-dir` and `--node-id`.
+- `node_missing`: the node id does not exist; the error lists the existing
+  ids (of the expected type first) and the create command
+  (`node_missing_error` in `mdclaw/node/snapshot.py`, shared by
+  `explain_node`, `trace_failure`, `wait_node`, `manage_node_need` and the
+  run-time context check).
 - `node_type_mismatch`: the selected node's type does not match the tool's
-  declared `node_type`.
+  declared `node_type`; the fix names the open node of the right type or the
+  create command.
+- `node_terminal`: the node is completed or failed; the fix is the branch
+  command with the same parents (and `trace_failure` for a failed node).
+- `parent_not_completed`: a parent or dependency is not completed. Refused
+  before the tool starts so the node stays pending (stage tools that resolve
+  their own inputs would otherwise seal it as failed); the fix names the
+  parent's stage command or `wait_node`.
 - `tool_renamed`: a consolidated/renamed tool name was invoked; the message and
   `context.replacement` name the current tool.
+
+Inside tools, `validate_node_execution_context` returns the same kind of
+fix-carrying result (`message`, `hints`, `next_action`, `blocking_nodes`,
+`dag`), `create_node` answers `parent_required` with `candidate_parents` and
+`candidate_commands` when no single open parent of the right type exists,
+`invalid_node_type` suggests the stage a made-up name refers to
+(`suggest_node_type`; long names such as `minimization` are accepted as
+aliases by `normalize_node_type`), and a second `create_node --node-type source` hands back the job's source
+node while it is still pending (`reused_existing_node`) or answers
+`source_already_exists` naming it once it has run. `update_workflow_state --status completed` is refused
+with `node_terminal_transition_reserved` pointing at the stage tool.
+Enumerated parameters use `create_choice_error` (`invalid_parameter_value`)
+instead of raising.
 
 ## Recovery Hint Envelope
 

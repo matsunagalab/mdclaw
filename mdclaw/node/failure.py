@@ -284,15 +284,9 @@ def trace_failure(job_dir: str, node_id: str) -> dict[str, Any]:
     jd = Path(job_dir).resolve()
     node_json = jd / "nodes" / node_id / "node.json"
     if not node_json.exists():
-        return {
-            "success": False,
-            "code": "node_missing",
-            "message": f"Node '{node_id}' does not exist under {jd}",
-            "job_dir": str(jd),
-            "node_id": node_id,
-            "errors": [f"node not found: {node_id}"],
-            "warnings": [],
-        }
+        from mdclaw.node.snapshot import node_missing_error
+
+        return node_missing_error(str(jd), node_id)
 
     node = read_node(str(jd), node_id)
     metadata = node.get("metadata") or {}

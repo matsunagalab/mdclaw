@@ -875,9 +875,9 @@ class TestArgparseConstruction:
 
         output = capsys.readouterr().out
         assert output.splitlines()[:3] == [
-            "MD workflow: follow the matching skill; prefer MDClaw CLI tools over custom scripts.",
-            "Preparation stage: use prepare_complex; use focused helpers only when directed.",
-            "DAG: create_node -> explain_node -> stage tool. Inspect: mdclaw --list-json <tool>.",
+            "MDClaw tools. Stage tools run with --job-dir/--node-id and record node state;",
+            "everything else is a standalone helper or a DAG/cluster utility.",
+            "Workflow: mdclaw --workflow. One tool's parameters: mdclaw --list-json <tool>.",
         ]
         assert "example_tool" in output
         assert "mdclaw --list-json <tool>" in output

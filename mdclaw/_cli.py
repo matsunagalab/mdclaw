@@ -17,7 +17,9 @@ import difflib
 import inspect
 import json
 import logging
+import os
 import sys
+import threading
 import types
 import time
 import traceback
@@ -28,8 +30,20 @@ from mdclaw import __version__
 from mdclaw._benchmark_log import _write_benchmark_harness_record
 from mdclaw.confirmation_report import report_confirmation_items
 from mdclaw._common import create_validation_error, finalize_error
+from mdclaw._envelope import (
+    OUTPUT_MODES,
+    _load_nodes,
+    blocking_ancestor,
+    brief_result,
+    dag_context,
+    helper_stage_hint,
+    order_envelope,
+    stage_tools_for,
+    write_result_file,
+)
 from mdclaw._registry import SERVER_REGISTRY
-from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE
+from mdclaw.node.snapshot import describe_nodes, node_missing_error, nodes_of_type
+from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE, NODE_TYPE_ORDER
 from mdclaw._tool_meta import (
     tool_job_dir_is_data,
     tool_node_type,
@@ -64,7 +78,13 @@ _RENAMED_TOOLS = {
 
 # Global options that consume a following value, used to locate the subcommand
 # token when scanning argv for a renamed tool.
-_GLOBAL_VALUE_OPTIONS = {"--job-dir", "--node-id", "--list-json"}
+_GLOBAL_VALUE_OPTIONS = {"--job-dir", "--node-id", "--list-json", "--output", "--log-file",
+                         "--heartbeat-seconds"}
+
+# Set once per invocation from the global flags; read by the emit helpers.
+_OUTPUT_MODE = "brief"
+_TOOLS: dict[str, dict] = {}
+_HEARTBEAT_DEFAULT_SECONDS = 30.0
 
 
 def _attach_dag_handoff(result, job_dir, node_id):
@@ -119,12 +139,171 @@ def _detect_subcommand(argv: list[str]) -> str | None:
 # Logging: force all loggers to stderr so stdout stays clean JSON
 # ---------------------------------------------------------------------------
 
-def _configure_logging():
+class _LogTailHandler(logging.Handler):
+    """Keep the tail of every log record for failure artifacts.
+
+    stderr shows warnings and above by default (agents merge stderr into the
+    JSON stream in half of their invocations, and a clean success must parse),
+    but a failure manifest still wants the INFO trail, so it is kept here.
+    """
+
+    def __init__(self, limit: int = 65536):
+        super().__init__(level=logging.DEBUG)
+        self._limit = limit
+        self._tail = ""
+
+    def emit(self, record):
+        try:
+            text = self.format(record) + "\n"
+        except Exception:  # noqa: BLE001 - logging must never break the CLI
+            return
+        self._tail = (self._tail + text)[-self._limit:]
+
+    def get_tail(self) -> str:
+        return self._tail
+
+    def reset(self) -> None:
+        self._tail = ""
+
+
+_LOG_TAIL = _LogTailHandler()
+
+
+def _configure_logging(log_file: str | None = None):
+    """stderr gets warnings and above unless MDCLAW_LOG_LEVEL says otherwise.
+
+    ``--log-file`` / ``MDCLAW_LOG_FILE`` receives every record at INFO and
+    above, so a quiet stderr costs no evidence.
+    """
     root = logging.getLogger()
     root.handlers.clear()
+    formatter = logging.Formatter("%(name)s - %(levelname)s - %(message)s")
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter("%(name)s - %(levelname)s - %(message)s"))
+    handler.setFormatter(formatter)
+    env_level = os.getenv("MDCLAW_LOG_LEVEL", "").upper()
+    handler.setLevel(getattr(logging, env_level, logging.INFO) if env_level else logging.WARNING)
     root.addHandler(handler)
+    _LOG_TAIL.setFormatter(formatter)
+    _LOG_TAIL.reset()
+    root.addHandler(_LOG_TAIL)
+    log_file = log_file or os.getenv("MDCLAW_LOG_FILE")
+    if log_file:
+        try:
+            file_handler = logging.FileHandler(log_file)
+        except OSError as exc:
+            root.warning("cannot open log file %s: %s", log_file, exc)
+        else:
+            file_handler.setFormatter(formatter)
+            file_handler.setLevel(logging.INFO)
+            root.addHandler(file_handler)
+
+
+class _Heartbeat:
+    """Say on stderr that a long tool is still running.
+
+    Agents that saw no output for a minute backgrounded stage tools and
+    polled them with ``sleep`` (338 polls in 33 attempts of the 2026-09-10
+    campaign). One line every ``interval`` seconds, after a ``delay``, keeps
+    the command in the foreground.
+    """
+
+    def __init__(self, tool_name: str, stream: TextIO, interval: float, delay: float = 20.0):
+        self._tool_name = tool_name
+        self._stream = stream
+        self._interval = max(float(interval), 1.0)
+        self._delay = max(float(delay), 0.0)
+        self._stop = threading.Event()
+        self._started = time.monotonic()
+        self._thread = threading.Thread(target=self._run, name="mdclaw-heartbeat", daemon=True)
+
+    def _run(self) -> None:
+        if self._stop.wait(self._delay):
+            return
+        while not self._stop.is_set():
+            elapsed = time.monotonic() - self._started
+            try:
+                self._stream.write(f"[mdclaw] {self._tool_name} still running after {elapsed:.0f}s\n")
+                self._stream.flush()
+            except Exception:  # noqa: BLE001 - never let progress output break the tool
+                return
+            if self._stop.wait(self._interval):
+                return
+
+    def start(self) -> "_Heartbeat":
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+
+
+def _result_file_path(job_dir: str | None, node_id: str | None) -> str | None:
+    if not job_dir or not node_id:
+        return None
+    node_dir = Path(job_dir) / "nodes" / node_id
+    return str(node_dir / "result.json") if node_dir.is_dir() else None
+
+
+def _emit_result(
+    result,
+    *,
+    exit_code: int,
+    job_dir: str | None = None,
+    node_id: str | None = None,
+    requires_node: bool = False,
+    stderr_tail: str = "",
+    stderr_stream: TextIO | None = None,
+) -> None:
+    """Print the agent-facing envelope and exit.
+
+    Every exit path of the CLI comes through here so the first keys, the
+    ``dag``/``next`` blocks, the result file and the output mode are the same
+    for successes, refusals and crashes.
+    """
+    payload = result
+    if isinstance(result, dict):
+        payload = dict(result)
+        context = dag_context(job_dir, node_id, _TOOLS) if job_dir else {}
+        for key, value in context.items():
+            payload.setdefault(key, value)
+        result_file = _result_file_path(job_dir, node_id) if requires_node else None
+        payload = order_envelope(
+            payload,
+            node_id=node_id,
+            node_status=context.get("node_status"),
+            result_file=result_file,
+            include_node_keys=requires_node,
+        )
+        if result_file:
+            write_result_file(payload, job_dir, node_id)
+        if _OUTPUT_MODE == "brief":
+            payload = brief_result(payload, result_file=result_file)
+    stream = stderr_stream or sys.stderr
+    if stderr_tail.strip():
+        # Agents often merge stderr into the JSON stream; give a parser that
+        # sees both a line to split on.
+        try:
+            stream.write("--- mdclaw result follows on stdout ---\n")
+            stream.flush()
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        if _OUTPUT_MODE == "id" and isinstance(payload, dict):
+            print(payload.get("node_id") or payload.get("job_dir") or "")
+        else:
+            json.dump(payload, sys.stdout, indent=2, default=str)
+            print()
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # The reader went away (``| head``). The node's result.json is already
+        # written; keep the interpreter from failing again at exit.
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except OSError:
+            pass
+        exit_code = exit_code or 0
+    sys.exit(exit_code)
 
 
 class _TailCaptureStream:
@@ -376,12 +555,24 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
     """Build the top-level parser and one subparser per tool."""
     parser = argparse.ArgumentParser(
         prog="mdclaw",
-        description="MDClaw CLI — run MD tools from the command line.",
+        description=(
+            "MDClaw CLI: MD workflow stages as one job DAG. Each stage is "
+            "create_node -> (explain_node) -> stage tool with --job-dir/--node-id; "
+            "inputs resolve from the parent node. Results are JSON on stdout."
+        ),
+        epilog=(
+            "Stages and their tools: mdclaw --workflow | all tools: mdclaw --list | "
+            "one tool's parameters: mdclaw --list-json <tool> | mdclaw <tool> --help"
+        ),
     )
     parser.add_argument("--version", action="version", version=f"mdclaw {__version__}")
     parser.add_argument(
         "--list", action="store_true", dest="list_tools",
-        help="List all available tools grouped by server.",
+        help="List all tools: stage tools by DAG stage, then the rest by server.",
+    )
+    parser.add_argument(
+        "--workflow", action="store_true", dest="show_workflow",
+        help="Describe the job DAG: stage order, stage tools, the per-stage commands and rules.",
     )
     parser.add_argument(
         "--list-json", nargs="?", const="", default=None,
@@ -392,15 +583,34 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--job-dir", type=str, default=None, dest="_global_job_dir",
+        "--job-dir", type=str, default=None, dest="_global_job_dir", metavar="JOB_DIR",
         help="Job directory for node-based state tracking (schema v3).",
     )
     parser.add_argument(
-        "--node-id", type=str, default=None, dest="_global_node_id",
+        "--node-id", type=str, default=None, dest="_global_node_id", metavar="NODE_ID",
         help="Node ID for node-based state tracking (requires --job-dir).",
     )
+    parser.add_argument(
+        "--output", choices=list(OUTPUT_MODES), default=os.getenv("MDCLAW_OUTPUT", "brief"),
+        dest="_output_mode",
+        help=(
+            "brief (default): envelope first, large values stubbed and kept in the node's "
+            "result.json; full: everything inline; id: only the node id (create_node)."
+        ),
+    )
+    parser.add_argument(
+        "--log-file", type=str, default=None, dest="_log_file", metavar="PATH",
+        help="Write INFO logs to this file; stderr then carries warnings only (MDCLAW_LOG_FILE).",
+    )
+    parser.add_argument(
+        "--heartbeat-seconds", type=float, default=None, dest="_heartbeat_seconds", metavar="SECONDS",
+        help="Progress line interval on stderr while a tool runs; 0 disables (MDCLAW_HEARTBEAT_SECONDS).",
+    )
 
-    subparsers = parser.add_subparsers(dest="tool_name")
+    # ``metavar`` and no per-parser ``help`` keep ``mdclaw --help`` to one
+    # screen; the 80-tool index is ``--list`` and one tool's help is
+    # ``mdclaw <tool> --help`` (both unchanged).
+    subparsers = parser.add_subparsers(dest="tool_name", metavar="<tool>")
 
     for tool_name, info in sorted(tools.items()):
         fn = info["fn"]
@@ -418,7 +628,6 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
             description = info["description"]
         sub = subparsers.add_parser(
             tool_name,
-            help=desc_first_line,
             description=description,
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
@@ -587,10 +796,15 @@ def _report_confirmation_items_safely(result: object) -> None:
         )
 
 
-def _json_error_and_exit(error: dict) -> None:
-    json.dump(finalize_error(error), sys.stdout, indent=2, default=str)
-    print()
-    sys.exit(1)
+def _json_error_and_exit(
+    error: dict,
+    *,
+    job_dir: str | None = None,
+    node_id: str | None = None,
+    requires_node: bool = False,
+) -> None:
+    _emit_result(finalize_error(error), exit_code=1, job_dir=job_dir, node_id=node_id,
+                 requires_node=requires_node)
 
 
 def _node_type_preflight_error(
@@ -603,6 +817,7 @@ def _node_type_preflight_error(
     """Return a structured error for a wrong-type or terminal workflow node."""
     actual_node_type = None
     actual_status = None
+    node = None
     try:
         from mdclaw._node import read_node
 
@@ -629,7 +844,20 @@ def _node_type_preflight_error(
                 "create a new node instead"
             )
         else:
-            return None
+            nodes, _params = _load_nodes(job_dir)
+            blocker = blocking_ancestor(node, nodes)
+            if blocker is None:
+                return None
+            # Refuse here, before the tool starts: a stage tool that resolves
+            # its inputs itself seals the node as failed on a pending parent,
+            # which spends a node the agent only ran too early (chains of
+            # pending nodes are legitimate since parent auto-resolution
+            # accepts open parents).
+            code = "parent_not_completed"
+            message = (
+                f"Parent '{blocker[0]}' of '{node_id}' is {blocker[1]}; '{node_id}' "
+                "cannot run yet and stays pending (not spent)"
+            )
 
     error = create_validation_error(
         "node_id",
@@ -646,7 +874,147 @@ def _node_type_preflight_error(
         "actual_node_type": actual_node_type,
         "actual_status": actual_status,
     })
+    hints, next_action = _preflight_fix(
+        code, tool_name=tool_name, job_dir=job_dir, node_id=node_id,
+        expected_node_type=expected_node_type, actual_status=actual_status,
+        node=node if code in {"node_terminal", "parent_not_completed"} else None,
+    )
+    if hints:
+        error["hints"] = hints
+    if next_action:
+        error["next_action"] = next_action
     return error
+
+
+def _preflight_fix(code, *, tool_name, job_dir, node_id, expected_node_type,
+                   actual_status, node=None):
+    """Hints and the next command for a preflight refusal.
+
+    The refusal used to name the invariant only; agents then re-ran the same
+    command or guessed ids (18 ``node_terminal`` and 12 ``node_missing``-class
+    errors on 2026-09-10). Name the node to use or the command that creates it.
+    """
+    nodes, params = _load_nodes(job_dir)
+    if code == "parent_not_completed":
+        blocker_id, blocker_status = blocking_ancestor(node or {}, nodes) or (None, None)
+        blocker_type = (nodes.get(blocker_id) or {}).get("type")
+        rerun = f"mdclaw --job-dir {job_dir} --node-id {node_id} {tool_name} ..."
+        hints = ["Parents run first; the CLI does not run them for you. This node is not "
+                 "spent: rerun the same command once the parent is completed, or submit "
+                 "the chain with submit_job --dependency afterok:<parent job>."]
+        if blocker_status == "failed":
+            trace = f"mdclaw trace_failure --job-dir {job_dir} --node-id {blocker_id}"
+            hints.append(f"'{blocker_id}' failed; re-running '{node_id}' cannot succeed.")
+            return hints, (f"{trace}, then create a NEW {blocker_type} node and a NEW "
+                           f"{expected_node_type} node from it")
+        if blocker_status in {"running", "queued"}:
+            return hints, (f"mdclaw wait_node --job-dir {job_dir} --node-id {blocker_id}; "
+                           f"then {rerun}")
+        tools = stage_tools_for(blocker_type, _TOOLS, params)
+        tool = tools[0] if tools else f"<{blocker_type} stage tool>"
+        return hints, (f"mdclaw --job-dir {job_dir} --node-id {blocker_id} {tool} ...; "
+                       f"then {rerun}")
+    if code == "node_missing":
+        missing = node_missing_error(job_dir, node_id, expected_type=expected_node_type)
+        return missing["hints"], missing["next_action"]
+    if code == "node_type_mismatch":
+        same = nodes_of_type(nodes, expected_node_type)
+        open_same = [nid for nid in same if nodes[nid].get("status") in ("pending", "queued", "running")]
+        hints = [
+            f"{tool_name} runs on {expected_node_type} nodes; "
+            + (f"existing: {describe_nodes(nodes, same)}" if same
+               else f"this job has no {expected_node_type} node yet")
+        ]
+        if len(open_same) == 1:
+            return hints, f"mdclaw --job-dir {job_dir} --node-id {open_same[0]} {tool_name} ..."
+        actual_type = (nodes.get(node_id) or {}).get("type")
+        if (CANONICAL_FORWARD_NODE_TYPE.get(actual_type) == expected_node_type
+                and actual_status == "completed"):
+            return hints, (f"mdclaw create_node --job-dir {job_dir} --node-type {expected_node_type} "
+                           f"--parent-node-ids {node_id}, then run {tool_name} on the returned node_id")
+        return hints, (f"mdclaw create_node --job-dir {job_dir} --node-type {expected_node_type} "
+                       f"(parent auto-resolved), then run {tool_name} on the returned node_id")
+    if code == "node_terminal":
+        parents = list((node or {}).get("parent_node_ids") or [])
+        branch = f"mdclaw create_node --job-dir {job_dir} --node-type {expected_node_type}"
+        if parents:
+            branch += f" --parent-node-ids {' '.join(parents)}"
+        hints = ["Nodes run once; a completed or failed node is sealed. Put corrected "
+                 "arguments on a new node with the same parents (a branch)."]
+        if actual_status == "failed":
+            trace = f"mdclaw trace_failure --job-dir {job_dir} --node-id {node_id}"
+            hints.append(f"Why it failed: {trace}")
+            return hints, f"{trace}, then branch: {branch}"
+        forward = CANONICAL_FORWARD_NODE_TYPE.get(expected_node_type)
+        if forward:
+            return hints, (f"This stage is done; continue: mdclaw create_node --job-dir {job_dir} "
+                           f"--node-type {forward} --parent-node-ids {node_id}")
+        return hints, f"Branch a variant: {branch}"
+    return [], None
+
+
+def _unknown_parameter_error(tool_name, unknown, spec_by_name, *, requires_node,
+                             job_dir=None, node_id=None) -> dict:
+    """``unknown_parameter`` instead of the TypeError the tool would raise.
+
+    Seen 21 times on 2026-09-10 as ``unhandled_exception`` ("got an unexpected
+    keyword argument 'job_dir'"), mostly helpers called with node context.
+    """
+    import difflib
+
+    accepted = sorted(spec_by_name)
+    hints = []
+    for name in unknown:
+        close = difflib.get_close_matches(name, accepted, n=2, cutoff=0.6)
+        if close:
+            hints.append(f"'{name}': did you mean {' or '.join(repr(c) for c in close)}?")
+    if {"job_dir", "node_id"} & set(unknown) and not requires_node:
+        hints.append(helper_stage_hint(tool_name, job_dir, node_id) or (
+            f"{tool_name} takes no node context (job_dir/node_id); it is a standalone helper."))
+    if len(accepted) <= 30:
+        hints.append(f"Accepted parameters: {', '.join(accepted)}")
+    else:
+        hints.append(f"Accepted parameters: mdclaw --list-json {tool_name}")
+    message = f"{tool_name} does not accept: {', '.join(unknown)}"
+    return {
+        "success": False,
+        "error_type": "ValidationError",
+        "code": "unknown_parameter",
+        "message": message,
+        "errors": [message],
+        "warnings": [],
+        "hints": hints,
+        "context": {"tool": tool_name, "unknown_parameters": unknown,
+                    "accepted_parameters": accepted, "code": "unknown_parameter"},
+        "recoverable": True,
+    }
+
+
+def _node_context_not_applicable_error(tool_name, *, job_dir=None, node_id=None) -> dict:
+    """A helper was given ``--job-dir/--node-id``; it would silently ignore them."""
+    stage_hint = helper_stage_hint(tool_name, job_dir, node_id)
+    message = (
+        f"{tool_name} is a standalone helper: --job-dir/--node-id do not apply and "
+        "would be ignored (it reads and writes no node state)."
+    )
+    hints = [stage_hint] if stage_hint else [
+        f"Run {tool_name} without --job-dir/--node-id; only stage tools "
+        "(mdclaw --workflow) record node state."
+    ]
+    return {
+        "success": False,
+        "error_type": "ValidationError",
+        "code": "node_context_not_applicable",
+        "message": message,
+        "errors": [message],
+        "warnings": [],
+        "hints": hints,
+        "next_action": (stage_hint.split(": ", 2)[-1] if stage_hint
+                        else f"mdclaw {tool_name} ... (without --job-dir/--node-id)"),
+        "context": {"tool": tool_name, "job_dir": job_dir, "node_id": node_id,
+                    "code": "node_context_not_applicable"},
+        "recoverable": True,
+    }
 
 
 def _load_json_cli(value: str, field: str):
@@ -848,20 +1216,120 @@ def _tool_list_json(
     return payload
 
 
+_STAGE_TOOL_NOTES = {
+    "solvate_structure": "explicit water",
+    "embed_in_membrane": "membrane regime",
+    "build_amber_system": "Amber force fields; the default topology builder",
+    "build_openmm_system": "OpenMM force fields",
+    "prepare_complex": "the prep stage tool: split, clean, merge, ligands",
+    "fetch_structure": "PDB / AlphaFold / local file into the source node",
+    "register_local_structure": "an already-prepared local structure",
+}
+_STAGE_TOOL_PREFERENCE = ("prepare_complex", "solvate_structure", "build_amber_system",
+                          "fetch_structure")
+
+
+def _stage_tools_by_type(tools: dict[str, dict]) -> dict[str, list[str]]:
+    """Stage tools grouped by node type, in workflow order, preferred tool first."""
+    grouped: dict[str, list[str]] = {}
+    for tool_name, info in tools.items():
+        node_type = info.get("node_type")
+        if node_type:
+            grouped.setdefault(node_type, []).append(tool_name)
+    ordered: dict[str, list[str]] = {}
+    for node_type in NODE_TYPE_ORDER:
+        names = sorted(grouped.get(node_type, []))
+        names.sort(key=lambda n: (n not in _STAGE_TOOL_PREFERENCE, n))
+        ordered[node_type] = names
+    for node_type in sorted(set(grouped) - set(NODE_TYPE_ORDER)):
+        ordered[node_type] = sorted(grouped[node_type])
+    return ordered
+
+
 def _print_tool_list(tools: dict[str, dict]) -> None:
-    """Print a compact tool-name index grouped by server."""
+    """Print a compact tool-name index: stage tools by stage, the rest by server."""
+    print("MDClaw tools. Stage tools run with --job-dir/--node-id and record node state;")
+    print("everything else is a standalone helper or a DAG/cluster utility.")
+    print("Workflow: mdclaw --workflow. One tool's parameters: mdclaw --list-json <tool>.")
+    print("\nStage tools by DAG stage (" + " > ".join(NODE_TYPE_ORDER) + "):")
+    stage_names: set[str] = set()
+    for node_type, names in _stage_tools_by_type(tools).items():
+        if names:
+            print(f"  {node_type:<8} " + "  ".join(names))
+            stage_names.update(names)
     by_server: dict[str, list[str]] = {}
     for tool_name, info in tools.items():
-        by_server.setdefault(info["server"], []).append(tool_name)
-
-    print("MD workflow: follow the matching skill; prefer MDClaw CLI tools over custom scripts.")
-    print("Preparation stage: use prepare_complex; use focused helpers only when directed.")
-    print("DAG: create_node -> explain_node -> stage tool. Inspect: mdclaw --list-json <tool>.")
-    print("Tool index:")
+        if tool_name not in stage_names:
+            by_server.setdefault(info["server"], []).append(tool_name)
+    print("\nOther tools by server (no node state unless the tool says otherwise):")
     for server_name in sorted(by_server):
         print(f"\n[{server_name}]")
         print("  " + "  ".join(sorted(by_server[server_name])))
     print(f"\nTotal: {len(tools)} tools")
+
+
+def _workflow_text(tools: dict[str, dict]) -> str:
+    """The DAG contract in one screen: what ``--help`` cannot say per tool.
+
+    Skill-less agents rebuilt this model from tool help, package source and
+    trial and error (11 help reads and a source grep per attempt on
+    2026-09-10). Everything here is structural; scientific choices stay with
+    the skills.
+    """
+    lines = [
+        "MDClaw job DAG (schema v3)",
+        "",
+        "Stages, in order:  " + " > ".join(NODE_TYPE_ORDER),
+        "Stage tools (run with --job-dir/--node-id; inputs resolve from the parent node):",
+    ]
+    for node_type, names in _stage_tools_by_type(tools).items():
+        if not names:
+            continue
+        described = []
+        for name in names:
+            note = _STAGE_TOOL_NOTES.get(name)
+            described.append(f"{name} ({note})" if note else name)
+        lines.append(f"  {node_type:<8} " + ", ".join(described))
+    lines += [
+        "",
+        "Start a job (creates study/jobs/main and its source node):",
+        "  mdclaw bootstrap_md_workflow --study-dir <dir> --question \"<request>\" "
+        "[--pdb-id 1ABC]",
+        "",
+        "Every stage, in this order:",
+        "  1. mdclaw create_node --job-dir <job_dir> --node-type <stage>"
+        "        # parent auto-resolved; returns node_id (or use --output id)",
+        "  2. mdclaw explain_node --job-dir <job_dir> --node-id <node_id>"
+        "        # optional: ready_to_run, resolved inputs, blocking codes",
+        "  3. mdclaw --job-dir <job_dir> --node-id <node_id> <stage tool> [options]"
+        "  # runs the stage and records the node",
+        "  Each result carries 'dag' (frontier and statuses) and 'next' "
+        "(the next command); 'inspect_job --job-dir <job_dir>' shows the whole DAG.",
+        "",
+        "Rules the CLI enforces:",
+        "  - Nodes run once. completed/failed nodes are sealed; to redo a stage, "
+        "create a new node with the same parents (--parent-node-ids) and run it there.",
+        "  - A parent must be completed before its child runs (pending chains may be "
+        "created ahead and submitted with Slurm dependencies).",
+        "  - Never pass artifact paths between nodes; stage tools resolve them.",
+        "  - Standalone helpers (clean_protein, split_molecules, merge_structures, ...) "
+        "read and write no node state; inside a job use the stage tool.",
+        "  - Node status becomes completed only through the stage tool, never via "
+        "update_workflow_state.",
+        "",
+        "Batch execution (min/eq/prod on a cluster):",
+        "  mdclaw submit_job --job-dir <job_dir> --node-id <node_id> "
+        "--script \"mdclaw --job-dir <job_dir> --node-id <node_id> run_minimization ...\" "
+        "--gpus 1 [--dependency afterok:<slurm_job_id>]",
+        "",
+        "Output: JSON on stdout; stderr carries warnings and a heartbeat only "
+        "(--log-file <path> for INFO logs).",
+        "  --output brief (default): envelope first, large values stubbed, full result "
+        "in <job_dir>/nodes/<node_id>/result.json; --output full; --output id (create_node).",
+        "  On failure: code, message, hints, next_action; "
+        "mdclaw trace_failure --job-dir <job_dir> --node-id <node_id> for a sealed node.",
+    ]
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -885,10 +1353,24 @@ def main(argv: list[str] | None = None) -> None:
 
     parser = _build_parser(tools)
     args = parser.parse_args(argv)
+    global _OUTPUT_MODE, _TOOLS
+    _OUTPUT_MODE = args._output_mode
+    _TOOLS = tools
+    if args._log_file:
+        _configure_logging(args._log_file)
+    heartbeat_seconds = (
+        args._heartbeat_seconds if args._heartbeat_seconds is not None
+        else float(os.getenv("MDCLAW_HEARTBEAT_SECONDS", _HEARTBEAT_DEFAULT_SECONDS))
+    )
 
     # --list
     if args.list_tools:
         _print_tool_list(tools)
+        sys.exit(0)
+
+    # --workflow
+    if args.show_workflow:
+        print(_workflow_text(tools))
         sys.exit(0)
 
     # --list-json
@@ -925,6 +1407,19 @@ def main(argv: list[str] | None = None) -> None:
     missing: list[str] = []
     if args.json_input:
         kwargs = _load_json_cli(args.json_input, "--json-input")
+        if not isinstance(kwargs, dict):
+            _json_error_and_exit(create_validation_error(
+                "--json-input", "must be a JSON object of parameter names to values",
+                code="invalid_json_input", actual=type(kwargs).__name__,
+                expected="JSON object",
+            ))
+        unknown = sorted(str(k) for k in kwargs if k not in spec_by_name)
+        if unknown:
+            _json_error_and_exit(_unknown_parameter_error(
+                tool_name, unknown, spec_by_name, requires_node=requires_node,
+                job_dir=_global_job_dir or kwargs.get("job_dir"),
+                node_id=_global_node_id or kwargs.get("node_id"),
+            ))
         for pname, value in list(kwargs.items()):
             spec = spec_by_name.get(pname)
             if spec is None or value is None:
@@ -975,6 +1470,16 @@ def main(argv: list[str] | None = None) -> None:
     if effective_job_dir:
         effective_job_dir = str(Path(effective_job_dir).resolve())
 
+    if (
+        (_global_job_dir is not None or _global_node_id is not None)
+        and not requires_node
+        and "job_dir" not in spec_by_name
+        and "node_id" not in spec_by_name
+    ):
+        _json_error_and_exit(_node_context_not_applicable_error(
+            tool_name, job_dir=_global_job_dir, node_id=_global_node_id,
+        ), job_dir=_global_job_dir, node_id=_global_node_id)
+
     expected_node_type = info.get("node_type", tool_node_type(fn))
     if expected_node_type and effective_job_dir and effective_node_id:
         preflight_error = _node_type_preflight_error(
@@ -984,7 +1489,8 @@ def main(argv: list[str] | None = None) -> None:
             expected_node_type=expected_node_type,
         )
         if preflight_error:
-            _json_error_and_exit(preflight_error)
+            _json_error_and_exit(preflight_error, job_dir=effective_job_dir,
+                                 node_id=effective_node_id, requires_node=True)
 
     if missing:
         error = {
@@ -1000,6 +1506,8 @@ def main(argv: list[str] | None = None) -> None:
             "hints": [
                 f"Run 'mdclaw --list-json {tool_name}' to see the exact "
                 "required parameters and defaults.",
+                *([helper_hint] if (helper_hint := helper_stage_hint(
+                    tool_name, effective_job_dir, effective_node_id)) else []),
             ],
             "context": {"tool": tool_name, "missing": missing,
                         "code": "missing_required_arguments"},
@@ -1014,7 +1522,8 @@ def main(argv: list[str] | None = None) -> None:
                 exit_code=1,
                 stdout_tail=_json_stdout_tail(error),
             )
-        _json_error_and_exit(error)
+        _json_error_and_exit(error, job_dir=effective_job_dir, node_id=effective_node_id,
+                             requires_node=requires_node)
 
     if effective_node_id and not effective_job_dir:
         _json_error_and_exit({
@@ -1069,20 +1578,31 @@ def main(argv: list[str] | None = None) -> None:
     started_at = time.monotonic()
     tool_stdout_tail = ""
     tool_stderr_tail = ""
+    raw_stderr_tail = ""
     try:
         stdout_capture = _TailCaptureStream(sys.stdout, tee=False)
         stderr_capture = _TailCaptureStream(sys.stderr)
         old_stdout = sys.stdout
         old_stderr = sys.stderr
         logging_swaps: list[tuple[logging.StreamHandler, TextIO]] = []
+        heartbeat = None
         try:
             sys.stdout = stdout_capture
             sys.stderr = stderr_capture
             logging_swaps = _swap_logging_stream(old_stderr, stderr_capture)
+            _LOG_TAIL.reset()
+            if heartbeat_seconds and heartbeat_seconds > 0:
+                heartbeat = _Heartbeat(tool_name, stderr_capture, heartbeat_seconds).start()
             result = _run_tool(fn, is_async, kwargs)
         finally:
+            if heartbeat is not None:
+                heartbeat.stop()
             tool_stdout_tail = stdout_capture.get_tail()
-            tool_stderr_tail = stderr_capture.get_tail()
+            # Raw stderr (tool prints, warnings) plus the INFO log trail that
+            # no longer reaches stderr by default.
+            raw_stderr_tail = stderr_capture.get_tail()
+            log_tail = _LOG_TAIL.get_tail()
+            tool_stderr_tail = (log_tail + raw_stderr_tail) if log_tail and log_tail not in raw_stderr_tail else raw_stderr_tail
             _restore_logging_stream(logging_swaps)
             sys.stdout = old_stdout
             sys.stderr = old_stderr
@@ -1138,9 +1658,17 @@ def main(argv: list[str] | None = None) -> None:
             started_at=started_at,
         )
         _report_confirmation_items_safely(result)
-        json.dump(result, sys.stdout, indent=2, default=str)
-        print()  # trailing newline
-        sys.exit(exit_code)
+        _emit_result(
+            result,
+            exit_code=exit_code,
+            job_dir=effective_job_dir or (result.get("job_dir") if isinstance(result, dict) else None),
+            node_id=effective_node_id or (result.get("node_id") if isinstance(result, dict) else None),
+            requires_node=requires_node,
+            stderr_tail=raw_stderr_tail,
+            stderr_stream=old_stderr,
+        )
+    except SystemExit:
+        raise
     except Exception as e:
         _write_benchmark_harness_record(
             tool_name=tool_name,
@@ -1174,9 +1702,14 @@ def main(argv: list[str] | None = None) -> None:
                 stderr_tail=tool_stderr_tail or None,
                 traceback_text=traceback.format_exc(),
             )
-        json.dump(error_out, sys.stdout, indent=2, default=str)
-        print()
-        sys.exit(1)
+        _emit_result(
+            error_out,
+            exit_code=1,
+            job_dir=effective_job_dir,
+            node_id=effective_node_id,
+            requires_node=requires_node,
+            stderr_tail=tool_stderr_tail,
+        )
 
 
 if __name__ == "__main__":

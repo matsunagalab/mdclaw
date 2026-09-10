@@ -144,8 +144,13 @@ Core schema v3 rules:
 - `explain_node` validates a candidate node before execution and reports
  `ready_to_run`, resolved inputs, missing inputs, and blocking codes.
 - `create_node` auto-resolves the canonical forward parent when
- `--parent-node-ids` is omitted (single completed frontier leaf). CLI preflight
- failures return structured `code`s (`node_context_required`, etc.).
+ `--parent-node-ids` is omitted (the single open frontier leaf of the parent
+ type; pending parents are allowed so chains can be submitted with Slurm
+ dependencies). Otherwise it answers `parent_required` with the candidates.
+ CLI preflight failures return structured `code`s (`node_context_required`,
+ `parent_not_completed`, `node_terminal`, ...) that carry the fix, and every
+ result starts with the same envelope plus `dag` / `next` blocks
+ (`mdclaw/_envelope.py`; `mdclaw --workflow` states the contract).
 - New scientific work should start with a `study_dir`; a simple one-system MD
   run is a study with one job, usually `jobs/main`, and still has
   `study_plan.json`.

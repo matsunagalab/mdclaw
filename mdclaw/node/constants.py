@@ -1,6 +1,7 @@
 """Schema-v3 node constants: types, statuses, parent-type table."""
 
 import logging
+import re
 
 
 logger = logging.getLogger(__name__)
@@ -9,6 +10,58 @@ logger = logging.getLogger(__name__)
 NODE_TYPES = frozenset({
     "source", "prep", "solv", "topo", "min", "eq", "prod", "analyze",
 })
+
+
+NODE_TYPE_ORDER = ("source", "prep", "solv", "topo", "min", "eq", "prod", "analyze")
+
+# Long names agents type for a stage; accepted silently by create_node.
+NODE_TYPE_ALIASES = {
+    "minimization": "min", "minimisation": "min", "minimize": "min", "minimise": "min",
+    "equilibration": "eq", "equilibrate": "eq", "equil": "eq",
+    "production": "prod", "prod_md": "prod",
+    "topology": "topo", "top": "topo",
+    "solvation": "solv", "solvate": "solv", "solvent": "solv",
+    "preparation": "prep", "prepare": "prep",
+    "analysis": "analyze", "analyse": "analyze",
+}
+
+# Words agents invent from tool names, mapped to the stage that does that work
+# (observed 2026-09-10: 'split', 'membrane', 'fetch', 'build').
+NODE_TYPE_SUGGESTIONS = {
+    "fetch": "source", "register": "source", "structure": "source", "pdb": "source",
+    "download": "source", "acquire": "source",
+    "split": "prep", "clean": "prep", "merge": "prep", "complex": "prep", "protein": "prep",
+    "ligand": "prep", "mutate": "prep", "mutation": "prep",
+    "membrane": "solv", "embed": "solv", "water": "solv", "box": "solv", "ions": "solv",
+    "build": "topo", "amber": "topo", "openmm": "topo", "system": "topo", "forcefield": "topo",
+    "md": "prod", "run": "prod", "simulation": "prod", "simulate": "prod", "dynamics": "prod",
+    "trajectory": "analyze", "rmsd": "analyze", "rmsf": "analyze", "analyze_rmsd": "analyze",
+}
+
+
+def normalize_node_type(value):
+    """Canonical node type for ``value`` (an alias or the type itself), else None."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    if text in NODE_TYPES:
+        return text
+    return NODE_TYPE_ALIASES.get(text)
+
+
+def suggest_node_type(value):
+    """Best-guess stage for a name that is not a node type, else None."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    for word in (text, *re.split(r"[^a-z]+", text)):
+        if word in NODE_TYPES:
+            return word
+        if word in NODE_TYPE_ALIASES:
+            return NODE_TYPE_ALIASES[word]
+        if word in NODE_TYPE_SUGGESTIONS:
+            return NODE_TYPE_SUGGESTIONS[word]
+    return None
 
 
 NODE_STATUSES = frozenset({"pending", "queued", "running", "completed", "failed"})

@@ -14,6 +14,20 @@ tool produced it:
 - `errors` / `warnings`: bounded diagnostic lists (long output is truncated).
 - `recoverable`: whether a corrected retry can succeed.
 
+Every result (success or failure) starts with the same envelope keys, in this
+order: `success`, `code`, `message`, `node_id`, `node_status`, `next_action`,
+`next`, `warnings_count`, `result_file`, `dag`. Workflow results carry:
+
+- `dag`: the job's frontier (`leaves`) and the ids per status.
+- `next`: the structurally next command (`action` = `run`, `create`, `wait`,
+  `branch` or `done`, with `run_command` / `create_command` / `batch_command`
+  and `stage_tools`). It names tools and ids, never scientific parameters;
+  when a parent blocks the node it names the parent and sets
+  `blocked_node_id`.
+- `result_file`: `<job_dir>/nodes/<node_id>/result.json`, the complete result.
+  In the default `--output brief` mode, top-level values larger than a few KB
+  are replaced by `{"_omitted": true, "chars": N, "see": "<result_file>#<key>"}`.
+
 Other common fields:
 
 - `success`: whether the tool completed its primary action.

@@ -12,9 +12,13 @@ Use this skill when the user wants to run minimization, equilibration, or
 production nodes on SLURM, submit multiple replicates or systems, monitor/recover
 jobs, configure cluster policy, or extend production runs.
 
-Structure preparation remains a login-node or interactive step. HPC submission
-starts after a `topo` node exists and the next `min`/`eq`/`prod` node can resolve
-its inputs from the DAG.
+Structure preparation remains a login-node or interactive step: run
+`prepare_complex`, `solvate_structure` / `embed_in_membrane` and
+`build_amber_system` in the foreground and wait for their JSON (minutes to
+tens of minutes; the CLI reports `still running` on stderr). Do not submit
+them as Slurm jobs and do not background them. HPC submission starts after a
+`topo` node exists and the next `min`/`eq`/`prod` node can resolve its inputs
+from the DAG.
 
 ## Step 0: Confirm
 

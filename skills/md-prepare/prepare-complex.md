@@ -59,7 +59,11 @@ values. Rerun a new prep node with one of those IDs, or use
 `--include-ligand-resnames <RESNAME>` when the task names a residue/cofactor and
 all matching associated instances should be retained.
 
-Important outputs:
+Important outputs (the brief result stubs blocks larger than a few KB as
+`{"_omitted": true, "see": "<result_file>#<key>"}`; read
+`<job_dir>/nodes/<prep_node_id>/result.json` when such a block matters, and
+report from `success`, `node_status`, `warnings` and `confirmation_needed`
+first):
 
 - `merged_pdb`: downstream structure for solvation or topology.
 - `split/`: extracted components.

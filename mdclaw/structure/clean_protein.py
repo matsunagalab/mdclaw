@@ -17,7 +17,7 @@ import shutil
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from mdclaw._common import setup_logger  # noqa: E402
+from mdclaw._common import create_choice_error, setup_logger  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -2339,9 +2339,11 @@ def clean_protein(
     logger.info(f"Cleaning protein structure: {pdb_file}")
 
     if protonation_method not in PROTONATION_METHODS:
-        raise ValueError(
-            f"Unsupported protonation_method {protonation_method!r}. "
-            f"Supported: {', '.join(PROTONATION_METHODS)}")
+        return create_choice_error(
+            "protonation_method", protonation_method, PROTONATION_METHODS,
+            hints=["'propka' predicts pKa-based states; 'standard' uses textbook "
+                   "states. Ligand protonation is a separate prepare_complex option."],
+        )
     standard_state_protonation = protonation_method == "standard"
     input_terminal_caps = detect_input_terminal_caps(pdb_file)
     

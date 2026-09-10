@@ -907,6 +907,27 @@ def _states_for_chain(states, author_chain, chain_id, window=None):
             start <= int(state["resnum"]) <= end for start, end in window)]
     return matching or None
 
+def _node_relative_artifact(path, artifacts_dir, fallback_rel: str) -> str:
+    """``artifacts/<...>`` for a file under the node's artifacts directory.
+
+    Files written outside the node (never expected in node mode) are copied to
+    the fallback location so the registered artifact always exists.
+    """
+    import shutil
+
+    artifacts_dir = Path(artifacts_dir).resolve()
+    node_dir = artifacts_dir.parent
+    candidate = Path(path).resolve()
+    try:
+        rel = candidate.relative_to(node_dir)
+        return str(rel)
+    except ValueError:
+        target = artifacts_dir / fallback_rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(candidate, target)
+        return str(target.relative_to(node_dir))
+
+
 
 @node_tool(node_type="prep")
 @tool_parameter_examples(
@@ -3161,7 +3182,14 @@ def prepare_complex(
             ligands = result.get("ligands", [])
             artifacts = {}
             if result.get("merged_pdb"):
-                artifacts["merged_pdb"] = "artifacts/merge/merged.pdb"
+                # Register the file this run wrote. A node whose artifacts dir
+                # was already populated (an interrupted earlier run) gets a
+                # ``merge_2/`` directory, and the old hard-coded
+                # ``artifacts/merge/merged.pdb`` then pointed at a stale or
+                # missing file (campaign 2026-09-10, task 009_membrane_6jzh).
+                artifacts["merged_pdb"] = _node_relative_artifact(
+                    result["merged_pdb"], base_dir, "merge/merged.pdb"
+                )
             lig_chemistry = [
                 {
                     "sdf": lig.get("sdf_file"),
