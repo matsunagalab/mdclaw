@@ -1145,3 +1145,80 @@ def test_run_production_rejects_checkpoint_for_bias(tmp_path):
 
     assert result["success"] is False
     assert result["code"] == "production_bias_checkpoint_unsupported"
+
+
+# ---------------------------------------------------------------------------
+# The water model is decided at solvation; the topology inherits it
+# ---------------------------------------------------------------------------
+
+
+def test_topology_inherits_the_solv_water_model_and_pairs_the_forcefield():
+    from mdclaw.amber.water_utils import default_forcefield_for_water, resolve_water_and_forcefield
+
+    assert default_forcefield_for_water("opc") == "ff19SB"
+    assert default_forcefield_for_water("tip3p") == "ff14SB"
+    assert default_forcefield_for_water("TIP3P") == "ff14SB"
+    assert default_forcefield_for_water("tip4pew") == "ff19SB"
+
+    inherited = resolve_water_and_forcefield(
+        water_model=None, forcefield=None, solvation_water_model="tip3p",
+        solvation_node_id="solv_001", job_dir="/j", node_id="topo_001")
+    assert inherited["water_model"] == "tip3p" and inherited["forcefield"] == "ff14SB"
+    assert inherited["water_model_source"] == "inherited from solv node solv_001"
+    assert inherited["mismatch"] is None
+    assert any("defaulted to ff14SB" in w for w in inherited["warnings"])
+
+    explicit = resolve_water_and_forcefield(
+        water_model="TIP3P", forcefield="ff99SBildn", solvation_water_model="tip3p",
+        solvation_node_id="solv_001")
+    assert explicit["mismatch"] is None and explicit["forcefield"] == "ff99SBildn"
+    assert explicit["forcefield_source"] == "argument" and explicit["warnings"] == []
+
+    standalone = resolve_water_and_forcefield(water_model=None, forcefield=None)
+    assert (standalone["water_model"], standalone["forcefield"]) == ("opc", "ff19SB")
+    assert standalone["water_model_source"] == "default"
+
+
+def test_topology_water_mismatch_names_both_ways_out(tmp_path):
+    """036_ligand_1ceb: solvated with the default, built with --water-model tip3p."""
+    from mdclaw.amber.water_utils import resolve_water_and_forcefield
+
+    verdict = resolve_water_and_forcefield(
+        water_model="tip3p", forcefield=None, solvation_water_model="opc",
+        solvation_node_id="solv_001", job_dir="/j", node_id="topo_001")
+    mismatch = verdict["mismatch"]
+    assert "solv_001" in mismatch["message"] and "'opc'" in mismatch["message"]
+    assert mismatch["next_action"].startswith("mdclaw --job-dir /j --node-id topo_001 build_amber_system")
+    assert any("--node-type solv" in h and "--water-model tip3p" in h for h in mismatch["hints"])
+
+    # Through the tool, in node mode: the topo node is spent with the fix on record.
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    update_job_params(str(job_dir), {"solvent_regime": "explicit"})
+    source = create_node(str(job_dir), "source")["node_id"]
+    (job_dir / "nodes" / source / "artifacts").mkdir(parents=True, exist_ok=True)
+    (job_dir / "nodes" / source / "artifacts" / "sb.json").write_text("{}")
+    complete_node(str(job_dir), source, artifacts={"source_bundle": "artifacts/sb.json"})
+    prep = create_node(str(job_dir), "prep", parent_node_ids=[source])["node_id"]
+    merged = job_dir / "nodes" / prep / "artifacts" / "merge" / "merged.pdb"
+    merged.parent.mkdir(parents=True)
+    _write_minimal_pdb(merged)
+    complete_node(str(job_dir), prep, artifacts={"merged_pdb": "artifacts/merge/merged.pdb"})
+    solv = create_node(str(job_dir), "solv", parent_node_ids=[prep])["node_id"]
+    solvated = job_dir / "nodes" / solv / "artifacts" / "solvated.pdb"
+    solvated.parent.mkdir(parents=True, exist_ok=True)
+    _write_minimal_box_pdb(solvated)
+    _write_box_dimensions_json(job_dir / "nodes" / solv / "artifacts",
+                               {"box_a": 30.0, "box_b": 30.0, "box_c": 30.0})
+    complete_node(str(job_dir), solv,
+                  artifacts={"solvated_pdb": "artifacts/solvated.pdb",
+                             "box_dimensions": "artifacts/box_dimensions.json"},
+                  metadata={"water_model": "opc"})
+    topo = create_node(str(job_dir), "topo", parent_node_ids=[solv])["node_id"]
+
+    result = build_amber_system(job_dir=str(job_dir), node_id=topo, water_model="tip3p")
+    assert result["success"] is False
+    assert result["code"] == "solvation_topology_water_model_mismatch"
+    assert solv in result["message"]
+    assert any("--node-type solv" in h for h in result["hints"])
+    assert read_node(str(job_dir), topo)["status"] == "failed"

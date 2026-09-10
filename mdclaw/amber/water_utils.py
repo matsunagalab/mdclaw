@@ -73,6 +73,94 @@ def _canonical_water_model_name(water_model: Optional[str]) -> Optional[str]:
     return normalize_choice(water_model, CANONICAL_WATER_MODELS)
 
 
+def default_forcefield_for_water(water_model: Optional[str]) -> str:
+    """The protein force field to pair with ``water_model`` when none was given.
+
+    ff19SB with OPC is the modern default; a water ff19SB advises against
+    (TIP3P) gets the force field that lists it as recommended (ff14SB), so
+    "the task says TIP3P" needs one flag at solvation and nothing at topology.
+    """
+    canonical = _canonical_water_model_name(water_model) or water_model
+    for forcefield in ("ff19SB", "ff14SB"):
+        compat = FORCEFIELD_WATER_COMPATIBILITY.get(forcefield, {})
+        if canonical in compat.get("recommended", []) or canonical in compat.get("acceptable", []):
+            return forcefield
+    return "ff19SB"
+
+
+def resolve_water_and_forcefield(
+    *,
+    water_model: Optional[str],
+    forcefield: Optional[str],
+    solvation_water_model: Optional[str] = None,
+    solvation_node_id: Optional[str] = None,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
+) -> dict:
+    """Effective water model and force field for a topology build.
+
+    The water model is fixed by the solvated coordinates (OPC waters carry a
+    virtual site, TIP3P waters do not), so in node mode an omitted
+    ``water_model`` is inherited from the solv node and a different explicit
+    value is a mismatch that names both ways out. An omitted force field is
+    paired with the water. On 036_ligand_1ceb (2026-09-10) the agent
+    solvated with the default and built with ``--water-model tip3p``; the
+    old check only said "match the solvation step".
+    """
+    warnings: list[str] = []
+    solvation_canonical = _canonical_water_model_name(solvation_water_model) if solvation_water_model else None
+    if water_model is None:
+        if solvation_water_model:
+            effective_water = solvation_water_model
+            water_source = f"inherited from solv node {solvation_node_id or 'ancestor'}"
+        else:
+            effective_water = "opc"
+            water_source = "default"
+    else:
+        effective_water = water_model
+        water_source = "argument"
+    requested_canonical = _canonical_water_model_name(effective_water) or effective_water
+    mismatch = None
+    if (water_model is not None and solvation_water_model
+            and requested_canonical != (solvation_canonical or solvation_water_model)):
+        job = job_dir or "<job_dir>"
+        node = node_id or "<topo_node_id>"
+        keep = (f"mdclaw --job-dir {job} --node-id {node} build_amber_system ... "
+                f"(without --water-model; the topo inherits {solvation_water_model!r})")
+        change = (f"mdclaw create_node --job-dir {job} --node-type solv, then "
+                  f"mdclaw --job-dir {job} --node-id <new solv node> solvate_structure "
+                  f"--water-model {water_model} ..., then a new topo node")
+        mismatch = {
+            "message": (
+                f"Topology water_model {water_model!r} does not match solv node "
+                f"{solvation_node_id or 'ancestor'} ({solvation_water_model!r}); the solvated "
+                "coordinates fix the water model, so the topology cannot change it."
+            ),
+            "hints": [f"Keep the solvation: {keep}", f"Change the water: {change}"],
+            "next_action": keep,
+            "solvation_water_model": solvation_water_model,
+        }
+    if forcefield is None:
+        effective_forcefield = default_forcefield_for_water(effective_water)
+        forcefield_source = f"paired with water model {effective_water!r}"
+        if effective_forcefield != "ff19SB":
+            warnings.append(
+                f"forcefield defaulted to {effective_forcefield} to pair with the water model "
+                f"{effective_water!r} ({water_source}); pass --forcefield to choose another."
+            )
+    else:
+        effective_forcefield = forcefield
+        forcefield_source = "argument"
+    return {
+        "water_model": effective_water,
+        "forcefield": effective_forcefield,
+        "water_model_source": water_source,
+        "forcefield_source": forcefield_source,
+        "warnings": warnings,
+        "mismatch": mismatch,
+    }
+
+
 def _evaluate_forcefield_water_guardrails(forcefield: str, water_model: str) -> list[Dict[str, Any]]:
     """Evaluate explicit-solvent forcefield/water guardrails."""
     compat = FORCEFIELD_WATER_COMPATIBILITY.get(forcefield, {})

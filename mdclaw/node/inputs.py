@@ -398,6 +398,7 @@ def _resolve_topo_inputs(job_dir: str, node_id: str) -> dict:
         result["box_dimensions"] = loaded_box
 
     if solv_anc is not None:
+        result["solvation_node_id"] = solv_anc
         is_membrane = _read_metadata_field(job_dir, solv_anc, "is_membrane")
         if isinstance(is_membrane, bool):
             result["is_membrane"] = is_membrane

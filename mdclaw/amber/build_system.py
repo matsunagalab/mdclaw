@@ -74,7 +74,7 @@ from mdclaw.amber.glycam_topology import _prepare_glycam_pdb_with_cpptraj  # noq
 from mdclaw.amber.ligand_validation import implicit_ligand_diagnostics, validate_initial_ligand_contacts, validate_ligand_chemistry, validate_ligand_template_coverage, validate_modxna_params  # noqa: E402
 from mdclaw.amber.openmm_build import _record_topology_build_stage, _run_openmmforcefields_build  # noqa: E402
 from mdclaw.amber.topology_bonds import _plan_glycan_topology_bonds  # noqa: E402
-from mdclaw.amber.water_utils import _canonical_forcefield_name, _canonical_water_model_name, _evaluate_forcefield_water_guardrails, fix_histidine_protonation_consistency, fix_ligand_residue_names, strip_crystal_waters  # noqa: E402
+from mdclaw.amber.water_utils import _canonical_forcefield_name, _canonical_water_model_name, _evaluate_forcefield_water_guardrails, fix_histidine_protonation_consistency, fix_ligand_residue_names, resolve_water_and_forcefield, strip_crystal_waters  # noqa: E402
 
 
 _NUCLEIC_FORCEFIELD_ALIASES = {
@@ -160,6 +160,7 @@ def _resolve_build_amber_node_inputs(
         "box_dimensions": box_dimensions if box_dimensions is not None else inputs.get("box_dimensions"),
         "is_membrane": is_membrane if is_membrane is not None else bool(inputs.get("is_membrane")),
         "solvation_water_model": inputs.get("solvation_water_model"),
+        "solvation_node_id": inputs.get("solvation_node_id"),
         "neutralization_expected": bool(inputs.get("neutralization_expected")),
     }
 
@@ -173,8 +174,8 @@ def build_amber_system(
     glycan_metadata: Optional[Dict[str, Any]] = None,
     glycan_linkages: Optional[List[Dict[str, Any]]] = None,
     box_dimensions: Optional[Dict[str, float]] = None,
-    forcefield: str = "ff19SB",
-    water_model: str = "opc",
+    forcefield: Optional[str] = None,
+    water_model: Optional[str] = None,
     nucleic_forcefield: str = "auto",
     glycan_forcefield: str = "auto",
     is_membrane: Optional[bool] = None,
@@ -240,9 +241,13 @@ def build_amber_system(
         box_dimensions: ``{"box_a", "box_b", "box_c"}`` in Å from
                         ``solvate_structure``; ``None`` selects implicit /
                         vacuum.
-        forcefield: Protein FF (default: ``"ff19SB"``).
-        water_model: Water model for explicit solvent (default: ``"opc"``).
-                     OPC is strongly recommended with ff19SB (Amber25 ch.3.6).
+        forcefield: Protein FF. Omitted: paired with the water model
+                    (``ff19SB`` for OPC, ``ff14SB`` for TIP3P).
+        water_model: Water model for explicit solvent. In node mode an
+                     omitted value is inherited from the solv node, whose
+                     coordinates fix it; a different explicit value is a
+                     ``solvation_topology_water_model_mismatch``. Outside node
+                     mode the default is ``"opc"`` (Amber25 ch.3.6).
         nucleic_forcefield: ``"auto"`` loads DNA OL15 / RNA OL3 when
                             standard nucleic residues are present;
                             ``"none"`` disables it.
@@ -338,7 +343,47 @@ def build_amber_system(
         ... )
     """
     solvation_water_model = None
+    solvation_node_id = None
     neutralization_expected = False
+    # The water model belongs to the solv node: peek at it before the
+    # condition cross-check so an omitted --water-model / --forcefield is
+    # resolved from the DAG rather than reported as unverifiable.
+    if job_dir and node_id:
+        try:
+            from mdclaw._node import resolve_node_inputs as _peek_inputs
+
+            _peek = _peek_inputs(job_dir, node_id, "topo")
+            solvation_water_model = _peek.get("solvation_water_model")
+            solvation_node_id = _peek.get("solvation_node_id")
+        except Exception:  # noqa: BLE001 - the full resolver reports problems below
+            pass
+    _ff_water = resolve_water_and_forcefield(
+        water_model=water_model, forcefield=forcefield,
+        solvation_water_model=solvation_water_model,
+        solvation_node_id=solvation_node_id, job_dir=job_dir, node_id=node_id,
+    )
+    water_model = _ff_water["water_model"]
+    forcefield = _ff_water["forcefield"]
+    if _ff_water["mismatch"]:
+        mismatch = _ff_water["mismatch"]
+        blocked = {
+            **create_validation_error(
+                "water_model",
+                mismatch["message"],
+                expected=mismatch["solvation_water_model"],
+                actual=water_model,
+                hints=mismatch["hints"],
+                code="solvation_topology_water_model_mismatch",
+            ),
+            "next_action": mismatch["next_action"],
+        }
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir, node_id, blocked,
+                default_error="build_amber_system water model differs from the solv node",
+            )
+        return blocked
     # Auto-resolve input from DAG when in node mode and pdb_file not provided
     if job_dir and node_id:
         _resolved = _resolve_build_amber_node_inputs(
@@ -612,6 +657,8 @@ def build_amber_system(
             ),
             "box_dimensions": box_dimensions,
             "is_membrane": is_membrane if box_dimensions else False,
+            "water_model_source": _ff_water["water_model_source"],
+            "forcefield_source": _ff_water["forcefield_source"],
             "ligand_count": len(ligand_chemistry) if ligand_chemistry else 0,
             "modxna_param_count": len(modxna_params) if modxna_params else 0,
             "glycan_count": len((glycan_metadata or {}).get("glycans", [])) if isinstance(glycan_metadata, dict) else 0,
@@ -629,6 +676,7 @@ def build_amber_system(
     # Add box_dimensions validation warning to result
     if box_dim_warning:
         result["warnings"].append(box_dim_warning)
+    result["warnings"].extend(_ff_water["warnings"])
 
     # Validate force field
     canonical_forcefield = _canonical_forcefield_name(forcefield)

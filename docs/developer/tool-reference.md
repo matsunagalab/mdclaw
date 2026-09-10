@@ -312,7 +312,13 @@ signature, update the relevant section here and the matching skill examples.
 
 ## `amber/`
 
-- `build_amber_system(...)`: openmmforcefields-based topology builder
+- `build_amber_system(...)`: openmmforcefields-based topology builder.
+  `water_model` and `forcefield` default to `None`: in node mode the water
+  model is inherited from the solv node (`parameters.water_model_source`)
+  and an explicit different value is `solvation_topology_water_model_mismatch`
+  with both ways out; the force field is paired with the water
+  (`default_forcefield_for_water`: ff19SB for OPC, ff14SB for TIP3P).
+  Outside node mode the defaults are OPC and ff19SB. Builder details:
   (`SystemGenerator` and `GAFFTemplateGenerator`,
   with OpenFF Pablo for the PDB → topology stage). Handles ligand, metal,
   modXNA, glycan, nucleic acid,

@@ -35,6 +35,14 @@ mdclaw --job-dir <job_dir> --node-id <solv_node_id> solvate_structure \
   --dist 15.0 --salt --saltcon 0.15
 ```
 
+The water model is decided here and only here: the default is OPC, and a
+request that names another water (for example TIP3P) is `--water-model tip3p`
+on this command. The topology stage inherits the solv node's water model and
+pairs the protein force field with it, so do not repeat the water model at
+`build_amber_system`; an explicit different value there is refused
+(`solvation_topology_water_model_mismatch`), because the solvated
+coordinates already fix it.
+
 `pdb_file` is auto-resolved from the `prep` parent's `merged_pdb` artifact. If
 that artifact is wrong, create a corrected prep branch instead of overriding
 the path on the solv node.
@@ -64,13 +72,15 @@ fields, use `skills/common/solvent-regimes.md#ion-intent---exact-flags`.
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type topo
 mdclaw explain_node --job-dir <job_dir> --node-id <topo_node_id>
-mdclaw --job-dir <job_dir> --node-id <topo_node_id> build_amber_system \
-  --no-is-membrane
+mdclaw --job-dir <job_dir> --node-id <topo_node_id> build_amber_system
 ```
 
-`pdb_file` is auto-resolved from the `solv` parent's `solvated_pdb` artifact.
-For membrane systems created by `embed_in_membrane`, pass `--is-membrane`
-instead of `--no-is-membrane`.
+`pdb_file`, the box, the membrane flag and the water model are auto-resolved
+from the `solv` parent (`solvated_pdb`, `box_dimensions`, `is_membrane`,
+`water_model`); the protein force field defaults to the pairing for that
+water (ff19SB for OPC, ff14SB for TIP3P) unless `--forcefield` is given. The
+result's `parameters.water_model_source` and `parameters.forcefield_source`
+say where each value came from.
 Do not pass a manual `--pdb-file`; if the wrong structure would be resolved,
 fix the upstream `prep`/`solv` branch and create a new `topo` node.
 
@@ -107,11 +117,12 @@ mdclaw export_state_pdb \
   --output-pdb-file minimized_structure.pdb
 ```
 
-To explore an older protein force field that is
-not the recommended default, override both sides together — e.g.
-`build_amber_system --forcefield ff14SB --water-model tip3p` selects the
-ff14SB bundle and TIP3P water in the SystemGenerator XML list, and is a
-research / comparison choice, not a "legacy artifact format" toggle.
+To use an older protein force field that is not the recommended default,
+choose the water at solvation (`solvate_structure --water-model tip3p`) and,
+if the request names a force field, pass it at topology
+(`build_amber_system --forcefield ff99SBildn`); with no `--forcefield` the
+topology pairs ff14SB with TIP3P by itself. This is a research / comparison
+choice, not a "legacy artifact format" toggle.
 
 ### Protonation Notes
 - pH 7.4 is physiological default
