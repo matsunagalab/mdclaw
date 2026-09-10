@@ -522,7 +522,10 @@ signature, update the relevant section here and the matching skill examples.
   `--gpus 1`, and it applies the same container-command guard.
   Each task also receives the same production condition preflight before any
   task is submitted; results are indexed by `task_index`.
-- `check_job(...)`: sync SLURM state and reflect failures into linked nodes.
+- `check_job(...)`: query squeue → scontrol → sacct, sync SLURM state and
+  reflect failures into linked nodes. Returns `state_source` and `checked_at`.
+  Missing/expired records return `slurm_status_unavailable`, never inferred
+  completion; `last_observation`, when present, is historical, not current.
 - `list_jobs(...)`, `cancel_job(...)`, `check_job_log(...)`: operational
   helpers.
 - `set_policy(...)`, `show_policy(...)`: resource policy management.

@@ -117,7 +117,9 @@ def test_container_sbatch_hands_the_worker_the_host_environment(tmp_path, monkey
     monkeypatch.setenv("SBATCH_ACCOUNT", "project")
 
     result = json.loads(_base.run_command(["sbatch"]).stdout)["env"]
-    assert result["PATH"] == os.environ["MDCLAW_SLURM_PATH"]
+    # Measured 2026-09-10 on n2: with the Slurm directory alone as PATH the
+    # worker had no /usr/bin, so `singularity --nv` could not bind nvidia-smi.
+    assert result["PATH"] == os.environ["MDCLAW_SLURM_PATH"] + ":/usr/local/bin:/usr/bin:/bin"
     for key in ("LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH",
                 "APPTAINERENV_EXAMPLE", "SINGULARITY_NAME"):
         assert result[key] == ""

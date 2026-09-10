@@ -29,6 +29,9 @@ _CONTAINER_BIND_ENV = (
 # Loader and interpreter settings that describe this image, not the worker.
 _IMAGE_ONLY_ENV = ("LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME")
 _CONTAINER_ENV_PREFIXES = ("SINGULARITY", "APPTAINER")
+# Appended to a worker's PATH after MDCLAW_SLURM_PATH; source-built
+# singularity-ce lives in /usr/local/bin, distro apptainer and nvidia-smi in /usr/bin.
+_WORKER_SYSTEM_PATH = ["/usr/local/bin", "/usr/bin", "/bin"]
 
 
 def _slurm_executable(tool_name, env=None):
@@ -69,8 +72,13 @@ def run_command(cmd, cwd=None, timeout=None, capture_output=True, env=None, use_
             env.update(dict.fromkeys(_IMAGE_ONLY_ENV, ""))
             env.update({key: "" for key in environment
                         if key.startswith(_CONTAINER_ENV_PREFIXES)})
+            # Keep the system directories behind it: a Slurm-only search path
+            # hides /usr/bin, and `singularity --nv` binds nvidia-smi only
+            # when PATH resolves it (measured 2026-09-10 on n2: job 137274
+            # had no nvidia-smi with MDCLAW_SLURM_PATH=/usr/local/bin alone).
             if environment.get("MDCLAW_SLURM_PATH"):
-                env["PATH"] = environment["MDCLAW_SLURM_PATH"]
+                env["PATH"] = os.pathsep.join(dict.fromkeys(
+                    environment["MDCLAW_SLURM_PATH"].split(os.pathsep) + _WORKER_SYSTEM_PATH))
         cmd = [executable, *cmd[1:]]
     return _run_command(
         cmd, cwd=cwd, timeout=timeout, capture_output=capture_output,

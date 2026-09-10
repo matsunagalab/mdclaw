@@ -373,6 +373,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     # --- SLURM / HPC policy ---
     "invalid_slurm_job_id": "Provide a valid SLURM job id.",
     "slurm_node_unavailable": "SLURM node/tooling is unavailable; check the cluster runtime.",
+    "slurm_status_unavailable": "Retry if Slurm is unavailable; if records expired, inspect DAG and logs separately.",
     "slurm_node_already_submitted": "This node was already submitted; do not resubmit.",
     "slurm_node_submission_in_progress": "Submission is in progress; wait before resubmitting.",
     "slurm_completed_without_node_completion": "SLURM job completed but the node did not; inspect artifacts.",
