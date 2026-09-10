@@ -97,6 +97,56 @@ def build_modaa_residue_definitions(
     return definitions
 
 
+def residue_names_in_pdb(pdb_path: Path) -> list[str]:
+    """Distinct residue names of a PDB file, in order of first appearance."""
+    names: dict[str, None] = {}
+    try:
+        with Path(pdb_path).open() as handle:
+            for line in handle:
+                if line.startswith(("ATOM  ", "HETATM")):
+                    name = line[17:20].strip()
+                    if name:
+                        names.setdefault(name.upper(), None)
+    except OSError:
+        return []
+    return list(names)
+
+
+def seed_absent_ccd_names(cache: Any, residue_names: Sequence[str]) -> dict:
+    """Look each unknown residue name up in the CCD once, and remember misses.
+
+    Pablo asks the CCD for a name every time a residue with that name fails to
+    match, and a name the CCD does not have (lipid21's ``PA`` / ``OL`` / ``PC``
+    fragments) is asked again for every such residue: one HTTP request per
+    lipid, about 700 per membrane build, before Pablo gives up and the
+    ``PDBFile`` fallback runs. Under six concurrent agents that took 395 s on
+    2026-09-10 (22 s for a smaller membrane, 27 s in isolation). Registering
+    an empty definition list for a missed name makes Pablo's lookup answer
+    "no definitions" immediately, so each absent name costs one request.
+    """
+    definitions = getattr(cache, "_definitions", None)
+    outcome = {"looked_up": [], "absent": [], "unreachable": []}
+    if not isinstance(definitions, dict):
+        return outcome
+    for name in residue_names:
+        key = str(name).upper()
+        if key in definitions or key in ("UNK", "UNL"):
+            continue
+        outcome["looked_up"].append(key)
+        try:
+            cache[key]
+        except KeyError as exc:
+            reason = " ".join(str(part) for part in exc.args[1:])
+            if "could not be accessed" in reason:
+                outcome["unreachable"].append(key)
+                continue
+            definitions.setdefault(key, [])
+            outcome["absent"].append(key)
+        except Exception:  # noqa: BLE001 - a probe failure must not change the load
+            outcome["unreachable"].append(key)
+    return outcome
+
+
 def load_topology(
     pdb_path: Path,
     *,
@@ -147,6 +197,13 @@ def load_topology(
     try:
         if previous_auto_download is not None:
             STD_CCD_CACHE.auto_download = bool(auto_download)
+        if auto_download:
+            ccd_probe = seed_absent_ccd_names(STD_CCD_CACHE, residue_names_in_pdb(pdb_path))
+            if ccd_probe["absent"]:
+                warnings.append(
+                    "Residue names absent from the CCD (one lookup each, then skipped): "
+                    + ", ".join(ccd_probe["absent"])
+                )
         try:
             off_topology = topology_from_pdb(
                 str(pdb_path),

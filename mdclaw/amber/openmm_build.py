@@ -1241,6 +1241,7 @@ def _run_openmmforcefields_build(
     # PDB round trip. Copy any missing template bond onto the topology so
     # ``SystemGenerator.create_system`` sees the same residue graph as the
     # loaded force field.
+    _stage("ligand_internal_bond_patch")
     ligand_molecule_bonds_added = _patch_ligand_molecule_internal_bonds(
         omm_topology,
         valid_ligands or [],
@@ -1256,6 +1257,7 @@ def _run_openmmforcefields_build(
             f"GAFFTemplateGenerator can match the residue graph."
         )
 
+    _stage("template_internal_bond_patch")
     bonds_added = _patch_template_internal_bonds(omm_topology, sg.forcefield)
     if bonds_added:
         patch_summary["template_internal_bonds_added"] = bonds_added
@@ -1300,6 +1302,7 @@ def _run_openmmforcefields_build(
             "bond(s)); glycan hydrogens were completed without generic protein repair."
         )
 
+    _stage("external_bond_search")
     # Patch missing inter-residue (external) bonds. ``packmol-memgen`` and
     # ``cpptraj prepareforleap`` write residues with the right geometry but
     # rely on tleap/parmed-side bond inference to connect them. The
@@ -1515,6 +1518,7 @@ def _run_openmmforcefields_build(
                     f"and the protein FF treats them as plain asparagine)."
                 )
 
+        _stage("orphan_glycam_cleanup")
         # Drop orphan GLYCAM residues whose external bonds are still
         # unpaired — these arise when ``cpptraj prepareforleap`` lays out
         # a glycan chain whose attachment-site partner (NLN, another

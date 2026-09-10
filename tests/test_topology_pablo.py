@@ -220,3 +220,48 @@ def test_add_disulfide_bonds_rejects_unresolvable_pairs():
 def test_add_disulfide_bonds_with_empty_input():
     from openmm.app import Topology
     assert tp.add_disulfide_bonds(Topology(), []) == 0
+
+
+class TestAbsentCcdNamesAreAskedOnce:
+    """Names the CCD does not have (lipid21 fragments) cost one lookup, not one per residue."""
+
+    class _Cache:
+        def __init__(self, present):
+            self._definitions = {name: [object()] for name in present}
+            self.requests = []
+
+        def __getitem__(self, key):
+            self.requests.append(key)
+            if key in self._definitions:
+                return tuple(self._definitions[key])
+            if key == "OFF":
+                raise KeyError(key, "unknown and CCD could not be accessed")
+            raise KeyError(key, "unknown and absent from CCD")
+
+    def test_misses_are_remembered_and_hits_are_kept(self):
+        from mdclaw._topology_pablo import seed_absent_ccd_names
+
+        cache = self._Cache(present={"ALA", "HOH"})
+        cache._definitions["NAG"] = [object()]
+        outcome = seed_absent_ccd_names(cache, ["ALA", "PA", "OL", "PC", "NAG", "OFF", "PA", "OL"])
+        assert outcome["absent"] == ["PA", "OL", "PC"]
+        assert outcome["unreachable"] == ["OFF"]
+        assert cache.requests == ["PA", "OL", "PC", "OFF"]
+        assert cache._definitions["PA"] == [] and cache._definitions["OL"] == []
+        assert "OFF" not in cache._definitions  # a network failure is not a miss
+        # A second pass over a membrane's ~700 lipid residues asks nothing.
+        again = seed_absent_ccd_names(cache, ["PA", "OL"] * 300)
+        assert again["looked_up"] == [] and cache.requests == ["PA", "OL", "PC", "OFF"]
+
+    def test_residue_names_are_read_in_order(self, tmp_path):
+        from mdclaw._topology_pablo import residue_names_in_pdb
+
+        pdb = tmp_path / "m.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+            "HETATM    2  C1  PA  A   2       0.000   0.000   0.000  1.00  0.00           C\n"
+            "HETATM    3  C2  PA  A   2       0.000   0.000   0.000  1.00  0.00           C\n"
+            "HETATM    4  O   HOH A   3       0.000   0.000   0.000  1.00  0.00           O\n"
+        )
+        assert residue_names_in_pdb(pdb) == ["ALA", "PA", "HOH"]
+        assert residue_names_in_pdb(tmp_path / "missing.pdb") == []
