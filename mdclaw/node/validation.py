@@ -154,16 +154,41 @@ def _node_is_terminal(data: dict) -> bool:
     return _normalize_node_status(data.get("status")) in TERMINAL_NODE_STATUSES
 
 
-def _terminal_node_sealed_response(node_id: str, status: Optional[str] = None) -> dict:
+def _terminal_node_sealed_response(node_id: str, status: Optional[str] = None,
+                                   node: Optional[dict] = None,
+                                   job_dir: Optional[str] = None) -> dict:
     status = _normalize_node_status(status) if status is not None else None
     label = f"{status.capitalize()} node" if status else "Terminal node"
+    message = (
+        f"{label} '{node_id}' is sealed: nodes run once and their records are "
+        "immutable after completion or failure."
+    )
+    node_type = (node or {}).get("node_type") or (node or {}).get("type")
+    parents = list((node or {}).get("parent_node_ids") or [])
+    jd = job_dir or "<job_dir>"
+    branch = f"mdclaw create_node --job-dir {jd} --node-type {node_type or '<type>'}"
+    if parents:
+        branch += f" --parent-node-ids {' '.join(parents)}"
+    hints = [
+        "Changed scientific state goes on a new node (a branch with the same "
+        "parents); operational observations go to events.",
+        f"Branch: {branch}",
+    ]
+    if status == "failed":
+        hints.append(f"Why it failed: mdclaw trace_failure --job-dir {jd} --node-id {node_id}")
     return {
         "success": False,
         "code": "node_terminal",
         "node_id": node_id,
         "status": status,
-        "error": (
-            f"{label} record '{node_id}' is sealed; write an event or create "
-            "a new node instead of mutating node.json."
+        "error": message,
+        "message": message,
+        "errors": [message],
+        "warnings": [],
+        "hints": hints,
+        "next_action": (
+            f"mdclaw trace_failure --job-dir {jd} --node-id {node_id}, then branch: {branch}"
+            if status == "failed" else f"Branch a new node: {branch}"
         ),
+        "recoverable": True,
     }

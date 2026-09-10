@@ -105,18 +105,13 @@ def wait_node(
         polls += 1
         node_json = jd / "nodes" / node_id / "node.json"
         if not node_json.is_file():
-            return {
-                "success": False,
-                "code": "node_missing",
-                "message": f"Node '{node_id}' does not exist under {jd}",
-                "job_dir": str(jd),
-                "node_id": node_id,
+            from mdclaw.node.snapshot import node_missing_error
+
+            return node_missing_error(str(jd), node_id, extra={
                 "terminal_statuses": sorted(terminal),
                 "elapsed_seconds": round(time.monotonic() - started, 3),
                 "polls": polls,
-                "errors": [f"missing node.json: {node_json}"],
-                "warnings": [],
-            }
+            })
 
         try:
             node = json.loads(node_json.read_text())

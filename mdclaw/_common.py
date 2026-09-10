@@ -564,6 +564,27 @@ def finalize_error(
     return result
 
 
+def create_choice_error(
+    field: str, value: Any, choices, *, hints: Optional[list[str]] = None,
+) -> dict:
+    """Validation error for a parameter whose value is not one of ``choices``.
+
+    Tools used to ``raise ValueError`` for these, which the CLI could only
+    report as ``unhandled_exception``; the agent then saw a traceback instead
+    of the accepted values.
+    """
+    accepted = [str(c) for c in choices]
+    return create_validation_error(
+        field,
+        f"unsupported value {value!r}; accepted: {', '.join(accepted)}",
+        expected=f"one of: {', '.join(accepted)}",
+        actual=repr(value),
+        hints=hints,
+        context_extra={"accepted_values": accepted},
+        code="invalid_parameter_value",
+    )
+
+
 def create_validation_error(
     field: str, message: str,
     expected: Optional[str] = None, actual: Optional[str] = None,

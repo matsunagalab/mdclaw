@@ -69,6 +69,16 @@ Every skill uses the same three tiers:
 - **Stable CLI flag names.** Use one flag name for one concept across skills.
   The source-candidate selector passed to `prepare_complex` is
   `--source-candidate-id` everywhere.
+- **Structural facts belong to the CLI; skills carry scientific procedure.**
+  The DAG contract (node types and their order, parent rules, which tool runs
+  which stage, the result envelope, what an error code means and how to fix
+  it) is stated once by the CLI: `mdclaw --workflow`, the `dag` / `next`
+  blocks of every result, and fix-carrying error messages. Skills refer to it
+  through `skills/common/run-loop.md` and `skills/common/tool-output.md` and
+  do not restate it; they decide *what* to run (regime, parameters, order of
+  scientific decisions), never *how the DAG works*. When a CLI rule changes,
+  update the CLI text and its tests first, then the two common pages; a skill
+  that only works because it re-explains a CLI rule is a defect in the CLI.
 
 ## Anti-patterns
 

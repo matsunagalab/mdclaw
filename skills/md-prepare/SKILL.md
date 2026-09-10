@@ -32,9 +32,11 @@ Before the first state-changing command:
 5. The workflow below already names the normal-path tools; do not scan the
    global registry with bare `mdclaw --list`. To check one tool's signature,
    use `mdclaw --list-json <tool>`. Only if that is insufficient, read the
-   complete `mdclaw <tool> --help`. Previewing output with `head`, `tail`, or
-   `grep` is fine; before concluding that a tool or parameter is unavailable,
-   confirm with `mdclaw --list-json <tool>`.
+   complete `mdclaw <tool> --help`. Previewing *help* output with `head`,
+   `tail`, or `grep` is fine; a stage tool's JSON result is read whole from
+   stdout (see the output rule in `skills/common/run-loop.md`). Before
+   concluding that a tool or parameter is unavailable, confirm with
+   `mdclaw --list-json <tool>`.
 Use IDs returned by tools, never literal example IDs. Follow
 `skills/common/preamble.md`, `skills/common/run-loop.md` (the canonical node
 loop, re-entry, and shared-job reference), and `skills/common/tool-output.md`
@@ -89,9 +91,15 @@ mdclaw bootstrap_md_workflow \
   --question "<user request>" \
   --md-goal "<one sentence MD goal>" \
   --solvent-regime explicit \
-  --execution-mode autonomous
+  --execution-mode autonomous \
+  --pdb-id <PDB id, when the request names one>
 mdclaw inspect_job --job-dir <returned_job_dir>
 ```
+
+The bootstrap result names the job's `source` node (`source_node_id`,
+normally `source_001`) and, in `next`, the command to run on it. With
+`--pdb-id` the entry is already fetched into that node and `next` points at
+the `prep` stage.
 
 Replace `"explicit"` with `"implicit"`, `"vacuum"`, or `"membrane"` when the
 request names that regime. The returned `job_dir` is the only directory passed
@@ -128,8 +136,11 @@ use the HPacker-based `create_mutated_structure` branch in
    richer `md-study` plan. Use its returned `job_dir` for all DAG commands and
    run `inspect_job` once after bootstrap. For an older study missing workflow
    params, repair them with `update_workflow_state --params ...`.
-3. Create, explain, and run the `source` node. Read `acquisition.md` only for a
-   remote/generated source, biological assembly, or multi-candidate bundle.
+3. Run the `source` node that the bootstrap created (its id is the result's
+   `source_node_id`, and `next.run_command` is the fetch); passing
+   `--pdb-id <id>` to `bootstrap_md_workflow` performs that fetch in the same
+   call. Read `acquisition.md` only for a remote/generated source, biological
+   assembly, or multi-candidate bundle.
 4. Run `inspect_molecules` and confirm Step 0b. Before creating `prep`, read
    `prep-chemistry.md` for the protonation baseline, and for caps, disulfides
    or a mutation/PTM branch where those apply; `branches.md` covers branching.

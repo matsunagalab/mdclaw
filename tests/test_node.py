@@ -178,8 +178,11 @@ class TestCreateNode:
         result = create_node(str(job_dir), "topo")
 
         assert result["success"] is False
-        assert result["code"] == "node_context_required"
+        assert result["code"] == "parent_required"
         assert result["candidate_parent_node_ids"] == []
+        assert "no solv node exists yet" in result["message"]
+        assert "--node-type solv" in result["next_action"]
+        assert result["dag"]["node_count"] == 0
         assert not (job_dir / "nodes").exists()
         progress = json.loads((job_dir / "progress.json").read_text())
         assert progress["nodes"] == {}
@@ -204,8 +207,11 @@ class TestCreateNode:
         result = create_node(str(job_dir), "solv")
 
         assert result["success"] is False
-        assert result["code"] == "node_context_required"
+        assert result["code"] == "parent_required"
         assert result["candidate_parent_node_ids"] == ["prep_001", "prep_002"]
+        assert result["candidate_parents"] == [{"node_id": "prep_001", "status": "completed"},
+                                               {"node_id": "prep_002", "status": "completed"}]
+        assert "prep_001 (completed), prep_002 (completed)" in result["message"]
         assert result["candidate_commands"] == [
             f"mdclaw create_node --job-dir {job_dir} --node-type solv "
             "--parent-node-ids prep_001",
@@ -591,7 +597,9 @@ class TestCreateNode:
         result = create_node(str(job_dir), "invalid_type")
         assert result["success"] is False
         assert result["code"] == "invalid_node_type"
-        assert "Invalid node_type" in result["error"]
+        assert "is not a node type" in result["error"]
+        assert result["valid_node_types"] == [
+            "source", "prep", "solv", "topo", "min", "eq", "prod", "analyze"]
 
     def test_invalid_parent_ref(self, job_dir):
         result = create_node(str(job_dir), "solv",
@@ -3947,10 +3955,16 @@ class TestSourceStudyContext:
     def test_rejects_second_source_root(self, job_dir):
         jd = str(job_dir)
         assert create_node(jd, "source")["success"] is True
+        # A pending source is handed back; once it has run, a second source
+        # root is refused and the existing one is named.
+        from mdclaw._node import begin_node
+        begin_node(jd, "source_001")
         result = create_node(jd, "source")
         assert result["success"] is False
         assert result["code"] == "source_already_exists"
-        assert "already has a source root" in result["error"]
+        assert "one source per job" in result["error"]
+        assert result["existing_node_id"] == "source_001"
+        assert result["next_action"].endswith("--node-id source_001  (then run the source tool on it)")
 
     def test_rejects_prep_with_multiple_source_lineages(self, job_dir):
         jd = str(job_dir)

@@ -28,8 +28,10 @@ def test_an_unknown_method_is_refused(tmp_path):
 
     structure = tmp_path / "x.pdb"
     structure.write_text("END\n")
-    with pytest.raises(ValueError, match="Unsupported protonation_method"):
-        clean_protein(str(structure), protonation_method="propka-ish")
+    result = clean_protein(str(structure), protonation_method="propka-ish")
+    assert result["success"] is False
+    assert result["code"] == "invalid_parameter_value"
+    assert result["context"]["accepted_values"] == ["propka", "standard"]
 
 
 def test_requested_method_fails_closed_when_pdb2pqr_is_unavailable(

@@ -155,8 +155,16 @@ def bootstrap_md_workflow(
     job_description: Optional[str] = None,
     plan_id: Optional[str] = None,
     plan: Optional[dict] = None,
+    pdb_id: Optional[str] = None,
+    create_source_node: bool = True,
 ) -> dict:
     """Create the canonical study/plan/job layout for any MD workflow.
+
+    The job's ``source`` node is created as well (``create_source_node``), so
+    the first stage command is the fetch itself; with ``pdb_id`` the entry is
+    fetched into that node here and the result's ``next`` already points at
+    ``prep``. Skill-less agents otherwise spent their first calls discovering
+    that a job starts with a source node (2026-09-10 campaign).
 
     This is the high-level entry point skills should use before creating DAG
     nodes. It unifies the old direct-run and study-driven layouts:
@@ -370,6 +378,8 @@ def bootstrap_md_workflow(
             },
             "next_command": f"mdclaw inspect_job --job-dir {job_dir}",
         })
+        if create_source_node:
+            _bootstrap_source_node(result, str(job_dir), pdb_id)
         return result
     except Exception as exc:  # noqa: BLE001
         logger.error(f"bootstrap_md_workflow failed: {exc}")
@@ -377,6 +387,82 @@ def bootstrap_md_workflow(
             f"bootstrap_md_workflow failed: {type(exc).__name__}: {exc}"
         )
         return result
+
+
+def _bootstrap_source_node(result: dict, job_dir: str, pdb_id: Optional[str]) -> None:
+    """Create (or find) the job's source node and describe the first command."""
+    from mdclaw.node.lifecycle import create_node
+    from mdclaw.node.progress import _load_progress_v3
+
+    progress = _load_progress_v3(Path(job_dir) / "progress.json") or {}
+    nodes = progress.get("nodes", {}) or {}
+    existing = sorted(nid for nid, info in nodes.items() if info.get("type") == "source")
+    if existing:
+        source_id = existing[0]
+        result["warnings"].append(f"reusing existing source node {source_id!r}")
+    else:
+        created = create_node(job_dir, "source")
+        if not created.get("success"):
+            result["warnings"].append(
+                "source node was not created: "
+                + str(created.get("message") or created.get("error") or created.get("code"))
+            )
+            return
+        source_id = created["node_id"]
+    result["source_node_id"] = source_id
+    source_status = (nodes.get(source_id) or {}).get("status") or "pending"
+    result["message"] = (
+        f"study ready; job {result.get('job_id')!r} at {job_dir} with {source_id} "
+        f"{source_status}"
+    )
+    fetch = (f"mdclaw --job-dir {job_dir} --node-id {source_id} fetch_structure "
+             f"--source pdb --pdb-id {pdb_id or '<PDB id>'}")
+    prep = f"mdclaw create_node --job-dir {job_dir} --node-type prep"
+    result["next"] = {
+        "action": "run",
+        "node_id": source_id,
+        "node_type": "source",
+        "stage_tools": ["fetch_structure", "register_local_structure"],
+        "run_command": fetch,
+        "alternatives": [
+            f"mdclaw --job-dir {job_dir} --node-id {source_id} fetch_structure "
+            "--source local --file-path <file.pdb|cif>",
+            f"mdclaw --job-dir {job_dir} --node-id {source_id} fetch_structure "
+            "--source alphafold --uniprot-id <UniProt id>",
+        ],
+        "then": prep,
+    }
+    if source_status == "completed":
+        result["next"] = {"action": "create", "node_type": "prep", "create_command": prep,
+                          "stage_tools": ["prepare_complex"], "inputs": "auto_resolved"}
+    if not pdb_id or source_status != "pending":
+        return
+    import asyncio
+
+    from mdclaw.research.fetch import fetch_structure
+
+    fetched = asyncio.run(fetch_structure(
+        source="pdb", pdb_id=pdb_id, job_dir=job_dir, node_id=source_id))
+    result["source_fetch"] = {
+        key: fetched.get(key) for key in (
+            "success", "code", "message", "structure_count", "candidate_count",
+            "source_bundle_file", "errors", "warnings",
+        ) if key in fetched
+    }
+    if fetched.get("success"):
+        result["next"] = {"action": "create", "node_type": "prep", "create_command": prep,
+                          "stage_tools": ["prepare_complex"], "inputs": "auto_resolved",
+                          "then": f"mdclaw --job-dir {job_dir} --node-id <prep node id> "
+                                  "prepare_complex --solvent-type explicit ..."}
+    else:
+        result["success"] = False
+        result["errors"].append(
+            f"fetch_structure for {pdb_id!r} failed: "
+            + str(fetched.get("message") or fetched.get("code") or "unknown error")
+        )
+        result["next_action"] = (
+            f"mdclaw trace_failure --job-dir {job_dir} --node-id {source_id}"
+        )
 
 
 @job_dir_data_tool

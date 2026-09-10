@@ -1,14 +1,19 @@
 # Structure Acquisition
 
 Use a `source` node for the initial structural source bundle.
+`bootstrap_md_workflow` already created it (`source_node_id`, normally
+`source_001`); do not create a second one. Create a source node by hand only
+for a job that has none (`inspect_job` shows no `source` node).
 
 Common sources:
 
 ```bash
-mdclaw create_node --job-dir <job_dir> --node-type source
 mdclaw explain_node --job-dir <job_dir> --node-id <source_node_id>
 mdclaw --job-dir <job_dir> --node-id <source_node_id> fetch_structure --source pdb --pdb-id 1AKE
 ```
+
+When the request names a PDB entry, `bootstrap_md_workflow --pdb-id 1AKE`
+performs this fetch during bootstrap; then continue with `prep`.
 
 That example fetches a deposited PDB entry. Change only the final run command
 for another source: add `--assembly-ids 1` for a named assembly; use
@@ -21,8 +26,11 @@ Rules:
 
 - Run exactly one source tool after `explain_node` reports
   `ready_to_run=true`.
-- Use the exact `node_id` returned by `create_node`; do not leave `--node-id`
-  empty and do not create a second `source` node for the same job.
+- Use the exact `node_id` reported by the bootstrap (or by `create_node`); do
+  not leave `--node-id` empty and do not create a second `source` node for the
+  same job (`create_node --node-type source` hands the pending source back
+  with `reused_existing_node=true`, and answers `code=source_already_exists`
+  naming it once it has run).
 - Copy the target identifier exactly from the user's request.
 - Default PDB/local fetch records the deposited asymmetric unit only. If the
   user asks for a biological assembly, or the PDB/mmCIF entry says a specific

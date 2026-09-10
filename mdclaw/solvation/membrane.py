@@ -1944,7 +1944,6 @@ def _run_membrane_packmol_race(
     return lane_results
 
 
-@node_tool(node_type="solv")
 def _coerce_ligand_chemistry(value):
     """Ligand chemistry as records, whether resolved as records or as a file.
 
@@ -1961,6 +1960,7 @@ def _coerce_ligand_chemistry(value):
     return list(value)
 
 
+@node_tool(node_type="solv")
 def embed_in_membrane(
     pdb_file: Optional[str] = None,
     output_dir: Optional[str] = None,
