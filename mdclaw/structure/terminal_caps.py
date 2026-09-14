@@ -244,6 +244,51 @@ def _rewrite_cap_atom_names_for_pdb2pqr(pdb_file: Path) -> int:
     return renamed
 
 
+
+# Atoms only a free terminus carries. A deposit with hydrogens (NMR; 1AA3's
+# domain starts at ILE 268 with H/H2/H3) keeps them when a cap is attached, and
+# OpenMM then finds an N-terminal ILE bonded to ACE: "No template found for
+# residue 1 (ILE) ... externally bonded atoms has 1 N atom too many"
+# (090_soluble_1aa3, campaign v2). The capped residue is no longer a terminus.
+_N_TERMINUS_ONLY = ("H1", "H2", "H3", "HN1", "HN2", "HN3", "HT1", "HT2", "HT3")
+_C_TERMINUS_ONLY = ("OXT", "HXT", "OT2", "HO")
+
+
+def _strip_terminus_atoms_next_to_caps(modeller) -> list[str]:
+    """Delete terminus-only atoms of residues a cap is attached to.
+
+    Next to an N-cap, one amide hydrogen stays (an ``H1`` is renamed ``H`` when
+    the residue has no ``H``); next to a C-cap, ``OXT``/``HXT`` go. Returns the
+    removed atoms as ``RES chainNUM ATOM`` labels.
+    """
+    doomed, removed = [], []
+    for chain in modeller.topology.chains():
+        residues = list(chain.residues())
+        for index, residue in enumerate(residues):
+            name = residue.name.upper()
+            if name in SUPPORTED_N_TERMINAL_CAPS and index + 1 < len(residues):
+                target = residues[index + 1]
+                atoms = {atom.name: atom for atom in target.atoms()}
+                if "H" not in atoms:
+                    for alias in ("H1", "HN1", "HT1"):
+                        if alias in atoms:
+                            atoms.pop(alias).name = "H"
+                            break
+                names = [n for n in _N_TERMINUS_ONLY if n in atoms]
+            elif name in SUPPORTED_C_TERMINAL_CAPS and index > 0:
+                target = residues[index - 1]
+                atoms = {atom.name: atom for atom in target.atoms()}
+                names = [n for n in _C_TERMINUS_ONLY if n in atoms]
+            else:
+                continue
+            for atom_name in names:
+                doomed.append(atoms[atom_name])
+                removed.append(f"{target.name} {chain.id}{target.id} {atom_name}")
+    if doomed:
+        modeller.delete(doomed)
+    return removed
+
+
 def _prepare_terminal_caps_for_pdb2pqr(
     pdb_file: str | Path,
     *,
@@ -294,6 +339,13 @@ def _prepare_terminal_caps_for_pdb2pqr(
         from openmm.app import ForceField, Modeller
 
         pdb = _load_pdb_with_variant_bonds(input_path)
+        modeller = Modeller(pdb.topology, pdb.positions)
+        stripped = _strip_terminus_atoms_next_to_caps(modeller)
+        if stripped:
+            result["terminus_atoms_removed_next_to_caps"] = stripped
+            result["warnings"].append(
+                "Removed free-terminus atoms from residues a cap is attached to: "
+                + ", ".join(stripped[:6]) + ("..." if len(stripped) > 6 else ""))
         original_atoms = {
             (
                 atom.residue.chain.id,
@@ -301,9 +353,8 @@ def _prepare_terminal_caps_for_pdb2pqr(
                 atom.residue.name,
                 atom.name,
             )
-            for atom in pdb.topology.atoms()
+            for atom in modeller.topology.atoms()
         }
-        modeller = Modeller(pdb.topology, pdb.positions)
         modeller.addHydrogens(ForceField(forcefield_xml), pH=ph)
         added_outside_caps = [
             atom
@@ -621,6 +672,9 @@ def _complete_terminal_cap_hydrogens_with_modeller(
         pdb = _load_pdb_with_variant_bonds(input_path)
         forcefield = ForceField(forcefield_xml)
         modeller = Modeller(pdb.topology, pdb.positions)
+        stripped = _strip_terminus_atoms_next_to_caps(modeller)
+        if stripped:
+            result["terminus_atoms_removed_next_to_caps"] = stripped
         modeller.addHydrogens(forcefield, pH=ph)
         with output_file.open("w") as handle:
             PDBFile.writeFile(

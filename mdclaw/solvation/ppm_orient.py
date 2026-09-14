@@ -84,6 +84,53 @@ def _dummy_membrane(lines: list[str]) -> dict[str, Any]:
     }
 
 
+def _carry_input_atoms_into_ppm_frame(
+    input_pdb: Path, oriented_heavy_lines: list[str], max_rmsd: float = 0.5
+) -> tuple[Optional[list[str]], dict[str, Any]]:
+    """Apply the rigid transform PPM3 used to every atom of the input file.
+
+    Heavy atoms are matched by chain, residue number, insertion code and atom
+    name. Returns ``(lines, fit)``; ``lines`` is ``None`` when fewer than three
+    atoms match or the fit is not rigid (PPM3 is a rigid re-orientation, so a
+    poor fit means the output is not the input and must not be trusted).
+    """
+    def key(line):
+        return (line[21], line[22:26].strip(), line[26].strip(), line[12:16].strip())
+
+    def xyz(line):
+        return [float(line[30:38]), float(line[38:46]), float(line[46:54])]
+
+    reference = {}
+    for line in oriented_heavy_lines:
+        if line.startswith(("ATOM", "HETATM")) and len(line) >= 54:
+            reference.setdefault(key(line), xyz(line))
+    input_lines = Path(input_pdb).read_text(encoding="utf-8", errors="ignore").splitlines()
+    mobile, target = [], []
+    for line in input_lines:
+        if line.startswith(("ATOM", "HETATM")) and len(line) >= 54 and key(line) in reference:
+            mobile.append(xyz(line))
+            target.append(reference[key(line)])
+    if len(mobile) < 3:
+        return None, {"matched_atoms": len(mobile), "reason": "fewer than 3 atoms matched"}
+    from mdclaw.solvation.opm_orient import _kabsch
+
+    rotation, translation, rmsd = _kabsch(mobile, target)
+    fit = {"matched_atoms": len(mobile), "rmsd": round(float(rmsd), 4)}
+    if rmsd > max_rmsd:
+        fit["reason"] = f"fit RMSD {rmsd:.2f} A is not a rigid re-orientation"
+        return None, fit
+    import numpy as np
+
+    out = []
+    for line in input_lines:
+        if line.startswith(("ATOM", "HETATM")) and len(line) >= 54:
+            moved = rotation @ np.array(xyz(line)) + translation
+            out.append(f"{line[:30]}{moved[0]:8.3f}{moved[1]:8.3f}{moved[2]:8.3f}{line[54:]}")
+        elif line.startswith("TER"):
+            out.append(line)
+    return out, fit
+
+
 def orient_protein_with_ppm(
     *,
     protein_pdb: Path,
@@ -214,14 +261,32 @@ def orient_protein_with_ppm(
             for line in kept
         ]
 
+    # PPM3 writes heavy atoms only. Recover the rigid transform it applied from
+    # the atoms it kept and move the *input* file, hydrogens and all, the same
+    # way (6ME3: the heavy-atom file reached the exact net-charge evaluation,
+    # which built no template for a PRO "missing 7 H atoms" and failed the
+    # solv node three times).
+    heavy_only = Path(out_dir) / "ppm3_oriented_heavy.pdb"
+    heavy_only.write_text("\n".join(kept) + "\nEND\n", encoding="utf-8")
     oriented = Path(out_dir) / "oriented_protein.pdb"
-    oriented.write_text("\n".join(kept) + "\nEND\n", encoding="utf-8")
+    carried, input_fit = _carry_input_atoms_into_ppm_frame(protein_pdb, kept)
+    if carried is None:
+        result["warnings"].append(
+            "PPM3's oriented atoms could not be matched to the input "
+            f"({input_fit.get('reason')}); the oriented file carries PPM3's heavy "
+            "atoms only and hydrogens were lost."
+        )
+        oriented.write_text("\n".join(kept) + "\nEND\n", encoding="utf-8")
+    else:
+        oriented.write_text("\n".join(carried) + "\nEND\n", encoding="utf-8")
 
     result.update({
         "success": True,
         "oriented_pdb": str(oriented),
         "membrane_center_z": 0.0,
         "ppm": {
+            "input_fit": input_fit,
+            "heavy_atom_output": str(heavy_only),
             "n_terminal_side": side,
             "n_terminal_side_requested": n_terminal_side,
             "n_terminal_side_assumed": side_is_assumed,

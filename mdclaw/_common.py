@@ -416,10 +416,25 @@ def get_timeout(timeout_type: str) -> int:
 
 
 def normalize_choice(value: Optional[str], aliases: dict[str, str]) -> Optional[str]:
-    """Normalize a user-provided string through a case-insensitive alias map."""
+    """Normalize a user-provided string through a case-insensitive alias map.
+
+    Exact (case-folded) aliases win; otherwise hyphens, underscores and spaces
+    are ignored on both sides, so ``ff99SB-ILDN`` finds ``ff99SBildn`` (the
+    spelling the literature uses; 039_ligand_3ikd cli_sif r2 lost a topo node
+    to it while the hint listed the unhyphenated key).
+    """
     if value is None:
         return None
-    return aliases.get(str(value).strip().lower())
+    key = str(value).strip().lower()
+    if key in aliases:
+        return aliases[key]
+    loose = re.sub(r"[-_\s]", "", key)
+    if not loose:
+        return None
+    for alias, canonical in aliases.items():
+        if re.sub(r"[-_\s]", "", alias) == loose:
+            return canonical
+    return None
 
 
 def create_guardrail_result(

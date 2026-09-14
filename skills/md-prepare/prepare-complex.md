@@ -23,6 +23,13 @@ add `--source-candidate-id <candidate_id>` to the validated
 For NMR-style model numbering, `--source-model-index 2` selects the second
 model-derived candidate.
 
+When the task states residue ranges ("chain I residues 1–456"), pass them
+verbatim as `--residue-ranges` in author numbering. The range is what removes a
+deposited cap or an extra residue the reference does not carry: in campaign v2,
+1DFJ attempts that selected the chains without the ranges kept a deposited ACE
+and failed the reference's residue count, while the one that passed
+`--residue-ranges A:1-124 B:1-456` matched it.
+
 Expand every omission into effective `--residue-ranges` first. All resulting ranges are separate components by default, including pieces created by "leave it out"; an enclosing range, shared source chain, nearby residue numbers, or physical plausibility never implies a peptide bond.
 Use `--join-range-pieces` only when the request explicitly joins every piece of that chain; for only named boundaries, use `--join-range-groups 'A:29-173,A:183-227'`. Before topology, verify the returned component sizes match the requested construct.
 

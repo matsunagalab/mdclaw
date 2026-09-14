@@ -33,7 +33,11 @@ Every pair, detected or declared, carries a `geometry`: `bonded` (SG-SG within
 1.8-2.3 A), `overlap` (shorter -- the deposit put the two sulfurs on top of
 each other, as 9OQ1 does at 1.30 and 1.47 A) or `not_formed` (longer). Only
 `not_formed` after a MODELLER repair is an error (`modeller_disulfide_not_formed`):
-the bond was never made. `overlap` is a warning with code `disulfide_sg_overlap`
+the bond was never made. A declared pair whose two sulfurs the deposit itself
+places beyond bonding distance is refused before the node begins
+(`declared_disulfide_unbonded_in_source`, node still pending): preparation keeps
+observed atoms where the deposit put them, so drop the pair and let detection
+decide. `overlap` is a warning with code `disulfide_sg_overlap`
 on both routes: the bond is formed, and the harmonic S-S term relaxes it at
 minimization. A declared list is also measured on the input before anything is
 rebuilt (`declared_disulfide_input_geometry`), so a short pair after the repair
@@ -47,15 +51,25 @@ Suppression exists and is explicit:
 | all but one | list the pairs to keep, or give the unwanted one `"form_bond": false` |
 | the detected set | pass nothing |
 
+A declared list that leaves out a bonded disulfide the deposit shows is
+accepted, and warned about with `detected_disulfides_suppressed` naming the
+pairs; read that warning before continuing.
+
 The empty list is honoured rather than ignored: preparation gates on the
 argument being present, not on it being non-empty, so `'[]'` means none rather
 than falling back to detection.
 
 Each declared pair is `{"cys1": {"chain": "A", "resnum": 6}, "cys2": {"chain":
-"A", "resnum": 127}}`, with `icode` and `form_bond` optional. The list is
-checked for that shape before the node is touched: a malformed entry returns
-`invalid_disulfide_pairs` naming the entry (`disulfide_pairs[2].cys1.resnum`),
-and the node stays pending, so correct the list and run the same node again.
+"A", "resnum": 127}}`, with `icode` and `form_bond` optional. `chain` is the
+**author** chain id (`author_chain` in inspection, the id the detected pairs
+use), even for mmCIF input where `--select-chains` takes the label id; an
+unstated `icode` means the residue without one. The list is checked for that
+shape before the node is touched: a malformed entry returns
+`invalid_disulfide_pairs` naming the entry (`disulfide_pairs[2].cys1.resnum`).
+After the split, a site the selection cannot hold (a label chain id, a residue
+that is not a cysteine, a chain that was not selected) returns
+`disulfide_site_not_selected` naming the author id to use. In both cases the
+node stays pending, so correct the list and run the same node again.
 
 Reach for suppression when the request asks for reduced cysteines, or names a
 reference state that has no disulfide. Do not reach for it to make a downstream
@@ -111,7 +125,10 @@ for standard states, then name the handful of sites that genuinely differ.
 
 If the user requests terminal caps, use `--n-terminal-cap ACE` and/or
 `--c-terminal-cap NME`; `--cap-termini` is only the shorthand for both. Each
-side is independent - a C-terminal cap alone is fine.
+side is independent - a C-terminal cap alone is fine. Do not cap when nothing
+asks for it: a database reference with charged termini counts ACE/NME as two
+extra residues and fails the residue-count and composition checks
+(095_soluble_1ard, campaign v2).
 
 A deposit can arrive already capped. ACE and NME count as protein, so a cap
 that came in with the structure is kept and counted as a residue, which changes

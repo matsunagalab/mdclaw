@@ -213,8 +213,32 @@ def _write_standard_nucleic_pdb(tmp_path):
     ):
         first = heavy_coords(res5)
         second = heavy_coords(res3)
-        shift = first["O3'"] + np.array([1.6, 0.0, 0.0]) - second["P"]
+        # P sits 1.6 A from O3' along the P -> OP2 direction, so OP2 ends up
+        # 3.1 A away instead of on top of O3' (the prep refuses superposed atoms).
+        away = second["OP2"] - second["P"]
+        away = away / np.linalg.norm(away)
+        shift = first["O3'"] + 1.6 * away - second["P"]
         second = {k: v + shift for k, v in second.items()}
+        # The two template frames are unrelated, so the rest of the second
+        # residue may land on the first (the RNA pair put O5' 1.46 A from
+        # O2', and the hydrogen rebuild then set HO2' on O5'). Turn the second
+        # residue about the O3' -> P axis to where it is clear of the first.
+        def _rotated(coords, angle):
+            axis = away
+            centre = coords["P"]
+            cos, sin = np.cos(angle), np.sin(angle)
+            out = {}
+            for key, value in coords.items():
+                v = value - centre
+                out[key] = centre + v * cos + np.cross(axis, v) * sin + axis * np.dot(axis, v) * (1 - cos)
+            return out
+
+        def _clearance(coords):
+            return min(np.linalg.norm(first[a] - coords[b])
+                       for a in first if a != "O3'" for b in coords if b not in ("P", "OP1", "OP2"))
+
+        second = max((_rotated(second, np.radians(step)) for step in range(0, 360, 15)), key=_clearance)
+        assert _clearance(second) > 2.4, _clearance(second)
         for coords in (first, second):
             for key in coords:
                 coords[key] = coords[key] + np.array([xoff, 0.0, 0.0])

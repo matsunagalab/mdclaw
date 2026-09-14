@@ -971,6 +971,36 @@ def extend_water_slabs(
         "copies": [],
         "extended": False,
     }
+    # The interval was computed from the solute against a patch assumed to sit
+    # at centre +/- patch_half. The patch's water is lopsided (the bundled
+    # patch reaches 48 A below the midplane and 33 A above it), so when the
+    # solute needs little room on the lopsided side the box face lands inside
+    # the patch's own water and the periodic image of the top copy overlaps
+    # it (006_membrane_6a94 cli_sif r3: 502 atom pairs under 0.6 A, a built
+    # state of 1.7e6 kJ/mol per atom). A cell that is being re-derived from
+    # the solute therefore grows to whatever material the primary cell holds.
+    if interval.get("extended") and placed:
+        material_lo = min(item[4] for item in placed)
+        material_hi = max(item[4] for item in placed)
+        low_before, high_before = float(interval["low"]), float(interval["high"])
+        low_after = min(low_before, material_lo)
+        high_after = max(high_before, material_hi)
+        if low_after < low_before - 1e-6 or high_after > high_before + 1e-6:
+            interval["low"] = round(low_after, 3)
+            interval["high"] = round(high_after, 3)
+            interval["box_c"] = round(high_after - low_after, 3)
+            interval["extend_below"] = round(max(0.0, (centre - float(patch_box_c) / 2.0) - low_after), 3)
+            interval["extend_above"] = round(max(0.0, high_after - (centre + float(patch_box_c) / 2.0)), 3)
+            interval["widened_to_material"] = {
+                "low_before": round(low_before, 3), "low_after": round(low_after, 3),
+                "high_before": round(high_before, 3), "high_after": round(high_after, 3),
+            }
+            below = float(interval["extend_below"])
+            above = float(interval["extend_above"])
+            report["extend_below"] = round(below, 3)
+            report["extend_above"] = round(above, 3)
+            report["widened_to_material"] = dict(interval["widened_to_material"])
+
     if (below <= 0.0 and above <= 0.0) or period <= 1.0:
         if period <= 1.0 and (below > 0.0 or above > 0.0):
             report["skipped"] = "the patch has no water slab to copy"
@@ -1131,6 +1161,43 @@ def extend_water_slabs(
                     [],
                 ).append((x, y, z))
             pending.clear()
+
+    # The in-cell test above cannot see the new periodic seam: a copy placed
+    # just under ``high`` sits, one box away, right on the primary water at
+    # ``low``. Test every copied molecule's images at z +/- box_c against the
+    # material kept so far (primary first, then the copies already accepted,
+    # so of two copies meeting at the seam one survives).
+    cell_c = float(interval["high"]) - float(interval["low"])
+    kept_grid = _point_grid(
+        [(i[2], i[3], i[4]) for i in placed if _is_heavy_patch_atom(i[0])],
+        cutoff,
+    )
+    kept: list[tuple[PDBAtom, str, float, float, float]] = []
+    kept_keys: list[tuple] = []
+    start = 0
+    report["dropped_periodic_overlap"] = 0
+    while start < len(added):
+        stop = start
+        while stop < len(added) and added_keys[stop] == added_keys[start]:
+            stop += 1
+        molecule = added[start:stop]
+        heavy = [(a[2], a[3], a[4]) for a in molecule if _is_heavy_patch_atom(a[0])]
+        clashes = cell_c > 0.0 and any(
+            _near_protein(x, y, z + shift, grid=kept_grid, cutoff=cutoff)
+            for x, y, z in heavy for shift in (cell_c, -cell_c)
+        )
+        if clashes:
+            report["dropped_periodic_overlap"] += 1
+            report["added_molecules"] -= 1
+        else:
+            kept.extend(molecule)
+            kept_keys.extend(added_keys[start:stop])
+            for x, y, z in heavy:
+                kept_grid.setdefault(
+                    (math.floor(x / cutoff), math.floor(y / cutoff), math.floor(z / cutoff)), []
+                ).append((x, y, z))
+        start = stop
+    added, added_keys = kept, kept_keys
 
     report["extended"] = bool(added)
     report["added_atoms"] = len(added)

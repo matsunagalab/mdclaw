@@ -882,6 +882,47 @@ def _parse_join_range_groups(
     return groups
 
 
+def _range_fit(parsed_ranges, chains, id_key) -> tuple[int, int]:
+    """How well residue ranges fit the polymer chains named under one id space.
+
+    Returns ``(endpoints found, ranges that select anything)`` summed over the
+    ranges, where a chain is matched when ``chains[i][id_key]`` equals the
+    range's chain name. Used only to tell label ids from author ids when the
+    two id sets are permutations of each other.
+    """
+    found = overlapping = 0
+    for entry in parsed_ranges or []:
+        residues = [
+            (record["resnum"], record["insertion_code"])
+            for info in chains
+            if info.get(id_key) == entry.chain
+            and info.get("chain_type") in ("protein", "nucleic", "glycan")
+            for record in (info.get("residue_numbering") or {}).get("ordered_residues") or []
+        ]
+        if not residues:
+            continue
+        present = set(residues)
+        found += (tuple(entry.start) in present) + (tuple(entry.end) in present)
+        low, high = sorted((entry.start[0], entry.end[0]))
+        overlapping += any(low <= number <= high for number, _icode in residues)
+    return found, overlapping
+
+
+def _split_listed_ids(values):
+    """``["A,B", " C"]`` -> ``["A", "B", "C"]``; ``None`` stays ``None``."""
+    if values is None:
+        return None
+    if isinstance(values, str):
+        values = [values]
+    out = []
+    for value in values:
+        for part in str(value).replace(",", " ").split():
+            if part and part not in out:
+                out.append(part)
+    return out
+
+
+
 def split_molecules(
     structure_file: str,
     output_dir: Optional[str] = None,
@@ -1138,6 +1179,12 @@ def split_molecules(
         return result
     
     # First, analyze the structure
+    # "A,B" is one argument on the command line (047_nucleic_1c7u cli_skill_sif
+    # r1 lost a prep node to "Chain(s) not found: ['A,B']"); lists of ids are
+    # read the way residue ranges already are, split on commas and whitespace.
+    select_chains = _split_listed_ids(select_chains)
+    include_ligand_ids = _split_listed_ids(include_ligand_ids)
+    exclude_ligand_ids = _split_listed_ids(exclude_ligand_ids)
     analysis = _inspect_molecules_impl(structure_file)
     
     if not analysis["success"]:
@@ -1146,6 +1193,34 @@ def split_molecules(
         return result
     
     result["all_chains"] = analysis["chains"]
+
+    # Label ids can be a permutation of the author ids (1KX5: author D is
+    # label F, author I is label A). The documented convention for mmCIF is
+    # the label id, and most calls follow it; but a task that names chains and
+    # ranges in author terms then lands on other chains, every endpoint is
+    # "unresolved" and nothing says why (051_nucleic_1kx5, campaign v2: every
+    # CLI attempt timed out on it). The names alone cannot tell the two apart
+    # when both id sets are the same letters, so the residue numbers decide:
+    # the names are read as author ids only when every requested name is an
+    # author chain, one of them names a different chain as a label, and the
+    # requested ranges fit the author chains strictly better than the label
+    # chains. Reading on the names alone broke every call that used labels
+    # the documented way (1IV6 "A:1-13" is label A's DNA strand, author A is
+    # the protein 378-434; 1A66, 1J46, 1ZGW, 2HDC alike).
+    _author_ids = {info.get("author_chain") for info in analysis["chains"]}
+    _label_ids = {info.get("chain_id") for info in analysis["chains"]}
+    _label_to_author = {info.get("chain_id"): info.get("author_chain") for info in analysis["chains"]}
+    _requested_names = set(select_chains or []) | {entry.chain for entry in parsed_ranges}
+    read_as_author = bool(
+        _requested_names
+        and Path(structure_file).suffix.lower() not in (".pdb", ".ent")
+        and all(name in _author_ids for name in _requested_names)
+        and any(name in _label_ids and _label_to_author.get(name) != name for name in _requested_names)
+        and _range_fit(parsed_ranges, analysis["chains"], "author_chain")
+        > _range_fit(parsed_ranges, analysis["chains"], "chain_id")
+    )
+    _permuted_names = {name: _label_to_author[name] for name in sorted(_requested_names)
+                       if name in _label_ids and _label_to_author.get(name) != name} if read_as_author else {}
 
     # Resolve each residue range to the chains it names, once and globally, so
     # the per-chain loop only has to look up an answer. Two rules matter here.
@@ -1156,7 +1231,7 @@ def split_molecules(
     _labels = {info.get("chain_id") for info in analysis["chains"]}
     range_by_chain_id = {}
     for entry in parsed_ranges:
-        if entry.chain in _labels:
+        if entry.chain in _labels and not read_as_author:
             matched = [info for info in analysis["chains"]
                        if info.get("chain_id") == entry.chain]
         else:
@@ -1406,7 +1481,34 @@ def split_molecules(
             selected_chain_ids: set[str] = set()
             missing_chains: list[str] = []
             fallback_used: list[tuple[str, list[str]]] = []
+            # Label ids can be a permutation of the author ids (1KX5: author D
+            # is label F, author I is label A). Read as labels, the task's
+            # author-numbered ranges then land on other chains, every endpoint
+            # is "unresolved" and nothing says why (051_nucleic_1kx5: all three
+            # cli_sif attempts timed out on it). When every requested id is an
+            # author chain and at least one of them names a *different* chain
+            # as a label, the ids are read as author ids and the call says so.
+            if read_as_author:
+                permuted = _permuted_names
+                result["selection_adjustments"].append({
+                    "code": "chain_ids_read_as_author",
+                    "message": (
+                        "select_chains were read as author chain ids: as label ids they "
+                        f"would name other chains here (label -> author {permuted})."
+                    ),
+                    "label_to_author": dict(label_to_author_map),
+                })
+                result["warnings"].append(
+                    "chain_ids_read_as_author: the requested chain ids match author "
+                    "chains, and the same letters are label ids of other chains in this "
+                    f"entry ({permuted}); they were read as author ids."
+                )
             for ch in select_chains:
+                if read_as_author:
+                    selected_chain_ids |= {
+                        c["chain_id"] for c in analysis["chains"] if c["author_chain"] == ch
+                    }
+                    continue
                 # Primary: label_asym_id exact match
                 label_hits = {c["chain_id"] for c in analysis["chains"] if c["chain_id"] == ch}
                 if label_hits:

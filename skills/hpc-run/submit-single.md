@@ -34,4 +34,8 @@ the GPU rule and the no-manual-artifact-paths rule in `skills/hpc-run/SKILL.md`
 "Critical Rules".
 
 For `min -> eq -> prod`, create downstream nodes on the login node and submit
-them with `afterok:<upstream_slurm_id>` dependencies.
+them with `afterok:<upstream_slurm_id>` dependencies. If an upstream job fails,
+the scheduler cancels the jobs behind it (`submit_job` adds
+`--kill-on-invalid-dep=yes` to dependent jobs) and their nodes are recorded
+failed; fix the upstream stage on a new node and chain new downstream nodes
+from it.

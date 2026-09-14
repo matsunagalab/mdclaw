@@ -384,3 +384,117 @@ def _record_salt_override_fallback(
         result["initial_packmol_memgen_log"] = str(preserved_log)
     logger.warning(message)
 
+
+# Residue names of water in packmol-memgen and force-field outputs.
+_SEAM_WATER_NAMES = frozenset({"WAT", "HOH", "TIP3", "TP3", "T3P", "SOL", "OPC", "SPC", "SPCE", "TIP4", "T4P"})
+
+
+def _drop_periodic_seam_overlaps(pdb_path, box: dict, *, cutoff: float = 1.2, shell: float = 2.5) -> dict:
+    """Remove water molecules that sit on another molecule's periodic image.
+
+    packmol keeps molecules 2 A apart inside the box but does not see the
+    periodic images: a water at one face and one at the opposite face can be
+    0.2 A apart once the cell repeats. Every packmol water box of campaign v2
+    carried 60-160 heavy-atom pairs under 1.2 A across the seam, the built
+    System started at 1e6-1e10 kJ/mol, and two builds' minimisers diverged
+    (023_antibody_3wd5 r3, 087_soluble_1gqv r3). For each such pair the water
+    is dropped -- never an ion or a solute atom, so ion counts and the net
+    charge stay -- and a pair without a water is reported and left. The file
+    is rewritten in place without the dropped molecules; nothing else changes.
+    """
+    import math
+
+    lengths = [box.get(k) for k in ("box_a", "box_b", "box_c")] if isinstance(box, dict) else None
+    report = {"cutoff_angstrom": cutoff, "pairs": 0, "dropped_waters": 0,
+              "closest_angstrom": None, "unresolved": []}
+    if not lengths or not all(isinstance(v, (int, float)) and v > 0 for v in lengths):
+        report["skipped"] = "no box lengths"
+        return report
+    path = Path(pdb_path)
+    lines = path.read_text(errors="ignore").splitlines()
+    atoms = []                     # (line index, molecule key, x, y, z, is_water, label)
+    for index, line in enumerate(lines):
+        if not line.startswith(("ATOM  ", "HETATM")) or len(line) < 54:
+            continue
+        element = line[76:78].strip().upper() if len(line) >= 78 else ""
+        name = line[12:16].strip()
+        if (element or name[:1].upper()) in ("H", "D"):
+            continue
+        resname = line[17:20].strip().upper()
+        key = (line[21], line[22:27], resname)
+        atoms.append((index, key, float(line[30:38]), float(line[38:46]), float(line[46:54]),
+                      resname in _SEAM_WATER_NAMES, f"{resname} {line[21]}{line[22:27].strip()} {name}"))
+    if not atoms:
+        return report
+    lo = [min(a[2 + k] for a in atoms) for k in range(3)]
+    cell = max(cutoff, 1e-3)
+    grid: dict[tuple[int, int, int], list[int]] = {}
+    for i, a in enumerate(atoms):
+        grid.setdefault(tuple(math.floor(a[2 + k] / cell) for k in range(3)), []).append(i)
+    dropped: set = set()
+    closest = None
+    seen_pairs: set = set()
+    for i, a in enumerate(atoms):
+        near = [k for k in range(3) if a[2 + k] - lo[k] < shell]
+        if not near:
+            continue
+        # every image shifted by +L along a subset of the axes this atom is near
+        for mask in range(1, 1 << len(near)):
+            shift = [0.0, 0.0, 0.0]
+            for bit, k in enumerate(near):
+                if mask & (1 << bit):
+                    shift[k] = lengths[k]
+            image = (a[2] + shift[0], a[3] + shift[1], a[4] + shift[2])
+            base = tuple(math.floor(image[k] / cell) for k in range(3))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dz in (-1, 0, 1):
+                        for j in grid.get((base[0] + dx, base[1] + dy, base[2] + dz), ()):
+                            b = atoms[j]
+                            if b[1] == a[1]:
+                                continue
+                            distance = math.dist(image, (b[2], b[3], b[4]))
+                            if distance >= cutoff:
+                                continue
+                            pair = tuple(sorted((a[1], b[1])))
+                            if pair in seen_pairs:
+                                continue
+                            seen_pairs.add(pair)
+                            report["pairs"] += 1
+                            closest = distance if closest is None else min(closest, distance)
+                            if a[1] in dropped or b[1] in dropped:
+                                continue
+                            if a[5]:
+                                dropped.add(a[1])
+                            elif b[5]:
+                                dropped.add(b[1])
+                            else:
+                                report["unresolved"].append(f"{a[6]} - {b[6]} {distance:.2f} A")
+    report["closest_angstrom"] = round(closest, 3) if closest is not None else None
+    report["dropped_waters"] = len(dropped)
+    if dropped:
+        kept = []
+        for index, line in enumerate(lines):
+            if line.startswith(("ATOM  ", "HETATM")) and len(line) > 26:
+                if (line[21], line[22:27], line[17:20].strip().upper()) in dropped:
+                    continue
+            kept.append(line)
+        path.write_text("\n".join(kept) + "\n")
+    return report
+
+
+def _record_periodic_seam(result: dict, output_file: Path, box: dict) -> None:
+    """Apply :func:`_drop_periodic_seam_overlaps` to a finished box and record it."""
+    seam = _drop_periodic_seam_overlaps(output_file, box)
+    result["periodic_seam"] = seam
+    if seam.get("dropped_waters"):
+        result["warnings"].append(
+            f"Removed {seam['dropped_waters']} water molecule(s) sitting on a periodic image "
+            f"across the box boundary (closest {seam['closest_angstrom']} A); packmol does not "
+            "see the periodic images")
+        result.setdefault("statistics", {})["total_atoms"] = count_atoms_in_pdb(str(output_file))
+    if seam.get("unresolved"):
+        shown = seam["unresolved"][:4]
+        result["warnings"].append(
+            f"{len(seam['unresolved'])} non-water pair(s) overlap across the periodic boundary "
+            f"and were left for minimization: {shown}")

@@ -360,6 +360,16 @@ _PROTONATION_STATE_SPECS: Dict[str, Dict[str, Any]] = {
         "present": set(),
         "absent": {"HZ3"},
     },
+    "ARG": {
+        # The only arginine ff14SB/ff19SB carry. Accepted so a caller that
+        # names every titratable residue ("A:52": "ARG"; 5ZKB and 6GT3 in
+        # campaign v2) is not refused for the one residue that has no choice.
+        "base": "ARG",
+        "modeller_variant": "ARG",
+        "input_names": {"ARG"},
+        "present": set(),
+        "absent": set(),
+    },
     "CYS": {
         "base": "CYS",
         "modeller_variant": "CYS",
@@ -439,6 +449,14 @@ def _normalize_protonation_state_overrides(
         for entry in protonation_states:
             if not isinstance(entry, dict):
                 raise ValueError("Each protonation state entry must be a dict")
+            if entry and not ({"chain", "resnum", "residue_number"} & set(entry)):
+                # A list of one-site mappings, [{"A:7": "CYS"}, ...] -- the dict
+                # form split into pieces (016_antibody_1ay7, campaign v2, was
+                # refused with "records require a non-empty 'chain'").
+                for key, state in entry.items():
+                    chain, resnum, icode = _parse_protonation_site_key(str(key))
+                    add_record(chain, resnum, state, icode)
+                continue
             add_record(
                 entry.get("chain"),
                 entry.get("resnum", entry.get("residue_number")),

@@ -64,10 +64,16 @@ signature, update the relevant section here and the matching skill examples.
   `include_ligand_ids`, residue-name scoped `include_ligand_resnames`, or
   deliberate `include_associated_ligands=True`; otherwise prep fails with
   `code="associated_ligands_require_selection"` instead of silently dropping
-  ligand components.
+  ligand components. That refusal, like every refusal raised before the split
+  has delivered the selection, leaves the prep node pending and rerunnable.
 - `clean_protein(...)`: PDBFixer plus pdb2pqr protonation, with fallback
   paths and optional site-specific residue protonation overrides rebuilt via
-  OpenMM `Modeller.addHydrogens(variants=...)`. If ACE/NME caps are present,
+  OpenMM `Modeller.addHydrogens(variants=...)`. `context_pdb_files` (the other
+  pieces of a multi-piece prep, passed by `prepare_complex`) are present, cut
+  to a 12 A neighbourhood, while PDBFixer places missing atoms (best of up to
+  four seeded placements by distance from the context, reported in the
+  `completion_context` operation) and while pdb2pqr debumps and titrates
+  (`protonation_context`); they never reach the output. If ACE/NME caps are present,
   cap-specific H completion runs here; topology builders do not repair them.
   Heavy internal missing-residue gaps stop with
   `code="pdbfixer_missing_residues_out_of_scope"` and recommend regenerating
@@ -405,6 +411,12 @@ signature, update the relevant section here and the matching skill examples.
   downstream `eq` nodes. Its `solute_heavy` default uses prep provenance to
   include structural solute components while excluding added solvent, ions,
   and membrane lipids.
+  Every minimization (this node and the ten-iteration relaxation inside both
+  topology builders) goes through `mdclaw/simulation/relax.py`:
+  `minimize_robustly` runs a capped steepest descent while the largest force
+  exceeds 1e5 kJ/mol/nm, then `minimizeEnergy`, and retries once from the
+  starting coordinates if L-BFGS diverged. The report lands under
+  `minimization.relaxation` (`steepest_descent`, `retried`, `diverged`).
 - `run_equilibration(...)`: restrained equilibration with an NVT heating stage
   and optional NPT density stage. In node mode topology inputs resolve from the
   `topo` ancestor; omitted HMR and implicit-solvent settings inherit that

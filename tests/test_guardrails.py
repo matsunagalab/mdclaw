@@ -638,7 +638,7 @@ def test_build_amber_system_rejects_explicit_pdb_outside_dag(tmp_path):
     assert result["success"] is False
     assert result["code"] == "input_resolution_blocked"
     assert "conflicts with DAG-resolved artifact" in result["errors"][0]
-    assert read_node(str(job_dir), node["node_id"])["status"] == "failed"
+    assert read_node(str(job_dir), node["node_id"])["status"] == "pending"  # refused before begin_node: rerunnable
 
 
 def test_build_amber_system_unspecified_membrane_uses_dag_metadata():
@@ -1044,7 +1044,7 @@ def test_build_amber_system_blocks_hmr_condition_mismatch(tmp_path):
     assert helper_called["yes"] is False, (
         "Condition mismatch must short-circuit before the build helper runs."
     )
-    assert read_node(str(job_dir), node["node_id"])["status"] == "failed"
+    assert read_node(str(job_dir), node["node_id"])["status"] == "pending"  # refused before begin_node: rerunnable
 
 
 def test_build_amber_system_node_missing_pdb_marks_failed(tmp_path):
@@ -1060,7 +1060,7 @@ def test_build_amber_system_node_missing_pdb_marks_failed(tmp_path):
     assert result["success"] is False
     assert result["code"] == "node_execution_context_invalid"
     assert "parent_required" in result["blocking_codes"]
-    assert read_node(str(job_dir), node["node_id"])["status"] == "failed"
+    assert read_node(str(job_dir), node["node_id"])["status"] == "pending"  # refused before begin_node: rerunnable
 
 
 def test_prepare_complex_node_input_resolution_marks_failed(tmp_path):
@@ -1075,7 +1075,7 @@ def test_prepare_complex_node_input_resolution_marks_failed(tmp_path):
     assert result["success"] is False
     assert result["code"] == "node_execution_context_invalid"
     assert "parent_required" in result["blocking_codes"]
-    assert read_node(str(job_dir), node["node_id"])["status"] == "failed"
+    assert read_node(str(job_dir), node["node_id"])["status"] == "pending"  # refused before begin_node: rerunnable
 
 
 def test_solvate_structure_node_condition_mismatch_marks_failed(tmp_path):
@@ -1092,7 +1092,7 @@ def test_solvate_structure_node_condition_mismatch_marks_failed(tmp_path):
 
     assert result["success"] is False
     assert any("condition" in error for error in result.get("errors", []))
-    assert read_node(str(job_dir), node["node_id"])["status"] == "failed"
+    assert read_node(str(job_dir), node["node_id"])["status"] == "pending"  # refused before begin_node: rerunnable
 
 
 def _valid_distance_restraints():
@@ -1221,7 +1221,7 @@ def test_topology_water_mismatch_names_both_ways_out(tmp_path):
     assert result["code"] == "solvation_topology_water_model_mismatch"
     assert solv in result["message"]
     assert any("--node-type solv" in h for h in result["hints"])
-    assert read_node(str(job_dir), topo)["status"] == "failed"
+    assert read_node(str(job_dir), topo)["status"] == "pending"  # refused before begin_node: rerunnable
 
 
 def test_prepare_complex_refuses_malformed_disulfide_pairs_before_touching_the_node(tmp_path):

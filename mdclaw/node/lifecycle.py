@@ -13,7 +13,7 @@ from mdclaw._lock import file_lock
 logger = logging.getLogger(__name__)
 
 from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPE_ORDER, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, TERMINAL_NODE_STATUSES, _ALLOWED_PARENT_TYPES, _AUTO_PARENT_PREFERENCE, normalize_node_type, suggest_node_type  # noqa: E402
-from mdclaw.node.condition_hints import describe_condition_key  # noqa: E402
+from mdclaw.node.condition_hints import describe_condition_key, resolve_condition_key  # noqa: E402
 from mdclaw.node.io import _atomic_write_json, _values_match, normalize_artifact_paths  # noqa: E402
 from mdclaw.node.progress import _load_progress_v3, _next_node_id, _node_progress_summary  # noqa: E402
 from mdclaw.node.snapshot import dag_snapshot, describe_nodes, node_missing_error, nodes_of_type  # noqa: E402
@@ -1028,7 +1028,15 @@ def fail_node_from_result(
                 ],
             }
         from mdclaw.node.failure import record_node_failure
-        record_node_failure(job_dir, node_id, result)
+        record = record_node_failure(job_dir, node_id, result, keep_pending=True)
+        if record.get("node_status") == "pending":
+            result["node_status"] = "pending"
+            hints = list(result.get("hints") or [])
+            hints.insert(0, (
+                "Nothing ran: this node is still pending. Fix the arguments and run the "
+                "same node again; no new node is needed."
+            ))
+            result["hints"] = hints
     return result
 
 
@@ -1139,12 +1147,17 @@ def validate_node_execution_context(
                 "source nodes are DAG roots and cannot have parents/dependencies",
             )
 
+    condition_aliases: dict = {}
     if validate_conditions:
         checked = validate_declared_conditions(node.get("conditions"), actual_conditions)
         errors.extend(checked["errors"])
         blocking_codes.extend(c for c in checked["blocking_codes"] if c not in blocking_codes)
+        condition_aliases = checked.get("condition_aliases") or {}
     if not errors:
-        return {"success": True, "code": "ok", "blocking_codes": [], "errors": []}
+        return {"success": True, "code": "ok", "blocking_codes": [], "errors": [],
+                "condition_aliases": condition_aliases,
+                "warnings": [f"declared condition {k!r} was read as {v!r}"
+                             for k, v in condition_aliases.items()]}
     next_action, hints = _context_fix(
         str(jd), node_id, node, expected_node_type, blocking_codes, blockers, index,
     )
@@ -1247,20 +1260,29 @@ def validate_declared_conditions(declared_conditions, actual_conditions):
         + " Branch a new node declaring only keys with a concrete value here,"
           " and record other intent in --label or the study plan."
     )
+    aliases: dict[str, str] = {}
     for key, expected in condition_items:
         if key not in actual_conditions:
-            # Strict: a declared condition is a contract the tool must
-            # cross-check. Silently skipping keys absent from
-            # actual_conditions defeats the purpose of declaring them.
-            add_error(
-                "condition_missing",
-                f"Tool did not include declared condition "
-                f"{describe_condition_key(verifiable, key)} in "
-                f"actual_conditions; node declared {key}={expected!r} but "
-                f"the runtime call provided no value to cross-check."
-                + branch_advice
-            )
-            continue
+            # A natural spelling of a reported key is read as that key and
+            # recorded (``chains`` for ``select_chains``,
+            # ``salt_concentration_molar`` for ``saltcon``: 018, 019 and 057
+            # in campaign v2 each lost a node and rebuilt it with the same
+            # arguments). Anything else stays the strict contract: a declared
+            # condition the tool does not cross-check is refused.
+            meant = resolve_condition_key(verifiable, key)
+            if meant is not None:
+                aliases[key] = meant
+                key = meant
+            else:
+                add_error(
+                    "condition_missing",
+                    f"Tool did not include declared condition "
+                    f"{describe_condition_key(verifiable, key)} in "
+                    f"actual_conditions; node declared {key}={expected!r} but "
+                    f"the runtime call provided no value to cross-check."
+                    + branch_advice
+                )
+                continue
         actual = actual_conditions[key]
         if actual is None:
             # A declared condition is only useful if the runtime call can
@@ -1283,6 +1305,9 @@ def validate_declared_conditions(declared_conditions, actual_conditions):
                           for part in item.split(",") if part.strip())
 
         comparable_expected, comparable_actual = expected, actual
+        if isinstance(actual, (list, tuple)) and isinstance(expected, str) and "," in expected:
+            # "A,B,E" declared against a list the tool reports (018_antibody_1mlc)
+            comparable_expected = [part.strip() for part in expected.split(",") if part.strip()]
         if key in {"residue_ranges", "join_range_groups"}:
             try:
                 if key == "residue_ranges":
@@ -1307,4 +1332,5 @@ def validate_declared_conditions(declared_conditions, actual_conditions):
         "code": "node_execution_context_invalid" if errors else "ok",
         "blocking_codes": blocking_codes,
         "errors": errors,
+        "condition_aliases": aliases,
     }

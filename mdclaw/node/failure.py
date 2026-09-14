@@ -70,8 +70,12 @@ def record_node_failure(
     traceback_text: Optional[str] = None,
     exit_code: Optional[int | str] = None,
     same_invocation: bool = False,
+    keep_pending: bool = False,
 ) -> dict[str, Any]:
     """Persist the structured failure evidence for ``node_id``.
+
+    With ``keep_pending`` a node that is still ``pending`` is not sealed: the
+    caller is a tool that refused before ``begin_node`` and nothing ran.
 
     The durable node state stays small: ``metadata.errors``,
     ``metadata.failure_code`` and ``artifacts.failure``. Full CLI/tool evidence
@@ -101,6 +105,15 @@ def record_node_failure(
     node = read_node(str(jd), node_id)
     terminal_status = node.get("status") if node.get("status") in {"completed", "failed"} else None
     enriches_latest = same_invocation and terminal_status == "failed"
+    # A tool refuses *before* begin_node for argument-level reasons (declared
+    # --conditions the call does not carry, an explicit file that is not the
+    # DAG input, a disulfide plan that differs from the prep's). Nothing ran,
+    # so the node keeps its pending status and the same node can be run again
+    # with corrected arguments; only the evidence bundle and a small
+    # ``metadata.last_refusal`` record change. Campaign v2 spent a prep node on
+    # every such refusal (``chains``, ``solvent_regime``, ``ligands``,
+    # ``ligand_net_charge``, ...), each followed by a fresh node.
+    never_begun = keep_pending and node.get("status") == "pending"
     failure_dir = _failure_bundle_dir(
         node_dir,
         observation=terminal_status is not None and not enriches_latest,
@@ -159,6 +172,10 @@ def record_node_failure(
         "next_action": remedies[0] if remedies else None,
         "hints": remedies,
         "files": files,
+        "node_status_after": (
+            terminal_status if terminal_status is not None
+            else ("pending" if never_begun else "failed")
+        ),
     }
     manifest_path = failure_dir / "failure_manifest.json"
     manifest_rel = _relative_to_node(node_dir, manifest_path)
@@ -180,6 +197,32 @@ def record_node_failure(
                     "terminal_status": terminal_status,
                 },
             )
+        elif never_begun:
+            from mdclaw.node.lifecycle import _apply_status
+
+            _apply_status(
+                str(jd),
+                node_id,
+                "pending",
+                payload={
+                    "metadata": {
+                        "last_refusal": {
+                            "code": code,
+                            "errors": errors[:3],
+                            "failure_artifact": manifest_rel,
+                            "at": manifest["recorded_at"],
+                        },
+                    },
+                    "artifacts": {"failure": manifest_rel},
+                },
+            )
+            write_event(
+                str(jd),
+                node_id,
+                "node_refused_before_start",
+                success=False,
+                details={"code": code, "failure_artifact": manifest_rel},
+            )
         else:
             _finalize_failed_node(
                 str(jd),
@@ -200,6 +243,7 @@ def record_node_failure(
         "failure_artifact": manifest_rel,
         "failure_dir": str(failure_dir),
         "code": code,
+        "node_status": manifest["node_status_after"],
     }
 
 
@@ -336,6 +380,19 @@ def trace_failure(job_dir: str, node_id: str) -> dict[str, Any]:
 
     node_type = str(node.get("node_type") or "")
     non_branch_codes = {"tool_not_available", "missing_required_arguments", "node_context_required"}
+    if node.get("status") == "pending" and (metadata.get("last_refusal") or manifest):
+        recovery_options.append({
+            "action": "run_node",
+            "reason": "refused_before_start",
+            "node_id": node_id,
+            "node_type": node_type,
+            "message": (
+                "The tool refused before starting, so this node is still pending: "
+                "run the same node again with corrected arguments (or the values "
+                "its --conditions declare). No new node is needed."
+            ),
+            "source": "trace_failure",
+        })
     if (
         node.get("status") == "failed"
         and node_type

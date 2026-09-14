@@ -135,6 +135,51 @@ def _detect_subcommand(argv: list[str]) -> str | None:
     return None
 
 
+# Output-shaping options that belong to the CLI itself and read the same
+# wherever they are written. Agents put them after the tool name too
+# ("prepare_complex ... --output brief"), where argparse took "--output" as an
+# abbreviation of the tool's "--output-dir" and silently wrote a directory
+# named "brief" (032_nanobody_1xfp, 004_membrane_5zkb; campaign v2).
+_HOISTED_GLOBAL_OPTIONS = ("--output", "--log-file", "--heartbeat-seconds")
+
+
+def _hoist_global_options(argv: list[str], tool_flags: set[str]) -> list[str]:
+    """Move CLI-level options found after the tool name in front of it.
+
+    Only options the tool itself does not declare are moved, so a tool
+    parameter of the same name keeps its value; ``--output`` only with an
+    output-mode value, so "--output /some/dir" still reaches the tool's
+    ``--output-dir`` as before.
+    """
+    subcommand = _detect_subcommand(argv)
+    if subcommand is None:
+        return argv
+    at = argv.index(subcommand)
+    head, tail = argv[:at], argv[at + 1:]
+    moved: list[str] = []
+    kept: list[str] = []
+    i = 0
+    while i < len(tail):
+        tok = tail[i]
+        option = tok.split("=", 1)[0]
+        value = tok.split("=", 1)[1] if "=" in tok else (tail[i + 1] if i + 1 < len(tail) else None)
+        if option == "--output" and value not in OUTPUT_MODES:
+            kept.append(tok)
+            i += 1
+            continue
+        if option in _HOISTED_GLOBAL_OPTIONS and option not in tool_flags:
+            if "=" in tok or i + 1 >= len(tail):
+                moved.append(tok)
+                i += 1
+            else:
+                moved.extend(tail[i:i + 2])
+                i += 2
+            continue
+        kept.append(tok)
+        i += 1
+    return head + moved + [subcommand] + kept if moved else argv
+
+
 # ---------------------------------------------------------------------------
 # Logging: force all loggers to stderr so stdout stays clean JSON
 # ---------------------------------------------------------------------------
@@ -817,12 +862,18 @@ def _record_cli_node_failure(
     try:
         from mdclaw._node import cli_argv, read_node, record_node_failure
 
-        # A recoverable argument error detected before the tool starts is a
-        # corrected invocation of the same pending node, not a failed attempt.
-        if (
-            result.get("error_type") == "ValidationError"
-            and result.get("recoverable") is True
-            and read_node(job_dir, node_id).get("status") == "pending"
+        # A refusal before the tool started - a recoverable argument error, or
+        # a tool result that says the node is still pending (the
+        # ``fail_node_from_result`` path: prepare_complex refusing at the
+        # split) - is a corrected invocation of the same pending node, not a
+        # failed attempt. Recording it here without ``keep_pending`` would
+        # seal the node the tool deliberately left open.
+        if read_node(job_dir, node_id).get("status") == "pending" and (
+            result.get("node_status") == "pending"
+            or (
+                result.get("error_type") == "ValidationError"
+                and result.get("recoverable") is True
+            )
         ):
             return
 
@@ -1468,6 +1519,16 @@ def main(argv: list[str] | None = None) -> None:
         _json_error_and_exit(_missing_tool_error(subcommand, tools))
     if subcommand is not None and tools[subcommand].get("contract_error"):
         _json_error_and_exit(_tool_contract_error(subcommand, tools[subcommand]))
+    if subcommand is not None:
+        info = tools[subcommand]
+        tool_flags = {
+            spec.cli_flag
+            for spec in _tool_param_specs(info["fn"], requires_node=bool(info.get("requires_node")))
+        }
+        hoisted = _hoist_global_options(raw_argv, tool_flags)
+        if hoisted is not raw_argv:
+            raw_argv = hoisted
+            argv = hoisted
 
     parser = _build_parser(tools)
     args = parser.parse_args(argv)

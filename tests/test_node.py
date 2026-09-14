@@ -743,6 +743,32 @@ class TestValidateNodeExecutionContext:
 
         assert ctx["success"] is True
 
+    def test_a_declared_scalar_matches_the_one_item_list_the_tool_reports(self, job_dir):
+        """063_metal_6wrh cli_skill_sif r1: declared 'S111C', actual ['S111C']."""
+        create_node(str(job_dir), "topo")
+        complete_node(str(job_dir), "topo_001",
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
+        create_node(str(job_dir), "eq", parent_node_ids=["topo_001"],
+                    conditions={"mutations": "S111C", "temperature_kelvin": "300"})
+        ctx = validate_node_execution_context(
+            str(job_dir), "eq_001", "eq",
+            actual_conditions={"mutations": ["S111C"], "temperature_kelvin": 300.0})
+        assert ctx["success"] is True, ctx["errors"]
+        ctx = validate_node_execution_context(
+            str(job_dir), "eq_001", "eq",
+            actual_conditions={"mutations": ["S111C", "K5A"], "temperature_kelvin": 300.0})
+        assert ctx["success"] is False and "condition_mismatch" in ctx["blocking_codes"]
+
+    def test_string_conditions_compare_case_insensitively(self, job_dir):
+        create_node(str(job_dir), "topo")
+        complete_node(str(job_dir), "topo_001",
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
+        create_node(str(job_dir), "eq", parent_node_ids=["topo_001"], conditions={"ensemble": "npt"})
+        ctx = validate_node_execution_context(str(job_dir), "eq_001", "eq", actual_conditions={"ensemble": "NPT"})
+        assert ctx["success"] is True, ctx["errors"]
+
     def test_rejects_declared_condition_missing_from_actual(self, job_dir):
         """Strict cross-check: a key declared on node.conditions must be
         present in the tool's actual_conditions. Silently skipping the

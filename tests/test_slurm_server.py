@@ -2424,3 +2424,26 @@ class TestListTrackedJobsFilters:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_dependent_jobs_are_cancelled_by_the_scheduler_when_the_dependency_fails():
+    """A job behind a failed afterok parent can never run; without
+    --kill-on-invalid-dep it was held as DependencyNeverSatisfied for ever
+    (MDDataBench campaign v2: 178 such jobs held 77 attempts unscored)."""
+    from mdclaw.slurm.sbatch import _generate_array_sbatch_script, _generate_sbatch_script
+
+    common = dict(command="echo hi", job_name="j", partition="gpu", nodes=1, ntasks=1,
+                  cpus_per_task=1, gpus=1, gres=None, time_limit="00:10:00", memory=None,
+                  output_dir="/tmp", account=None, qos=None, extra_sbatch=None,
+                  environment=None, stdout_log="/tmp/o", stderr_log="/tmp/e")
+    chained = _generate_sbatch_script(nodelist=None, dependency="afterok:123", **common)
+    assert "#SBATCH --dependency=afterok:123" in chained
+    assert "#SBATCH --kill-on-invalid-dep=yes" in chained
+    alone = _generate_sbatch_script(nodelist=None, dependency=None, **common)
+    assert "--kill-on-invalid-dep" not in alone
+    array = _generate_array_sbatch_script(
+        tasks=[{"command": "echo a", "job_dir": "/tmp/j", "node_id": "prod_001"},
+               {"command": "echo b", "job_dir": "/tmp/j", "node_id": "prod_002"}], max_concurrent=None,
+        dependency="afterok:123", **{k: v for k, v in common.items()
+                                     if k not in ("command", "nodes", "ntasks")})
+    assert "#SBATCH --kill-on-invalid-dep=yes" in array

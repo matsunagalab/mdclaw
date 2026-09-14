@@ -414,6 +414,89 @@ class TestArgparseConstruction:
         assert called is False
         assert json.loads(capsys.readouterr().out)["code"] == "node_terminal"
 
+    def test_output_mode_after_the_tool_name_is_the_cli_option(self, tmp_path, monkeypatch, capsys):
+        """"prepare_complex ... --output brief" was read as --output-dir brief."""
+        from mdclaw import _cli
+
+        seen = {}
+
+        def fake_tool(output_dir: str = None, name: str = "x") -> dict:
+            seen["output_dir"] = output_dir
+            return {"success": True, "message": "ok"}
+
+        monkeypatch.setattr(_cli, "_discover_tools", lambda: {
+            "fake_tool": {"fn": fake_tool, "is_async": False, "server": "fake",
+                          "description": "Fake tool.", "requires_node": False},
+        })
+        with pytest.raises(SystemExit) as exc_info:
+            _cli.main(["fake_tool", "--name", "y", "--output", "full"])
+        assert exc_info.value.code == 0
+        assert seen["output_dir"] is None
+        capsys.readouterr()
+        # a path after --output is still the tool's --output-dir, as before
+        with pytest.raises(SystemExit):
+            _cli.main(["fake_tool", "--output", str(tmp_path / "out")])
+        assert seen["output_dir"] == str(tmp_path / "out")
+
+    def test_hoisting_leaves_a_tool_option_of_the_same_name_alone(self):
+        from mdclaw._cli import _hoist_global_options
+
+        argv = ["tool", "--a", "1", "--log-file=/tmp/l", "--heartbeat-seconds", "5"]
+        assert _hoist_global_options(argv, {"--a"}) == [
+            "--log-file=/tmp/l", "--heartbeat-seconds", "5", "tool", "--a", "1"]
+        assert _hoist_global_options(["tool", "--output", "brief"], {"--output"}) == [
+            "tool", "--output", "brief"]
+        assert _hoist_global_options(["--output", "full", "tool"], set()) == ["--output", "full", "tool"]
+
+    def test_cli_does_not_seal_a_node_the_tool_left_pending(self, tmp_path, monkeypatch, capsys):
+        """The recorder honours a tool's refusal-before-start verdict.
+
+        prepare_complex refuses at the split (associated_ligands_require_selection)
+        through fail_node_from_result and answers node_status="pending"; the
+        CLI's same-invocation record must not seal that node as failed.
+        """
+        from mdclaw import _cli
+        from mdclaw._node import create_node, fail_node_from_result, read_node
+
+        job_dir = tmp_path / "job_cli_pending_refusal"
+        job_dir.mkdir()
+        node = create_node(str(job_dir), "prep")
+
+        def fake_prep(job_dir: str, node_id: str) -> dict:
+            return fail_node_from_result(job_dir, node_id, {
+                "success": False,
+                "code": "associated_ligands_require_selection",
+                "message": "select the ligand",
+                "errors": ["select the ligand"],
+                "warnings": [],
+            })
+
+        monkeypatch.setattr(_cli, "_discover_tools", lambda: {
+            "fake_prep": {
+                "fn": fake_prep,
+                "is_async": False,
+                "server": "fake",
+                "description": "Fake refusing prep tool.",
+                "requires_node": True,
+            }
+        })
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cli.main([
+                "--job-dir", str(job_dir),
+                "--node-id", node["node_id"],
+                "fake_prep",
+            ])
+
+        assert exc_info.value.code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["code"] == "associated_ligands_require_selection"
+        assert payload["node_status"] == "pending"
+        latest = read_node(str(job_dir), node["node_id"])
+        assert latest["status"] == "pending"
+        assert latest["metadata"]["last_refusal"]["code"] == "associated_ligands_require_selection"
+        assert "failure_code" not in latest["metadata"]
+
     def test_cli_unhandled_exception_records_traceback_artifact(self, tmp_path, monkeypatch):
         from mdclaw import _cli
         from mdclaw._node import create_node, read_node

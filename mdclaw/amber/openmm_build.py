@@ -643,6 +643,35 @@ def _positions_are_finite_for_report(positions: Any, unit_module: Any) -> bool:
     return _walk(values)
 
 
+# The scorer's ceiling is 1e6 kJ/mol per particle; a relaxed cell sits near
+# -10. Anything past 1e5 is overlapping atoms, never a strained but real system.
+BUILT_ENERGY_CEILING_KJ_MOL_PER_PARTICLE = 1.0e5
+
+
+def _built_energy_verdict(
+    energy_kj_mol: float, particle_count: int,
+    ceiling: float = BUILT_ENERGY_CEILING_KJ_MOL_PER_PARTICLE,
+) -> tuple[bool, float | None, str]:
+    """``(plausible, energy per particle, message)`` for the relaxed built state."""
+    if not particle_count or particle_count <= 0:
+        return True, None, ""
+    if not math.isfinite(energy_kj_mol):
+        return False, None, (
+            f"The built System's relaxed potential energy is not finite ({energy_kj_mol!r}); "
+            "atoms overlap or the box is wrong. Rebuild the solvation step on a new node."
+        )
+    per_particle = float(energy_kj_mol) / float(particle_count)
+    if abs(per_particle) > ceiling:
+        return False, per_particle, (
+            f"The built System's relaxed potential energy is {energy_kj_mol:.4g} kJ/mol "
+            f"({per_particle:.4g} kJ/mol per particle, over {particle_count} particles); "
+            f"a physical cell sits near -10. Atoms are overlapping, usually solvent copied "
+            "across a periodic seam or an ion on a solute atom. Rebuild the solvation step "
+            "on a new node instead of minimizing this state."
+        )
+    return True, per_particle, ""
+
+
 def _position_count_for_report(positions: Any, unit_module: Any) -> Optional[int]:
     try:
         values = positions.value_in_unit(unit_module.nanometer)
@@ -1684,7 +1713,9 @@ def _run_openmmforcefields_build(
         energy_initial_kj_mol = float(
             initial_state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
         )
-        simulation.minimizeEnergy(maxIterations=minimize_max_iterations)
+        from mdclaw.simulation.relax import minimize_robustly
+
+        relaxation = minimize_robustly(simulation, minimize_max_iterations)
         if box_dimensions:
             # Re-image so the solute sits at the box center and solvent wraps
             # around it, instead of OpenMM's corner-origin per-atom wrap that
@@ -1729,6 +1760,25 @@ def _run_openmmforcefields_build(
 
     final_positions = state.getPositions(asNumpy=True)
     position_count = _position_count_for_report(final_positions, unit)
+    plausible, energy_per_particle, verdict = _built_energy_verdict(
+        energy_final_kj_mol, position_count
+    )
+    if not plausible:
+        # A relaxed state at 1e6 kJ/mol per atom is atoms on top of each other
+        # (006_membrane_6a94: 502 water pairs under 0.6 A across the periodic
+        # seam of an extended membrane cell). Ten relaxation steps cannot fix
+        # that and the min node only hides it; the artifact triple is not a
+        # deliverable, and the cause is in the solvation step.
+        result["code"] = "built_system_energy_implausible"
+        result["errors"].append(verdict)
+        result["minimization_report"] = {
+            "energy_initial_kj_mol": energy_initial_kj_mol,
+            "energy_final_kj_mol": energy_final_kj_mol,
+            "energy_per_particle_kj_mol": energy_per_particle,
+            "max_iterations": minimize_max_iterations,
+            "relaxation": relaxation,
+        }
+        return result
     minimization_report = {
         "schema_version": "1.0",
         "minimization": {
@@ -1738,6 +1788,7 @@ def _run_openmmforcefields_build(
             "satisfies_min_node_contract": False,
             "backend": "openmm",
             "max_iterations": minimize_max_iterations,
+            "relaxation": relaxation,
             "energy_initial_kj_mol": energy_initial_kj_mol,
             "energy_final_kj_mol": energy_final_kj_mol,
             "energy_is_finite": (

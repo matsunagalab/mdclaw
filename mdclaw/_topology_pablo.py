@@ -57,6 +57,7 @@ class PabloLoadResult:
     warnings: list[str] = field(default_factory=list)
     guardrail_codes: list[str] = field(default_factory=list)
     auto_download: bool = True
+    solvent_atoms_via_pdbfile: int = 0
 
 
 def build_modaa_residue_definitions(
@@ -147,6 +148,91 @@ def seed_absent_ccd_names(cache: Any, residue_names: Sequence[str]) -> dict:
     return outcome
 
 
+# A trailing block of water and ions at least this large is read by
+# ``openmm.app.PDBFile`` instead of Pablo. Pablo identifies every residue
+# against the CCD, right for the solute and wasted on 100k identical waters:
+# the campaign's builds above 250k atoms spent a median 127 s (max 276 s) in
+# the load, where PDBFile parses the same block in a few seconds.
+SOLVENT_FAST_PATH_MIN_ATOMS = 30_000
+
+
+def _solvent_block_names() -> frozenset[str]:
+    from mdclaw.chemistry_constants import STANDARD_BARE_ION_RESNAME_KEYS, WATER_NAMES
+
+    return frozenset(WATER_NAMES) | frozenset(STANDARD_BARE_ION_RESNAME_KEYS)
+
+
+def split_trailing_solvent(
+    pdb_path: Path, *, min_atoms: int | None = None,
+) -> tuple[list[str], list[str]] | None:
+    """``(solute lines, solvent lines)`` when the file ends in enough water and ions.
+
+    The solvent block is the run of water / bare-ion residues at the end of the
+    atom records; the solute keeps every other line (header, CRYST1, CONECT,
+    END) in its order. ``None`` when there is no such block, when the whole
+    file is solvent, or when the block is under ``min_atoms``
+    (``SOLVENT_FAST_PATH_MIN_ATOMS`` by default).
+    """
+    names = _solvent_block_names()
+    lines = Path(pdb_path).read_text(errors="ignore").splitlines(keepends=True)
+    atom_indices = [i for i, line in enumerate(lines) if line.startswith(("ATOM  ", "HETATM"))]
+    start = len(atom_indices)
+    for k in range(len(atom_indices) - 1, -1, -1):
+        if lines[atom_indices[k]][17:20].strip().upper() not in names:
+            break
+        start = k
+    solvent_atoms = len(atom_indices) - start
+    floor = SOLVENT_FAST_PATH_MIN_ATOMS if min_atoms is None else min_atoms
+    if solvent_atoms == 0 or start == 0 or solvent_atoms < floor:
+        return None
+    boundary = atom_indices[start]
+    records = ("ATOM  ", "HETATM", "TER")
+    solvent = [line for line in lines[boundary:] if line.startswith(records)]
+    solute = lines[:boundary] + [line for line in lines[boundary:] if not line.startswith(records)]
+    return solute, solvent
+
+
+def _append_solvent_block(topology: Any, positions: Any, solvent_lines: list[str]) -> tuple[Any, Any, int]:
+    """Read the solvent block with PDBFile and append it the way Pablo would have.
+
+    PDBFile canonicalises names (WAT -> HOH) and groups residues into chains
+    by chain id; Pablo keeps the file's names, numbers residues with ints and
+    gives every water and ion a chain of its own. The appended block follows
+    Pablo so the two paths produce one topology.
+    """
+    import io
+
+    import numpy as np
+    from openmm import unit
+    from openmm.app import PDBFile
+
+    solvent = PDBFile(io.StringIO("".join(solvent_lines) + "END\n"))
+    atom_lines = [line for line in solvent_lines if line.startswith(("ATOM  ", "HETATM"))]
+    atoms = list(solvent.topology.atoms())
+    if len(atoms) != len(atom_lines):
+        raise ValueError(
+            f"PDBFile read {len(atoms)} solvent atoms from {len(atom_lines)} records")
+    new_atoms: dict[int, Any] = {}
+    for residue in solvent.topology.residues():
+        first = atom_lines[next(iter(residue.atoms())).index]
+        chain = topology.addChain(id=residue.chain.id)
+        residue_id = first[22:26].strip()
+        new_residue = topology.addResidue(
+            first[17:20].strip(), chain,
+            id=int(residue_id) if residue_id.lstrip("-").isdigit() else residue_id,
+            insertionCode=residue.insertionCode)
+        for atom in residue.atoms():
+            line = atom_lines[atom.index]
+            new_atoms[atom.index] = topology.addAtom(line[12:16].strip(), atom.element, new_residue, id=atom.id)
+    for atom_a, atom_b in solvent.topology.bonds():
+        topology.addBond(new_atoms[atom_a.index], new_atoms[atom_b.index])
+    merged = np.vstack([
+        np.asarray(positions.value_in_unit(unit.nanometer), dtype=float).reshape(-1, 3),
+        np.asarray(solvent.positions.value_in_unit(unit.nanometer), dtype=float).reshape(-1, 3),
+    ])
+    return topology, unit.Quantity(merged, unit.nanometer), len(atoms)
+
+
 def load_topology(
     pdb_path: Path,
     *,
@@ -204,11 +290,24 @@ def load_topology(
                     "Residue names absent from the CCD (one lookup each, then skipped): "
                     + ", ".join(ccd_probe["absent"])
                 )
+        split = split_trailing_solvent(pdb_path)
         try:
-            off_topology = topology_from_pdb(
-                str(pdb_path),
-                additional_definitions=tuple(additional_definitions),
-            )
+            if split is None:
+                off_topology = topology_from_pdb(
+                    str(pdb_path),
+                    additional_definitions=tuple(additional_definitions),
+                )
+            else:
+                import tempfile
+
+                solute_lines, solvent_lines = split
+                with tempfile.TemporaryDirectory(prefix="pablo_solute_") as tmpdir:
+                    solute_path = Path(tmpdir) / pdb_path.name
+                    solute_path.write_text("".join(solute_lines))
+                    off_topology = topology_from_pdb(
+                        str(solute_path),
+                        additional_definitions=tuple(additional_definitions),
+                    )
         finally:
             if previous_auto_download is not None:
                 STD_CCD_CACHE.auto_download = previous_auto_download
@@ -229,13 +328,19 @@ def load_topology(
             auto_download=bool(auto_download),
         )
 
+    topology = off_topology.to_openmm()
+    positions = off_topology.get_positions().to_openmm()
+    solvent_atoms = 0
+    if split is not None:
+        topology, positions, solvent_atoms = _append_solvent_block(topology, positions, split[1])
     return PabloLoadResult(
-        topology=off_topology.to_openmm(),
-        positions=off_topology.get_positions().to_openmm(),
+        topology=topology,
+        positions=positions,
         used_pablo=True,
         warnings=warnings,
         guardrail_codes=codes,
         auto_download=bool(auto_download),
+        solvent_atoms_via_pdbfile=solvent_atoms,
     )
 
 
@@ -255,5 +360,6 @@ __all__ = [
     "PabloLoadResult",
     "build_modaa_residue_definitions",
     "load_topology",
+    "split_trailing_solvent",
     "add_disulfide_bonds",
 ]

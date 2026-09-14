@@ -59,6 +59,7 @@ from mdclaw.solvation._base import (
     _packmol_memgen_diagnostics,
     _packmol_quality_failure_reasons,
     _record_packmol_memgen_output,
+    _record_periodic_seam,
     _record_packmol_quality_failure,
     _record_salt_override_fallback,
     _run_packmol_if_needed,
@@ -1960,6 +1961,34 @@ def _coerce_ligand_chemistry(value):
     return list(value)
 
 
+_POSITIVE_RESIDUES = {"ARG", "LYS", "HIP", "ARN"}
+_NEGATIVE_RESIDUES = {"ASP", "GLU", "CYM"}
+
+
+def _estimate_protein_net_charge(pdb_path) -> int:
+    """Net charge of the protein residues by name: +1 ARG/LYS/HIP, -1 ASP/GLU/CYM.
+
+    Neutral variants (ASH, GLH, LYN, HID, HIE) count zero; ligands, ions and
+    termini are not counted. Good enough to say "this cell is charged" before
+    ions are decided, not a substitute for the force-field charge.
+    """
+    seen: set[tuple[str, str, str]] = set()
+    charge = 0
+    for line in Path(pdb_path).read_text(errors="ignore").splitlines():
+        if not line.startswith(("ATOM  ", "HETATM")) or len(line) < 27:
+            continue
+        resname = line[17:20].strip().upper()
+        key = (line[21], line[22:26], line[26])
+        if key in seen:
+            continue
+        seen.add(key)
+        if resname in _POSITIVE_RESIDUES:
+            charge += 1
+        elif resname in _NEGATIVE_RESIDUES:
+            charge -= 1
+    return charge
+
+
 @node_tool(node_type="solv")
 def embed_in_membrane(
     pdb_file: Optional[str] = None,
@@ -2350,10 +2379,31 @@ def embed_in_membrane(
         pdb_file = _inputs.get("pdb_file")
         canonical_pairs = _inputs.get("disulfide_bonds")
         if disulfide_bonds is not None and disulfide_bonds != canonical_pairs:
+            # Three cli_sif attempts of campaign v2 (001, 004, 012) restated
+            # their own pairs here and were told only that the plan must match.
             from mdclaw._node import fail_node_from_result
+
+            def _spell_pair(pair):
+                try:
+                    a, b = pair["cys1"], pair["cys2"]
+                    return f"{a['chain']}:{a['resnum']}-{b['chain']}:{b['resnum']}"
+                except (KeyError, TypeError):
+                    return str(pair)
+
+            recorded = ", ".join(_spell_pair(p) for p in (canonical_pairs or [])) or "none"
             return fail_node_from_result(job_dir, node_id, {
                 "success": False, "code": "input_resolution_blocked",
-                "errors": ["Disulfide plan must match the selected prep ancestor."],
+                "errors": [
+                    "Disulfide plan must match the selected prep ancestor: the prep "
+                    f"node recorded {len(canonical_pairs or [])} pair(s) ({recorded}) "
+                    "and --disulfide-bonds gave a different plan."
+                ],
+                "hints": [
+                    "Omit --disulfide-bonds in node mode; the plan the prep node "
+                    "recorded is applied automatically. A different disulfide plan "
+                    "belongs to a new prep node (prepare_complex --disulfide-pairs), "
+                    "not to solvation.",
+                ],
             })
         disulfide_bonds = canonical_pairs
         if ligand_chemistry is None and _inputs.get("ligand_chemistry"):
@@ -2365,7 +2415,7 @@ def embed_in_membrane(
         )
         if job_dir and node_id:
             from mdclaw._node import fail_node
-            fail_node(job_dir, node_id, errors=result.get("errors", []))
+            fail_node(job_dir, node_id, errors=result.get("errors", []), code=result.get("code"))
         return result
 
     result["input_file"] = str(pdb_file)
@@ -2376,12 +2426,25 @@ def embed_in_membrane(
     
     # Validate input file (resolve to absolute path for conda run compatibility)
     pdb_path = Path(pdb_file).resolve()
+    if pdb_path.exists() and not salt:
+        # --no-salt places no ions at all. Three campaign agents read it as "no
+        # bulk salt" for a "neutralised" request, embedded a +6 to +18 e
+        # receptor without counter-ions and only learnt it from the topology
+        # refusal one node later. Say it here, from the residue names.
+        estimate = _estimate_protein_net_charge(pdb_path)
+        if estimate:
+            result["warnings"].append(
+                f"--no-salt places no ions, and the protein residues carry an estimated "
+                f"{estimate:+d} e (ARG/LYS/HIP minus ASP/GLU/CYM; ligands not counted). "
+                "The topology will refuse a charged cell. For counter-ions only use "
+                "--salt --saltcon 0; for physiological salt --salt --saltcon 0.15."
+            )
     if not pdb_path.exists():
         result["errors"].append(f"Input PDB file not found: {pdb_file}")
         logger.error(f"Input PDB file not found: {pdb_file}")
         if job_dir and node_id:
             from mdclaw._node import fail_node
-            fail_node(job_dir, node_id, errors=result.get("errors", []))
+            fail_node(job_dir, node_id, errors=result.get("errors", []), code=result.get("code"))
         return result
 
     # Check packmol-memgen availability.  A warm patch-cache hit can still build
@@ -2394,7 +2457,7 @@ def embed_in_membrane(
         logger.error("packmol-memgen not available")
         if job_dir and node_id:
             from mdclaw._node import fail_node
-            fail_node(job_dir, node_id, errors=result.get("errors", []))
+            fail_node(job_dir, node_id, errors=result.get("errors", []), code=result.get("code"))
         return result
 
     # Setup output directory
@@ -2622,7 +2685,7 @@ def embed_in_membrane(
             result["box_dimensions_file"] = patch_result.get("box_dimensions_file")
             result["statistics"].update(patch_result.get("statistics") or {})
             result["statistics"]["method"] = "patch_tile"
-            result["parameters"]["neutralization_expected"] = True
+            result["parameters"]["neutralization_expected"] = bool(salt)
             result["packing_quality"] = {
                 "passed": True,
                 "backend": "patch-tile",
@@ -2659,6 +2722,7 @@ def embed_in_membrane(
                             node_id,
                             errors=result.get("errors", []),
                             warnings=result.get("warnings") or None,
+                            code=result.get("code"),
                         )
                     return result
 
@@ -2687,7 +2751,7 @@ def embed_in_membrane(
                         "water_model": water_model,
                         "lipid_type": lipids,
                         "is_membrane": True,
-                        "neutralization_expected": True,
+                        "neutralization_expected": bool(salt),
                         "salt_concentration_M": saltcon,
                         "salt_override": salt_override,
                         "packing_quality": result.get("packing_quality"),
@@ -2725,6 +2789,7 @@ def embed_in_membrane(
                     node_id,
                     errors=result.get("errors", []),
                     warnings=result.get("warnings") or None,
+                    code=result.get("code"),
                 )
             return result
 
@@ -2751,6 +2816,7 @@ def embed_in_membrane(
                 node_id,
                 errors=result.get("errors", []),
                 warnings=result.get("warnings") or None,
+                code=result.get("code"),
             )
         return result
 
@@ -2775,7 +2841,7 @@ def embed_in_membrane(
         )
         if _node_mode:
             from mdclaw._node import fail_node
-            fail_node(job_dir, node_id, errors=result["errors"])
+            fail_node(job_dir, node_id, errors=result["errors"], code=result.get("code"))
         return result
     if not packmol_charge_report.get("success", False):
         result["code"] = packmol_charge_report.get(
@@ -2785,13 +2851,13 @@ def embed_in_membrane(
         result["membrane_charge_delta_report"] = packmol_charge_report
         if _node_mode:
             from mdclaw._node import fail_node
-            fail_node(job_dir, node_id, errors=result["errors"])
+            fail_node(job_dir, node_id, errors=result["errors"], code=result.get("code"))
         return result
     packmol_charge_delta = int(packmol_charge_report["charge_pdb_delta"])
     result["auto_charge_pdb_delta"] = packmol_charge_delta
     result["auto_charge_pdb_delta_applied"] = bool(packmol_charge_delta)
     result["membrane_charge_delta_report"] = packmol_charge_report
-    result["parameters"]["neutralization_expected"] = True
+    result["parameters"]["neutralization_expected"] = bool(salt)
     result["parameters"]["auto_charge_pdb_delta"] = packmol_charge_delta
     result["parameters"]["auto_charge_pdb_delta_applied"] = bool(
         packmol_charge_delta
@@ -3176,6 +3242,8 @@ def embed_in_membrane(
                         "Packmol output did not preserve every source solute "
                         "residue; the membrane structure is not safe to use."
                     )
+                if result.get("success"):
+                    _record_periodic_seam(result, restored_output, result.get("box_dimensions") or {})
                 if membrane_geometry_validation:
                     _record_membrane_embedding_geometry(
                         result=result,
@@ -3216,7 +3284,7 @@ def embed_in_membrane(
                     "water_model": water_model,
                     "lipid_type": lipids,
                     "is_membrane": True,
-                    "neutralization_expected": True,
+                    "neutralization_expected": bool(salt),
                     "salt_concentration_M": saltcon,
                     "salt_override": salt_override,
                     "auto_charge_pdb_delta": result.get(
@@ -3256,6 +3324,7 @@ def embed_in_membrane(
                 node_id,
                 errors=result.get("errors", []),
                 warnings=result.get("warnings") or None,
+                code=result.get("code"),
             )
 
     return result

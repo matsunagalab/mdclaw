@@ -332,6 +332,13 @@ def run_production(
                 "simulation_time_ns": simulation_time_ns,
                 "temperature_kelvin": temperature_kelvin,
                 "pressure_bar": pressure_bar,
+                # The pressure is resolved by now (inherited from the eq
+                # ancestor when omitted), so the ensemble is known: agents
+                # declare it ("NPT") and 054_nucleic_1zgw cli_skill_sif r3
+                # lost its production job to "did not include declared
+                # condition 'ensemble'".
+                "ensemble": ("NPT" if (pressure_bar is not None and pressure_bar > 0
+                                       and not implicit_solvent) else "NVT"),
                 "timestep_fs": timestep_fs,
                 "output_frequency_ps": output_frequency_ps,
                 "trajectory_format": trajectory_format,

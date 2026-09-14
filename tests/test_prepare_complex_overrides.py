@@ -984,7 +984,10 @@ class TestPrecedence:
             ],
             "histidine_states": [{"chain": "A", "resnum": 50, "state": "HIE"}],
         }
-        direct = [{"cys1": {"chain": "A", "resnum": 99}, "cys2": {"chain": "A", "resnum": 100}}]
+        # The direct pair names the fixture's own cysteines: a declared site the
+        # split output does not hold is refused before cleaning
+        # (disulfide_site_not_selected), which would leave precedence untested.
+        direct = [{"cys1": {"chain": "A", "resnum": 10}, "cys2": {"chain": "A", "resnum": 20}}]
         prepare_complex(
             structure_file=str(mini_pdb),
             output_dir=str(tmp_path / "out"),
@@ -997,9 +1000,9 @@ class TestPrecedence:
         assert mock_clean.called, "clean_protein was never reached; precedence untested"
         handed = mock_clean.call_args.kwargs["disulfide_pairs"]
         assert handed is not None
-        # The direct pair (99/100) reached clean_protein; the structure_analysis
+        # The direct pair (10/20) reached clean_protein; the structure_analysis
         # pair (1/2) did not.
-        assert [(p["resnum1"], p["resnum2"]) for p in handed] == [(99, 100)]
+        assert [(p["resnum1"], p["resnum2"]) for p in handed] == [(10, 20)]
         assert mock_clean.call_args.kwargs["protonation_states"] == [
             {"chain": "A", "resnum": "99", "icode": "", "state": "HIP"}
         ]
@@ -1176,3 +1179,16 @@ def test_nothing_is_printed_when_nothing_was_assigned(caplog):
         report_confirmation_items(items)
 
     assert "Chemistry assigned" not in caplog.text
+
+
+def test_a_declared_list_that_drops_a_detected_disulfide_is_warned_about(mini_pdb):
+    """096_soluble_1ay7 r2 passed '[]' and lost C7-C96 without a word."""
+    import importlib
+
+    _pc = importlib.import_module("mdclaw.structure.prepare_complex")
+    left_out = _pc._detected_disulfides_not_declared(Path(mini_pdb), [], ["A"])
+    assert [(b["cys1"]["resnum"], b["cys2"]["resnum"]) for b in left_out] == [(10, 20)]
+    named = [{"cys1": {"chain": "A", "resnum": 10}, "cys2": {"chain": "A", "resnum": 20}}]
+    assert _pc._detected_disulfides_not_declared(Path(mini_pdb), named, ["A"]) == []
+    assert _pc._detected_disulfides_not_declared(Path(mini_pdb), [], ["B"]) == []
+

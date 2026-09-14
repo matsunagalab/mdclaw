@@ -163,22 +163,117 @@ def flatten_disulfide_pairs(disulfide_pairs) -> list:
     return flat
 
 
+# Under this distance two atoms share a point: the force between them is not
+# finite and no minimizer parts them. Up to CLOSE_CONTACT_ANGSTROM they are a
+# contact the capped steepest descent (mdclaw.simulation.relax) resolves.
+DUPLICATE_ATOM_ANGSTROM = 0.1
+CLOSE_CONTACT_ANGSTROM = 0.8
+
+
+def _heavy_atom_overlaps(pdb_path, cutoff: float = CLOSE_CONTACT_ANGSTROM) -> list[str]:
+    """Labels of the pairs ``_close_atom_pairs`` finds under ``cutoff`` A."""
+    return [label for _distance, label in _close_atom_pairs(pdb_path, cutoff)]
+
+
+def _close_atom_pairs(pdb_path, cutoff: float = CLOSE_CONTACT_ANGSTROM) -> list[tuple[float, str]]:
+    """``(distance, label)`` for atom pairs under ``cutoff`` A that no bond holds.
+
+    Any two atoms under 0.8 A are on top of each other: the shortest bond is
+    0.96 A. Hydrogens count -- 1GQV (NMR) deposits ILE 133 with HG21 0.71 A
+    from HD12, which pdb2pqr's standard-state path kept, and the built
+    System's forces reached 3e8 kJ/mol/nm on those two and the minimiser
+    diverged to 1e42 kJ/mol (087_soluble_1gqv cli_sif r3, campaign v2).
+    Inside one residue a bonded pair (a hydrogen within 1.3 A of a heavy atom,
+    two heavy atoms within 1.9 A; pdb2pqr writes some N-H at 0.76 A) or a pair
+    sharing a bonded neighbour is left alone (PDBFixer puts a terminal OXT
+    0.5 A from O, both on C; the angle term opens it -- 6JZH, 6KUY); anything
+    else is reported. A grid walk keeps this linear in the atom count.
+    """
+    import math
+
+    atoms: list[tuple[str, str, str, float, float, float, bool]] = []
+    for line in Path(pdb_path).read_text(errors="ignore").splitlines():
+        if not line.startswith(("ATOM  ", "HETATM")) or len(line) < 54:
+            continue
+        element = line[76:78].strip().upper() if len(line) >= 78 else ""
+        name = line[12:16].strip()
+        residue = f"{line[17:20].strip()} {line[21]}{line[22:26].strip()}{line[26].strip()}"
+        atoms.append((f"{residue} {name}", residue, name,
+                      float(line[30:38]), float(line[38:46]), float(line[46:54]),
+                      (element or name[:1].upper()) in ("H", "D")))
+    grid: dict[tuple[int, int, int], list[int]] = {}
+    for index, atom in enumerate(atoms):
+        grid.setdefault((math.floor(atom[3] / cutoff), math.floor(atom[4] / cutoff),
+                         math.floor(atom[5] / cutoff)), []).append(index)
+    by_residue: dict[str, list[int]] = {}
+    for index, atom in enumerate(atoms):
+        by_residue.setdefault(atom[1], []).append(index)
+
+    def _bonded(i: int, j: int) -> bool:
+        a, b = atoms[i], atoms[j]
+        if a[6] and b[6]:
+            return False   # two hydrogens are never bonded to each other
+        limit = 1.3 if (a[6] or b[6]) else 1.9
+        return math.dist(a[3:6], b[3:6]) < limit
+
+    def _share_a_neighbour(i: int, j: int) -> bool:
+        for k in by_residue.get(atoms[i][1], ()):
+            if k not in (i, j) and _bonded(i, k) and _bonded(j, k):
+                return True
+        return False
+
+    found: list[tuple[float, str]] = []
+    for (cx, cy, cz), members in grid.items():
+        for index in members:
+            label, residue, _name, x, y, z, _h = atoms[index]
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dz in (-1, 0, 1):
+                        for other in grid.get((cx + dx, cy + dy, cz + dz), ()):
+                            if other <= index:
+                                continue
+                            olabel, oresidue, _oname, ox, oy, oz, _oh = atoms[other]
+                            distance = math.dist((x, y, z), (ox, oy, oz))
+                            if distance >= cutoff:
+                                continue
+                            if residue == oresidue and (
+                                    _bonded(index, other) or _share_a_neighbour(index, other)):
+                                continue
+                            found.append((distance, f"{label} - {olabel} {distance:.2f} A"))
+    return sorted(found, key=lambda pair: pair[1])
+
+
 def _disulfide_pairs_in_merged_frame(disulfide_pairs, chain_mapping_entries):
     """Rewrite declared pairs into the merged structure's chain ids.
 
     The merge may rename chains, and a pair still written in author chains would
     then match nothing -- every bond quietly "out of scope" and unverified.
-    Returns ``(pairs, unmapped)``; ``unmapped`` names the pairs whose chains the
-    mapping does not cover.
+    One author chain can also reach the merge as several pieces (residue ranges
+    ``A:17-217 A:377-456`` become protein_1 -> A and protein_2 -> B), so a site
+    is located by the piece whose file carries the residue; a chain is mapped by
+    name alone only when it became exactly one merged chain. Returns
+    ``(pairs, unmapped)``; ``unmapped`` names the pairs that cannot be located.
     """
     if not disulfide_pairs:
         return [], []
-    renamed: dict[str, str] = {}
+    from mdclaw.structure.pdb_utils import _read_pdb_unique_residues
+
+    owner: dict[tuple[str, int, str], str] = {}
+    targets_by_chain: dict[str, list[str]] = {}
     for entry in chain_mapping_entries:
-        source = str(entry.get("source_chain_id") or "").strip()
-        target = str(entry.get("md_chain_id") or "").strip()
-        if source and target:
-            renamed.setdefault(source[:1], target[:1])
+        source = str(entry.get("source_chain_id") or "").strip()[:1]
+        target = str(entry.get("md_chain_id") or "").strip()[:1]
+        if not source or not target:
+            continue
+        targets = targets_by_chain.setdefault(source, [])
+        if target not in targets:
+            targets.append(target)
+        source_file = entry.get("source_file")
+        if source_file and Path(source_file).is_file():
+            for residue in _read_pdb_unique_residues(source_file):
+                if residue["chain"] != source or not isinstance(residue["resnum"], int):
+                    continue
+                owner.setdefault((source, residue["resnum"], residue["icode"] or ""), target)
 
     pairs, unmapped = [], []
     for pair in disulfide_pairs:
@@ -187,11 +282,17 @@ def _disulfide_pairs_in_merged_frame(disulfide_pairs, chain_mapping_entries):
             continue
         moved = []
         for chain_id, resnum, icode in sites:
-            target = renamed.get(chain_id, chain_id if not renamed else None)
+            icode = icode if icode is not None else ""
+            target = owner.get((chain_id, int(resnum), icode))
+            if target is None:
+                targets = targets_by_chain.get(chain_id)
+                if not targets_by_chain:
+                    target = chain_id             # nothing was renamed
+                elif targets and len(targets) == 1:
+                    target = targets[0]
             if target is None:
                 break
-            moved.append({"chain": target, "resnum": resnum,
-                          "icode": icode if icode is not None else ""})
+            moved.append({"chain": target, "resnum": resnum, "icode": icode})
         if len(moved) == 2:
             pairs.append({"cys1": moved[0], "cys2": moved[1]})
         else:
@@ -788,6 +889,205 @@ def _drop_detections_outside_ranges(result, split_result, disulfide_bonds, metal
     return kept_bonds, kept_sites
 
 
+def _detected_disulfides_not_declared(structure_path, declared_pairs, select_chains) -> list[dict]:
+    """Bonded disulfides the deposit shows that a declared list leaves out.
+
+    A declared ``--disulfide-pairs`` list replaces detection entirely, and
+    ``'[]'`` means none. That is deliberate, but the omission was silent:
+    096_soluble_1ay7 cli_skill_sif r2 (campaign v2) passed ``'[]'`` with a
+    long protonation list, lost the deposit's C7-C96 (2.04 A) and failed the
+    reference's disulfide check without any warning naming the bond. Returns
+    the detected pairs (SSBOND/_struct_conn merged with S-S distances, filtered
+    to the selected chains) whose geometry is a bond or an overlap and which
+    the declared list neither names nor names with ``form_bond: false``.
+    """
+    from mdclaw.structure.clean_protein import _disulfide_pair_sites
+    from mdclaw.structure.disulfide import (
+        _detect_disulfide_candidates,
+        _merge_disulfide_pairs,
+        _parse_ssbond_records,
+    )
+
+    def _key(pair):
+        sites = _disulfide_pair_sites(pair)
+        if sites is None:
+            return None
+        return frozenset((chain, int(resnum), (icode or "").strip()) for chain, resnum, icode in sites)
+
+    try:
+        detected = _merge_disulfide_pairs(
+            _parse_ssbond_records(structure_path),
+            _detect_disulfide_candidates(structure_path),
+            select_chains=select_chains,
+        )
+    except Exception:  # noqa: BLE001 - a warning must never break the preparation
+        return []
+    declared_keys = {_key(pair) for pair in declared_pairs or []} - {None}
+    return [pair for pair in detected
+            if pair.get("geometry") in ("bonded", "overlap") and _key(pair) not in declared_keys]
+
+
+def _declared_disulfide_site_problems(disulfide_pairs, split_result, *, terminal_builds: bool) -> list[str]:
+    """Declared cysteine sites the selected protein pieces cannot hold.
+
+    Checked on the split output, before the node begins: 028_complex_1dfj
+    (campaign v2) declared RNase A's A:26-A:84 by label chain A while the
+    pieces carry author chain E, and lost the node after the whole preparation
+    ("could not be located in the merged structure"). Pairs are written in
+    author chain ids, as inspect_molecules and the disulfide detection report
+    them. A site passes when a piece holds it as a cysteine, when the range
+    contract requests it (unobserved residues are built), or when it lies
+    inside the observed span of its chain (an internal gap the repair builds;
+    near a chain end too when terminal residues are built). An unstated
+    insertion code matches any.
+    """
+    from mdclaw.structure.clean_protein import _disulfide_pair_sites
+    from mdclaw.structure.pdb_utils import _read_pdb_unique_residues
+
+    cysteines = {"CYS", "CYX", "CYM"}
+    held: dict[tuple[str, int, str], set] = {}
+    spans: dict[str, list[tuple[int, int]]] = {}
+    label_to_author: dict[str, str] = {}
+    infos = {str(info.get("file")): info for info in split_result.get("chain_file_info", []) or []}
+    for path in split_result.get("protein_files", []) or []:
+        info = infos.get(str(path), {})
+        try:
+            residues = _read_pdb_unique_residues(path)
+        except OSError:
+            continue
+        numbers_by_chain: dict[str, list[int]] = {}
+        for residue in residues:
+            if isinstance(residue["resnum"], int):
+                held.setdefault((residue["chain"], residue["resnum"], residue["icode"]),
+                                set()).add(residue["resname"])
+                numbers_by_chain.setdefault(residue["chain"], []).append(residue["resnum"])
+        for chain, numbers in numbers_by_chain.items():
+            spans.setdefault(chain, []).append((min(numbers), max(numbers)))
+        file_chain = next(iter(numbers_by_chain), None)
+        label = str(info.get("chain_id") or "").strip()[:1]
+        if label and file_chain and label != file_chain:
+            label_to_author.setdefault(label, file_chain)
+        for row in (info.get("residue_identity") or {}).get("residues") or []:
+            if file_chain and row.get("number") is not None and row.get("name"):
+                held.setdefault((file_chain, row["number"], row.get("icode") or ""),
+                                set()).add(row["name"])
+
+    def _held_names(chain, resnum, icode):
+        # An unstated insertion code means the residue without one, as the
+        # merged-frame mapping reads it: 1CEB numbers GLU 1A before CYS 1,
+        # and "A:1" is the cysteine. Only when no such residue exists does
+        # any insertion code match.
+        if icode is not None:
+            return held.get((chain, resnum, icode))
+        if (chain, resnum, "") in held:
+            return held[(chain, resnum, "")]
+        found = set()
+        for (c, n, _i), names in held.items():
+            if c == chain and n == resnum:
+                found |= names
+        return found or None
+
+    problems: list[str] = []
+    for pair in disulfide_pairs or []:
+        sites = _disulfide_pair_sites(pair)
+        if sites is None:
+            continue
+        for chain, resnum, icode in sites:
+            spelled = f"{chain}:{resnum}{icode or ''}"
+            if chain in spans:
+                names = _held_names(chain, resnum, icode)
+                if names:
+                    if not names & cysteines:
+                        problems.append(f"{spelled} is {'/'.join(sorted(names))}, not a cysteine")
+                    continue
+                reach = 10 if terminal_builds else 0
+                if not any(low - reach < resnum < high + reach for low, high in spans[chain]):
+                    shown = ", ".join(f"{chain}:{low}-{high}" for low, high in sorted(spans[chain]))
+                    problems.append(f"{spelled} is outside the selected residues of chain {chain} ({shown})")
+            elif chain in label_to_author:
+                author = label_to_author[chain]
+                problems.append(
+                    f"{spelled} names label chain {chain}; pairs use author chain ids, and "
+                    f"label {chain} is author chain {author} ({author}:{resnum}{icode or ''})")
+            else:
+                problems.append(
+                    f"{spelled}: chain {chain} is not a selected protein chain "
+                    f"(selected: {', '.join(sorted(spans)) or 'none'})")
+    return problems
+
+
+def _unbuildable_range_ends(split_result, *, terminal_builds: bool) -> list[dict]:
+    """Requested residues at a range end that the preparation can never deliver.
+
+    Each protein piece's identity contract lists every residue its range asked
+    for, observed or not (mmCIF polymer scheme or SEQRES alignment), and the
+    identity audit at the end refuses the finished preparation when any is
+    absent. Two cases are certain to be refused, so they are refused here,
+    before the node begins: an endpoint the source cannot identify at all
+    (``unresolved_endpoints``), and an unobserved run at a component end when
+    nothing builds terminal residues (neither
+    ``build_terminal_missing_residues`` nor terminal caps; 008_membrane_6i53's
+    B:8-312 with 8-20 unobserved, campaign v2). A run facing another range of
+    the same component is not an end: joined ranges are bonded across the
+    omitted span and the run is built as the insertion between them. Returns
+    one record per offending run.
+    """
+    problems: list[dict] = []
+    for info in split_result.get("chain_file_info", []) or []:
+        pieces = list(info.get("residue_ranges")
+                      or ([info["residue_range"]] if info.get("residue_range") else []))
+        if not pieces:
+            continue
+        identity = info.get("residue_identity") or {}
+        spelled = ", ".join(str(piece.get("range") or f"{piece['start']}-{piece['end']}")
+                            for piece in pieces)
+        for endpoint in identity.get("unresolved_endpoints") or []:
+            problems.append({
+                "range": spelled, "residues": None, "count": None, "end": None,
+                "observed_span": None,
+                "reason": (f"endpoint {endpoint} is not a residue the source identifies (not "
+                           "observed, and no sequence numbering covers it), so the prepared "
+                           "chain can never be matched to the request"),
+            })
+        rows = identity.get("residues") or []
+        if not rows:
+            continue
+        bounds = [(piece["start"], piece["end"]) for piece in pieces]
+        for piece in pieces:
+            start, end = piece["start"], piece["end"]
+            letter = str(piece.get("range") or "").split(":")[0] or str(
+                info.get("author_chain") or info.get("chain_id") or "")
+            in_piece = [row for row in rows
+                        if row.get("number") is not None and start <= row["number"] <= end]
+            if not in_piece:
+                continue
+            seen = [i for i, row in enumerate(in_piece) if row.get("observed")]
+            if seen:
+                leading, trailing = in_piece[:seen[0]], in_piece[seen[-1] + 1:]
+                first, last = in_piece[seen[0]], in_piece[seen[-1]]
+                span = (f"{letter}:{first['number']}{first.get('icode') or ''}-"
+                        f"{last['number']}{last.get('icode') or ''}")
+            else:
+                leading, trailing, span = in_piece, [], None
+            for run, which in ((leading, "start"), (trailing, "end")):
+                if not run:
+                    continue
+                faces_range = any(
+                    (other_end < start) if which == "start" else (other_start > end)
+                    for other_start, other_end in bounds if (other_start, other_end) != (start, end))
+                if faces_range or terminal_builds:
+                    continue
+                reason = ("nothing builds unobserved terminal residues here "
+                          "(build_terminal_missing_residues is off and no caps are requested)")
+                problems.append({
+                    "range": str(piece.get("range") or spelled),
+                    "residues": (f"{run[0]['number']}{run[0].get('icode') or ''}-"
+                                 f"{run[-1]['number']}{run[-1].get('icode') or ''}"),
+                    "count": len(run), "end": which, "observed_span": span, "reason": reason,
+                })
+    return problems
+
+
 def _residue_range_coverage(split_result, protein_results):
     """Audit final components against source identity, not integer intervals."""
     import gemmi
@@ -1371,10 +1671,8 @@ def prepare_complex(
     # Setup output directory.
     _node_mode = job_dir and node_id
     if _node_mode:
-        from mdclaw._node import begin_node
         base_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
         base_dir.mkdir(parents=True, exist_ok=True)
-        begin_node(job_dir, node_id)
     elif output_dir:
         base_dir = Path(output_dir)
     else:
@@ -1382,6 +1680,28 @@ def prepare_complex(
     ensure_directory(base_dir)
     out_dir = base_dir
     result["output_dir"] = str(base_dir)
+
+    def _refused(refusal: dict) -> dict:
+        """A refusal raised before anything was prepared.
+
+        Inspection, the disulfide/cap/range argument checks and the split only
+        read the source and describe the selection; the node is begun once
+        the split has delivered it. Until then a refusal (a ``--select-chains``
+        naming an absent chain, ``associated_ligands_require_selection``, a
+        range that selects nothing, a malformed ligand declaration) leaves
+        the node pending and the same node is run again with corrected
+        arguments (``fail_node_from_result``). Campaign v2 sealed 39 prep
+        nodes on ``associated_ligands_require_selection`` alone, each followed
+        by a fresh node with the ligand added.
+        """
+        refusal["overall_status"] = "failed"
+        if _node_mode:
+            from mdclaw._node import fail_node_from_result
+
+            return fail_node_from_result(job_dir, node_id, refusal)
+        return refusal
+
+    from mdclaw.node.lifecycle import NodeSealedError
 
     try:
         # Step 1: Inspect structure
@@ -1420,7 +1740,7 @@ def prepare_complex(
 
         if not inspection["success"]:
             result["errors"].append(f"Inspection failed: {inspection['errors']}")
-            return result
+            return _refused(result)
 
         summary = inspection["summary"]
         logger.info(f"Found: {summary['num_protein_chains']} proteins, "
@@ -1456,7 +1776,14 @@ def prepare_complex(
         # chain-filtered source of truth. Detection runs on the ORIGINAL
         # structure file (before splitting) so inter-chain pairs survive.
         if disulfide_pairs is not None:
-            disulfide_bonds = list(disulfide_pairs)
+            # A copy of the records, not of the list: the merged-frame remap
+            # below rewrites chains in place and adds keys, and on the
+            # caller's own dicts that rewrote the receipt's "requested" pairs
+            # (028_complex_1dfj: the agent passed E:26-E:84, the receipt
+            # showed A:26-A:84 with original_chain E).
+            import copy
+
+            disulfide_bonds = copy.deepcopy(list(disulfide_pairs))
             for b in disulfide_bonds:
                 b.setdefault("source", "user_override")
             logger.info(
@@ -1474,6 +1801,50 @@ def prepare_complex(
                 if entry.get("geometry") is not None:
                     bond.setdefault("geometry", entry["geometry"])
                     bond.setdefault("distance_angstrom", entry["sg_sg_angstrom"])
+            # Both sulfurs observed and beyond bonding distance: preparation
+            # keeps observed atoms where the deposit put them (loop repair
+            # included), so the merged check is certain to refuse the pair --
+            # after the whole preparation, as "came back at 3.48 A", although
+            # nothing was rebuilt (035_nanobody_6gwn, campaign v2: B22-B96 is
+            # 3.49 A apart in the deposit). Decided here, with the node pending.
+            from mdclaw.structure.disulfide import (
+                DISULFIDE_BOND_MAX_ANGSTROM as _ss_max,
+                DISULFIDE_BOND_MIN_ANGSTROM as _ss_min,
+            )
+            suppressed = _detected_disulfides_not_declared(
+                structure_path, disulfide_bonds, ss_select_chains)
+            if suppressed:
+                spelled = ", ".join(
+                    f"{b['cys1'].get('chain', '')}:{b['cys1'].get('resnum')}-"
+                    f"{b['cys2'].get('chain', '')}:{b['cys2'].get('resnum')}"
+                    f" ({b.get('distance_angstrom')} A)" for b in suppressed)
+                result["warnings"].append(
+                    f"detected_disulfides_suppressed: the deposit shows {len(suppressed)} "
+                    f"bonded disulfide(s) the declared list leaves out, so they will not be "
+                    f"formed: {spelled}. Pass nothing to keep detection, or list them.")
+                result.setdefault("warning_records", []).append({
+                    "code": "detected_disulfides_suppressed",
+                    "pairs": [f"{b['cys1'].get('chain', '')}:{b['cys1'].get('resnum')}-"
+                              f"{b['cys2'].get('chain', '')}:{b['cys2'].get('resnum')}" for b in suppressed],
+                })
+            unbonded = [entry for entry, bond in zip(input_geometry, disulfide_bonds)
+                        if entry.get("geometry") == "not_formed"
+                        and bond.get("form_bond", True) is not False]
+            if unbonded:
+                for entry in unbonded:
+                    result["errors"].append(
+                        f"Declared disulfide {entry['chain1']}:{entry['resnum1']}"
+                        f"{entry.get('icode1') or ''}-{entry['chain2']}:{entry['resnum2']}"
+                        f"{entry.get('icode2') or ''}: the deposit places the two sulfurs "
+                        f"{entry['sg_sg_angstrom']:.2f} A apart (a bond is {_ss_min}-{_ss_max} A), "
+                        "and preparation keeps observed atoms where the deposit put them, so "
+                        "this bond cannot be formed from this structure")
+                result["code"] = "declared_disulfide_unbonded_in_source"
+                result["hints"] = [
+                    'Drop the pair (or give it "form_bond": false) and let detection decide; '
+                    "it forms only the pairs the deposit's geometry supports.",
+                ]
+                return _refused(result)
         else:
             from mdclaw.structure.disulfide import (
                 _detect_disulfide_candidates,
@@ -1536,8 +1907,7 @@ def prepare_complex(
                 f"Disulfide pairing gives more than one bond to {named}; a cysteine "
                 "holds at most one disulfide")
             result["code"] = "invalid_disulfide_pairing"
-            result["overall_status"] = "failed"
-            return result
+            return _refused(result)
 
         result["disulfide_bonds"] = disulfide_bonds
         result["disulfide_source"] = disulfide_source
@@ -1575,8 +1945,7 @@ def prepare_complex(
         except ValueError as exc:
             result["errors"].append(str(exc))
             result["code"] = "invalid_terminal_cap"
-            result["overall_status"] = "failed"
-            return result
+            return _refused(result)
         terminal_caps_requested = bool(resolved_n_terminal_cap or resolved_c_terminal_cap)
 
         # Parsed once here as well: split validates and reports them, and the
@@ -1591,9 +1960,21 @@ def prepare_complex(
             result["errors"].append(str(exc))
             result["code"] = exc.code
             result["hints"] = exc.hints
-            result["overall_status"] = "failed"
-            return result
+            return _refused(result)
 
+        # Protonation-state names are an argument check: a name outside the
+        # supported set ("ARG" from 5ZKB/6GT3 in campaign v2, now accepted;
+        # anything else) is refused here, with the node still pending, rather
+        # than after the split.
+        try:
+            _normalize_protonation_state_overrides(
+                protonation_states=protonation_states,
+                histidine_states=dict(histidine_states) if histidine_states else None,
+            )
+        except (TypeError, ValueError) as exc:
+            result["errors"].append(str(exc))
+            result["code"] = "invalid_protonation_state"
+            return _refused(result)
 
         # Step 2: Split structure
         logger.info("Step 2: Splitting structure...")
@@ -1634,8 +2015,7 @@ def prepare_complex(
             except ValueError as exc:
                 result["errors"].append(str(exc))
                 result["code"] = "ligand_component_invalid"
-                result["overall_status"] = "failed"
-                return result
+                return _refused(result)
         if split_result["success"]:
             result["output_dir"] = split_result["output_dir"]
             out_dir = Path(split_result["output_dir"])
@@ -1682,7 +2062,6 @@ def prepare_complex(
             result["errors"].append(f"Split failed: {split_result['errors']}")
             result["warnings"].extend(split_result.get("warnings", []))
             result["code"] = split_result.get("code", "split_failed")
-            result["overall_status"] = "failed"
             for key in (
                 "hints",
                 "context",
@@ -1691,8 +2070,92 @@ def prepare_complex(
             ):
                 if key in split_result:
                     result[key] = split_result[key]
-            return result
-        
+            return _refused(result)
+
+        # Two more refusals the split output decides, before anything runs.
+        terminal_builds = bool(build_terminal_missing_residues or terminal_caps_requested)
+        if disulfide_pairs and split_result.get("protein_files"):
+            site_problems = _declared_disulfide_site_problems(
+                disulfide_pairs, split_result, terminal_builds=terminal_builds)
+            if site_problems:
+                result["errors"].append(
+                    "Declared disulfide site(s) the selection cannot hold: "
+                    + "; ".join(site_problems))
+                result["code"] = "disulfide_site_not_selected"
+                result["hints"] = [
+                    "Name each cysteine as <author chain>:<resnum> of a selected chain "
+                    "(inspect_molecules lists author ids), or drop the pair.",
+                ]
+                return _refused(result)
+        unbuildable = _unbuildable_range_ends(split_result, terminal_builds=terminal_builds)
+        if unbuildable:
+            for item in unbuildable:
+                if item["residues"]:
+                    result["errors"].append(
+                        f"Residue range {item['range']}: residues {item['residues']} "
+                        f"({item['count']}) at its {item['end']} are not observed in the "
+                        f"deposit, and {item['reason']}")
+                else:
+                    result["errors"].append(f"Residue range {item['range']}: {item['reason']}")
+            spans = sorted({item["observed_span"] for item in unbuildable if item["observed_span"]})
+            result["code"] = "residue_range_endpoint_unobserved"
+            result["hints"] = [
+                ("Ask for the observed span instead: " + ", ".join(spans))
+                if spans else
+                "Ask for a range whose endpoints are observed residues (inspect_molecules lists them).",
+                "Or build them: --build-terminal-missing-residues rebuilds unobserved "
+                "residues at a component end (up to 10 per end).",
+            ]
+            return _refused(result)
+
+        # A protonation state for a residue no selected protein component
+        # holds is refused by the per-component routing after the split; the
+        # routing is decided by the split alone, so it is decided here
+        # (021_antibody_3eoa, campaign v2: "B:6" on a selection that held no
+        # chain B sealed a prep node).
+        if protonation_states or histidine_states:
+            try:
+                requested_sites = _normalize_protonation_state_overrides(
+                    protonation_states=protonation_states,
+                    histidine_states=dict(histidine_states) if histidine_states else None,
+                )
+            except (TypeError, ValueError):
+                requested_sites = []          # refused above, before the split
+            infos = {info.get("file"): info for info in split_result.get("chain_file_info", []) or []}
+            routed = [
+                _states_for_chain(requested_sites, infos.get(path, {}).get("author_chain"),
+                                  infos.get(path, {}).get("chain_id"),
+                                  _window_for_component(split_result, infos.get(path, {}))) or []
+                for path in split_result.get("protein_files", []) or []
+            ]
+            outside = [site for site in requested_sites
+                       if not any(site in states for states in routed)]
+            if outside:
+                held = []
+                for path in split_result.get("protein_files", []) or []:
+                    info = infos.get(path, {})
+                    author, label = info.get("author_chain"), info.get("chain_id")
+                    window = _window_for_component(split_result, info)
+                    held.append(f"{author}" + (f" (label {label})" if label and label != author else "")
+                                + (" " + ",".join(f"{lo}-{hi}" for lo, hi in window) if window else ""))
+                result["errors"].append(
+                    "Protonation target not in any selected protein component: "
+                    + ", ".join(f"{s['chain']}:{s['resnum']}{s['icode'] or ''}" for s in outside)
+                    + f"; the selected protein components are {', '.join(held) or 'none'}")
+                result["code"] = "invalid_protonation_state"
+                result["hints"] = [
+                    "Key protonation states by <chain>:<resnum> of a selected protein chain "
+                    "inside its requested range, or drop the entry.",
+                ]
+                return _refused(result)
+
+        # The selection is delivered and the arguments are accepted: from here
+        # on the node has run, and a failure seals it.
+        if _node_mode:
+            from mdclaw._node import begin_node
+
+            begin_node(job_dir, node_id)
+
         # Which metals survived the split, identified by residue name, chain and
         # number rather than by element: 6W9C chain C carries two zincs, one on
         # the Cys4 site and one shared between three copies at Cys270, and
@@ -2090,6 +2553,13 @@ def prepare_complex(
                         strip_input_caps=strip_input_caps,
                         protonation_states=states_by_file[protein_file],
                         missing_residue_method=missing_residue_method,
+                        context_pdb_files=[
+                            other for other in (
+                                list(split_result.get("protein_files", []))
+                                + list(split_result.get("nucleic_files", []))
+                            )
+                            if other != protein_file
+                        ],
                     )
                     escalation_warnings = [
                         warning
@@ -2525,6 +2995,40 @@ def prepare_complex(
                         result["code"] = "modeller_disulfide_not_formed"
                         result["overall_status"] = "failed"
                         return result
+                    close_pairs = _close_atom_pairs(Path(merge_result["output_file"]))
+                    duplicates = [label for distance, label in close_pairs
+                                  if distance < DUPLICATE_ATOM_ANGSTROM]
+                    if duplicates:
+                        # Two atoms on one point have no direction to part in;
+                        # the force between them is not finite and no
+                        # minimizer moves them.
+                        result["errors"].append(
+                            "prepared structure has atoms on top of each other: "
+                            + "; ".join(duplicates[:6]) + (" ..." if len(duplicates) > 6 else "")
+                            + ". Either the deposit duplicates them or atoms completed for one "
+                            "piece landed on another; this cannot be minimized away."
+                        )
+                        result["code"] = "prepared_atoms_overlap"
+                        result["overall_status"] = "failed"
+                        return result
+                    if close_pairs:
+                        # Campaign v2 built and ran 47 such preps (heavy atoms
+                        # down to 0.44 A, hydrogens to 0.19 A); the capped
+                        # steepest descent before every minimization parts
+                        # them. Said here so a later blow-up can be traced.
+                        spelled = "; ".join(label for _d, label in close_pairs[:6])
+                        result["warnings"].append(
+                            f"prepared_close_contacts: {len(close_pairs)} atom pair(s) under "
+                            f"{CLOSE_CONTACT_ANGSTROM} A that no bond holds: {spelled}"
+                            + (" ..." if len(close_pairs) > 6 else "")
+                            + ". The topology build relaxes them before minimizing."
+                        )
+                        result.setdefault("warning_records", []).append({
+                            "code": "prepared_close_contacts",
+                            "pairs": [{"distance_angstrom": round(d, 2), "atoms": label}
+                                      for d, label in close_pairs[:50]],
+                            "count": len(close_pairs),
+                        })
                     result["merged_pdb"] = merge_result["output_file"]
                     result["merge_result"] = {
                         "success": True,
@@ -3229,6 +3733,10 @@ def prepare_complex(
         if result.get("merged_pdb"):
             logger.info(f"  Merged PDB: {result['merged_pdb']}")
 
+    except NodeSealedError:
+        # begin_node on a node sealed meanwhile: the CLI names the fix
+        # (node_terminal) instead of this tool recording it as a crash.
+        raise
     except Exception as e:
         error_msg = f"Error during complex preparation: {type(e).__name__}: {str(e)}"
         result["errors"].append(error_msg)
@@ -3344,6 +3852,7 @@ def prepare_complex(
         else:
             fail_node(job_dir, node_id,
                       errors=result.get("errors", []),
-                      warnings=result.get("warnings", []))
+                      warnings=result.get("warnings", []),
+                      code=result.get("code"))
 
     return result

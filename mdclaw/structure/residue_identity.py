@@ -5,12 +5,39 @@ from difflib import SequenceMatcher
 from .residue_range import resolve_ordered_ranges
 
 
+_FALLBACK_SUBSTITUTIONS = {
+    "CYX": "CYS", "CYM": "CYS", "MSE": "MET", "OCS": "CYS", "CSO": "CYS",
+    "CME": "CYS", "CSX": "CYS", "KCX": "LYS", "ALY": "LYS", "LLP": "LYS",
+    "SEP": "SER", "TPO": "THR", "PTR": "TYR", "HYP": "PRO", "CGU": "GLU",
+    "PCA": "GLU", "CSD": "ALA",
+}
+_substitutions = None
+
+
+def _standard_parent(name):
+    """The standard residue PDBFixer substitutes for a modified one.
+
+    A deposit's OCS (cysteine sulfonic acid) leaves the preparation as CYS,
+    and the identity audit compared names literally, so 060_metal_4ow0
+    (campaign v2) refused a correct `--residue-ranges A:4-315` with "312
+    requested, 311 delivered, absent: 112 OCS" although residue 112 was there.
+    """
+    global _substitutions
+    if _substitutions is None:
+        table = dict(_FALLBACK_SUBSTITUTIONS)
+        try:
+            from pdbfixer.pdbfixer import substitutions as pdbfixer_table
+            table.update({k: v for k, v in pdbfixer_table.items() if v})
+        except Exception:  # noqa: BLE001 - pdbfixer is a runtime, not an audit, dependency
+            pass
+        _substitutions = table
+    return _substitutions.get(name, name)
+
+
 def canonical_name(name):
     from .protonation import _PRESERVABLE_INPUT_PROTONATION_BASES
 
-    return {"CYX": "CYS", "CYM": "CYS", "MSE": "MET"}.get(
-        name, _PRESERVABLE_INPUT_PROTONATION_BASES.get(name, name)
-    )
+    return _standard_parent(_PRESERVABLE_INPUT_PROTONATION_BASES.get(name, name))
 
 
 def chain_residues(subchain):
@@ -34,16 +61,30 @@ def selection_identity(structure, subchain, ranges, block=None):
     if block is not None:
         table = block.find("_pdbx_poly_seq_scheme.", [
             "asym_id", "seq_id", "mon_id", "pdb_seq_num", "pdb_ins_code"])
-        present = {(r["number"], r["icode"]) for r in observed}
+        present = {(r["number"], r["icode"]): r for r in observed}
         for row in table:
             if row[0] != subchain.subchain_id():
                 continue
             number = int(row[3]) if row[3].lstrip("-").isdigit() else None
-            icode = "" if row[4] in {".", "?"} else row[4].strip()
-            rows.append({"number": number, "icode": icode,
-                         "name": canonical_name(row[2]),
-                         "sequence_position": int(row[1]),
-                         "observed": (number, icode) in present})
+            # gemmi hands back a quoted "'.'" for a value set from Python and a
+            # bare "." from a file; both mean no insertion code.
+            icode = row[4].strip().strip("'\"")
+            icode = "" if icode in {".", "?"} else icode
+            site = present.get((number, icode))
+            record = {"number": number, "icode": icode,
+                      "name": canonical_name(row[2]),
+                      "sequence_position": int(row[1]),
+                      "observed": site is not None}
+            if site is not None and site["name"] != record["name"]:
+                # The scheme and the atoms disagree about an observed site.
+                # 6WRH records an engineered C111S in its sequence tables while
+                # the atoms at A:111 are a cysteine with SG; the prepared chain
+                # can only carry what the atoms hold, so the audit expects
+                # that and keeps the scheme's name as provenance
+                # (063_metal_6wrh, campaign v2: four prep nodes refused).
+                record["scheme_name"] = record["name"]
+                record["name"] = site["name"]
+            rows.append(record)
     evidence = "polymer_scheme" if rows else "coordinates_only"
     if not rows:
         entity = next((e for e in structure.entities

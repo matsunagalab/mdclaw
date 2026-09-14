@@ -47,6 +47,7 @@ from mdclaw.solvation._base import (
     _diagnostics_require_salt_override,
     _packmol_memgen_diagnostics,
     _record_packmol_memgen_output,
+    _record_periodic_seam,
     _record_salt_override_fallback,
     _run_packmol_if_needed,
 )
@@ -440,7 +441,7 @@ def solvate_structure(
         )
         if job_dir and node_id:
             from mdclaw._node import fail_node
-            fail_node(job_dir, node_id, errors=blocked.get("errors", []))
+            fail_node(job_dir, node_id, errors=blocked.get("errors", []), code=blocked.get("code"))
         return blocked
 
     # Validate input file (resolve to absolute path for conda run compatibility)
@@ -450,7 +451,7 @@ def solvate_structure(
         logger.error(f"Input PDB file not found: {pdb_file}")
         if job_dir and node_id:
             from mdclaw._node import fail_node
-            fail_node(job_dir, node_id, errors=result.get("errors", []))
+            fail_node(job_dir, node_id, errors=result.get("errors", []), code=result.get("code"))
         return result
 
     # Check packmol-memgen availability; fall back to OpenMM if not available
@@ -472,7 +473,7 @@ def solvate_structure(
             }
             if job_dir and node_id:
                 from mdclaw._node import fail_node
-                fail_node(job_dir, node_id, errors=blocked.get("errors", [blocked.get("message", "")]))
+                fail_node(job_dir, node_id, errors=blocked.get("errors", [blocked.get("message", "")]), code=blocked.get("code"))
             return blocked
         result["warnings"].extend(guardrail_messages(warning_results))
         logger.warning("packmol-memgen not available, trying OpenMM fallback")
@@ -514,7 +515,7 @@ def solvate_structure(
                     metadata={
                         "water_model": water_model,
                         "backend": "openmm_fallback",
-                        "neutralization_expected": True,
+                        "neutralization_expected": bool(salt),
                         "buffer_distance_angstrom": dist,
                         "salt_cation": salt_c,
                         "salt_anion": salt_a,
@@ -531,7 +532,7 @@ def solvate_structure(
                     "water_model": water_model,
                 })
             else:
-                fail_node(job_dir, node_id, errors=fallback_result.get("errors", []))
+                fail_node(job_dir, node_id, errors=fallback_result.get("errors", []), code=fallback_result.get("code"))
         return fallback_result
 
     # Setup output directory
@@ -618,7 +619,7 @@ def solvate_structure(
         result["lipid_charge_report"] = lipid_charge_delta_report
         if _node_mode:
             from mdclaw._node import fail_node
-            fail_node(job_dir, node_id, errors=result["errors"])
+            fail_node(job_dir, node_id, errors=result["errors"], code=result.get("code"))
         return result
 
     metal_charge_delta_report = {
@@ -835,7 +836,9 @@ def solvate_structure(
                     "Packmol output did not preserve every source solute residue; "
                     "the solvated structure is not safe to use."
                 )
-        
+            if result.get("success"):
+                _record_periodic_seam(result, output_file, result.get("box_dimensions") or {})
+
     except Exception as e:
         error_msg = f"Error during solvation: {type(e).__name__}: {str(e)}"
         result["errors"].append(error_msg)
@@ -859,7 +862,7 @@ def solvate_structure(
                 result["errors"].append(
                     "Explicit solvation completed but box_dimensions could not be extracted"
                 )
-                fail_node(job_dir, node_id, errors=result.get("errors", []))
+                fail_node(job_dir, node_id, errors=result.get("errors", []), code=result.get("code"))
                 return result
             complete_node(job_dir, node_id,
                 artifacts={
@@ -868,7 +871,7 @@ def solvate_structure(
                 },
                 metadata={
                     "water_model": water_model,
-                    "neutralization_expected": True,
+                    "neutralization_expected": bool(salt),
                     "box_shape": "cubic" if _box.get("is_cubic") else "rectangular",
                     "buffer_distance_angstrom": dist,
                     "salt_concentration_M": saltcon,
@@ -892,6 +895,6 @@ def solvate_structure(
                 "water_model": water_model,
             })
         else:
-            fail_node(job_dir, node_id, errors=result.get("errors", []))
+            fail_node(job_dir, node_id, errors=result.get("errors", []), code=result.get("code"))
 
     return result

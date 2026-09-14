@@ -31,6 +31,37 @@ from mdclaw.simulation.restart import _save_state_atomic  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _load_xml_topology_inputs, _system_signature, _validate_xml_system_contract  # noqa: E402
 
 
+MINIMIZED_MAX_FORCE_CEILING_KJ_MOL_NM = 1.0e5
+MINIMIZED_ENERGY_CEILING_KJ_MOL_PER_ATOM = 1.0e5
+
+
+def _minimized_state_verdict(max_force, energy, atom_count) -> tuple[bool, str]:
+    """``(plausible, message)`` for a minimized state.
+
+    A relaxed cell has a max force of a few thousand kJ/mol/nm and sits near
+    -10 kJ/mol per atom; forces past 1e5 or energies past 1e5 per atom mean
+    atoms on top of each other, which the minimizer cannot separate and the
+    equilibration will NaN on.
+    """
+    try:
+        force = float(max_force)
+        per_atom = float(energy) / float(atom_count) if atom_count else 0.0
+    except (TypeError, ValueError):
+        return False, "The minimized state has no finite energy or force."
+    if not (np.isfinite(force) and np.isfinite(per_atom)):
+        return False, "The minimized state has a non-finite energy or force."
+    if force > MINIMIZED_MAX_FORCE_CEILING_KJ_MOL_NM or abs(per_atom) > MINIMIZED_ENERGY_CEILING_KJ_MOL_PER_ATOM:
+        return False, (
+            f"Minimization ended with max force {force:.3g} kJ/mol/nm and "
+            f"{per_atom:.3g} kJ/mol per atom; a relaxed cell has a few thousand and "
+            "about -10. Atoms are on top of each other (superposed side chains from the "
+            "preparation, or solvent copied across a periodic seam); minimization cannot "
+            "separate them. Rebuild the preparation or solvation on new nodes; do not "
+            "equilibrate this state."
+        )
+    return True, ""
+
+
 @node_tool(node_type="min")
 def run_minimization(
     system_xml_file: Optional[str] = None,
@@ -411,7 +442,9 @@ def run_minimization(
             return check
 
         initial_check = _finite_energy_check("initial")
-        simulation.minimizeEnergy(maxIterations=max_iterations)
+        from mdclaw.simulation.relax import minimize_robustly
+
+        relaxation = minimize_robustly(simulation, max_iterations)
         final_check = _finite_energy_check("minimized")
 
         pref = f"{name}_" if name else ""
@@ -451,6 +484,7 @@ def run_minimization(
                 "attempted": True,
                 "completed": True,
                 "max_iterations": max_iterations,
+                "relaxation": relaxation,
                 "restraint_atoms": restraint_atoms,
                 "restraint_force_constant": restraint_force_constant,
                 "restraint_count": result["restraint_count"],
@@ -498,6 +532,18 @@ def run_minimization(
         os.replace(tmp_report, report_file)
         result["minimization_report"] = str(report_file)
         result["minimization"] = report["minimization"]
+        plausible, verdict = _minimized_state_verdict(
+            final_check["max_force_kj_per_mol_nm"],
+            final_check["potential_energy_kj_per_mol"],
+            xml_inputs.topology.getNumAtoms(),
+        )
+        if not plausible:
+            # 011_membrane_6kuy: 5,000 steps left 1.88e10 kJ/mol and a max force
+            # of 3.7e9 kJ/mol/nm, the node completed, and the equilibration
+            # NaN'd down to 0.5 fs. Superposed atoms are not minimized away.
+            result["code"] = "minimized_state_implausible"
+            result["errors"].append(verdict)
+            raise RuntimeError(verdict)
         result["system_signature"] = _system_signature(
             xml_inputs,
             solvent_type=solvent_type,

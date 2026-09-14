@@ -37,6 +37,14 @@ logger = setup_logger(__name__)
 # (~23.5k atoms) scaled by 0.85 to approximate OpenMM throughput, then
 # rescaled to 30k atoms with the power-law below.
 _NS_PER_DAY_AT_30K: dict[str, float] = {
+    # Measured, not scaled from AMBER: 339 production runs of MDDataBench
+    # campaign v2 on RIKYU's GB200 nodes (OpenMM 8.5 CUDA, HMR 4 fs, mostly
+    # ff14SB + TIP3P, 60k-400k atoms), simulated ns over the tool's wall time
+    # and normalised to 30k atoms with the power law below: median 3000,
+    # IQR 2800-3600 ns/day. Rounded down for setup time in that wall time and
+    # for OPC's fourth site. The cluster's own GPU was an "unknown gpu_type"
+    # before (008, 019, 027 in that campaign asked for it as nvidia_gb200).
+    "gb200": 2800.0,
     "h100": 1000.0,
     "rtx_6000_ada": 1200.0,
     "rtx_4090": 1180.0,
@@ -55,6 +63,8 @@ _NS_PER_DAY_AT_30K: dict[str, float] = {
 # "M2 Max", "no GPU") onto the keys of _NS_PER_DAY_AT_30K. Order matters
 # for substring matches; check more specific patterns first.
 _GPU_ALIASES: list[tuple[str, str]] = [
+    ("gb200", "gb200"),             # also Slurm's gres name "nvidia_gb200"
+    ("grace blackwell", "gb200"),
     ("6000 ada", "rtx_6000_ada"),
     ("rtx_6000_ada", "rtx_6000_ada"),
     ("a6000", "rtx_a6000"),

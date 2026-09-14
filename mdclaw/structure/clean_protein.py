@@ -58,6 +58,12 @@ PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH = 5
 # from internal loops: the first 1CTF validation exposed that a six-residue
 # N-terminal tail was being reported as an over-limit *internal* PDBFixer gap.
 PDBFIXER_MAX_TERMINAL_MISSING_RESIDUE_SEGMENT_LENGTH = 5
+# Planning failures of an *automatic* MODELLER escalation that leave the gap
+# open with a warning instead of failing the node; an explicit request still fails.
+AUTO_REPAIR_SKIPPABLE_CODES = frozenset({
+    "modeller_repair_numbering_unresolvable",
+    "modeller_terminal_numbering_unresolvable",
+})
 MODELLER_MAX_TERMINAL_MISSING_RESIDUE_SEGMENT_LENGTH = 10
 
 # Initialize tool wrappers
@@ -1442,15 +1448,31 @@ def _resolve_target_residue_sites(
             right = walk[run_end] if run_end < len(walk) else None
             length = run_end - run_start
             if left is not None and right is not None:
-                if right[1] - left[1] - 1 != length:
+                # Joined ranges (join_range_groups) bond A:10-323 to A:384-418
+                # across the omitted span, so the unobserved 313-323 and
+                # 384-414 of the request are one inserted run between the
+                # anchors 312 and 415 whose numbers are not consecutive. The
+                # windows name them: the numbers between the anchors that lie
+                # in a requested window, when they account for the whole run
+                # (008_membrane_6i53, campaign v2: "positions in the
+                # 42-residue internal gap are not determined").
+                in_windows = ([number for number in range(left[1] + 1, right[1])
+                               if any(min(low, high) <= number <= max(low, high)
+                                      for low, high in windows)]
+                              if windows and not left[2] and not right[2] else [])
+                if right[1] - left[1] - 1 == length:
+                    numbers = list(range(left[1] + 1, right[1]))
+                    source = "two_anchor"
+                elif len(in_windows) == length:
+                    numbers = in_windows
+                    source = "joined_range_windows"
+                else:
                     errors.append(
                         f"chain {chain_id}: positions in the {length}-residue "
                         "internal gap are not determined by the flanking "
                         f"residues {left[1]}{left[2]} and {right[1]}{right[2]}"
                     )
                     continue
-                numbers = list(range(left[1] + 1, right[1]))
-                source = "two_anchor"
             elif right is not None:
                 if right[2]:
                     errors.append(
@@ -2544,6 +2566,198 @@ def _protonation_method_label(standard_state: bool) -> str:
     return "pdb2pqr_standard_state" if standard_state else "pdb2pqr+propka"
 
 
+_CONTEXT_CHAIN_POOL = "zyxwvutsrqponmlkjihgfedcba9876543210ZYXWVUTSRQPONMLKJIHGFEDCBA"
+
+
+def _without_noncap_hydrogens(pdb_path: Path):
+    """``(path, count)`` of a copy without hydrogens outside ACE/NME caps, or None.
+
+    None when the file has no such hydrogen (every crystal structure), so the
+    caller keeps handing pdb2pqr the file it always did.
+    """
+    from mdclaw.structure.terminal_caps import TERMINAL_CAP_RESIDUES
+
+    kept, removed = [], 0
+    for line in Path(pdb_path).read_text(errors="ignore").splitlines():
+        if line.startswith(("ATOM  ", "HETATM")) and len(line) > 20:
+            element = line[76:78].strip().upper() if len(line) >= 78 else ""
+            name = line[12:16].strip().upper()
+            is_h = element in ("H", "D") or (not element and name[:1] in ("H", "D")
+                                              and not name.startswith(("HG", "HO", "HF")))
+            if is_h and line[17:20].strip().upper() not in TERMINAL_CAP_RESIDUES:
+                removed += 1
+                continue
+        kept.append(line)
+    if not removed:
+        return None
+    target = Path(pdb_path).with_name(Path(pdb_path).stem + ".heavy.pdb")
+    target.write_text("\n".join(kept) + "\n")
+    return target, removed
+
+
+def _residues_within(records, piece_xyz, radius: float) -> set:
+    """Residue keys ``(chain, resnum+icode)`` of ``records`` near the piece."""
+    import numpy as np
+
+    if not records or not piece_xyz:
+        return set()
+    keys = [(line[21], line[22:27]) for line in records]
+    xyz = np.asarray([(float(line[30:38]), float(line[38:46]), float(line[46:54])) for line in records])
+    piece = np.asarray(piece_xyz)
+    close = np.zeros(len(records), dtype=bool)
+    try:
+        from scipy.spatial import cKDTree
+
+        distances, _ = cKDTree(piece).query(xyz, distance_upper_bound=radius)
+        close = np.isfinite(distances)
+    except Exception:  # noqa: BLE001 - scipy is optional here
+        for start in range(0, len(records), 256):
+            block = xyz[start:start + 256]
+            close[start:start + 256] = (
+                np.linalg.norm(block[:, None, :] - piece[None, :, :], axis=-1).min(axis=1) <= radius
+            )
+    return {key for key, near in zip(keys, close) if near}
+
+
+def _atom_key(atom) -> tuple:
+    residue = atom.residue
+    return (residue.chain.id, residue.id, residue.insertionCode, atom.name)
+
+
+def _place_missing_atoms_against_context(fixer, is_context, attempts: int = 4) -> dict:
+    """Place the missing atoms a few times and keep the placement with the fewest clashes.
+
+    PDBFixer relaxes the new atoms in a soft potential whose minimiser is not
+    deterministic across threads: on the 6KUY TRP99 ring the closest heavy-atom
+    contact with the neighbouring piece measured 0.7-2.0 A over seven identical
+    calls with the same seed. Every attempt restarts from the pre-completion
+    topology (``missingAtoms`` is keyed by its residues and is not consumed),
+    and the attempt whose new heavy atoms keep the largest distance from every
+    other heavy atom is kept -- the neighbouring pieces and the piece itself,
+    except the atom's own residue and its chain neighbours, which bonds and
+    angles place. Scoring against the context alone kept a ring that the
+    context avoided but its own piece did not (6KUX: TRP A99 NE1 0.72 A from
+    PHE A101 CE1), which pdb2pqr no longer debumps for such pieces. Both the
+    overall and the context-only closest contacts travel with the result.
+    """
+    import numpy as np
+    from openmm import unit
+
+    topology, positions = fixer.topology, fixer.positions
+    before = {_atom_key(atom) for atom in topology.atoms()}
+    xyz = np.asarray(positions.value_in_unit(unit.angstrom), dtype=float)
+    obstacles = [atom for atom in topology.atoms()
+                 if atom.element is not None and atom.element.symbol != "H"]
+    obstacle_xyz = xyz[[atom.index for atom in obstacles]] if obstacles else np.zeros((0, 3))
+    obstacle_context = np.array([bool(is_context(atom.residue.chain)) for atom in obstacles], dtype=bool)
+    obstacle_chain = [atom.residue.chain.index for atom in obstacles]
+    obstacle_residue = np.array([atom.residue.index for atom in obstacles])
+    best: dict = {}
+    for seed in range(max(1, attempts)):
+        fixer.topology, fixer.positions = topology, positions
+        fixer.addMissingAtoms(seed=seed)
+        placed = np.asarray(fixer.positions.value_in_unit(unit.angstrom), dtype=float)
+        new_atoms = [atom for atom in fixer.topology.atoms()
+                     if _atom_key(atom) not in before
+                     and atom.element is not None and atom.element.symbol != "H"]
+        closest = closest_context = float("inf")
+        pair = None
+        if new_atoms and len(obstacle_xyz):
+            # residue indices of the pre-completion topology, by (chain, id, icode)
+            index_of = {(r.chain.index, r.id, r.insertionCode): r.index for r in topology.residues()}
+            for atom in new_atoms:
+                residue = atom.residue
+                own = index_of.get((residue.chain.index, residue.id, residue.insertionCode))
+                distances = np.linalg.norm(obstacle_xyz - placed[atom.index], axis=1)
+                if own is not None:
+                    # bonds and angles place the atom against its own residue
+                    # and its chain neighbours; only farther atoms can clash
+                    same_chain = np.array([c == residue.chain.index for c in obstacle_chain])
+                    distances = np.where(same_chain & (np.abs(obstacle_residue - own) <= 1),
+                                         np.inf, distances)
+                j = int(np.argmin(distances))
+                if distances[j] < closest:
+                    closest = float(distances[j])
+                    b = obstacles[j]
+                    pair = (f"{residue.name} {residue.chain.id}{residue.id} {atom.name}",
+                            f"{b.residue.name} {b.residue.id} {b.name}")
+                if obstacle_context.any():
+                    closest_context = min(closest_context,
+                                          float(np.min(np.where(obstacle_context, distances, np.inf))))
+        if not best or closest > best["closest_contact_angstrom"]:
+            best = {"seed": seed, "closest_contact_angstrom": closest,
+                    "closest_context_contact_angstrom": closest_context,
+                    "closest_pair": pair, "topology": fixer.topology, "positions": fixer.positions}
+        if closest >= 2.5 or not new_atoms:
+            break
+    fixer.topology, fixer.positions = best.pop("topology"), best.pop("positions")
+    best["attempts"] = seed + 1
+    for key in ("closest_contact_angstrom", "closest_context_contact_angstrom"):
+        if best[key] == float("inf"):
+            best[key] = None
+    return best
+
+
+def _input_with_completion_context(input_path: Path, context_pdb_files, *, radius: float = 12.0) -> tuple[Path, list[str]]:
+    """Write ``input_path`` plus the heavy atoms of the other pieces as extra chains.
+
+    Returns the combined file and the chain ids the context received (never one
+    the piece uses), so the caller can keep PDBFixer's fixes to the piece and
+    strip the context afterwards. ``radius`` keeps only context residues with
+    a heavy atom within that many angstroms of the piece.
+    """
+    piece_lines = Path(input_path).read_text(errors="ignore").splitlines()
+    used = {line[21] for line in piece_lines if line.startswith(("ATOM  ", "HETATM")) and len(line) > 21}
+    pool = [c for c in _CONTEXT_CHAIN_POOL if c not in used]
+    out = [line for line in piece_lines if not line.startswith(("END", "MASTER", "CONECT"))]
+    if out and not out[-1].startswith("TER"):
+        out.append("TER")
+
+    def _heavy_records(lines):
+        for line in lines:
+            if not line.startswith(("ATOM  ", "HETATM")) or len(line) < 54:
+                continue
+            element = line[76:78].strip().upper() if len(line) >= 78 else ""
+            if (element or line[12:16].strip()[:1].upper()) == "H":
+                continue
+            yield line
+
+    piece_xyz = [(float(line[30:38]), float(line[38:46]), float(line[46:54]))
+                 for line in _heavy_records(piece_lines)]
+    context_ids: list[str] = []
+    for path in context_pdb_files or []:
+        path = Path(path)
+        if not path.is_file():
+            continue
+        records = list(_heavy_records(path.read_text(errors="ignore").splitlines()))
+        # Only the neighbourhood matters, and it bounds the cost: every piece
+        # of a ten-chain complex would otherwise carry the whole complex
+        # through PDBFixer's soft minimisation and pdb2pqr/propka.
+        nearby = _residues_within(records, piece_xyz, radius)
+        mapping: dict[str, str] = {}
+        added = 0
+        for line in records:
+            if (line[21], line[22:27]) not in nearby:
+                continue
+            original = line[21]
+            if original not in mapping:
+                if not pool:
+                    break
+                mapping[original] = pool.pop(0)
+                context_ids.append(mapping[original])
+            out.append(line[:21] + mapping[original] + line[22:])
+            added += 1
+        if added:
+            out.append("TER")
+    if not context_ids:
+        return Path(input_path), []
+    out.append("END")
+    combined = Path(input_path).with_name(Path(input_path).stem + ".with_context.pdb")
+    combined.write_text("\n".join(out) + "\n")
+    return combined, context_ids
+
+
+
 def clean_protein(
     pdb_file: str,
     ignore_terminal_missing_residues: bool = True,
@@ -2566,6 +2780,7 @@ def clean_protein(
     preserve_input_protonation: bool = False,
     strip_input_caps: bool = False,
     missing_residue_method: str = "auto",
+    context_pdb_files: Optional[list[str]] = None,
 ) -> dict:
     """Clean a monomer protein PDB/mmCIF file for MD simulation using PDBFixer.
 
@@ -2775,6 +2990,7 @@ def clean_protein(
         )
         effective_method = decision["method"]
         escalated_to_modeller = decision["escalated"]
+        repair_skipped_reason: Optional[str] = None
         if decision.get("terminal_out_of_scope"):
             terminal_summary = decision["terminal_summary"]
             result["missing_residue_method_used"] = effective_method
@@ -2875,9 +3091,28 @@ def clean_protein(
             )
             result["warnings"].extend(repair["warnings"])
             if not repair["success"]:
-                result["errors"].extend(repair["errors"])
-                result["code"] = repair["code"]
-                return result
+                if escalated_to_modeller and repair.get("code") in AUTO_REPAIR_SKIPPABLE_CODES:
+                    # Nobody asked for MODELLER: ``auto`` reached for it because
+                    # the gap exceeded PDBFixer's scope. When the repair cannot
+                    # even be numbered (1CEB: six SEQRES residues between author
+                    # 78 and 79), the honest result is the gap left open with a
+                    # warning, not a failed node the agent has to redo with
+                    # --missing-residue-method none.
+                    repair_skipped_reason = str(repair.get("code"))
+                    result["warnings"].append(
+                        "Automatic MODELLER repair was not applied: "
+                        + "; ".join(repair["errors"])
+                        + ". The internal gap is left open. To insist on the repair, pass "
+                        "--missing-residue-method modeller with a residue mapping that "
+                        "resolves the numbering."
+                    )
+                    result["missing_residue_method_used"] = "none"
+                    result["missing_residue_method_escalated"] = False
+                    effective_method = "none"
+                else:
+                    result["errors"].extend(repair["errors"])
+                    result["code"] = repair["code"]
+                    return result
             if repair["applied"]:
                 if escalated_to_modeller:
                     escalation_warning = (
@@ -2914,11 +3149,28 @@ def clean_protein(
 
         # Load structure
         logger.info("Loading structure with PDBFixer")
-        fixer = PDBFixer(filename=str(input_path))
-        
+        # The other pieces of the selection ride along as extra chains while
+        # missing atoms are placed: PDBFixer minimizes the atoms it adds against
+        # everything it can see, and a piece cleaned alone cannot see the piece
+        # next to it (6KUY: TRP99's rebuilt indole landed 0.5 A from GLU185/
+        # PRO186 of the neighbouring range, 1e10 kJ/mol before minimization).
+        context_chain_ids: list[str] = []
+        # Set only when missing atoms were placed with the context in view; a
+        # piece with nothing missing still reports the context it was given.
+        context_placement = None
+        load_path = input_path
+        if context_pdb_files and input_path.suffix.lower() == ".pdb":
+            load_path, context_chain_ids = _input_with_completion_context(
+                input_path, context_pdb_files
+            )
+        fixer = PDBFixer(filename=str(load_path))
+
+        def _is_context(chain) -> bool:
+            return getattr(chain, "id", None) in context_chain_ids
+
         # Get initial statistics
-        initial_chains = list(fixer.topology.chains())
-        initial_residues = list(fixer.topology.residues())
+        initial_chains = [c for c in fixer.topology.chains() if not _is_context(c)]
+        initial_residues = [r for r in fixer.topology.residues() if not _is_context(getattr(r, "chain", None))]
         result["statistics"]["initial_chains"] = len(initial_chains)
         result["statistics"]["initial_residues"] = len(initial_residues)
         
@@ -2931,6 +3183,13 @@ def clean_protein(
         # Step 1: Handle missing residues and terminal caps
         logger.info("Finding missing residues")
         fixer.findMissingResidues()
+        if context_chain_ids:
+            _chains = list(fixer.topology.chains())
+            fixer.missingResidues = {
+                key: residues for key, residues in fixer.missingResidues.items()
+                if not (isinstance(key, tuple) and key and isinstance(key[0], int)
+                        and key[0] < len(_chains) and _is_context(_chains[key[0]]))
+            }
         num_missing_residues = len(fixer.missingResidues)
         
         # Get chain information for terminal handling
@@ -3067,27 +3326,32 @@ def clean_protein(
                     "terminus is disorder, not a gap to bridge"
                 )
 
-        if method == "none" and fixer.missingResidues:
+        if (method == "none" or repair_skipped_reason) and fixer.missingResidues:
             skipped_records = _internal_missing_residue_records(
                 fixer.missingResidues,
                 chains,
             )
             skipped_summary = _missing_residue_summary(skipped_records)
             fixer.missingResidues.clear()
+            skipped_status = "skipped_by_request" if method == "none" else "skipped_unresolvable"
             result["missing_residue_repair"] = {
                 "method": "none",
-                "method_requested": "none",
+                "method_requested": method,
                 "method_used": "none",
-                "escalated": False,
-                "status": "skipped_by_request",
+                "escalated": bool(repair_skipped_reason),
+                "status": skipped_status,
+                **({"reason_code": repair_skipped_reason} if repair_skipped_reason else {}),
                 **skipped_summary,
             }
             result["operations"].append({
                 "step": "missing_residues",
-                "status": "skipped_by_request",
+                "status": skipped_status,
                 "details": (
                     f"Left {skipped_summary['total_residues']} internal missing "
-                    "residue(s) unbuilt because missing_residue_method='none'"
+                    + ("residue(s) unbuilt because missing_residue_method='none'"
+                       if method == "none" else
+                       f"residue(s) unbuilt because the automatic MODELLER repair could "
+                       f"not number them ({repair_skipped_reason})")
                 ),
                 **skipped_summary,
             })
@@ -3295,6 +3559,15 @@ def clean_protein(
         if add_missing_atoms:
             logger.info("Finding and adding missing atoms")
             fixer.findMissingAtoms()
+            if context_chain_ids:
+                fixer.missingAtoms = {
+                    res: atoms for res, atoms in fixer.missingAtoms.items()
+                    if not _is_context(getattr(res, "chain", None))
+                }
+                fixer.missingTerminals = {
+                    res: atoms for res, atoms in fixer.missingTerminals.items()
+                    if not _is_context(getattr(res, "chain", None))
+                }
             
             num_missing_atoms = sum(len(atoms) for atoms in fixer.missingAtoms.values())
             num_missing_terminals = sum(len(atoms) for atoms in fixer.missingTerminals.values())
@@ -3302,7 +3575,14 @@ def clean_protein(
             
             # Always call addMissingAtoms if there are missing atoms OR missing residues (caps)
             if num_missing_atoms > 0 or num_missing_terminals > 0 or num_missing_residues > 0:
-                fixer.addMissingAtoms()
+                # A fixed seed: PDBFixer places new atoms from random starts,
+                # and a prep must be reproducible from its arguments. With the
+                # other pieces in view the placement is chosen among a few
+                # seeds by its distance from them (see the helper).
+                if context_chain_ids:
+                    context_placement = _place_missing_atoms_against_context(fixer, _is_context)
+                else:
+                    fixer.addMissingAtoms(seed=0)
                 details_parts = []
                 if num_missing_atoms > 0:
                     details_parts.append(f"{num_missing_atoms} missing atom(s)")
@@ -3379,6 +3659,31 @@ def clean_protein(
             })
             result["warnings"].append("Missing atoms not added - structure may be incomplete")
         
+        if context_chain_ids:
+            from openmm import app as _app
+            modeller = _app.Modeller(fixer.topology, fixer.positions)
+            modeller.delete([chain for chain in modeller.topology.chains() if _is_context(chain)])
+            fixer.topology, fixer.positions = modeller.topology, modeller.positions
+            operation = {
+                "step": "completion_context",
+                "status": "used",
+                "details": (
+                    f"{len(context_chain_ids)} chain(s) from the other pieces were present "
+                    "while missing atoms were placed, then removed"
+                ),
+            }
+            if context_placement:
+                operation.update(context_placement)
+                closest = context_placement["closest_contact_angstrom"]
+                if closest is not None and closest < 2.0:
+                    new_atom, other_atom = context_placement["closest_pair"]
+                    result["warnings"].append(
+                        f"Rebuilt atom {new_atom} sits {closest:.2f} A from {other_atom} after "
+                        f"{context_placement['attempts']} placement attempt(s); minimization "
+                        "has to resolve this contact"
+                    )
+            result["operations"].append(operation)
+
         # Step 5: Detect and handle disulfide bonds
         logger.info("Detecting disulfide bonds")
         try:
@@ -3648,12 +3953,29 @@ def clean_protein(
                     titration_args = ["--titration-state-method", "propka",
                                       "--with-ph", str(ph)]
 
+                # Deposit hydrogens (NMR models) come through PDBFixer, and one
+                # pdb2pqr has no template for aborts the whole structure: 1AH9's
+                # GLU 3 carries a carboxyl HE2 ("Found gap in biomolecule
+                # structure for atom HE2 GLU 3", 092_soluble_1ah9, campaign
+                # v2). pdb2pqr rebuilds every hydrogen and propka ignores them;
+                # input protonation, when preserved, was read from the original
+                # input above and is re-applied afterwards. Cap hydrogens are
+                # completed below and stay.
+                pdb2pqr_input_file = output_file
+                heavy_only = _without_noncap_hydrogens(output_file)
+                if heavy_only is not None:
+                    pdb2pqr_input_file, removed_h = heavy_only
+                    result["operations"].append({
+                        "step": "input_hydrogens_removed_for_pdb2pqr",
+                        "status": "success",
+                        "details": f"{removed_h} deposit hydrogen(s) removed; pdb2pqr rebuilds them",
+                    })
+
                 # pdb2pqr cannot complete ACE/NME hydrogens itself and
                 # refuses the whole structure over the non-integral cap charge
                 # that leaves behind. Hand it caps it can charge to zero.
-                pdb2pqr_input_file = output_file
                 cap_prep = _prepare_terminal_caps_for_pdb2pqr(
-                    output_file,
+                    pdb2pqr_input_file,
                     forcefield_name=terminal_cap_forcefield,
                     ph=ph,
                 )
@@ -3680,6 +4002,16 @@ def clean_protein(
                         "resnames_restored": cap_prep.get("resnames_restored"),
                     })
 
+                # pdb2pqr's debumping rotates the side chain of any residue
+                # whose added hydrogens bump, and sees only this piece: it
+                # turned the TRP99 ring that PDBFixer had placed clear of the
+                # neighbouring range straight back into it (an 8 A move, 1.3 A
+                # from GLU185; 6KUY). When missing atoms were placed with the
+                # other pieces in view, the placement stands and the remaining
+                # hydrogen bumps are left to minimization. Handing pdb2pqr the
+                # neighbours instead fails on a low-resolution deposit's own
+                # truncated side chains ("Couldn't rebuild HD1 in TYR 98").
+                keep_placement = bool(context_placement)
                 pdb2pqr_args = [
                     str(pdb2pqr_input_file),
                     str(pqr_output),
@@ -3689,10 +4021,21 @@ def clean_protein(
                     "--pdb-output", str(amber_output_file),
                     "--keep-chain",
                     "--drop-water",
+                    *(["--nodebump"] if keep_placement else []),
                 ]
 
                 try:
                     pdb2pqr_wrapper.run(pdb2pqr_args)
+
+                    if keep_placement:
+                        result["operations"].append({
+                            "step": "protonation_debump",
+                            "status": "skipped",
+                            "details": (
+                                "pdb2pqr ran with --nodebump: missing atoms were placed with "
+                                "the neighbouring pieces in view, which pdb2pqr cannot see"
+                            ),
+                        })
 
                     if amber_output_file.exists():
                         if requested_protonation_states:
@@ -4002,6 +4345,31 @@ def clean_protein(
     return result
 
 
+def _complete_nucleic_heavy_atoms(input_path) -> tuple[Path, dict]:
+    """Add the heavy atoms a nucleotide is missing; never build residues.
+
+    Returns the file to continue from (the input when nothing was missing)
+    and ``{"added": {"DG201": ["O5'", "C5'"], ...}, "completed_file": ...}``.
+    """
+    input_path = Path(input_path)
+    fixer = PDBFixer(filename=str(input_path))
+    fixer.findMissingResidues()
+    fixer.missingResidues = {}
+    fixer.findMissingAtoms()
+    added = {
+        f"{residue.name}{residue.id}": sorted(atom.name for atom in atoms)
+        for residue, atoms in fixer.missingAtoms.items()
+    }
+    if not added:
+        return input_path, {"added": {}}
+    fixer.missingTerminals = {}
+    fixer.addMissingAtoms(seed=0)
+    completed = input_path.with_name(f"{input_path.stem}.completed.pdb")
+    with completed.open("w") as handle:
+        PDBFile.writeFile(fixer.topology, fixer.positions, handle, keepIds=True)
+    return completed, {"added": added, "completed_file": str(completed)}
+
+
 def _prepare_standard_nucleic(
     nucleic_file: str,
     *,
@@ -4078,6 +4446,24 @@ def _prepare_standard_nucleic(
             result["warnings"].append(
                 "Removed unsupported 5' terminal phosphate atom(s) from standard "
                 "nucleic input to match OpenMM Amber terminal templates."
+            )
+        # A deposit's terminal nucleotide can be truncated (1QN5 chain C
+        # starts at a DG without C5'/O5'); OpenMM's DG5 template then matches
+        # nothing and the rebuild dies with "No template found for residue 0"
+        # (053_nucleic_1qn5, campaign v2: six prep nodes). PDBFixer knows the
+        # nucleotide templates, so missing heavy atoms are completed first.
+        modeller_input_path, completion = _complete_nucleic_heavy_atoms(modeller_input_path)
+        result["missing_atom_completion"] = completion
+        if completion.get("added"):
+            result["operations"].append({
+                "step": "nucleic_missing_atoms",
+                "status": "added",
+                "details": f"Added missing heavy atoms: {completion['added']}",
+                "completed_file": completion.get("completed_file"),
+            })
+            result["warnings"].append(
+                "Completed missing heavy atoms before the hydrogen rebuild: "
+                + "; ".join(f"{res} {atoms}" for res, atoms in completion["added"].items())
             )
         pdb = PDBFile(str(modeller_input_path))
         forcefield = ForceField(forcefield_xml)

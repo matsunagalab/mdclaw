@@ -239,3 +239,39 @@ def test_real_12ca_preparation_keeps_255_and_author_phe260(tmp_path):
     last = audit["mapping"][-1]
     assert last["source"]["number"] == last["prepared"]["number"] == 260
     assert last["prepared"]["name"] == "PHE"
+
+
+def test_a_substituted_modified_residue_counts_as_delivered():
+    """OCS at 112 leaves the cleaning as CYS; the range was honoured (060_metal_4ow0)."""
+    from mdclaw.structure.residue_identity import canonical_name, compare_identity
+
+    assert canonical_name("OCS") == "CYS" and canonical_name("MSE") == "MET"
+    assert canonical_name("HIE") == "HIS" and canonical_name("CYX") == "CYS"
+    expected = [{"number": 111, "icode": "", "name": canonical_name("ALA"), "observed": True},
+                {"number": 112, "icode": "", "name": canonical_name("OCS"), "observed": True},
+                {"number": 113, "icode": "", "name": canonical_name("GLY"), "observed": True}]
+    actual = [{"number": 111, "icode": "", "name": canonical_name("ALA")},
+              {"number": 112, "icode": "", "name": canonical_name("CYS")},
+              {"number": 113, "icode": "", "name": canonical_name("GLY")}]
+    audit = compare_identity(expected, actual)
+    assert audit["delivered"] == 3 and audit["missing"] == [] and audit["unexpected"] == []
+    # a real mutation is still a mismatch
+    mutated = [dict(actual[0]), {**actual[1], "name": "GLY"}, dict(actual[2])]
+    audit = compare_identity(expected, mutated)
+    assert len(audit["missing"]) == 1 and len(audit["unexpected"]) == 1
+
+
+def test_scheme_and_atoms_disagreeing_at_an_observed_site_follow_the_atoms():
+    """6WRH: the sequence tables record C111S while the atoms are still a cysteine."""
+    structure = polymer(names=("ALA", "CYS", "PHE"))
+    label = structure[0][0].subchains()[0].subchain_id()
+    block = gemmi.cif.Block("test")
+    block.set_mmcif_category("_pdbx_poly_seq_scheme.", {
+        "asym_id": [label] * 3, "seq_id": ["1", "2", "3"],
+        "mon_id": ["ALA", "SER", "PHE"],
+        "pdb_seq_num": ["5", "7", "8"], "pdb_ins_code": ["."] * 3,
+    })
+    expected = selected(structure, block=block)["residues"]
+    assert expected[1]["name"] == "CYS" and expected[1]["scheme_name"] == "SER"
+    audit = compare_identity(expected, chain_residues(structure[0][0]))
+    assert audit["delivered"] == 3 and not audit["missing"] and not audit["unexpected"]

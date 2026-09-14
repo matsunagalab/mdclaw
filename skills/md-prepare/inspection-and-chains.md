@@ -72,6 +72,15 @@ Ligand selection rule:
 - If a selected polymer chain has associated ligand candidates and `ligand` is
   in `--include-types`, `prepare_complex` / `split_molecules` block with
   `code="associated_ligands_require_selection"` instead of silently dropping
-  them. Follow the returned `ligand_selection.recommended_*` fields.
+  them. Follow the returned `ligand_selection.recommended_*` fields. The prep
+  node is still `pending` after this block (nothing was prepared): run the
+  same `--node-id` again with the recommended `--include-ligand-ids`; do not
+  create a new prep node.
+- A `--residue-ranges` end that the deposit does not resolve is refused with
+  `residue_range_endpoint_unobserved` when nothing would build it (the node
+  stays pending): ask for the observed span the hint names, or add
+  `--build-terminal-missing-residues` for up to 10 residues at a component
+  end. Unobserved residues between two ranges joined by
+  `--join-range-groups` are built as the insertion that bonds them.
 
 For ligand-free command examples, use `skills/md-prepare/prepare-complex.md`.

@@ -138,8 +138,36 @@ def _read_node_json_path(node_json: Path, *, strict: bool = False) -> Optional[d
 
 
 def _values_match(expected, actual) -> bool:
-    if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
-        return abs(float(expected) - float(actual)) <= 1e-9
+    """Declared and runtime condition values agree.
+
+    A declared scalar equals a one-item list holding it (``"S111C"`` against
+    ``["S111C"]``: 063_metal_6wrh cli_skill_sif r1 lost a prep node to that),
+    numbers compare with a tolerance, and a numeric string equals its number.
+    """
+    if isinstance(expected, (list, tuple)) and len(expected) == 1 and not isinstance(actual, (list, tuple)):
+        return _values_match(expected[0], actual)
+    if isinstance(actual, (list, tuple)) and len(actual) == 1 and not isinstance(expected, (list, tuple)):
+        return _values_match(expected, actual[0])
+    if isinstance(expected, (list, tuple)) and isinstance(actual, (list, tuple)):
+        return len(expected) == len(actual) and all(
+            _values_match(e, a) for e, a in zip(expected, actual))
+    if isinstance(expected, bool) or isinstance(actual, bool):
+        return expected == actual
+    numbers = []
+    for value in (expected, actual):
+        if isinstance(value, (int, float)):
+            numbers.append(float(value))
+        elif isinstance(value, str):
+            try:
+                numbers.append(float(value.strip()))
+            except ValueError:
+                break
+        else:
+            break
+    if len(numbers) == 2:
+        return abs(numbers[0] - numbers[1]) <= 1e-9
+    if isinstance(expected, str) and isinstance(actual, str):
+        return expected.strip().lower() == actual.strip().lower()
     return expected == actual
 
 

@@ -76,3 +76,46 @@ def describe_condition_key(accepted: object, key: str) -> str:
         return f"{key!r} (did you mean {suggestions[0]!r}?)"
     listed = ", ".join(repr(s) for s in suggestions[:-1])
     return f"{key!r} (did you mean {listed} or {suggestions[-1]!r}?)"
+
+
+# Natural spellings of condition keys, resolved only when the tool actually
+# reports the canonical key with a value. The fuzzy suggestion above finds
+# ``chains`` -> ``select_chains`` but not ``salt_concentration_molar`` ->
+# ``saltcon`` (no shared stem); both lost nodes in campaign v2 (018, 019, 057).
+CONDITION_KEY_ALIASES = {
+    "chains": "select_chains",
+    "chain": "select_chains",
+    "chain_ids": "select_chains",
+    "ranges": "residue_ranges",
+    "residue_range": "residue_ranges",
+    "salt_concentration_molar": "saltcon",
+    "salt_concentration": "saltcon",
+    "salt_molar": "saltcon",
+    "ionic_strength": "saltcon",
+    "temperature": "temperature_kelvin",
+    "temperature_k": "temperature_kelvin",
+    "pressure": "pressure_bar",
+    "water": "water_model",
+    "force_field": "forcefield",
+    "ff": "forcefield",
+    "timestep": "timestep_fs",
+    "dt_fs": "timestep_fs",
+    "protonation": "protonation_method",
+    "ph_value": "ph",
+}
+
+
+def resolve_condition_key(accepted: object, key: str) -> str | None:
+    """The reported key a declared one unambiguously means, or None.
+
+    A table hit wins when the tool reports that key; otherwise a single fuzzy
+    suggestion is accepted. Two or more suggestions stay a refusal: the
+    caller has to say which one was meant.
+    """
+    reported = {str(k) for k in (accepted or ())}
+    alias = CONDITION_KEY_ALIASES.get(key)
+    if alias and alias in reported:
+        return alias
+    suggestions = suggest_condition_keys(accepted, key)
+    return suggestions[0] if len(suggestions) == 1 else None
+

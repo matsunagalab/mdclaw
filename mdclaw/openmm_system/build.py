@@ -619,8 +619,11 @@ def build_openmm_system(
         energy_initial_kj_mol = float(
             initial_state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
         )
+        relaxation = None
         if minimize:
-            simulation.minimizeEnergy(maxIterations=minimize_max_iterations)
+            from mdclaw.simulation.relax import minimize_robustly
+
+            relaxation = minimize_robustly(simulation, minimize_max_iterations)
         if nonbonded_method == "PME":
             # Re-image so the solute sits at the box center and solvent wraps
             # around it, instead of OpenMM's corner-origin per-atom wrap that
@@ -676,6 +679,7 @@ def build_openmm_system(
             "satisfies_min_node_contract": False,
             "backend": "openmm",
             "max_iterations": minimize_max_iterations if minimize else 0,
+            "relaxation": relaxation,
             "energy_initial_kj_mol": energy_initial_kj_mol,
             "energy_final_kj_mol": energy_final_kj_mol,
             "energy_is_finite": (

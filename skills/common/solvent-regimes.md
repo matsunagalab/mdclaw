@@ -44,7 +44,7 @@ Ion placement belongs to `solvate_structure` / `embed_in_membrane`; do not searc
 | `physiological salt` | `--salt --saltcon 0.15` |
 | `150 mM KCl` | `--salt --saltcon 0.15 --salt-c K+ --salt-a Cl-` |
 | explicit `no salt` / `counterions only` / `neutralised only, no bulk salt` | `--salt --saltcon 0` |
-| `no ions` | `--no-salt` |
+| `no ions` (neutral solute only) | `--no-salt`; a charged solute then fails the topology with `system_net_charge_without_ions` |
 
 Never turn `neutralised` alone into `--saltcon 0`: the 0.15 M NaCl default still
 applies. With `--salt`, counterions come from prepared, protonated Amber residue

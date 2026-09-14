@@ -92,21 +92,47 @@ def _condition_messages(result):
     )
 
 
-def test_the_runtime_failure_names_the_vocabulary_and_the_likely_key(tmp_path):
-    # The exact declaration that lost a node in the campaign.
-    job, node_id = _prep_node(tmp_path, {"chains": ["A"], "ph": 7.0})
+def test_a_unique_alias_is_read_as_the_reported_key(tmp_path):
+    # The exact declaration that lost a node in the campaign: read as
+    # select_chains now, and said so, instead of refused. The prep needs a
+    # completed parent so that only the conditions are under test.
+    from mdclaw._node import complete_node
+
+    job = tmp_path / "job_alias"
+    job.mkdir()
+    source = create_node(str(job), "source")["node_id"]
+    (job / "nodes" / source / "artifacts").mkdir(parents=True, exist_ok=True)
+    (job / "nodes" / source / "artifacts" / "sb.json").write_text("{}")
+    complete_node(str(job), source, artifacts={"source_bundle": "artifacts/sb.json"})
+    node_id = create_node(str(job), "prep", conditions={"chains": ["A"], "ph": 7.0},
+                          parent_node_ids=[source])["node_id"]
     result = validate_node_execution_context(
         str(job), node_id, "prep",
         actual_conditions={"select_chains": ["A"], "ph": 7.0,
                            "solvent_type": "explicit"},
         validate_conditions=True)
 
+    assert result["success"], result
+    assert result["condition_aliases"] == {"chains": "select_chains"}
+    assert result["warnings"] == ["declared condition 'chains' was read as 'select_chains'"]
+
+
+def test_the_runtime_failure_names_the_vocabulary_and_the_likely_keys(tmp_path):
+    # ``ligands`` has several honest readings, so it stays a refusal that
+    # names them all.
+    job, node_id = _prep_node(tmp_path, {"ligands": ["ATP"], "ph": 7.0})
+    result = validate_node_execution_context(
+        str(job), node_id, "prep",
+        actual_conditions={"include_ligand_ids": ["ATP"], "process_ligands": True,
+                           "ph": 7.0, "solvent_type": "explicit"},
+        validate_conditions=True)
+
     assert not result["success"]
     message = _condition_messages(result)
-    assert "'chains'" in message
-    assert "did you mean 'select_chains'?" in message
+    assert "'ligands'" in message
+    assert "did you mean" in message and "'include_ligand_ids'" in message
     assert "This invocation cross-checked:" in message
-    assert "select_chains, solvent_type" in message
+    assert "include_ligand_ids, ph, process_ligands, solvent_type" in message
     assert "--label" in message
 
 
@@ -114,10 +140,11 @@ def test_a_key_reported_as_none_is_not_offered_as_available(tmp_path):
     # A None value is rejected as unverifiable, so advertising the key as
     # something the tool cross-checks would send the caller back into the same
     # failure.
-    job, node_id = _prep_node(tmp_path, {"chains": ["A"]})
+    job, node_id = _prep_node(tmp_path, {"ligands": ["ATP"]})
     result = validate_node_execution_context(
         str(job), node_id, "prep",
-        actual_conditions={"select_chains": ["A"], "cap_termini": None},
+        actual_conditions={"select_chains": ["A"], "include_ligand_ids": ["ATP"],
+                           "process_ligands": True, "cap_termini": None},
         validate_conditions=True)
     message = _condition_messages(result)
     assert "select_chains" in message

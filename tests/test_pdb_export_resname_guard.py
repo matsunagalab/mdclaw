@@ -58,8 +58,11 @@ EXPECTED = {
     "sidechain_packer.py": (1, "restore"),              # HPacker mutation output
     "structure/protonation.py": (1, "restore"),         # user-state Modeller path
     # Two existing transient/source exports plus the polymer-only MODELLER
-    # template and its repaired complex; the latter two restore from the input.
-    "structure/clean_protein.py": (4, "restore"),
+    # template and its repaired complex (the latter two restore from the
+    # input), plus the nucleic heavy-atom completion, which writes a standard
+    # DNA/RNA chain (names OpenMM does not normalize) before the hydrogen
+    # rebuild reads it back.
+    "structure/clean_protein.py": (5, "restore"),
 }
 
 

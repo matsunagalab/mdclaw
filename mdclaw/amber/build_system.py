@@ -1491,14 +1491,28 @@ def build_amber_system(
         if om_result.get("success"):
             result["system_net_charge_e"] = om_result.get("system_net_charge_e")
             system_net_charge_e = om_result.get("system_net_charge_e")
-            if neutralization_expected and (
+            charged = (
                 system_net_charge_e is None or abs(float(system_net_charge_e)) > 1e-3
-            ):
+            )
+            if neutralization_expected and charged:
                 result["code"] = "neutralization_charge_mismatch"
                 message = (
-                    "Explicit solvation requested neutralization, but the built "
+                    "The solvation step placed neutralizing ions, yet the built "
                     f"System has net charge {system_net_charge_e!r} e. Check retained "
                     "solute-ion and ligand formal charges before creating a new topo node."
+                )
+                om_result.setdefault("errors", []).append(message)
+                logger.error(message)
+                om_result["success"] = False
+            elif solvation_node_id and not neutralization_expected and charged:
+                # The solv node placed no ions (--no-salt): the charge is the
+                # solute's own, and the fix is at the solvation step.
+                result["code"] = "system_net_charge_without_ions"
+                message = (
+                    f"The built System has net charge {system_net_charge_e!r} e and the "
+                    "solvation step placed no ions (--no-salt). A charged periodic cell is "
+                    "not a valid run: create a new solv node with --salt --saltcon 0 "
+                    "(counter-ions only) or --salt --saltcon 0.15, then a new topo node."
                 )
                 om_result.setdefault("errors", []).append(message)
                 logger.error(message)

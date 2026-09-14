@@ -108,6 +108,13 @@ def resolve_water_and_forcefield(
     old check only said "match the solvation step".
     """
     warnings: list[str] = []
+    # "auto" / "default" mean "decide for me", the same as omitting the flag:
+    # --nucleic-forcefield accepts auto, so agents write --forcefield auto too
+    # (049_nucleic_1iv6 cli_sif r2 lost a topo node to unknown_forcefield: auto).
+    if isinstance(forcefield, str) and forcefield.strip().lower() in {"auto", "default", ""}:
+        forcefield = None
+    if isinstance(water_model, str) and water_model.strip().lower() in {"auto", "default", ""}:
+        water_model = None
     solvation_canonical = _canonical_water_model_name(solvation_water_model) if solvation_water_model else None
     if water_model is None:
         if solvation_water_model:

@@ -21,6 +21,15 @@ from mdclaw._common import (
 from mdclaw.slurm.config import _build_singularity_command
 
 
+# A job whose afterok parent failed can never run, and a scheduler without
+# kill_invalid_depend holds it as DependencyNeverSatisfied for ever, with
+# everything queued behind it: the node stays "queued" and anything waiting on
+# the chain waits for ever (MDDataBench campaign v2: 178 such jobs held 77
+# attempts unscored, 2026-09-11). Asked per job, the scheduler cancels it
+# instead, and node sync then records the node failed with the Slurm state.
+_KILL_ON_INVALID_DEPENDENCY = ("#SBATCH --kill-on-invalid-dep=yes",)
+
+
 def _generate_sbatch_script(
     command: str,
     job_name: str,
@@ -74,6 +83,7 @@ def _generate_sbatch_script(
         lines.append(f"#SBATCH --nodelist={nodelist}")
     if dependency:
         lines.append(f"#SBATCH --dependency={dependency}")
+        lines.extend(_KILL_ON_INVALID_DEPENDENCY)
     lines.append(f"#SBATCH --output={stdout_log}")
     lines.append(f"#SBATCH --error={stderr_log}")
     if account:
@@ -177,6 +187,7 @@ def _generate_array_sbatch_script(
         lines.append(f"#SBATCH --mem={memory}")
     if dependency:
         lines.append(f"#SBATCH --dependency={dependency}")
+        lines.extend(_KILL_ON_INVALID_DEPENDENCY)
     lines.append(f"#SBATCH --array={array_spec}")
     lines.append(f"#SBATCH --output={stdout_log}")
     lines.append(f"#SBATCH --error={stderr_log}")

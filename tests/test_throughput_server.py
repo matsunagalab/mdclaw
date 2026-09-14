@@ -25,6 +25,19 @@ def test_in_table_h100_30k_returns_medium_confidence():
     assert out["ns_per_day"] == pytest.approx(1000.0, rel=0.05)
 
 
+def test_the_clusters_own_gb200_is_known_by_its_slurm_name():
+    """Campaign v2 agents asked for nvidia_gb200 (the gres name) and got unknown_gpu_type."""
+    for spelling in ("nvidia_gb200", "GB200", "Grace Blackwell GB200"):
+        out = estimate_md_throughput(atom_count=30000, gpu_type=spelling)
+        assert out["success"] is True, out
+        assert out["gpu_type_normalized"] == "gb200"
+        assert out["ns_per_day"] == pytest.approx(2800.0, rel=0.05)
+    # the 258k-atom 6I53 membrane the agent was sizing: the campaign measured
+    # a median of about 520 ns/day for systems above 250k atoms
+    big = estimate_md_throughput(atom_count=258356, gpu_type="nvidia_gb200")
+    assert 350 < big["ns_per_day"] < 700
+
+
 def test_alias_rtx_4090_normalizes():
     out = estimate_md_throughput(atom_count=30000, gpu_type="rtx 4090")
     assert out["success"] is True

@@ -195,6 +195,33 @@ job's node index (`_preflight_fix`), plus `dag` and `next`:
   has neither parameter; they would have been silently ignored.
 - `tool_contract_invalid`: the tool's own signature is broken (see Parameter
   Mapping); not recoverable by the caller, and the node is never touched.
+- A stage tool that refuses *before* `begin_node` (declared `--conditions`
+  the call does not carry, an explicit file that is not the DAG input, a
+  disulfide plan that differs from the prep's, a missing input file) leaves
+  the node **pending**: the evidence bundle is written under
+  `artifacts/failure/latest`, `metadata.last_refusal` records the code, the
+  result says so in its first hint, and `trace_failure` answers `run_node`.
+  This is the `fail_node_from_result` path every structured pre-start
+  refusal uses; a tool that calls `fail_node` outright still seals the node.
+  `prepare_complex` begins its node only after `split_molecules` has
+  delivered the selection: inspection, the disulfide/cap/range argument
+  checks and the split itself only describe the source, so their refusals
+  (`associated_ligands_require_selection`, `residue_range_chain_not_found`,
+  `residue_range_selects_nothing`, `ligand_component_invalid`, ...) keep the
+  node pending and the corrected call runs the same node. The split output
+  of a refused call stays under `artifacts/` (the rerun gets `split_2/`).
+  The CLI's own failure record (`_record_cli_node_failure`) skips a result
+  whose `node_status` is `pending` when the node is, so it never seals a
+  node the tool deliberately left open. Two more refusals are decided from
+  the split output before the node begins: `disulfide_site_not_selected`
+  (a declared cysteine the selection cannot hold) and
+  `residue_range_endpoint_unobserved` (a range end nothing will build); the
+  protonation-state names are validated before the split.
+- CLI-level options written after the tool name (`--output brief|full`,
+  `--log-file`, `--heartbeat-seconds`) are moved in front of it before
+  parsing (`_hoist_global_options`), unless the tool declares the same flag;
+  argparse otherwise read `--output brief` as an abbreviation of the tool's
+  `--output-dir`. `--output` with a path still reaches `--output-dir`.
 - `node_id_requires_job_dir`: `--node-id` without `--job-dir`.
 - `node_context_required`: a node-required workflow tool (one marked with
   `@node_tool`) ran without both `--job-dir` and `--node-id`.

@@ -331,3 +331,51 @@ def test_stripping_the_caps_leaves_nothing_for_the_helper_to_do(tmp_path):
     result = _prepare_terminal_caps_for_pdb2pqr(stripped, forcefield_name="ff19SB")
     assert result["success"] and result["skipped"]
     assert result["output_file"] is None
+
+
+# The capped residue still carries the atoms of a free terminus, as an NMR
+# deposit with hydrogens does when the construct began there (1AA3: ILE 268
+# with H/H2/H3) -- here on both sides of one ALA.
+CAPPED_WITH_TERMINUS_ATOMS = CAPPED.replace(
+    "ATOM      5  CA  ALA A  26",
+    "ATOM     11  H   ALA A  26      10.200   8.000  10.000  1.00  0.00           H\n"
+    "ATOM     12  H2  ALA A  26      11.300   8.500   9.100  1.00  0.00           H\n"
+    "ATOM     13  H3  ALA A  26      10.400   9.300   9.200  1.00  0.00           H\n"
+    "ATOM      5  CA  ALA A  26",
+).replace(
+    "HETATM    9  N   NME A  27",
+    "ATOM     14  OXT ALA A  26      12.300   9.100  12.400  1.00  0.00           O\n"
+    "HETATM    9  N   NME A  27",
+)
+
+
+def test_free_terminus_atoms_next_to_a_cap_are_removed_before_completion(tmp_path):
+    """090_soluble_1aa3: "No template found for residue 1 (ILE) ... externally
+    bonded atoms has 1 N atom too many" when ACE was attached to an ILE that
+    still had H2/H3."""
+    path = write(tmp_path, CAPPED_WITH_TERMINUS_ATOMS)
+    result = _prepare_terminal_caps_for_pdb2pqr(path)
+    assert result["success"], result["errors"]
+    assert sorted(result["terminus_atoms_removed_next_to_caps"]) == [
+        "ALA A26 H2", "ALA A26 H3", "ALA A26 OXT"]
+    names = {line[12:16].strip() for line in open(result["output_file"])
+             if line.startswith(("ATOM", "HETATM")) and line[17:20] == "ALA"}
+    assert "H" in names and not names & {"H2", "H3", "OXT"}
+
+
+def test_deposit_hydrogens_outside_caps_are_left_for_pdb2pqr_to_rebuild(tmp_path):
+    """092_soluble_1ah9: an NMR GLU 3 with a carboxyl HE2 made pdb2pqr give up
+    ("Found gap in biomolecule structure for atom HE2 GLU 3")."""
+    import importlib
+
+    cp = importlib.import_module("mdclaw.structure.clean_protein")
+    with_h = CAPPED.replace(
+        "ATOM      5  CA  ALA A  26",
+        "ATOM     11  H   ALA A  26      10.200   8.000  10.000  1.00  0.00           H\n"
+        "HETATM   12  H1  ACE A  25       8.100  10.900  10.000  1.00  0.00           H\n"
+        "ATOM      5  CA  ALA A  26")
+    heavy, removed = cp._without_noncap_hydrogens(write(tmp_path, with_h))
+    assert removed == 1
+    names = [(line[17:20], line[12:16].strip()) for line in open(heavy) if line.startswith(("ATOM", "HETATM"))]
+    assert ("ALA", "H") not in names and ("ACE", "H1") in names
+    assert cp._without_noncap_hydrogens(write(tmp_path, CAPPED, "heavy_only.pdb")) is None

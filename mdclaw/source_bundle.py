@@ -737,7 +737,9 @@ def select_source_structure(
     options = [str(s.get("structure_id")) for s in structures]
     raise ValueError(
         "source_bundle contains multiple candidate structures; pass "
-        f"source_structure_id or source_model_index. Options: {options}"
+        f"--source-structure-id <id> (options: {options}) or "
+        "--source-model-index <n>; mdclaw list_source_candidates --job-dir <job_dir> "
+        "shows each candidate's rank and metrics."
     )
 
 

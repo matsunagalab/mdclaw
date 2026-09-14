@@ -27,7 +27,7 @@ from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fai
 from mdclaw.simulation.integrator_plan import _resolve_equilibration_stage_steps  # noqa: E402
 from mdclaw.simulation.restraints import RESTRAINT_SELECTIONS, select_restraint_atoms  # noqa: E402
 from mdclaw.simulation.restart import _close_reporter_stream, _load_state_into_simulation, _resolve_restart_node_id_for_run, _restart_node_type_for_run, _restart_random_seed, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
-from mdclaw.simulation.nan_retry import run_with_halved_timestep  # noqa: E402
+from mdclaw.simulation.nan_retry import is_nan_failure, run_with_halved_timestep  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _effective_pressure_bar, _integrator_signature, _load_xml_topology_inputs, _system_signature, _validate_xml_system_contract  # noqa: E402
 
 
@@ -343,6 +343,11 @@ def run_equilibration(
             actual_conditions={
                 "temperature_kelvin": temperature_kelvin,
                 "pressure_bar": pressure_bar,
+                # The ensemble the equilibration ends in (what the prod node
+                # inherits); declared as "NPT" or "NVT" by agents.
+                "ensemble": ("NPT" if (pressure_bar is not None and pressure_bar > 0
+                                       and not implicit_solvent
+                                       and (effective_npt_time_ns or 0) > 0) else "NVT"),
                 "nvt_steps": nvt_steps,
                 "npt_steps": npt_steps,
                 "nvt_time_ns": effective_nvt_time_ns,
@@ -1234,7 +1239,20 @@ def run_equilibration(
         result["code"] = exc.code
     except Exception as e:
         logger.error(f"Equilibration failed: {e}")
-        result["errors"].append(f"Equilibration failed: {e}")
+        if is_nan_failure(e):
+            # The halved-timestep retry reached its floor and the state still
+            # blew up: the input carries superposed atoms (see the min node's
+            # max_force_final_kj_mol_nm), which no timestep cures.
+            result["code"] = "equilibration_nan_unrecoverable"
+            result["errors"].append(
+                f"Equilibration failed: {e} The NaN persisted after the timestep was "
+                "halved down to the floor, so the starting state carries atoms on top of "
+                "each other (check the min node's max_force_final_kj_mol_nm and the prep "
+                "for prepared_atoms_overlap). Rebuild the preparation or solvation on new "
+                "nodes; re-running this node cannot succeed."
+            )
+        else:
+            result["errors"].append(f"Equilibration failed: {e}")
 
     # Node state update
     if _node_mode:
