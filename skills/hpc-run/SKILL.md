@@ -65,6 +65,12 @@ from the DAG.
   follow [sif-slurm.md](sif-slurm.md), including bind-environment cleanup.
   A checkout deployment may instead use its existing `bin/mdclaw`. Do not
   create a host launcher or clone a checkout for the shared-SIF route.
+- On a SIF-only host (no host launcher), submit through `singularity exec` as
+  `skills/hpc-run/sif-slurm.md` describes, with `MDCLAW_SLURM_PATH="$PATH"`
+  from the host shell: the CLI resolves the container runtime on that path
+  into the sbatch script and refuses (`container_runtime_not_found`) when it
+  cannot. A wrapper that omits the variable submits jobs that die on the
+  compute node.
 - Always pass both `--job-dir` and `--node-id` when submitting or running a DAG
   workflow node.
 - Do not pass `--system-xml-file`, `--topology-pdb-file`, `--state-xml-file`, or `--restart-from` in normal

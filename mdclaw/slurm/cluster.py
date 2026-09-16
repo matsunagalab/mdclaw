@@ -10,6 +10,8 @@ these tools only handle the SLURM layer.
 
 from __future__ import annotations
 
+import os
+
 import json
 import re
 import subprocess
@@ -367,6 +369,7 @@ def configure_container(
     extra_flags: Optional[str] = None,
     source_mode: Optional[str] = None,
     disable: bool = False,
+    runtime: Optional[str] = None,
 ) -> dict:
     """Configure Singularity container execution for SLURM jobs.
 
@@ -395,6 +398,12 @@ def configure_container(
             dependencies with the host's.
         disable: Set True to disable container execution (removes the
             container section from config).
+        runtime: Container runtime the compute node runs: an absolute path
+            (``/shared/software/apptainer/bin/singularity``) or a command name.
+            Default: ``singularity``, then ``apptainer``, resolved at each
+            submission on ``MDCLAW_SLURM_PATH`` (or PATH) to an absolute path
+            that is written into the sbatch script; a runtime that cannot be
+            resolved refuses the submission (``container_runtime_not_found``).
 
     Returns:
         dict with:
@@ -433,6 +442,14 @@ def configure_container(
         container["bind_paths"] = bind_paths
     if extra_flags is not None:
         container["extra_flags"] = extra_flags
+    if runtime is not None:
+        runtime = str(runtime).strip()
+        if os.path.isabs(runtime) and not (os.path.isfile(runtime) and os.access(runtime, os.X_OK)):
+            result["code"] = "container_runtime_not_found"
+            result["errors"].append(f"runtime {runtime!r} is not an executable file")
+            return result
+        container["runtime"] = runtime
+        container.pop("runtime_resolved", None)
     flags_error = validate_container_flags(container)
     if flags_error:
         return {**result, **flags_error}

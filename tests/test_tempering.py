@@ -66,6 +66,25 @@ class TestValidation:
             _resolve_solute_indices("x.pdb", solute_selection=None, solute_indices_file=None)
         assert exc.value.code == "sst2_solute_required"
 
+    def test_solvent_in_selection_is_refused(self, tmp_path):
+        """A selection that reaches water or ions is refused with a stable code."""
+        pdb_in = _sst2_test_pdb()
+        if pdb_in is None:
+            pytest.skip("SST2 test system not available")
+        with pytest.raises(SST2ToolError) as exc:
+            _resolve_solute_indices(str(pdb_in), solute_selection="resid 101 to 103 or water",
+                                    solute_indices_file=None)
+        assert exc.value.code == "sst2_solute_includes_solvent"
+        assert "HOH" in str(exc.value)
+        ok, prov = _resolve_solute_indices(str(pdb_in), solute_selection="chainid 1 and resid 101 to 103",
+                                           solute_indices_file=None)
+        assert len(ok) == 52 and "HOH" not in prov["solute_residue_names"]
+        bad = tmp_path / "idx.json"
+        bad.write_text("[0, 1, 2, 11000]")   # 11000 is a water atom in the 2HPL system
+        with pytest.raises(SST2ToolError) as exc:
+            _resolve_solute_indices(str(pdb_in), solute_selection=None, solute_indices_file=str(bad))
+        assert exc.value.code == "sst2_solute_includes_solvent"
+
     def test_bad_home_reports_not_installed(self, tmp_path):
         with pytest.raises(SST2ToolError) as exc:
             _sst2_environment(str(tmp_path))

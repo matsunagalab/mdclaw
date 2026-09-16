@@ -2732,3 +2732,117 @@ class TestSubmitMpsJob:
         with patch("mdclaw.slurm.monitor.check_job") as mock_check_job:
             list_tracked_jobs(sync=True)
         assert sorted(c.args[0] for c in mock_check_job.call_args_list) == ["88889", "88890"]
+
+
+class TestResolveContainerRuntime:
+    """The runtime binary is resolved at submission so the sbatch script does
+    not depend on the job's PATH (SIF-only sites lost jobs to
+    'singularity: command not found')."""
+
+    def _fake_runtime(self, tmp_path, name="singularity"):
+        bindir = tmp_path / "hostbin"
+        bindir.mkdir(exist_ok=True)
+        exe = bindir / name
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o755)
+        return bindir, exe
+
+    def test_resolved_on_mdclaw_slurm_path(self, tmp_path, monkeypatch):
+        from mdclaw.slurm.config import resolve_container_runtime
+
+        bindir, exe = self._fake_runtime(tmp_path)
+        monkeypatch.setenv("MDCLAW_SLURM_PATH", str(bindir))
+        monkeypatch.delenv("SINGULARITY_CONTAINER", raising=False)
+        container = {"image": "/opt/mdclaw.sif"}
+        warnings: list = []
+        assert resolve_container_runtime(container, warnings=warnings) is None
+        assert container["runtime_resolved"] == str(exe)
+        assert warnings == []
+        cmd = _build_singularity_command("mdclaw --list", container, str(tmp_path))
+        assert cmd.startswith(f"{exe} exec")
+
+    def test_apptainer_is_the_fallback_name(self, tmp_path, monkeypatch):
+        from mdclaw.slurm.config import resolve_container_runtime
+
+        bindir, exe = self._fake_runtime(tmp_path, "apptainer")
+        monkeypatch.setenv("MDCLAW_SLURM_PATH", str(bindir))
+        container = {"image": "/opt/mdclaw.sif"}
+        assert resolve_container_runtime(container) is None
+        assert container["runtime_resolved"] == str(exe)
+
+    def test_configured_absolute_runtime_wins(self, tmp_path, monkeypatch):
+        from mdclaw.slurm.config import resolve_container_runtime
+
+        _, exe = self._fake_runtime(tmp_path, "singularity-ce")
+        monkeypatch.setenv("MDCLAW_SLURM_PATH", str(tmp_path / "empty"))
+        container = {"image": "/opt/mdclaw.sif", "runtime": str(exe)}
+        assert resolve_container_runtime(container) is None
+        assert container["runtime_resolved"] == str(exe)
+
+    def test_inside_image_without_runtime_is_refused(self, tmp_path, monkeypatch):
+        from mdclaw.slurm.config import resolve_container_runtime
+
+        (tmp_path / "empty").mkdir()
+        monkeypatch.setenv("MDCLAW_SLURM_PATH", str(tmp_path / "empty"))
+        monkeypatch.setenv("SINGULARITY_CONTAINER", "/data/mdclaw.sif")
+        container = {"image": "/opt/mdclaw.sif"}
+        error = resolve_container_runtime(container)
+        assert error["code"] == "container_runtime_not_found"
+        assert "MDCLAW_SLURM_PATH" in " ".join(error["hints"])
+        assert "runtime_resolved" not in container
+
+    def test_outside_image_without_runtime_only_warns(self, tmp_path, monkeypatch):
+        from mdclaw.slurm.config import resolve_container_runtime
+
+        (tmp_path / "empty").mkdir()
+        monkeypatch.setenv("MDCLAW_SLURM_PATH", str(tmp_path / "empty"))
+        monkeypatch.delenv("SINGULARITY_CONTAINER", raising=False)
+        monkeypatch.delenv("APPTAINER_CONTAINER", raising=False)
+        container = {"image": "/opt/mdclaw.sif"}
+        warnings: list = []
+        assert resolve_container_runtime(container, warnings=warnings) is None
+        assert len(warnings) == 1 and "PATH" in warnings[0]
+        assert _build_singularity_command("mdclaw --list", container, str(tmp_path)).startswith("singularity exec")
+
+    def test_configure_container_rejects_missing_absolute_runtime(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = configure_container(image="/opt/mdclaw.sif", runtime=str(tmp_path / "nope"))
+        assert result["success"] is False
+        assert result["code"] == "container_runtime_not_found"
+        _, exe = self._fake_runtime(tmp_path)
+        result = configure_container(image="/opt/mdclaw.sif", runtime=str(exe))
+        assert result["success"] is True
+        assert result["container"]["runtime"] == str(exe)
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_submit_from_inside_image_refuses_before_sbatch(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "empty").mkdir()
+        monkeypatch.setenv("MDCLAW_SLURM_PATH", str(tmp_path / "empty"))
+        monkeypatch.setenv("SINGULARITY_CONTAINER", "/data/mdclaw.sif")
+        (tmp_path / ".mdclaw_cluster.json").write_text(json.dumps({
+            "partitions": [{"name": "gpu", "gpus_per_node": 4}],
+            "container": {"image": "/opt/containers/mdclaw.sif", "extra_flags": "--nv"},
+        }))
+        result = submit_job(script="mdclaw run_production", partition="gpu", gpus=1, output_dir=str(tmp_path))
+        assert result["success"] is False
+        assert result["code"] == "container_runtime_not_found"
+        mock_run.assert_not_called()
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_submitted_script_carries_the_absolute_runtime(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        bindir, exe = self._fake_runtime(tmp_path)
+        monkeypatch.setenv("MDCLAW_SLURM_PATH", str(bindir))
+        monkeypatch.setenv("SINGULARITY_CONTAINER", "/data/mdclaw.sif")
+        (tmp_path / ".mdclaw_cluster.json").write_text(json.dumps({
+            "partitions": [{"name": "gpu", "gpus_per_node": 4}],
+            "container": {"image": "/opt/containers/mdclaw.sif", "extra_flags": "--nv"},
+        }))
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 10002\n")
+        result = submit_job(script="mdclaw run_production", partition="gpu", gpus=1, output_dir=str(tmp_path))
+        assert result["success"] is True, result
+        content = Path(result["script_file"]).read_text()
+        assert f"{exe} exec --nv" in content

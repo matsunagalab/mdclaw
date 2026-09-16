@@ -33,11 +33,14 @@ GUARDRAIL_CODES: dict[str, str] = {
     "sst2_not_installed": "Set MDCLAW_SST2_HOME to a checkout of the matsunagalab/SST2 fork (branch mdclaw) or install it, then rerun.",
     "sst2_solute_required": "Pass exactly one of --solute-selection (mdtraj DSL) or --solute-indices-file.",
     "sst2_solute_selection_invalid": "Fix the mdtraj selection; it must match a proper subset of the atoms, cut at residue boundaries.",
+    "sst2_solute_includes_solvent": "The solute must be part of the solute molecules; the selection picked up water, ions or virtual sites. Add 'and protein' / a chain restriction, or rebuild the index file against this node's topology.pdb.",
     "sst2_solute_selection_empty": "The solute selection matched no atoms; check chain ids and residue numbers against topology.pdb.",
     "sst2_ladder_invalid": "Pass --temperatures-kelvin as an increasing list that contains the reference temperature.",
     "sst2_restart_missing": "The tempering sidecar of the parent node is missing; continue from a completed run_sst2 node or drop --restart-state-file.",
     "sst2_requires_pme": "Solute tempering needs explicit solvent with PME; build the topology without implicit solvent.",
     "sst2_driver_failed": "Read artifacts/sst2_driver.log in the node, fix the cause (platform, memory, selection), then branch and rerun.",
+
+    "container_runtime_not_found": "Export MDCLAW_SLURM_PATH=\"$PATH\" from a host shell before submitting from inside the image, or run `mdclaw configure_container --runtime /abs/path/to/singularity`, then resubmit the same (still pending) node.",
 
     # --- node / DAG context ---
     "node_context_required": "Create the node, then run it with both --job-dir and --node-id.",

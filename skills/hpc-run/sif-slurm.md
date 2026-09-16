@@ -32,6 +32,14 @@ singularity exec --bind <detected-host-resources> \
   "$MDCLAW_SIF" mdclaw inspect_cluster
 ```
 
+`MDCLAW_SLURM_PATH` is not optional when submitting from inside the image: the
+sbatch script calls the container runtime by its absolute path, resolved on
+that search path at submission, and a submission whose search path has no
+`singularity` / `apptainer` is refused with `container_runtime_not_found`
+(the job would otherwise inherit the image's PATH and die on the compute node
+with `singularity: command not found`). Alternatively pin the binary once with
+`mdclaw configure_container --runtime /abs/path/to/singularity`.
+
 The CLI resolves clients in that search path and, when invoking `sbatch` from
 inside the image, hands the job the host environment: bind lists and other
 container variables are cleared, image-only loader settings (`LD_PRELOAD`,

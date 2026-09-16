@@ -39,6 +39,7 @@ from mdclaw._common import (
 from mdclaw.slurm import _base
 from mdclaw.slurm._base import _SUBMITTED_BATCH_JOB_RE
 from mdclaw.slurm.config import (
+    resolve_container_runtime,
     MPS_MAX_TASKS_PER_GPU,
     MPS_RECOMMENDED_MAX_TASKS_PER_GPU,
     _command_requests_cuda,
@@ -386,6 +387,9 @@ def submit_mps_job(
         container_error = resolve_container_source(container)
         if container_error:
             return {**result, **container_error}
+        runtime_error = resolve_container_runtime(container, warnings=result.setdefault("warnings", []))
+        if runtime_error:
+            return {**result, **runtime_error}
 
     sbatch_content = _generate_mps_sbatch_script(
         tasks=normalized_tasks,

@@ -297,7 +297,8 @@ Phase 4 のうちノード統合はこれで骨格ができた。残りは `anal
 SST2 は SIF / Docker / conda に同梱する: `environment.yml` と両 Dockerfile に fork のコミット
 （5590f4f、版 `0.0.1+mdclaw.1`）を pip で固定し、`MDCLAW_SST2_REVISION` で宣言。GPL-2.0 の同梱は
 aggregation で、MDClaw は subprocess でしか呼ばない。`MDCLAW_SST2_HOME` は開発用オーバーライド。
-イメージ再ビルドは fork の push 後。
+イメージ `mdclaw-rikyu-arm64-cuda130-cufft121-sst2-0a15ed1cf7d1.sif`（2026-09-16、overlay ビルド、
+1KXV の DAG 上で `run_sst2` の GPU 受け入れ済み）は `/data1/rkp00079` に配置済み。共有名の symlink はキャンペーン終了まで v2fix のまま。
 
 ### 検証項目
 

@@ -10,6 +10,9 @@ these tools only handle the SLURM layer.
 
 from __future__ import annotations
 
+import os
+import shutil
+
 import json
 import re
 import shlex
@@ -380,6 +383,97 @@ def resolve_container_source(container: Optional[dict]) -> Optional[dict]:
     return None
 
 
+# Where a worker's PATH may lack the container runtime even though the login
+# node had it: appended to the search path, never a substitute for it.
+_RUNTIME_FALLBACK_PATH = ["/usr/local/bin", "/usr/bin", "/bin"]
+_RUNTIME_CANDIDATES = ("singularity", "apptainer")
+
+
+def resolve_container_runtime(container: dict, warnings: Optional[list] = None) -> Optional[dict]:
+    """Resolve the container runtime binary a job will execute, as an absolute
+    path, and store it as ``container["runtime_resolved"]``.
+
+    The generated sbatch script used to invoke the bare word ``singularity``
+    and rely on the job's PATH. When the submission runs inside the image
+    itself (a SIF-only site), the job inherits the image's PATH unless
+    ``MDCLAW_SLURM_PATH`` names the host's, and the job died on the compute
+    node with ``singularity: command not found`` after sitting in the queue.
+    Resolving the runtime here, on the search path the job will get, turns
+    that into a refusal at submission time and makes the script independent
+    of PATH.
+
+    Search order: ``container["runtime"]`` when configured (an absolute path
+    or a command name), else ``singularity`` then ``apptainer``, looked up on
+    ``MDCLAW_SLURM_PATH`` when set, otherwise the current PATH, with the usual
+    system directories appended.
+
+    Outside an image an unresolvable runtime is only a warning (login nodes
+    without apptainer submit to compute nodes that have it) and the bare word
+    stays in the script; inside an image it is a refusal, because the job
+    would inherit the image's PATH.
+
+    Returns None on success, or a structured error dict. ``warnings`` (a
+    list) receives the soft case.
+    """
+    if warnings is None:
+        warnings = []
+    configured = container.get("runtime")
+    candidates = [configured] if configured else list(_RUNTIME_CANDIDATES)
+    environment = os.environ
+    inside_image = bool(
+        environment.get("SINGULARITY_CONTAINER") or environment.get("APPTAINER_CONTAINER")
+    )
+    base_path = environment.get("MDCLAW_SLURM_PATH") or environment.get("PATH", os.defpath)
+    search_path = os.pathsep.join(
+        [p for p in base_path.split(os.pathsep) if p] + _RUNTIME_FALLBACK_PATH
+    )
+    tried: list[str] = []
+    for candidate in candidates:
+        if os.path.isabs(candidate):
+            tried.append(candidate)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                container["runtime_resolved"] = candidate
+                return None
+            continue
+        found = shutil.which(candidate, path=search_path)
+        tried.append(candidate)
+        if found:
+            container["runtime_resolved"] = os.path.abspath(found)
+            return None
+    hints = [
+        "Set MDCLAW_SLURM_PATH to the host PATH that holds singularity/apptainer "
+        "(e.g. MDCLAW_SLURM_PATH=\"$PATH\" exported before the submitting mdclaw call), "
+        "or configure the binary once with: mdclaw configure_container --runtime /abs/path/to/singularity",
+    ]
+    if inside_image:
+        hints.insert(0, (
+            "This mdclaw runs inside a container image, so the job would inherit the image's "
+            "PATH, which has no container runtime."
+        ))
+    where = "MDCLAW_SLURM_PATH" if environment.get("MDCLAW_SLURM_PATH") else "PATH"
+    if not inside_image:
+        container.pop("runtime_resolved", None)
+        warnings.append(
+            f"No container runtime ({', '.join(tried)}) found on {where} here; the sbatch script "
+            f"calls '{candidates[0]}' by name and relies on the compute node's PATH."
+        )
+        return None
+    return {
+        "success": False,
+        "code": "container_runtime_not_found",
+        "message": (
+            f"No container runtime ({', '.join(tried)}) is executable on the {where} the job "
+            "would receive; the job would fail on the compute node with "
+            "'singularity: command not found'."
+        ),
+        "hints": hints,
+        "next_action": "export MDCLAW_SLURM_PATH=\"$PATH\" (from a host shell) and resubmit, "
+                       "or mdclaw configure_container --runtime /abs/path/to/singularity",
+        "errors": [f"container runtime not found: {', '.join(tried)}"],
+        "recoverable": True,
+    }
+
+
 def _build_singularity_command(
     command: str,
     container: dict,
@@ -433,7 +527,9 @@ def _build_singularity_command(
         bind_set.add(str(Path(source_root).resolve()))
 
     bind_arg = ",".join(sorted(bind_set) + [b for b in (runtime_binds or []) if b])
-    parts = ["singularity exec"]
+    # Absolute path when resolve_container_runtime() ran (every submission
+    # path does); the bare word only for callers that build a preview.
+    parts = [f"{container.get('runtime_resolved') or 'singularity'} exec"]
     if extra_flags:
         parts.append(extra_flags)
     parts.append(f"--bind {bind_arg}")

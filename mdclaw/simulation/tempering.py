@@ -37,6 +37,12 @@ from mdclaw.simulation._base import (  # noqa: E402
 from mdclaw.simulation.xml_contract import WORKING_DIR  # noqa: E402
 
 SAMPLING_METHOD = "sst2"
+# Residue names that are never part of a tempered solute (water models, ions).
+_SOLVENT_RESIDUES = frozenset({
+    "HOH", "WAT", "SOL", "TIP3", "TIP4", "TP3", "OPC", "SPC", "H2O",
+    "NA", "NA+", "CL", "CL-", "K", "K+", "MG", "MG2", "CA", "CA2", "ZN", "ZN2",
+    "LI", "RB", "CS", "F", "BR", "I", "SOD", "CLA", "POT", "CAL", "MG2+", "CA2+",
+})
 DRIVER_MODULE = "SST2.driver"
 
 
@@ -122,8 +128,6 @@ def _resolve_solute_indices(
             "solute_residue_count": len(residues),
         }
         n_atoms = topology.getNumAtoms()
-        if indices and indices[-1] >= n_atoms:
-            raise SST2ToolError(code="sst2_solute_selection_invalid", message="solute index out of range")
         if len(indices) == n_atoms:
             raise SST2ToolError(
                 code="sst2_solute_selection_invalid",
@@ -133,6 +137,38 @@ def _resolve_solute_indices(
         raise SST2ToolError(
             code="sst2_solute_selection_empty",
             message="The solute selection matched zero atoms.",
+        )
+    # A solute must be a part of the solute molecules. mdtraj selections such
+    # as "resid 96 to 108" address global residue indices, and index lists can
+    # be built against the wrong topology, so water, ions and virtual sites
+    # sneak in silently; that would temper the solvent instead of the loop.
+    from openmm.app import PDBFile
+
+    topology = PDBFile(topology_pdb_file).topology
+    atoms = list(topology.atoms())
+    if indices[-1] >= len(atoms):
+        raise SST2ToolError(
+            code="sst2_solute_selection_invalid",
+            message=f"solute index {indices[-1]} is beyond the {len(atoms)} atoms of topology.pdb",
+        )
+    offenders: dict[str, int] = {}
+    for i in indices:
+        atom = atoms[i]
+        rname = atom.residue.name.upper()
+        if atom.element is None:
+            offenders["virtual sites"] = offenders.get("virtual sites", 0) + 1
+        elif rname in _SOLVENT_RESIDUES:
+            offenders[rname] = offenders.get(rname, 0) + 1
+    provenance["solute_residue_names"] = sorted({atoms[i].residue.name for i in indices})
+    if offenders:
+        raise SST2ToolError(
+            code="sst2_solute_includes_solvent",
+            message=(
+                "The solute selection contains solvent, ions or virtual sites: "
+                + ", ".join(f"{k} x{v}" for k, v in sorted(offenders.items()))
+                + ". Restrict it to solute molecules, e.g. add 'and protein' or 'chainid 0', "
+                "and check that index files were built against this topology.pdb."
+            ),
         )
     return indices, provenance
 

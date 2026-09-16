@@ -34,7 +34,7 @@ from mdclaw._common import (
 from mdclaw.slurm import _base
 from mdclaw.slurm.config import validate_container_flags
 from mdclaw.slurm._base import _SUBMITTED_BATCH_JOB_RE
-from mdclaw.slurm.config import resolve_container_source, _command_requests_gpu, _get_container_config, _get_policy, _is_partition_allowed, _load_cluster_config, _resolve_job_command, _validate_against_policy, _validate_sbatch_directive_values
+from mdclaw.slurm.config import resolve_container_runtime, resolve_container_source, _command_requests_gpu, _get_container_config, _get_policy, _is_partition_allowed, _load_cluster_config, _resolve_job_command, _validate_against_policy, _validate_sbatch_directive_values
 from mdclaw.slurm.node_sync import _clear_slurm_submission_intent, _reserve_slurm_submission_on_node, _rollback_slurm_stamp_on_node, _stamp_slurm_on_node, _try_scancel_submitted_job, _validate_node_ready_for_slurm_submit
 from mdclaw.slurm.sbatch import _generate_array_sbatch_script, _generate_sbatch_script
 from mdclaw.slurm.tracker import _append_job_record
@@ -390,6 +390,9 @@ def submit_job(
         container_error = resolve_container_source(container)
         if container_error:
             return {**result, **container_error}
+        runtime_error = resolve_container_runtime(container, warnings=result.setdefault("warnings", []))
+        if runtime_error:
+            return {**result, **runtime_error}
 
     sbatch_content = _generate_sbatch_script(
         command=command,
@@ -801,6 +804,9 @@ def submit_array_job(
         container_error = resolve_container_source(container)
         if container_error:
             return {**result, **container_error}
+        runtime_error = resolve_container_runtime(container, warnings=result.setdefault("warnings", []))
+        if runtime_error:
+            return {**result, **runtime_error}
 
     sbatch_content = _generate_array_sbatch_script(
         tasks=normalized_tasks,
