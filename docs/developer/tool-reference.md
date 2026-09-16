@@ -566,11 +566,16 @@ signature, update the relevant section here and the matching skill examples.
   emitted) so a CUDA run is never scheduled on a CPU-only node. Container
   runtime commands in the payload are refused unless `allow_container_command`
   is explicitly set; `configure_container` normally owns that wrapper.
-  Before sbatch, the container runtime is resolved to an absolute path on
-  `MDCLAW_SLURM_PATH` (or PATH) and written into the script
-  (`resolve_container_runtime`); from inside an image an unresolvable runtime
-  is refused with `container_runtime_not_found`, elsewhere it is a warning.
-  `configure_container --runtime /abs/path` pins the binary.
+  Before sbatch, the container runtime is resolved to an absolute path on the
+  worker search path (`MDCLAW_SLURM_PATH`, else the launcher's host PATH when
+  readable, else PATH) and written into the script
+  (`resolve_container_runtime`); when it cannot be resolved (a submission from
+  inside the image), the script keeps the bare name and its preamble sources
+  the node's `/etc/profile` (and the module init) first
+  (`_container_runtime_preamble`), with a warning on the result. Only a
+  configured absolute `--runtime` that does not exist is refused
+  (`container_runtime_not_found`). `configure_container --runtime` pins the
+  binary or its command name.
 - `submit_array_job(...)`: submit one SLURM array where each task maps to a DAG
   node command. Shares the same `--platform`-driven GPU autodetection as
   `submit_job`; a single GPU-platform task command flips the whole array to

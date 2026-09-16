@@ -19,7 +19,7 @@ from mdclaw._common import (
     get_module_loads,
 )
 
-from mdclaw.slurm.config import _build_singularity_command
+from mdclaw.slurm.config import _build_singularity_command, _container_runtime_preamble
 
 
 # A job whose afterok parent failed can never run, and a scheduler without
@@ -125,6 +125,8 @@ def _generate_sbatch_script(
             actual_command, container, output_dir,
         )
 
+    if container and not environment:
+        lines.extend(_container_runtime_preamble(container))
     lines.append("# Job command")
     lines.append(actual_command)
     lines.append("")
@@ -221,6 +223,8 @@ def _generate_array_sbatch_script(
         lines.append(env_lines.strip())
         lines.append("")
 
+    if container and not environment:
+        lines.extend(_container_runtime_preamble(container))
     lines.append("# Array dispatch: one DAG node per SLURM_ARRAY_TASK_ID")
     lines.append('case "$SLURM_ARRAY_TASK_ID" in')
     for idx, task in enumerate(tasks):
@@ -389,6 +393,7 @@ def _generate_mps_sbatch_script(
         "MDCLAW_MPS_PIDS=()",
         "MDCLAW_MPS_NODES=()",
         "",
+        *(_container_runtime_preamble(container) if (container and not environment) else []),
         "# Tasks: one background process per DAG node, round-robin over the visible GPUs",
     ])
 

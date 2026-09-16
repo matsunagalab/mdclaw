@@ -404,8 +404,9 @@ def resolve_container_runtime(container: dict, warnings: Optional[list] = None) 
 
     Search order: ``container["runtime"]`` when configured (an absolute path
     or a command name), else ``singularity`` then ``apptainer``, looked up on
-    ``MDCLAW_SLURM_PATH`` when set, otherwise the current PATH, with the usual
-    system directories appended.
+    the worker search path (``MDCLAW_SLURM_PATH``; inside an image otherwise
+    the launcher's host PATH read from /proc, see ``host_search_path``), else
+    the current PATH, with the usual system directories appended.
 
     Outside an image an unresolvable runtime is only a warning (login nodes
     without apptainer submit to compute nodes that have it) and the bare word
@@ -423,7 +424,10 @@ def resolve_container_runtime(container: dict, warnings: Optional[list] = None) 
     inside_image = bool(
         environment.get("SINGULARITY_CONTAINER") or environment.get("APPTAINER_CONTAINER")
     )
-    base_path = environment.get("MDCLAW_SLURM_PATH") or environment.get("PATH", os.defpath)
+    from mdclaw.slurm._base import host_search_path
+
+    derived = host_search_path(environment)
+    base_path = derived or environment.get("PATH", os.defpath)
     search_path = os.pathsep.join(
         [p for p in base_path.split(os.pathsep) if p] + _RUNTIME_FALLBACK_PATH
     )
@@ -441,37 +445,62 @@ def resolve_container_runtime(container: dict, warnings: Optional[list] = None) 
             container["runtime_resolved"] = os.path.abspath(found)
             return None
     hints = [
-        "Set MDCLAW_SLURM_PATH to the host PATH that holds singularity/apptainer "
-        "(e.g. MDCLAW_SLURM_PATH=\"$PATH\" exported before the submitting mdclaw call), "
-        "or configure the binary once with: mdclaw configure_container --runtime /abs/path/to/singularity",
+        "Configure the binary once: mdclaw configure_container --runtime /abs/path/to/singularity, "
+        "or export MDCLAW_SLURM_PATH=\"$PATH\" from a host shell before the submitting mdclaw call.",
     ]
     if inside_image:
         hints.insert(0, (
-            "This mdclaw runs inside a container image, so the job would inherit the image's "
-            "PATH, which has no container runtime."
+            "This mdclaw runs inside a container image; the host PATH could not be read from the "
+            "launcher process, so the job would inherit the image's PATH, which has no container runtime."
         ))
-    where = "MDCLAW_SLURM_PATH" if environment.get("MDCLAW_SLURM_PATH") else "PATH"
-    if not inside_image:
-        container.pop("runtime_resolved", None)
-        warnings.append(
-            f"No container runtime ({', '.join(tried)}) found on {where} here; the sbatch script "
-            f"calls '{candidates[0]}' by name and relies on the compute node's PATH."
-        )
-        return None
-    return {
-        "success": False,
-        "code": "container_runtime_not_found",
-        "message": (
-            f"No container runtime ({', '.join(tried)}) is executable on the {where} the job "
-            "would receive; the job would fail on the compute node with "
-            "'singularity: command not found'."
-        ),
-        "hints": hints,
-        "next_action": "export MDCLAW_SLURM_PATH=\"$PATH\" (from a host shell) and resubmit, "
-                       "or mdclaw configure_container --runtime /abs/path/to/singularity",
-        "errors": [f"container runtime not found: {', '.join(tried)}"],
-        "recoverable": True,
-    }
+    where = ("MDCLAW_SLURM_PATH" if environment.get("MDCLAW_SLURM_PATH")
+             else "host PATH read from the launcher" if derived else "PATH")
+    if configured and os.path.isabs(configured):
+        # An explicit absolute runtime that does not exist is a configuration
+        # error; the script preamble cannot repair a wrong absolute path.
+        return {
+            "success": False,
+            "code": "container_runtime_not_found",
+            "message": f"configured container runtime {configured!r} is not an executable file",
+            "hints": ["Fix it with: mdclaw configure_container --runtime /abs/path/to/singularity "
+                      "(or a bare command name to resolve it on the compute node)."],
+            "next_action": "mdclaw configure_container --runtime /abs/path/to/singularity",
+            "errors": [f"container runtime not found: {configured}"],
+            "recoverable": True,
+        }
+    # Not resolvable here: the sbatch script calls the runtime by name and its
+    # preamble (_container_runtime_preamble) restores the node's login PATH
+    # first, so a submission from inside the image still runs.
+    container.pop("runtime_resolved", None)
+    warnings.append(
+        f"No container runtime ({', '.join(tried)}) resolvable on {where} here"
+        + (" (submitting from inside the image)" if inside_image else "")
+        + f"; the sbatch script calls '{candidates[0]}' by name after sourcing /etc/profile on the node."
+    )
+    return None
+
+
+
+def _container_runtime_preamble(container: dict) -> list[str]:
+    """Shell lines that make the container runtime reachable on the node.
+
+    The submitting shell's PATH is not the worker's: a submission from inside
+    the image hands the job the image's PATH (no ``singularity`` there), and
+    a login node may reach apptainer only through a profile script. When the
+    runtime named in the command is not found, source the node's login
+    profile (and the module init named by ``MDCLAW_MODULE_INIT`` when it
+    exists) before the command runs. A resolved absolute path passes the
+    check and costs nothing.
+    """
+    runtime = container.get("runtime_resolved") or container.get("runtime") or "singularity"
+    return [
+        "# Container runtime: the submitting shell's PATH is not necessarily this node's.",
+        f"if ! command -v {shlex.quote(runtime)} >/dev/null 2>&1; then",
+        "    [ -r /etc/profile ] && . /etc/profile >/dev/null 2>&1 || true",
+        '    [ -r "${MDCLAW_MODULE_INIT:-/etc/profile.d/modules.sh}" ] && . "${MDCLAW_MODULE_INIT:-/etc/profile.d/modules.sh}" >/dev/null 2>&1 || true',
+        "fi",
+        "",
+    ]
 
 
 def _build_singularity_command(
@@ -529,7 +558,7 @@ def _build_singularity_command(
     bind_arg = ",".join(sorted(bind_set) + [b for b in (runtime_binds or []) if b])
     # Absolute path when resolve_container_runtime() ran (every submission
     # path does); the bare word only for callers that build a preview.
-    parts = [f"{container.get('runtime_resolved') or 'singularity'} exec"]
+    parts = [f"{container.get('runtime_resolved') or container.get('runtime') or 'singularity'} exec"]
     if extra_flags:
         parts.append(extra_flags)
     parts.append(f"--bind {bind_arg}")

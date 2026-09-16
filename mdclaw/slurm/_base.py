@@ -34,6 +34,82 @@ _CONTAINER_ENV_PREFIXES = ("SINGULARITY", "APPTAINER")
 _WORKER_SYSTEM_PATH = ["/usr/local/bin", "/usr/bin", "/bin"]
 
 
+_HOST_PATH_CACHE: dict = {}
+
+
+def _proc_environ(pid: int):
+    """Environment of process ``pid`` from /proc, or None when unreadable."""
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    env = {}
+    for item in raw.split(b"\0"):
+        if b"=" in item:
+            key, _, value = item.partition(b"=")
+            env[key.decode(errors="replace")] = value.decode(errors="replace")
+    return env
+
+
+def _proc_parent(pid: int):
+    try:
+        with open(f"/proc/{pid}/status") as fh:
+            for line in fh:
+                if line.startswith("PPid:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _ancestor_environments(start_pid=None, max_depth=12):
+    """Yield the environments of the ancestor processes, nearest first."""
+    pid = os.getppid() if start_pid is None else start_pid
+    for _ in range(max_depth):
+        if not pid or pid <= 1:
+            return
+        env = _proc_environ(pid)
+        if env is not None:
+            yield env
+        pid = _proc_parent(pid)
+
+
+def host_search_path(environment=None):
+    """The search path a Slurm job should inherit.
+
+    ``MDCLAW_SLURM_PATH`` when set. Otherwise, when this process runs inside a
+    container image, the PATH of the nearest ancestor process that is not in
+    the image: the ``apptainer`` / ``singularity`` launcher inherited the host
+    shell's PATH, and the container runs in the host PID namespace, so
+    ``/proc/<ppid>/environ`` shows it. That is the PATH the compute node needs
+    (measured 2026-09-16: the same job submitted with the image's PATH died with
+    `singularity: command not found`). None outside an image or when no
+    ancestor exposes a PATH that resolves a container runtime.
+    """
+    env = os.environ if environment is None else environment
+    explicit = env.get("MDCLAW_SLURM_PATH")
+    if explicit:
+        return explicit
+    if not (env.get("SINGULARITY_CONTAINER") or env.get("APPTAINER_CONTAINER")):
+        return None
+    if "path" in _HOST_PATH_CACHE:
+        return _HOST_PATH_CACHE["path"]
+    own = env.get("PATH", "")
+    found = None
+    for ancestor in _ancestor_environments():
+        path = ancestor.get("PATH")
+        if not path or path == own:
+            continue
+        if ancestor.get("SINGULARITY_CONTAINER") or ancestor.get("APPTAINER_CONTAINER"):
+            continue
+        if any(shutil.which(name, path=path) for name in ("singularity", "apptainer")):
+            found = path
+            break
+    _HOST_PATH_CACHE["path"] = found
+    return found
+
+
 def _slurm_executable(tool_name, env=None):
     environment = {**os.environ, **(env or {})}
     search_path = environment.get("MDCLAW_SLURM_PATH", environment.get("PATH", os.defpath))
@@ -76,9 +152,10 @@ def run_command(cmd, cwd=None, timeout=None, capture_output=True, env=None, use_
             # hides /usr/bin, and `singularity --nv` binds nvidia-smi only
             # when PATH resolves it (measured 2026-09-10 on n2: job 137274
             # had no nvidia-smi with MDCLAW_SLURM_PATH=/usr/local/bin alone).
-            if environment.get("MDCLAW_SLURM_PATH"):
+            worker_path = host_search_path(environment)
+            if worker_path:
                 env["PATH"] = os.pathsep.join(dict.fromkeys(
-                    environment["MDCLAW_SLURM_PATH"].split(os.pathsep) + _WORKER_SYSTEM_PATH))
+                    worker_path.split(os.pathsep) + _WORKER_SYSTEM_PATH))
         cmd = [executable, *cmd[1:]]
     return _run_command(
         cmd, cwd=cwd, timeout=timeout, capture_output=capture_output,

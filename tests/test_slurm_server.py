@@ -2779,17 +2779,26 @@ class TestResolveContainerRuntime:
         assert resolve_container_runtime(container) is None
         assert container["runtime_resolved"] == str(exe)
 
-    def test_inside_image_without_runtime_is_refused(self, tmp_path, monkeypatch):
-        from mdclaw.slurm.config import resolve_container_runtime
+    def test_inside_image_without_runtime_warns_and_keeps_the_name(self, tmp_path, monkeypatch):
+        from mdclaw.slurm.config import _container_runtime_preamble, resolve_container_runtime
 
         (tmp_path / "empty").mkdir()
         monkeypatch.setenv("MDCLAW_SLURM_PATH", str(tmp_path / "empty"))
         monkeypatch.setenv("SINGULARITY_CONTAINER", "/data/mdclaw.sif")
         container = {"image": "/opt/mdclaw.sif"}
+        warnings: list = []
+        assert resolve_container_runtime(container, warnings=warnings) is None
+        assert "runtime_resolved" not in container
+        assert len(warnings) == 1 and "inside the image" in warnings[0]
+        preamble = "\n".join(_container_runtime_preamble(container))
+        assert "command -v singularity" in preamble and ". /etc/profile" in preamble
+
+    def test_missing_configured_absolute_runtime_is_refused(self, tmp_path, monkeypatch):
+        from mdclaw.slurm.config import resolve_container_runtime
+
+        container = {"image": "/opt/mdclaw.sif", "runtime": str(tmp_path / "nope")}
         error = resolve_container_runtime(container)
         assert error["code"] == "container_runtime_not_found"
-        assert "MDCLAW_SLURM_PATH" in " ".join(error["hints"])
-        assert "runtime_resolved" not in container
 
     def test_outside_image_without_runtime_only_warns(self, tmp_path, monkeypatch):
         from mdclaw.slurm.config import resolve_container_runtime
@@ -2816,7 +2825,7 @@ class TestResolveContainerRuntime:
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
     @patch("mdclaw.slurm._base.run_command")
-    def test_submit_from_inside_image_refuses_before_sbatch(self, mock_run, mock_check, tmp_path, monkeypatch):
+    def test_submit_from_inside_image_without_runtime_gets_the_preamble(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "empty").mkdir()
         monkeypatch.setenv("MDCLAW_SLURM_PATH", str(tmp_path / "empty"))
@@ -2825,10 +2834,13 @@ class TestResolveContainerRuntime:
             "partitions": [{"name": "gpu", "gpus_per_node": 4}],
             "container": {"image": "/opt/containers/mdclaw.sif", "extra_flags": "--nv"},
         }))
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 10003\n")
         result = submit_job(script="mdclaw run_production", partition="gpu", gpus=1, output_dir=str(tmp_path))
-        assert result["success"] is False
-        assert result["code"] == "container_runtime_not_found"
-        mock_run.assert_not_called()
+        assert result["success"] is True, result
+        assert any("inside the image" in w for w in result["warnings"])
+        content = Path(result["script_file"]).read_text()
+        assert ". /etc/profile" in content
+        assert content.index("command -v singularity") < content.index("singularity exec --nv")
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
     @patch("mdclaw.slurm._base.run_command")
@@ -2846,3 +2858,56 @@ class TestResolveContainerRuntime:
         assert result["success"] is True, result
         content = Path(result["script_file"]).read_text()
         assert f"{exe} exec --nv" in content
+        assert f"command -v {exe}" in content
+
+
+class TestHostSearchPath:
+    """Inside an image the worker PATH comes from the launcher process."""
+
+    def _fake_runtime_dir(self, tmp_path):
+        d = tmp_path / "hostbin"
+        d.mkdir(exist_ok=True)
+        exe = d / "apptainer"
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o755)
+        return d
+
+    def test_explicit_variable_wins(self, monkeypatch):
+        from mdclaw.slurm import _base
+        monkeypatch.setenv("MDCLAW_SLURM_PATH", "/x/bin")
+        assert _base.host_search_path() == "/x/bin"
+
+    def test_outside_image_is_none(self, monkeypatch):
+        from mdclaw.slurm import _base
+        monkeypatch.delenv("MDCLAW_SLURM_PATH", raising=False)
+        monkeypatch.delenv("SINGULARITY_CONTAINER", raising=False)
+        monkeypatch.delenv("APPTAINER_CONTAINER", raising=False)
+        assert _base.host_search_path() is None
+
+    def test_inside_image_reads_the_launcher_path(self, tmp_path, monkeypatch):
+        from mdclaw.slurm import _base
+        d = self._fake_runtime_dir(tmp_path)
+        monkeypatch.delenv("MDCLAW_SLURM_PATH", raising=False)
+        monkeypatch.setenv("SINGULARITY_CONTAINER", "/data/mdclaw.sif")
+        monkeypatch.setenv("PATH", "/opt/mdclaw/bin:/usr/bin")
+        monkeypatch.setattr(_base, "_HOST_PATH_CACHE", {})
+        chain = [
+            {"PATH": "/opt/mdclaw/bin:/usr/bin", "SINGULARITY_CONTAINER": "/data/mdclaw.sif"},  # a shell in the image
+            {"PATH": f"{d}:/usr/bin"},                                                          # the launcher
+        ]
+        monkeypatch.setattr(_base, "_ancestor_environments", lambda *a, **k: iter(chain))
+        assert _base.host_search_path() == f"{d}:/usr/bin"
+        # resolved into the sbatch script without any variable
+        from mdclaw.slurm.config import resolve_container_runtime
+        container = {"image": "/opt/mdclaw.sif"}
+        assert resolve_container_runtime(container) is None
+        assert container["runtime_resolved"] == str(d / "apptainer")
+
+    def test_inside_image_without_usable_ancestor(self, monkeypatch):
+        from mdclaw.slurm import _base
+        monkeypatch.delenv("MDCLAW_SLURM_PATH", raising=False)
+        monkeypatch.setenv("SINGULARITY_CONTAINER", "/data/mdclaw.sif")
+        monkeypatch.setenv("PATH", "/opt/mdclaw/bin")
+        monkeypatch.setattr(_base, "_HOST_PATH_CACHE", {})
+        monkeypatch.setattr(_base, "_ancestor_environments", lambda *a, **k: iter([{"PATH": "/nowhere"}]))
+        assert _base.host_search_path() is None
