@@ -38,7 +38,11 @@ from the DAG.
 - Shared SIF with no host MDClaw installation: [direct SIF invocation](sif-slurm.md).
 - One DAG node as one SLURM job:
   `skills/hpc-run/submit-single.md`
-- Homogeneous batches or replicate arrays:
+- Several nodes at the same stage whose systems are too small to fill the
+  GPU (replicates, seeds, several small systems), sharing one GPU under
+  NVIDIA MPS -- the default for replicate sets of small systems on any
+  NVIDIA GPU cluster: `skills/hpc-run/submit-mps.md`
+- Homogeneous batches of large systems, one GPU each:
   `skills/hpc-run/submit-array.md`
 - Monitoring, status sync, logs, and recovery:
   `skills/hpc-run/monitor-recover.md`
@@ -67,8 +71,18 @@ from the DAG.
   DAG SLURM commands; resolver logic handles these.
 - `COMPLETED` SLURM state alone does not mark a node complete. The MDClaw tool
   running inside the job owns the final `complete_node` call.
-- Use arrays only for homogeneous, low-failure task sets. Use individual jobs
-  with dependencies when failure isolation matters.
+- **Simulations too small for the GPU share it under MPS.** When two or more
+  nodes are ready at the same stage (replicates, seeds, several small
+  systems) and one simulation cannot fill the GPU (about 100k atoms or fewer
+  on a data-centre GPU, less on a smaller GPU), submit them with one
+  `submit_mps_job` per stage instead of one GPU job each: the aggregate
+  throughput is 2x or more for small systems (NVIDIA on H100/L40S; 2.65x
+  measured on a GB200 with 8 tasks) for the GPU-hours of one GPU. The
+  decision table, the GPU-class extrapolation and the calibration recipe are
+  in `submit-mps.md`. A single system, or one above about 400k atoms, takes
+  `submit_job`.
+- Use arrays only for homogeneous, low-failure task sets of large systems.
+  Use individual jobs with dependencies when failure isolation matters.
 - GPU resources stay in sync with the OpenMM platform automatically. When a
   node's run command uses `--platform CUDA` (or `--platform OpenCL`) and you
   pass neither `--gpus` nor `--gres`, `submit_job` / `submit_array_job` auto-set

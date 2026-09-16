@@ -384,6 +384,7 @@ def _build_singularity_command(
     command: str,
     container: dict,
     output_dir: str,
+    runtime_binds: Optional[list[str]] = None,
 ) -> str:
     """Wrap a command with singularity exec.
 
@@ -391,6 +392,11 @@ def _build_singularity_command(
         command: The original command to run.
         container: Container config dict with image, bind_paths, extra_flags.
         output_dir: The job output directory (always bound).
+        runtime_binds: Shell expressions (e.g. ``$CUDA_MPS_PIPE_DIRECTORY``)
+            appended to the bind list unresolved, for paths that only exist
+            once the job runs. They are appended after the sorted static
+            binds and are never quoted, so they must expand to a single
+            path without spaces.
 
     Returns:
         The singularity exec ... command string.
@@ -426,7 +432,7 @@ def _build_singularity_command(
             )
         bind_set.add(str(Path(source_root).resolve()))
 
-    bind_arg = ",".join(sorted(bind_set))
+    bind_arg = ",".join(sorted(bind_set) + [b for b in (runtime_binds or []) if b])
     parts = ["singularity exec"]
     if extra_flags:
         parts.append(extra_flags)
@@ -457,6 +463,43 @@ def _command_requests_gpu(command: Optional[str]) -> bool:
     if not command:
         return False
     return bool(_GPU_PLATFORM_RE.search(command))
+
+
+# NVIDIA MPS serves CUDA contexts only. An OpenCL or CPU run inside an MPS job
+# would occupy a slot without sharing the GPU through the server, and
+# ``--platform auto`` cannot be checked at submission time, so an MPS task must
+# say ``--platform CUDA`` explicitly.
+_CUDA_PLATFORM_RE = re.compile(r"--platform[=\s]+cuda\b", re.IGNORECASE)
+
+
+def _command_requests_cuda(command: Optional[str]) -> bool:
+    """Return True if a job command explicitly requests the CUDA platform."""
+    if not command:
+        return False
+    return bool(_CUDA_PLATFORM_RE.search(command))
+
+
+# Upper bound on processes sharing one GPU through ``submit_mps_job``. The MPS
+# server allows 48 clients per GPU (Volta and later), but past 8 the measured
+# throughput gain flattens (NVIDIA, "Maximizing OpenMM Molecular Dynamics
+# Throughput with NVIDIA Multi-Process Service", 2025: 1-8 processes tested),
+# and each extra process lengthens every simulation's wall time, so more
+# than 16 is refused rather than warned.
+MPS_MAX_TASKS_PER_GPU = 16
+MPS_RECOMMENDED_MAX_TASKS_PER_GPU = 8
+
+
+def mps_active_thread_percentage(tasks_per_gpu: int) -> int:
+    """Default ``CUDA_MPS_ACTIVE_THREAD_PERCENTAGE`` for N processes per GPU.
+
+    NVIDIA's OpenMM/MPS study found ``200 / N`` best: each process is limited
+    to twice its fair share of the SMs, which stops the processes from
+    interfering destructively while still letting one fill idle SMs. The
+    result is clamped to the valid 1-100 range (one or two processes get the
+    whole GPU).
+    """
+    n = max(1, int(tasks_per_gpu))
+    return max(1, min(100, 200 // n))
 
 
 def _resolve_job_command(script: str) -> str:

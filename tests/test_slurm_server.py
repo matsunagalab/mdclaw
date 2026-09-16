@@ -25,6 +25,7 @@ from mdclaw.slurm.config import (
     _parse_memory_bytes,
     _parse_time_limit_seconds,
     _validate_against_policy,
+    mps_active_thread_percentage,
 )
 from mdclaw.slurm.monitor import (
     cancel_job,
@@ -33,10 +34,12 @@ from mdclaw.slurm.monitor import (
     list_jobs,
     list_tracked_jobs,
 )
+from mdclaw.slurm.mps import submit_mps_job
 from mdclaw.slurm.submit import (
     submit_array_job,
     submit_job,
 )
+from mdclaw.slurm.node_sync import _stamp_slurm_on_node
 from mdclaw.slurm.tracker import (
     _append_job_record,
     _find_job_metadata,
@@ -2447,3 +2450,285 @@ def test_dependent_jobs_are_cancelled_by_the_scheduler_when_the_dependency_fails
         dependency="afterok:123", **{k: v for k, v in common.items()
                                      if k not in ("command", "nodes", "ntasks")})
     assert "#SBATCH --kill-on-invalid-dep=yes" in array
+
+
+# ---------------------------------------------------------------------------
+# submit_mps_job
+# ---------------------------------------------------------------------------
+
+
+def _mps_tasks(jds, node_id="prod_001", platform="--platform CUDA"):
+    return [
+        {
+            "job_dir": str(jd),
+            "node_id": node_id,
+            "command": (
+                f"mdclaw --job-dir {jd} --node-id {node_id} run_production "
+                f"--simulation-time-ns 0.1 {platform}"
+            ).strip(),
+        }
+        for jd in jds
+    ]
+
+
+class TestSubmitMpsJob:
+    """submit_mps_job: N nodes, one GPU job, one MPS daemon."""
+
+    def test_active_thread_percentage_follows_nvidia_rule(self):
+        # 200 / N, clamped to 1-100 (NVIDIA OpenMM/MPS blog, 2025).
+        assert mps_active_thread_percentage(1) == 100
+        assert mps_active_thread_percentage(2) == 100
+        assert mps_active_thread_percentage(3) == 66
+        assert mps_active_thread_percentage(4) == 50
+        assert mps_active_thread_percentage(8) == 25
+        assert mps_active_thread_percentage(400) == 1
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_three_nodes_one_job(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        jds = [_make_job_with_nodes(tmp_path, f"rep_{i}", ["prod_001"]) for i in range(3)]
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 77777\n")
+
+        result = submit_mps_job(
+            tasks=_mps_tasks(jds),
+            job_name="prod_mps",
+            partition="gpu",
+            time_limit="01:00:00",
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is True, result
+        assert result["slurm_job_id"] == "77777"
+        assert result["mps"] == {
+            "tasks": 3, "gpus": 1, "tasks_per_gpu": 3,
+            "active_thread_percentage": 66, "cpus_per_task": 6,
+        }
+        assert [t["mps_slot"] for t in result["tasks"]] == [0, 1, 2]
+        assert all(t["slurm_job_id"] == "77777" for t in result["tasks"])
+        assert all(t["gpu_slot"] == 0 for t in result["tasks"])
+
+        # Every node carries the same job id plus its slot, and is queued.
+        for idx, jd in enumerate(jds):
+            node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
+            assert node["status"] == "queued"
+            assert node["metadata"]["slurm_job_id"] == "77777"
+            assert node["metadata"]["slurm_parent_job_id"] == "77777"
+            assert node["metadata"]["slurm_mps_slot"] == idx
+            assert "slurm_array_task_id" not in node["metadata"]
+            assert node["metadata"]["slurm_stdout_log"].endswith(f"prod_mps_77777.task{idx}.out")
+            assert "slurm_submission_intent_id" not in node["metadata"]
+
+        content = Path(result["script_file"]).read_text()
+        assert "#SBATCH --gpus=1" in content
+        assert "#SBATCH --cpus-per-task=6" in content
+        assert "#SBATCH --array" not in content
+        assert "export CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=66" in content
+        assert 'export CUDA_MPS_PIPE_DIRECTORY="${MDCLAW_MPS_ROOT}/pipe"' in content
+        assert "nvidia-cuda-mps-control -d" in content
+        assert "echo quit | nvidia-cuda-mps-control" in content
+        assert "trap mdclaw_mps_stop EXIT" in content
+        assert content.count("MDCLAW_MPS_PIDS[") >= 3
+        for idx in range(3):
+            assert f"# slot {idx}: " in content
+            assert f".task{idx}.out" in content
+        assert "exit $MDCLAW_MPS_STATUS" in content
+        # The generated wrapper must be valid bash.
+        subprocess.run(["bash", "-n", result["script_file"]], check=True)
+
+        # One tracker record per node, all under the same job id.
+        records = _read_job_records()
+        assert [r["job_id"] for r in records] == ["77777", "77777", "77777"]
+        assert [r["mps_slot"] for r in records] == [0, 1, 2]
+        assert all(r["job_stderr_log"].endswith("prod_mps_77777.err") for r in records)
+        assert records[1]["stderr_log"].endswith("prod_mps_77777.task1.err")
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_tasks_spread_over_two_gpus(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        jds = [_make_job_with_nodes(tmp_path, f"rep_{i}", ["prod_001"]) for i in range(4)]
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 77778\n")
+
+        result = submit_mps_job(
+            tasks=_mps_tasks(jds), gpus=2, cpus_per_sim=3, output_dir=str(tmp_path),
+        )
+        assert result["success"] is True, result
+        assert result["mps"]["tasks_per_gpu"] == 2
+        assert result["mps"]["active_thread_percentage"] == 100
+        assert result["mps"]["cpus_per_task"] == 12
+        assert [t["gpu_slot"] for t in result["tasks"]] == [0, 1, 0, 1]
+        content = Path(result["script_file"]).read_text()
+        assert "#SBATCH --gpus=2" in content
+        assert "MDCLAW_MPS_DEVICES[$((3 % ${#MDCLAW_MPS_DEVICES[@]}))]" in content
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_explicit_cpus_and_percentage_win(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        jds = [_make_job_with_nodes(tmp_path, f"rep_{i}", ["prod_001"]) for i in range(2)]
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 77779\n")
+
+        result = submit_mps_job(
+            tasks=_mps_tasks(jds), cpus_per_task=9, active_thread_percentage=40,
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is True, result
+        content = Path(result["script_file"]).read_text()
+        assert "#SBATCH --cpus-per-task=9" in content
+        assert "export CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=40" in content
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_task_without_cuda_platform_refused(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        jds = [_make_job_with_nodes(tmp_path, f"rep_{i}", ["prod_001"]) for i in range(2)]
+        for platform in ("", "--platform OpenCL", "--platform auto"):
+            result = submit_mps_job(
+                tasks=_mps_tasks(jds, platform=platform), output_dir=str(tmp_path),
+            )
+            assert result["success"] is False
+            assert result["code"] == "mps_task_requires_cuda_platform", platform
+        mock_run.assert_not_called()
+        # Nothing was reserved on the nodes.
+        node = json.loads((jds[0] / "nodes" / "prod_001" / "node.json").read_text())
+        assert node["status"] == "pending"
+        assert node["metadata"] == {}
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_too_many_tasks_per_gpu_refused(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        jds = [_make_job_with_nodes(tmp_path, f"rep_{i}", ["prod_001"]) for i in range(17)]
+        result = submit_mps_job(tasks=_mps_tasks(jds), gpus=1, output_dir=str(tmp_path))
+        assert result["success"] is False
+        assert result["code"] == "mps_tasks_per_gpu_exceeded"
+        mock_run.assert_not_called()
+
+        # Two GPUs bring it to 9 per GPU: accepted with a warning.
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 77780\n")
+        result = submit_mps_job(tasks=_mps_tasks(jds), gpus=2, output_dir=str(tmp_path))
+        assert result["success"] is True, result
+        assert any("9 tasks per GPU" in w for w in result["warnings"])
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_container_wraps_each_task_and_binds_pipe_dir(
+        self, mock_run, mock_check, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mdclaw.sif").write_text("")
+        configure_container(image=str(tmp_path / "mdclaw.sif"), extra_flags="--nv")
+        jds = [_make_job_with_nodes(tmp_path, f"rep_{i}", ["prod_001"]) for i in range(2)]
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 77781\n")
+
+        result = submit_mps_job(tasks=_mps_tasks(jds), output_dir=str(tmp_path))
+        assert result["success"] is True, result
+        content = Path(result["script_file"]).read_text()
+        wrapped = [line for line in content.splitlines() if "singularity exec" in line]
+        assert len(wrapped) == 2
+        for idx, line in enumerate(wrapped):
+            assert "--nv" in line
+            assert str(jds[idx].resolve()) in line
+            # The client inside the container reaches the host daemon through
+            # the pipe directory, whose name is only known once the job runs.
+            assert ",$CUDA_MPS_PIPE_DIRECTORY " in line
+        subprocess.run(["bash", "-n", result["script_file"]], check=True)
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_stamp_failure_scancels_and_rolls_back(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        jds = [_make_job_with_nodes(tmp_path, f"rep_{i}", ["prod_001"]) for i in range(2)]
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 77782\n")
+
+        real_stamp = _stamp_slurm_on_node
+
+        def flaky_stamp(job_dir, node_id, slurm_job_id, **kwargs):
+            if kwargs.get("mps_slot") == 1:
+                return "could not stamp node prod_001: simulated"
+            return real_stamp(job_dir, node_id, slurm_job_id, **kwargs)
+
+        with patch("mdclaw.slurm.mps._stamp_slurm_on_node", side_effect=flaky_stamp):
+            result = submit_mps_job(tasks=_mps_tasks(jds), output_dir=str(tmp_path))
+        assert result["success"] is False
+        assert any("simulated" in e for e in result["errors"])
+        cancelled = [c for c in mock_run.call_args_list if c.args[0][0] == "scancel"]
+        assert cancelled and cancelled[0].args[0][1] == "77782"
+        for jd in jds:
+            node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
+            assert node["status"] == "pending"
+            assert "slurm_job_id" not in node["metadata"]
+            assert "slurm_mps_slot" not in node["metadata"]
+            assert "slurm_submission_intent_id" not in node["metadata"]
+        assert _read_job_records() == []
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_check_job_failed_syncs_every_packed_node(self, mock_run, mock_check, tmp_path, monkeypatch):
+        """One FAILED Slurm state must reach every node packed into the job,
+        each with the tail of its own slot log, while a node that already
+        completed itself keeps that status."""
+        monkeypatch.chdir(tmp_path)
+        jds = [_make_job_with_nodes(tmp_path, f"rep_{i}", ["prod_001"]) for i in range(3)]
+        job_err = tmp_path / "prod_mps_88888.err"
+        job_err.write_text("[mdclaw mps] slot 1 FAILED (exit 1)\n")
+        for idx, jd in enumerate(jds):
+            slot_err = tmp_path / f"prod_mps_88888.task{idx}.err"
+            slot_err.write_text(f"slot {idx} stderr: boom\n" if idx == 1 else "")
+            _append_job_record({
+                "job_id": "88888", "job_name": "prod_mps", "status": "RUNNING",
+                "job_dir": str(jd), "node_id": "prod_001", "mps_slot": idx,
+                "stdout_log": str(tmp_path / f"prod_mps_88888.task{idx}.out"),
+                "stderr_log": str(slot_err),
+                "job_stdout_log": str(tmp_path / "prod_mps_88888.out"),
+                "job_stderr_log": str(job_err),
+            })
+            status = "completed" if idx == 0 else "queued"
+            (jd / "nodes" / "prod_001" / "node.json").write_text(json.dumps({
+                "node_id": "prod_001", "type": "prod", "status": status,
+                "parents": [], "metadata": {"slurm_job_id": "88888", "slurm_mps_slot": idx},
+                "artifacts": {}, "warnings": [],
+            }))
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "squeue":
+                raise subprocess.CalledProcessError(1, cmd)
+            return _mock_run_command(stdout=json.dumps({
+                "jobs": [{
+                    "state": {"current": ["FAILED"]},
+                    "nodes": "c074",
+                    "exit_code": {"return_code": 1},
+                    "time": {"elapsed": "00:10:00"},
+                }]
+            }))
+        mock_run.side_effect = side_effect
+
+        result = check_job("88888")
+        assert result["state"] == "FAILED"
+        # The job-level tail comes from the wrapper's log, not slot 0's.
+        assert "slot 1 FAILED" in result["stderr_tail"]
+
+        n0 = json.loads((jds[0] / "nodes" / "prod_001" / "node.json").read_text())
+        assert n0["status"] == "completed"
+        for idx in (1, 2):
+            node = json.loads((jds[idx] / "nodes" / "prod_001" / "node.json").read_text())
+            assert node["status"] == "failed", idx
+            assert node["metadata"].get("failure_code") == "slurm_failed"
+        # Slot 1 recorded its own stderr as evidence.
+        manifest = jds[1] / "nodes" / "prod_001" / "artifacts" / "failure" / "latest"
+        evidence = " ".join(p.read_text() for p in manifest.rglob("*") if p.is_file())
+        assert "slot 1 stderr: boom" in evidence
+        # Every tracker record moved to FAILED.
+        assert {r["status"] for r in _read_job_records()} == {"FAILED"}
+
+    def test_list_tracked_jobs_sync_queries_each_job_id_once(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        for idx in range(3):
+            _append_job_record({
+                "job_id": "88889", "status": "RUNNING", "mps_slot": idx,
+                "job_dir": str(tmp_path / f"rep_{idx}"), "node_id": "prod_001",
+            })
+        _append_job_record({"job_id": "88890", "status": "RUNNING"})
+        with patch("mdclaw.slurm.monitor.check_job") as mock_check_job:
+            list_tracked_jobs(sync=True)
+        assert sorted(c.args[0] for c in mock_check_job.call_args_list) == ["88889", "88890"]

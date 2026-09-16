@@ -107,6 +107,7 @@ _SLURM_SUBMISSION_METADATA_KEYS = (
     "slurm_submitted_at",
     "slurm_array_task_id",
     "slurm_parent_job_id",
+    "slurm_mps_slot",
 )
 
 

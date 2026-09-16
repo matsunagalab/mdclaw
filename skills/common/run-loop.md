@@ -120,8 +120,10 @@ DAG handoff instead of claiming a scientific answer.
    Run the parent named in `next` first, then rerun the same command.
 
    On a batch cluster, `min`, `eq` and `prod` are *submitted*, not run here:
-   follow `skills/hpc-run/SKILL.md` and use `submit_job`, which owns the sbatch
-   script and the `--dependency` flag. Do not hand-write sbatch files.
+   follow `skills/hpc-run/SKILL.md` and use `submit_job` (one node per GPU) or
+   `submit_mps_job` (replicates of a small system sharing one GPU), which own
+   the sbatch script and the `--dependency` flag. Do not hand-write sbatch
+   files.
 
 5. **Report what ran, before moving on.**
 

@@ -1488,6 +1488,10 @@ def _workflow_text(tools: dict[str, dict]) -> str:
         "  mdclaw submit_job --job-dir <job_dir> --node-id <node_id> "
         "--script \"mdclaw --job-dir <job_dir> --node-id <node_id> run_minimization ...\" "
         "--gpus 1 [--dependency afterok:<slurm_job_id>]",
+        "  Replicates of small systems (<~100k atoms) share one GPU under NVIDIA MPS: "
+        "mdclaw submit_mps_job --tasks '[{\"job_dir\":..,\"node_id\":..,"
+        "\"command\":\"mdclaw ... --platform CUDA\"}, ...]' (one call per stage; "
+        "every packed node gets the same slurm_job_id).",
         "",
         "Output: JSON on stdout; stderr carries warnings and a heartbeat only "
         "(--log-file <path> for INFO logs).",

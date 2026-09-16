@@ -26,7 +26,7 @@ from mdclaw._common import (
 from mdclaw.slurm import _base
 from mdclaw.slurm.config import _validate_slurm_job_id
 from mdclaw.slurm.node_sync import _sync_slurm_state_to_node
-from mdclaw.slurm.tracker import _candidate_job_paths, _find_job_metadata, _find_record_by_job_id, _get_jobs_path, _read_job_records, _update_job_record
+from mdclaw.slurm.tracker import _candidate_job_paths, _find_job_metadata, _find_record_by_job_id, _find_records_by_job_id, _get_jobs_path, _read_job_records, _update_job_record
 
 
 _STATUS_QUERY_ERRORS = (subprocess.SubprocessError, OSError, ValueError, TypeError, AttributeError)
@@ -265,6 +265,22 @@ def check_job(
     return result
 
 
+def _job_level_log_record(rec: Optional[dict]) -> Optional[dict]:
+    """Return *rec* with the job's own log paths in ``stdout_log``/``stderr_log``.
+
+    MPS records point their log fields at the slot's logs and keep the
+    wrapper's under ``job_stdout_log`` / ``job_stderr_log``; the job-level
+    tails reported by ``check_job`` come from the wrapper.
+    """
+    if not rec or rec.get("mps_slot") is None:
+        return rec
+    return {
+        **rec,
+        "stdout_log": rec.get("job_stdout_log") or rec.get("stdout_log"),
+        "stderr_log": rec.get("job_stderr_log") or rec.get("stderr_log"),
+    }
+
+
 def _check_job_finalize(
     result: dict,
     job_id: str,
@@ -278,7 +294,13 @@ def _check_job_finalize(
     (RUNNING/PENDING via squeue) and archive-hit (COMPLETED/FAILED via
     scontrol/sacct) paths both sync consistently.
     """
-    rec = _find_record_by_job_id(job_id, job_dir=job_dir, output_dir=output_dir)
+    # One Slurm job id normally maps to one tracker record. An MPS-packed job
+    # (submit_mps_job) carries one record per DAG node, all sharing the id;
+    # the first record stands in for job-level bookkeeping and every record
+    # gets the state reflected onto its own node below.
+    recs = _find_records_by_job_id(job_id, job_dir=job_dir, output_dir=output_dir)
+    rec = recs[0] if recs else None
+    tail_rec = _job_level_log_record(rec)
 
     terminal_states = {
         "BOOT_FAIL",
@@ -299,14 +321,14 @@ def _check_job_finalize(
             result["stderr_tail"] = _find_log_tail(
                 job_id,
                 log_type="stderr",
-                rec=rec,
+                rec=tail_rec,
                 output_dir=output_dir,
             )
         if not result.get("stdout_tail"):
             result["stdout_tail"] = _find_log_tail(
                 job_id,
                 log_type="stdout",
-                rec=rec,
+                rec=tail_rec,
                 output_dir=output_dir,
             )
 
@@ -327,14 +349,24 @@ def _check_job_finalize(
         output_dir=output_dir or (rec or {}).get("output_dir"),
     )
 
-    # Reflect SLURM state onto the linked DAG node (if any).
-    if rec and rec.get("job_dir") and rec.get("node_id"):
+    # Reflect SLURM state onto every linked DAG node. A node packed into an
+    # MPS job has its own per-slot logs; those are the evidence it records,
+    # falling back to the job-level tails when the slot never wrote any.
+    terminal = result.get("state") in terminal_states
+    for linked in recs:
+        if not (linked.get("job_dir") and linked.get("node_id")):
+            continue
+        stdout_tail = result.get("stdout_tail")
+        stderr_tail = result.get("stderr_tail")
+        if terminal and linked.get("mps_slot") is not None:
+            stdout_tail = _read_tail(linked.get("stdout_log")) or stdout_tail
+            stderr_tail = _read_tail(linked.get("stderr_log")) or stderr_tail
         sync_err = _sync_slurm_state_to_node(
-            rec["job_dir"],
-            rec["node_id"],
+            linked["job_dir"],
+            linked["node_id"],
             str(result["state"]),
-            stdout_tail=result.get("stdout_tail"),
-            stderr_tail=result.get("stderr_tail"),
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
             elapsed=result.get("elapsed"),
             exit_code=result.get("exit_code"),
         )
@@ -633,11 +665,16 @@ def list_tracked_jobs(
     # Optionally sync status with SLURM (check_job updates the JSONL)
     if sync:
         terminal = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY"}
+        # An MPS-packed job has one record per node under one job id; one
+        # check_job call syncs all of them, so ask Slurm once per id.
+        checked: set[str] = set()
         for rec in records:
-            if rec.get("status") not in terminal and rec.get("job_id"):
+            job_id = rec.get("job_id")
+            if rec.get("status") not in terminal and job_id and job_id not in checked:
+                checked.add(job_id)
                 try:
                     check_job(
-                        rec["job_id"],
+                        job_id,
                         job_dir=rec.get("job_dir"),
                         output_dir=rec.get("output_dir"),
                     )

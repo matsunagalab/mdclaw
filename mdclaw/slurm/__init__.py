@@ -13,6 +13,7 @@ from mdclaw.slurm.submit import (
     submit_job,
     submit_array_job,
 )
+from mdclaw.slurm.mps import submit_mps_job
 from mdclaw.slurm.monitor import (
     check_job,
     list_jobs,
@@ -27,6 +28,7 @@ TOOLS = {
         inspect_cluster,
         submit_job,
         submit_array_job,
+        submit_mps_job,
         check_job,
         list_jobs,
         list_tracked_jobs,

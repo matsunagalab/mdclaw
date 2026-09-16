@@ -107,6 +107,7 @@ def _reserve_slurm_submission_on_node(
     *,
     kind: str,
     array_task_id: Optional[int] = None,
+    mps_slot: Optional[int] = None,
 ) -> tuple[Optional[dict], Optional[str]]:
     """Atomically reserve a DAG node before calling sbatch.
 
@@ -166,6 +167,8 @@ def _reserve_slurm_submission_on_node(
             })
             if array_task_id is not None:
                 metadata["slurm_array_task_id"] = array_task_id
+            if mps_slot is not None:
+                metadata["slurm_mps_slot"] = mps_slot
             data["updated_at"] = datetime.now(timezone.utc).isoformat()
             _atomic_write_json(node_json, data)
     except Exception as exc:  # noqa: BLE001
@@ -198,9 +201,10 @@ def _clear_slurm_submission_intent(
             return
         for key in _SLURM_SUBMISSION_INTENT_KEYS:
             metadata.pop(key, None)
-        # Array submissions store the task id during reservation so a
+        # Array and MPS submissions store the slot during reservation so a
         # failed submit must clear it along with the in-flight intent.
         metadata.pop("slurm_array_task_id", None)
+        metadata.pop("slurm_mps_slot", None)
         data["updated_at"] = datetime.now(timezone.utc).isoformat()
         _atomic_write_json(node_json, data)
 
@@ -221,6 +225,7 @@ def _stamp_slurm_on_node(
     parent_job_id: Optional[str] = None,
     set_queued: bool = True,
     submission_intent_id: Optional[str] = None,
+    mps_slot: Optional[int] = None,
 ) -> Optional[str]:
     """Stamp SLURM-submission metadata onto a node's ``node.json``.
 
@@ -234,7 +239,9 @@ def _stamp_slurm_on_node(
     without falling back to the JSONL tracker). For array children
     ``parent_job_id`` is the array's parent id (e.g. ``117135``) and
     ``slurm_job_id`` is the child id (``117135_<task>``); for single-job
-    submissions the two are equal.
+    submissions the two are equal. An MPS-packed submission
+    (``submit_mps_job``) stamps the same ``slurm_job_id`` on every node of the
+    job and records the node's process slot as ``slurm_mps_slot``.
     """
     node_dir = Path(job_dir) / "nodes" / node_id
     if not (node_dir / "node.json").exists():
@@ -251,6 +258,8 @@ def _stamp_slurm_on_node(
         meta["slurm_array_task_id"] = array_task_id
     if parent_job_id is not None:
         meta["slurm_parent_job_id"] = parent_job_id
+    if mps_slot is not None:
+        meta["slurm_mps_slot"] = mps_slot
 
     try:
         with file_lock(node_dir / "node.lock"):

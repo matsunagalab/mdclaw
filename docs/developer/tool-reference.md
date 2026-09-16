@@ -429,6 +429,28 @@ signature, update the relevant section here and the matching skill examples.
   `--nvt-time-ns` / `--npt-time-ns`) for user-facing duration requests;
   explicit `nvt_steps` / `npt_steps` remain available for low-level
   reproducibility.
+- `run_sst2(...)`: one Simulated Solute Tempering 2 (SST2) walker as a
+  `prod` node (`mdclaw/simulation/tempering.py`). The solute (an mdtraj
+  `solute_selection`, cut at residue boundaries, or `solute_indices_file`)
+  is REST2-scaled over `temperatures_kelvin` rungs while the rest stays at
+  the reference temperature; rung moves every `exchange_interval_ps` are
+  Gibbs draws over all rungs. The tempering runs in a separate process
+  (`python -m SST2.driver` from the GPL-2.0 matsunagalab/SST2 fork, branch
+  `mdclaw`, located via `sst2_home` / `MDCLAW_SST2_HOME`); MDClaw never
+  imports SST2. Artifacts: `trajectory.dcd`, `energy.dat`, `state.xml`,
+  `final_structure.pdb`, `tempering.csv` (step, rung temperature, per-term
+  energies, effective weights), `tempering.json` (rung, ladder, running
+  averages, weights, provenance), `solute_indices.json`, `sst2_driver.log`.
+  Metadata carries `sampling_method: sst2` and a `tempering` summary (rung
+  occupancy, rung changes, round trips, weights). `--continue-from` a
+  completed `run_sst2` node restarts the same walker: its `tempering_state`
+  sidecar and `state` are picked up automatically. `weights_file` (JSON list
+  of rung free energies in kJ/mol) switches to a fixed-weight production
+  stage; `scale_nonbonded=false` is the gREST dihedral-only mode;
+  `pressure_bar` unset runs NVT. Stable codes: `sst2_not_installed`,
+  `sst2_solute_required`, `sst2_solute_selection_invalid`,
+  `sst2_solute_selection_empty`, `sst2_ladder_invalid`,
+  `sst2_restart_missing`, `sst2_requires_pme`, `sst2_driver_failed`.
 - `run_production(...)`: production MD with topology-inherited HMR/implicit
   solvent, state/checkpoint persistence,
   DAG restart resolution, and timeline metadata. Accepts an optional custom
@@ -550,6 +572,27 @@ signature, update the relevant section here and the matching skill examples.
   `--gpus 1`, and it applies the same container-command guard.
   Each task also receives the same production condition preflight before any
   task is submitted; results are indexed by `task_index`.
+- `submit_mps_job(...)`: run several DAG nodes concurrently on one GPU
+  allocation under NVIDIA MPS (Multi-Process Service). Takes the same
+  `tasks` list as `submit_array_job`; one sbatch job holds `gpus` whole GPUs
+  (default 1), starts a per-job MPS control daemon (private
+  `CUDA_MPS_PIPE_DIRECTORY` under `$TMPDIR`, logs next to the job's), exports
+  `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE = 200 / tasks_per_gpu` (NVIDIA's rule
+  for OpenMM, overridable), launches every task in the background round-robin
+  over `CUDA_VISIBLE_DEVICES`, waits, stops the daemon, and exits non-zero if
+  any task failed. Every task command must say `--platform CUDA`
+  (`mps_task_requires_cuda_platform`); more than 16 tasks per GPU is refused
+  (`mps_tasks_per_gpu_exceeded`), more than 8 warned. `cpus_per_task` defaults
+  to `cpus_per_sim` (2) per task. Each node is stamped with the shared
+  `slurm_job_id`, `slurm_parent_job_id` and its `slurm_mps_slot`, and its own
+  `<job_name>_<id>.task<slot>.out/.err`; the tracker carries one record per
+  node under the same job id (`mps_slot`, `job_stdout_log`/`job_stderr_log`
+  for the wrapper's logs). `check_job` reflects the job state onto every
+  packed node, using each slot's own stderr as failure evidence, and
+  `list_tracked_jobs --sync` queries Slurm once per job id. Container wrapping
+  binds each task's `job_dir` plus `$CUDA_MPS_PIPE_DIRECTORY`. Same policy,
+  partition, container and production-preflight handling as `submit_array_job`.
+  Rationale and GB200 measurements: `docs/memo.md` (2026-09-16).
 - `check_job(...)`: query squeue → scontrol → sacct, sync SLURM state and
   reflect failures into linked nodes. Returns `state_source` and `checked_at`.
   Missing/expired records return `slurm_status_unavailable`, never inferred

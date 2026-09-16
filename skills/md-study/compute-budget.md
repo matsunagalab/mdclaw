@@ -41,6 +41,14 @@ available. Do not auto-detect compute via `inspect_openmm_platforms` /
 3. **Derive a feasible (replicates × length) plan** with 15% headroom:
    - `usable_gpu_hours = wall_time_hours * gpu_count * 0.85`
    - `total_simulation_ns = ns_per_day * usable_gpu_hours / 24`
+   - On an `hpc` target with an NVIDIA GPU and systems too small to fill it
+     (about 100k atoms or fewer on a data-centre GPU), replicates run packed
+     on one GPU under MPS (`skills/hpc-run/submit-mps.md` has the table by
+     GPU class and size). Plan with `ns_per_day * 1.5` for 4 packed replicates
+     (measured 2x or more on H100-class and GB200 GPUs for systems of 24k-52k
+     atoms; 1.5 is the conservative planning figure, 1.2 for mid-range GPUs
+     such as A10/L4) and record `"mps_packing": <tasks per GPU>` in
+     `derived`. Above 400k atoms plan one GPU per replicate.
    - Split across planned jobs, choosing `target_replicates_per_job` and
      `target_ns_per_replicate` that match the design (typically ≥ 2 replicates
      per job; trim replicates before trimming length).

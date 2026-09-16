@@ -45,6 +45,10 @@ For long runs, multi-replicate sweeps, or fan-out across many systems, hand off
 to HPC execution instead of duplicating sbatch patterns here: follow
 `skills/hpc-run/SKILL.md` and its submit/monitor/extension pages, and keep
 `--pressure-bar 0` in the job-script command.
+Replicates of a system too small to fill the GPU (about 100k atoms or fewer
+on a data-centre GPU; the table in `skills/hpc-run/submit-mps.md` covers other
+GPUs) go through `submit_mps_job`, which runs them together on one GPU; one
+job per replicate wastes GPU-hours.
 
 ---
 

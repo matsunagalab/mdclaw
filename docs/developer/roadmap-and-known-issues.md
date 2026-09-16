@@ -121,3 +121,15 @@ The node-aware SLURM integration has landed. Remaining nice-to-haves:
 - Propagate SLURM state into `progress.json` summaries so skills can surface
   active jobs without iterating tracker rows.
 - Add an optional `check_job --poll` command that blocks until terminal state.
+- `submit_mps_job` (2026-09-16) manages the NVIDIA MPS daemon inside the job
+  because RIKYU configures `GresTypes=gpu` only. Follow-ups: (a) a
+  `gres/mps` route for sites that expose it (one Slurm job per simulation
+  with `--gres=mps:<pct>`, no daemon of our own); (b) multi-GPU packing
+  (`--gpus 2` and up) is implemented by per-slot `CUDA_VISIBLE_DEVICES`
+  under one daemon but has only been unit-tested, not run; (c) failure
+  isolation: one failed slot fails the whole job and cancels the `afterok`
+  chain behind it, so the skill resubmits the survivors by hand -- a
+  `submit_mps_job --continue-from-job <id>` that lists the completed
+  parents' children would remove that step; (d) `estimate_md_throughput` does
+  not know about packing; the md-study budget page uses a fixed 1.5x planning
+  gain for 4 packed replicates until GB200 numbers per size class exist.

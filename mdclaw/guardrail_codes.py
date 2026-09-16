@@ -393,6 +393,8 @@ GUARDRAIL_CODES: dict[str, str] = {
     "slurm_node_already_submitted": "This node was already submitted; do not resubmit.",
     "slurm_node_submission_in_progress": "Submission is in progress; wait before resubmitting.",
     "slurm_completed_without_node_completion": "SLURM job completed but the node did not; inspect artifacts.",
+    "mps_task_requires_cuda_platform": "Every submit_mps_job task command must say --platform CUDA; MPS serves CUDA contexts only, and OpenCL/CPU/auto tasks are refused.",
+    "mps_tasks_per_gpu_exceeded": "Split the tasks across more submit_mps_job calls or raise --gpus; at most 16 tasks may share one GPU (8 recommended).",
     "sbatch_directive_injection": "Reject injected sbatch directives; sanitize the submission.",
     "policy_partition_denied": "Requested partition is denied by policy; choose an allowed one.",
     "policy_partition_not_allowed": "Partition is not on the allowlist; pick an allowed partition.",

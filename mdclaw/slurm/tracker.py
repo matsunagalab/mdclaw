@@ -152,6 +152,25 @@ def _find_record_by_job_id(
     return None
 
 
+def _find_records_by_job_id(
+    job_id: str,
+    *,
+    job_dir: Optional[str | Path] = None,
+    output_dir: Optional[str | Path] = None,
+) -> list[dict]:
+    """Return every tracker record whose ``job_id`` matches.
+
+    A single-job or array-child submission has one record per job id. An
+    MPS-packed submission (``submit_mps_job``) runs several DAG nodes under
+    one Slurm job id, one record per node, and every one of them must see
+    the job's state.
+    """
+    return [
+        rec for rec in _read_job_records(job_dir=job_dir, output_dir=output_dir)
+        if _record_matches_job_id(rec, job_id)
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Node integration helpers (schema v3)
 # ---------------------------------------------------------------------------

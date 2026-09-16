@@ -7,6 +7,25 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-16 — NVIDIA MPS で小系レプリカを 1 GPU に詰める: `submit_mps_job` 実装と GB200 実測（4 本で 2.24 倍、8 本で 2.65 倍）
+
+NVIDIA の記事 "Maximizing OpenMM Molecular Dynamics Throughput with NVIDIA Multi-Process Service" (2025) に沿って、複数の DAG ノードを 1 GPU ジョブに同居させる `mdclaw submit_mps_job` を追加した（`mdclaw/slurm/mps.py`、`sbatch.py` の `_generate_mps_sbatch_script`）。RIKYU の Slurm は `GresTypes=gpu` のみで `gres/mps` は無いので、ジョブ自身が `--gpus=1` の割当内で MPS 制御デーモンを起動する（ジョブごとの pipe dir を `$TMPDIR` 下に置く。Apptainer はホスト `/tmp` を見せるのでコンテナ内クライアントもそこへ繋がる。ログは `<job>_<id>.mps/`）。`CUDA_MPS_ACTIVE_THREAD_PERCENTAGE = 200/N`（記事の推奨、1–100 にクランプ）。各タスクはバックグラウンドで同時起動し、`CUDA_VISIBLE_DEVICES` の GPU に round-robin、全 `wait` 後にデーモン停止、1 つでも失敗すればジョブ失敗。N 個のノードは同じ `slurm_job_id` と `slurm_mps_slot`、スロット別ログを持ち、`check_job` は 1 job id を全ノードに反映する（`_find_records_by_job_id`；完了済みノードは降格しない、失敗ノードは自スロットの stderr を証拠にする）。`--platform CUDA` 明示を要求（`mps_task_requires_cuda_platform`）、GPU あたり 16 本超は拒否（`mps_tasks_per_gpu_exceeded`）。テスト 11 本追加、関連スイート 402 本通過。スキル: `skills/hpc-run/submit-mps.md` 新設、hpc-run / md-production / md-study(compute-budget) / run-loop から「小系（〜10 万原子）のレプリカは既定で MPS 詰め」と誘導。ユーザー指示: 小さい系のレプリカは GPU 時間節約のため可能な限り MPS で流す。
+
+実測（`/data1/rkp00079/rku00161/runs/mps-bench-20260916`、hen lysozyme 1AKI、ff19SB/OPC、10 Å、51,832 原子、HMR 4 fs、NPT 300 K、各レプリカ 3 ns、GB200 1 基、コンテナ起動込みの tool_started→tool_completed で計時）:
+
+| 条件 | 同居数 | ジョブ経過 | レプリカ 1 本の壁時間 | 集計 ns/day/GPU | 倍率 |
+|---|---|---|---|---|---|
+| 単独 `submit_job` (117404) | 1 | 4:42 | 277 s | 919 | 1.00 |
+| MPS 4 本 (117405, ATP=50) | 4 | 8:24 | 495–498 s | 2,057 | 2.24 |
+| MPS 8 本 (117407, ATP=25) | 8 | 14:11 | 837–845 s | 2,437 | 2.65 |
+| 対照: MPS なし 4 本同時 (117408) | 4 | 22:28 | 1,341 s | 769 | 0.84 |
+
+結論: (1) この規模では 8 本詰めが最良で、単独比 2.65 倍、4 本詰め比でも +18 %。1 本あたりは 3 倍遅くなるので `--time-limit` は N×単独時間/倍率で見積もる。(2) MPS 無しの同時実行（タイムスライス）は単独逐次より遅い（0.84 倍）。「同じ GPU に複数プロセスを流す」だけでは逆効果で、デーモンが必須。(3) 4 ジョブ計 0.83 GPU-h（≈250 円）。12 ns 分のサンプリングが 18.8 GPU 分 → 8.4 GPU 分（4 本）、24 ns 分が 37.6 → 14.2 GPU 分（8 本）。`skills/hpc-run/submit-mps.md` の既定は「5 万原子級まで 8 本、10 万原子まで 4 本、10–40 万原子は 2 本」に更新。md-study の予算導出は 4 本詰めで 1.5 倍を計画値のまま（実測 2.24 倍、10 万原子近くでは下がる見込み）。
+
+MLOPart（NVIDIA ブログ 2025-12、MPS v3 では locality domains）は Blackwell の 2 ダイをそれぞれ CUDA デバイスに分けてメモリ局所性を上げる機能だが、driver 590(x86)/595(ARM, CDMM)+CUDA 13.1 が必要で対応表は B200/B300 のみ。RIKYU は 580.173 で、ログインノードで `start_server -mlopart` を試すと無警告で通常サーバが立つ（`device_query` に MD サブデバイス無し）。ユーザーと相談し実装せず、`docs/developer/roadmap-and-known-issues.md` に追記のみ。
+
+スキルはサイト特化にしない（ユーザー指示: 他の GPU でも LLM が外挿して MPS 投入を判断できること、記述は RIKYU ではなく GB200 と書く）。`submit-mps.md` は GPU クラス × 原子数の判断表（NVIDIA の H100/L40S/A10 データと本日の GB200 実測を参照点に、原子数 2 倍で同居数半減・小さい GPU では 1 段下げる外挿則）、MPS 可否のチェック（Volta 以降、`nvidia-cuda-mps-control` の存在、compute mode、丸ごと GPU 割当、`--platform CUDA`）、GPU 不明時の較正手順（単独 1 本 vs 4 本詰めの短い 2 ジョブで集計 ns/day を比べ 1.3 倍以上なら詰める）で構成した。
+
 ## 2026-09-14 — v3 campaign launched on the v2fix image (20:06 JST); the shared image and the pi checkout are pinned until it ends
 
 `runs/kimi-k3-3cond-full-v3`: 98 tasks x 3 conditions x 3 replicates on the v2fix image (`6ecc1ad9…`, main `b648068`), pi package at `17283b6`, 1800 s for every task, six agents with the pace governor at 30 s/call. Do not switch the shared image or move the pi checkout while it runs (details in the MDDataBench memo of the same day). Provisional figures from v2 and the rerun: `runs/figures-20260914/` (script `MDDataBench/scripts/paper_figures.py`).
