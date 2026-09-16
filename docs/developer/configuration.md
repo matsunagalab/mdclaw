@@ -33,6 +33,7 @@ export MDCLAW_SLURM_TIMEOUT=120
 export MDCLAW_MODULE_LOADS="cuda/12.0 amber/24"
 export MDCLAW_MODULE_INIT="/etc/profile.d/modules.sh"
 export MDCLAW_SURROGATE_DIR="$HOME/.cache/mdclaw/surrogates"
+export MDCLAW_SST2_HOME="$HOME/SST2"   # optional override of the packaged SST2
 ```
 
 Notes:
@@ -69,6 +70,12 @@ Notes:
   (e.g. the host PATH for clients bound into a SIF); when explicitly set it
   does not fall back to a different installation. It selects executables,
   not mounts: files and their dependencies must already be visible.
+- `MDCLAW_SST2_HOME` is a development override for `run_sst2`: a checkout of
+  the matsunagalab/SST2 fork (branch `mdclaw`) whose `src` (and optional
+  `.pylib` side-install for `pdb_numpy`) go on the driver's `PYTHONPATH`
+  ahead of the packaged copy. The runtime images ship SST2 pinned to the
+  commit in `MDCLAW_SST2_REVISION`, so the variable is normally unset. The
+  tempering runs as a subprocess; MDClaw never imports the GPL package.
 - `MDCLAW_SURROGATE_DIR` controls where isolated model backend venvs are
   stored (`$MDCLAW_SURROGATE_DIR/<model>/venv`). BioEmu and Boltz-2 are never
   installed into the conda `mdclaw` environment.

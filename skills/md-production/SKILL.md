@@ -102,6 +102,9 @@ steering another CV (e.g. an angle or an ML-defined coordinate), **read and foll
 `skills/md-production/custom-force.md`**.
 For **PLUMED CV recording, steering or fixed umbrellas**, follow
 **`skills/md-production/plumed.md`**; this requires a PLUMED-capable runtime.
+For **enhanced sampling of a loop, peptide or binding site without a CV**
+(solute tempering, SST2), **read and follow `skills/md-production/sst2.md`**;
+this requires the SST2 fork on `MDCLAW_SST2_HOME`.
 
 ## Handoff
 

@@ -588,6 +588,16 @@
     "requires_node": true,
     "server": "md_simulation"
   },
+  "run_sst2": {
+    "job_dir_is_data": false,
+    "node_type": "prod",
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": true,
+    "server": "md_simulation"
+  },
   "search_proteins": {
     "job_dir_is_data": false,
     "node_type": null,
@@ -662,6 +672,15 @@
     "node_type": null,
     "required_params": [
       "script"
+    ],
+    "requires_node": false,
+    "server": "slurm"
+  },
+  "submit_mps_job": {
+    "job_dir_is_data": false,
+    "node_type": null,
+    "required_params": [
+      "tasks"
     ],
     "requires_node": false,
     "server": "slurm"

@@ -84,7 +84,8 @@ RUN mamba run -n mdclaw pip install --force-reinstall "torch==2.7.1+cu118" --ind
 # Install mdclaw plus its development tools into the packaged environment so
 # SIF overlay workflows can run repository lint and tests without a separate
 # host conda environment.
-RUN mamba run -n mdclaw pip install ".[dev]" && \
+RUN mamba run -n mdclaw pip install ".[dev]" \
+      "SST2 @ git+https://github.com/matsunagalab/SST2.git@5590f4f" && \
     mamba run -n mdclaw pip cache purge
 
 # Apply packmol-memgen numpy compatibility patch
@@ -264,6 +265,7 @@ COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc-builtins.so* /opt/mdcl
 
 # Set environment variables
 ENV MDCLAW_PLUMED_VERSION=2.9.4
+ENV MDCLAW_SST2_REVISION=5590f4f
 ENV PATH="/opt/mdclaw/bin:$PATH"
 ENV AMBERHOME="/opt/mdclaw"
 ENV PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages"

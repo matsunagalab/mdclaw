@@ -327,6 +327,21 @@ SIF as well as the container build; import-only tests are insufficient.
   conda-packed `/opt/mdclaw` environment so Singularity/Apptainer SIF workflows
   can run repository lint and tests without a separate host conda environment.
 
+## SST2 (solute tempering)
+
+`run_sst2` runs the SST2 package as a separate process. Both images install
+the matsunagalab/SST2 fork (branch `mdclaw`) with pip, pinned to a commit
+(`environment.yml` pip section and the `pip install` line of each Dockerfile;
+the revision is also declared as `MDCLAW_SST2_REVISION`). Bump the three
+places together. The install pulls `pdb_numpy` from PyPI.
+
+SST2 is GPL-2.0 and MDClaw is MIT. Shipping both in one image is aggregation,
+not combination: MDClaw never imports SST2, it execs `python -m SST2.driver`.
+The package's `LICENSE` stays in its dist-info under site-packages; keep it
+there. Bumping the SST2 pin changes container contents, so it needs an image
+rebuild; a checkout on `MDCLAW_SST2_HOME` overrides the packaged copy for
+development without a rebuild.
+
 ## Model Backends (BioEmu, Boltz-2)
 
 BioEmu and Boltz-2 are not part of the image. They are installed on first use

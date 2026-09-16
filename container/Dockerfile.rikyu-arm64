@@ -49,7 +49,8 @@ RUN sed -E \
 
 RUN mamba run -n mdclaw pip install --no-cache-dir \
       ".[dev]" \
-      "openff-pablo @ git+https://github.com/openforcefield/openff-pablo.git@v0.2.2"
+      "openff-pablo @ git+https://github.com/openforcefield/openff-pablo.git@v0.2.2" \
+      "SST2 @ git+https://github.com/matsunagalab/SST2.git@5590f4f"
 
 # Apply packmol-memgen's NumPy compatibility patch, matching the generic image.
 RUN SITE_PACKAGES=$(mamba run -n mdclaw python -c "import site; print(site.getsitepackages()[0])") && \
@@ -337,6 +338,7 @@ ENV PATH="/opt/mdclaw/bin:$PATH" \
     MDCLAW_MODELLER_VERSION="10.8" \
     MDCLAW_PPM3_PATCHED="1" \
     MDCLAW_PLUMED_VERSION="2.9.4" \
+    MDCLAW_SST2_REVISION="5590f4f" \
     PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages" \
     PYTHONUTF8="1" \
     OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins" \

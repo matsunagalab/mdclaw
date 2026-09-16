@@ -16,6 +16,9 @@ from mdclaw.simulation.equilibrate import (
 from mdclaw.simulation.production import (
     run_production,
 )
+from mdclaw.simulation.tempering import (
+    run_sst2,
+)
 from mdclaw.simulation.custom_forces import (  # noqa: F401
     CustomForceError,
     CustomForceReporter,
@@ -32,6 +35,7 @@ TOOLS = {
         run_minimization,
         run_equilibration,
         run_production,
+        run_sst2,
     )
 }
 

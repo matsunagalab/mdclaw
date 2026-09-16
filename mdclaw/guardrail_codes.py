@@ -29,6 +29,16 @@ GUARDRAIL_CODES: dict[str, str] = {
     "missing_required_arguments": "Add the listed required flags (see `mdclaw --list-json`).",
     "input_resolution_blocked": "Resolve inputs via the DAG or provide explicit paths.",
 
+    # --- solute tempering (run_sst2) ---
+    "sst2_not_installed": "Set MDCLAW_SST2_HOME to a checkout of the matsunagalab/SST2 fork (branch mdclaw) or install it, then rerun.",
+    "sst2_solute_required": "Pass exactly one of --solute-selection (mdtraj DSL) or --solute-indices-file.",
+    "sst2_solute_selection_invalid": "Fix the mdtraj selection; it must match a proper subset of the atoms, cut at residue boundaries.",
+    "sst2_solute_selection_empty": "The solute selection matched no atoms; check chain ids and residue numbers against topology.pdb.",
+    "sst2_ladder_invalid": "Pass --temperatures-kelvin as an increasing list that contains the reference temperature.",
+    "sst2_restart_missing": "The tempering sidecar of the parent node is missing; continue from a completed run_sst2 node or drop --restart-state-file.",
+    "sst2_requires_pme": "Solute tempering needs explicit solvent with PME; build the topology without implicit solvent.",
+    "sst2_driver_failed": "Read artifacts/sst2_driver.log in the node, fix the cause (platform, memory, selection), then branch and rerun.",
+
     # --- node / DAG context ---
     "node_context_required": "Create the node, then run it with both --job-dir and --node-id.",
     "unknown_parameter": "Remove or rename the listed parameters; accepted names are in hints and `mdclaw --list-json <tool>`.",
