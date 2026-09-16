@@ -323,7 +323,11 @@ VHH の H3 は FR2（元の VL 界面、Kabat 37 / 44 / 45 / 47）に折り重�
 gREST の結合サイト流に「H3 + 接触残基」を solute にする方が効く。framework を冷たいままに
 できるのは surrogate 用データとしては利点（native framework の中での H3 アンサンブル）。
 
-1KXV などの prep 済み VHH 1 本で次の 3 通りを比べる。いずれも残基境界で切る。
+1KXV などの VHH 1 本で次の 3 通りを比べる。いずれも残基境界で切る。**本試走は run 以外の部分も
+MDClaw のスキルで組む**: `md-study` で study と `jobs/<solute 条件>` を計画し、`md-prepare` →
+`md-equilibration` で各 job の `eq` まで作り、`run_sst2` を `prod` ノードとして `hpc-run` で Slurm に
+投げる（seed ごとに独立ノード、`continue_from` で延長）。キャンペーンの成果物を直接使うのは
+SIF 受け入れの smoke test までとし、収束の実測はスキル経由の DAG で記録する。
 
 1. **H3 のみ**（Kabat 95–102 相当）。
 2. **H3 + 接触殻**: H3 の重原子から 5 Å 以内の残基。H3 から出る disulfide があれば相手の Cys を

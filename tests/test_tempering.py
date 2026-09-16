@@ -52,6 +52,9 @@ class TestValidation:
 
     def test_ladder_rules(self):
         assert _validate_ladder([300, 330, 360], None) == ([300.0, 330.0, 360.0], 300.0)
+        assert _validate_ladder(["300", "330", "360"], "330") == ([300.0, 330.0, 360.0], 330.0)
+        with pytest.raises(SST2ToolError):
+            _validate_ladder(["300", "warm"], None)
         assert _validate_ladder([280, 300, 330], 300) == ([280.0, 300.0, 330.0], 300.0)
         for bad, ref in (([300], None), ([300, 300], None), ([330, 300], None), ([300, 330], 310)):
             with pytest.raises(SST2ToolError) as exc:

@@ -144,7 +144,13 @@ def _validate_ladder(temperatures_kelvin, reference_temperature_kelvin) -> tuple
             message="temperatures_kelvin needs at least two rung temperatures, increasing, "
             "e.g. 300 357 424 505 600.",
         )
-    ladder = [float(t) for t in temperatures_kelvin]
+    try:
+        ladder = [float(t) for t in temperatures_kelvin]
+    except (TypeError, ValueError) as exc:
+        raise SST2ToolError(
+            code="sst2_ladder_invalid",
+            message=f"temperatures_kelvin must be numbers: {temperatures_kelvin!r} ({exc})",
+        ) from exc
     if any(b <= a for a, b in zip(ladder, ladder[1:])) or ladder[0] <= 0:
         raise SST2ToolError(
             code="sst2_ladder_invalid",
@@ -203,7 +209,7 @@ def run_sst2(
     state_xml_file: Optional[str] = None,
     solute_selection: Optional[str] = None,
     solute_indices_file: Optional[str] = None,
-    temperatures_kelvin: Optional[list[float]] = None,
+    temperatures_kelvin: Optional[list[str]] = None,
     reference_temperature_kelvin: Optional[float] = None,
     simulation_time_ns: float = 1.0,
     exchange_interval_ps: float = 2.0,
@@ -244,8 +250,9 @@ def run_sst2(
             ``"chainid 0 and resid 97 to 109"``.  Cut at residue
             boundaries.  Alternative: ``solute_indices_file``.
         solute_indices_file: JSON list of 0-based solute atom indices.
-        temperatures_kelvin: Rung temperatures, increasing; the solute
-            scaling is ``lambda = T_ref / T``.  Example: 300 357 424 505 600.
+        temperatures_kelvin: Rung temperatures in K, increasing (CLI:
+            ``--temperatures-kelvin 300 357 424 505 600``); the solute
+            scaling is ``lambda = T_ref / T``.
         reference_temperature_kelvin: Physical temperature (default: the
             first rung).
         simulation_time_ns: Time to run in this call.
@@ -321,10 +328,11 @@ def run_sst2(
             actual_conditions={
                 "sampling_method": SAMPLING_METHOD,
                 "simulation_time_ns": simulation_time_ns,
-                "temperature_kelvin": reference_temperature_kelvin
+                "temperature_kelvin": float(reference_temperature_kelvin)
                 if reference_temperature_kelvin is not None
-                else (temperatures_kelvin[0] if temperatures_kelvin else None),
-                "temperatures_kelvin": temperatures_kelvin,
+                else (float(temperatures_kelvin[0]) if temperatures_kelvin else None),
+                "temperatures_kelvin": [float(t) for t in temperatures_kelvin]
+                if temperatures_kelvin else None,
                 "pressure_bar": pressure_bar,
                 "ensemble": "NPT" if (pressure_bar is not None and pressure_bar > 0) else "NVT",
                 "timestep_fs": timestep_fs,
