@@ -237,6 +237,39 @@ def _append_solvent_block(topology: Any, positions: Any, solvent_lines: list[str
     return topology, unit.Quantity(merged, unit.nanometer), len(atoms)
 
 
+def _water_resnames() -> frozenset[str]:
+    """Residue names that name water: MDClaw's own list plus every name
+    ``openmm.app.PDBFile`` rewrites to ``HOH`` (WAT, SOL, TIP3, T4P, ...), so
+    the Pablo path canonicalises exactly what the PDBFile fallback does."""
+    from mdclaw.chemistry_constants import WATER_NAMES
+
+    names = {str(n).upper() for n in WATER_NAMES}
+    try:
+        from openmm.app import PDBFile
+
+        PDBFile._loadNameReplacementTables()
+        names |= {k.upper() for k, v in PDBFile._residueNameReplacements.items() if v == "HOH"}
+    except Exception:  # noqa: BLE001 - the table is a convenience, not a contract
+        pass
+    return frozenset(names)
+
+
+def _looks_like_water(residue: Any) -> bool:
+    """One oxygen, at most two hydrogens, nothing else but massless extra points."""
+    heavy = hydrogens = 0
+    for atom in residue.atoms():
+        element = atom.element
+        if element is None:
+            continue
+        if element.symbol == "H":
+            hydrogens += 1
+        elif element.symbol == "O":
+            heavy += 1
+        else:
+            return False
+    return heavy == 1 and hydrogens <= 2
+
+
 def _canonicalise_water_names(topology: Any) -> int:
     """Rename water residues to ``HOH`` as ``openmm.app.PDBFile`` does.
 
@@ -244,14 +277,13 @@ def _canonicalise_water_names(topology: Any) -> int:
     ``res.name == 'HOH'`` (rigid-water constraints and the hydrogenMass
     exemption). Pablo keeps the file's residue names, so an Amber-style
     ``WAT`` block would otherwise be parameterised as flexible water and
-    receive repartitioned 4 amu hydrogens. Returns the number renamed.
+    receive repartitioned 4 amu hydrogens. Only residues whose composition
+    is water are renamed. Returns the number renamed.
     """
-    from mdclaw.chemistry_constants import WATER_NAMES
-
-    names = {str(n).upper() for n in WATER_NAMES}
+    names = _water_resnames()
     renamed = 0
     for residue in topology.residues():
-        if residue.name != "HOH" and residue.name.upper() in names:
+        if residue.name != "HOH" and residue.name.upper() in names and _looks_like_water(residue):
             residue.name = "HOH"
             renamed += 1
     return renamed

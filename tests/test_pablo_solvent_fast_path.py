@@ -94,3 +94,19 @@ def test_no_block_or_a_small_one_takes_the_usual_path(tmp_path):
     only_water = tmp_path / "water.pdb"
     only_water.write_text(_water(1, 1, 0.0) + _water(4, 2, 5.0) + "END\n")
     assert tp.split_trailing_solvent(only_water, min_atoms=1) is None   # nothing for Pablo
+
+
+def test_water_names_are_canonicalised_like_pdbfile(tmp_path):
+    """Every name PDBFile rewrites to HOH is water on the Pablo path too, and only water."""
+    from openmm.app import Topology, element
+
+    names = tp._water_resnames()
+    assert {"WAT", "SOL", "TIP3", "T4P", "H2O"} <= names
+    top = Topology()
+    chain = top.addChain()
+    for name, atoms in [("WAT", "OHH"), ("SOL", "OHH"), ("TIP3", "OHH"), ("SOL", "CNO"), ("WAT", "OHHH")]:
+        res = top.addResidue(name, chain)
+        for sym in atoms:
+            top.addAtom(sym, element.get_by_symbol(sym), res)
+    assert tp._canonicalise_water_names(top) == 3
+    assert [r.name for r in top.residues()] == ["HOH", "HOH", "HOH", "SOL", "WAT"]
