@@ -110,3 +110,17 @@ def test_water_names_are_canonicalised_like_pdbfile(tmp_path):
             top.addAtom(sym, element.get_by_symbol(sym), res)
     assert tp._canonicalise_water_names(top) == 3
     assert [r.name for r in top.residues()] == ["HOH", "HOH", "HOH", "SOL", "WAT"]
+
+
+def test_water_by_composition_with_an_unknown_name_is_reported(tmp_path):
+    """A water-shaped residue the loader cannot name is not silently built flexible."""
+    box = _solvated_box(tmp_path)
+    text = box.read_text().replace(" WAT W   3 ", " XWT W   3 ")
+    assert text.count("XWT") == 3
+    box.write_text(text)
+    result = tp.load_topology(box, auto_download=False)
+    names = [r.name for r in result.topology.residues()]
+    assert names[-6:] == ["HOH", "HOH", "XWT", "HOH", "NA", "CL"]
+    assert result.unrecognised_water == ["W:XWT3"]
+    assert "water_residue_name_unrecognised" in result.guardrail_codes
+    assert any("XWT" in w for w in result.warnings)

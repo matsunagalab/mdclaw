@@ -49,6 +49,11 @@ class PabloLoadResult:
         auto_download: Whether Pablo CCD auto-download was enabled for this
             load attempt. This is per-call provenance; the helper restores
             Pablo's process-global cache setting before returning.
+        unrecognised_water: Residues with water's composition whose name the
+            loader does not know as water (``chain:NAMEid``). Non-empty comes
+            with the ``water_residue_name_unrecognised`` guardrail code; the
+            builders refuse, because such a residue would be parameterised as
+            flexible water with repartitioned hydrogens.
     """
 
     topology: Any
@@ -58,6 +63,7 @@ class PabloLoadResult:
     guardrail_codes: list[str] = field(default_factory=list)
     auto_download: bool = True
     solvent_atoms_via_pdbfile: int = 0
+    unrecognised_water: list[str] = field(default_factory=list)
 
 
 def build_modaa_residue_definitions(
@@ -289,7 +295,7 @@ def _canonicalise_water_names(topology: Any) -> int:
     return renamed
 
 
-def load_topology(
+def _load_topology_raw(
     pdb_path: Path,
     *,
     extra_smiles: Sequence[tuple[str, str]] = (),
@@ -389,7 +395,6 @@ def load_topology(
     solvent_atoms = 0
     if split is not None:
         topology, positions, solvent_atoms = _append_solvent_block(topology, positions, split[1])
-    _canonicalise_water_names(topology)
     return PabloLoadResult(
         topology=topology,
         positions=positions,
@@ -420,3 +425,47 @@ __all__ = [
     "split_trailing_solvent",
     "add_disulfide_bonds",
 ]
+
+
+def unrecognised_water_residues(topology: Any) -> list[str]:
+    """``chain:NAMEid`` of residues that are water by composition but not named ``HOH``.
+
+    Run after :func:`_canonicalise_water_names`; whatever is left would be
+    parameterised as flexible water with 4 amu hydrogens under HMR, silently.
+    """
+    return [
+        f"{residue.chain.id}:{residue.name}{residue.id}"
+        for residue in topology.residues()
+        if residue.name != "HOH" and _looks_like_water(residue)
+    ]
+
+
+def load_topology(
+    pdb_path: Path,
+    *,
+    extra_smiles: Sequence[tuple[str, str]] = (),
+    auto_download: bool = True,
+) -> PabloLoadResult:
+    """Load a PDB into an OpenMM topology + positions, preferring Pablo.
+
+    See :func:`_load_topology_raw` for the Pablo / PDBFile fallback contract.
+    On every branch the water residues are then named ``HOH`` (what
+    ``ForceField.createSystem`` keys rigid water and the hydrogenMass exemption
+    on) and any residue that is water by composition but still not named
+    ``HOH`` is reported in ``unrecognised_water`` with the
+    ``water_residue_name_unrecognised`` code so the builder refuses it.
+    """
+    result = _load_topology_raw(pdb_path, extra_smiles=extra_smiles, auto_download=auto_download)
+    _canonicalise_water_names(result.topology)
+    unknown = unrecognised_water_residues(result.topology)
+    if unknown:
+        result.unrecognised_water = unknown
+        result.guardrail_codes.append("water_residue_name_unrecognised")
+        shown = ", ".join(unknown[:8]) + (f", ... ({len(unknown)} total)" if len(unknown) > 8 else "")
+        result.warnings.append(
+            f"{len(unknown)} residue(s) have water's composition but a name the loader does not "
+            f"know as water: {shown}. They would be built as flexible water with repartitioned "
+            f"hydrogens; name water HOH or WAT in the prepared PDB, or exclude it."
+        )
+    return result
+

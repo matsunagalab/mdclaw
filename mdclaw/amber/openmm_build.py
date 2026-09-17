@@ -1077,6 +1077,16 @@ def _run_openmmforcefields_build(
         _record_demotable_warning(warning)
     omm_topology = pablo_result.topology
     omm_positions = pablo_result.positions
+    if pablo_result.unrecognised_water:
+        unknown = pablo_result.unrecognised_water
+        shown = ", ".join(unknown[:8]) + (f", ... ({len(unknown)} total)" if len(unknown) > 8 else "")
+        result["code"] = "water_residue_name_unrecognised"
+        result["errors"].append(
+            f"{len(unknown)} residue(s) are water by composition but carry a name not known as "
+            f"water: {shown}. Such water would be built flexible with repartitioned hydrogens. "
+            f"Name water HOH or WAT in the prepared PDB (or exclude it), then run a new topo node."
+        )
+        return result
 
     from openmm.app import PDBFile
     from mdclaw.amber.topology_validation import validate_loader_conservation

@@ -362,5 +362,6 @@
   "visual_review_payload_invalid",
   "visual_review_recommendation_unsupported",
   "visual_review_reviewer_type_unsupported",
-  "visual_review_severity_unsupported"
+  "visual_review_severity_unsupported",
+  "water_residue_name_unrecognised"
 ]
