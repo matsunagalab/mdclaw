@@ -64,7 +64,11 @@ def test_the_fast_path_gives_the_full_pablo_topology(tmp_path, monkeypatch):
     assert np.allclose(np.asarray(fast.positions.value_in_unit(unit.nanometer)),
                        np.asarray(full.positions.value_in_unit(unit.nanometer)))
     names = [r.name for r in fast.topology.residues()]
-    assert names[-6:] == ["WAT", "WAT", "WAT", "WAT", "NA", "CL"]      # the file's names, not HOH
+    # Water is canonicalised to HOH on both paths (ions keep the file's names):
+    # ForceField.createSystem recognises water only by ``res.name == 'HOH'``,
+    # so a WAT-named block came out flexible with 4 amu hydrogens under HMR.
+    assert names[-6:] == ["HOH", "HOH", "HOH", "HOH", "NA", "CL"]
+    assert [r.name for r in full.topology.residues()][-6:] == names[-6:]
     # Pablo gives every water and ion a chain of its own; so does the fast path.
     assert [(c.id, sum(1 for _ in c.residues())) for c in fast.topology.chains()] == \
         [(c.id, sum(1 for _ in c.residues())) for c in full.topology.chains()]

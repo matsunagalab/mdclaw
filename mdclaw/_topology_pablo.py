@@ -217,8 +217,12 @@ def _append_solvent_block(topology: Any, positions: Any, solvent_lines: list[str
         first = atom_lines[next(iter(residue.atoms())).index]
         chain = topology.addChain(id=residue.chain.id)
         residue_id = first[22:26].strip()
+        # Water keeps PDBFile's canonical name: OpenMM's createSystem keys
+        # rigidWater and the hydrogenMass exemption on ``res.name == 'HOH'``,
+        # so a WAT-named block would come out flexible with 4 amu hydrogens.
+        residue_name = "HOH" if residue.name == "HOH" else first[17:20].strip()
         new_residue = topology.addResidue(
-            first[17:20].strip(), chain,
+            residue_name, chain,
             id=int(residue_id) if residue_id.lstrip("-").isdigit() else residue_id,
             insertionCode=residue.insertionCode)
         for atom in residue.atoms():
@@ -231,6 +235,26 @@ def _append_solvent_block(topology: Any, positions: Any, solvent_lines: list[str
         np.asarray(solvent.positions.value_in_unit(unit.nanometer), dtype=float).reshape(-1, 3),
     ])
     return topology, unit.Quantity(merged, unit.nanometer), len(atoms)
+
+
+def _canonicalise_water_names(topology: Any) -> int:
+    """Rename water residues to ``HOH`` as ``openmm.app.PDBFile`` does.
+
+    OpenMM's ``ForceField.createSystem`` recognises water only by
+    ``res.name == 'HOH'`` (rigid-water constraints and the hydrogenMass
+    exemption). Pablo keeps the file's residue names, so an Amber-style
+    ``WAT`` block would otherwise be parameterised as flexible water and
+    receive repartitioned 4 amu hydrogens. Returns the number renamed.
+    """
+    from mdclaw.chemistry_constants import WATER_NAMES
+
+    names = {str(n).upper() for n in WATER_NAMES}
+    renamed = 0
+    for residue in topology.residues():
+        if residue.name != "HOH" and residue.name.upper() in names:
+            residue.name = "HOH"
+            renamed += 1
+    return renamed
 
 
 def load_topology(
@@ -333,6 +357,7 @@ def load_topology(
     solvent_atoms = 0
     if split is not None:
         topology, positions, solvent_atoms = _append_solvent_block(topology, positions, split[1])
+    _canonicalise_water_names(topology)
     return PabloLoadResult(
         topology=topology,
         positions=positions,
