@@ -347,6 +347,9 @@ rung 往復回数。solute 原子数は 1 で 150–250、2 で 300–500 の見
 そして **重み収束にかかる時間の実測**。CLN025 0.5–1 µs、Trp-cage 2–10 µs に対し VHH H3 が
 何 µs かはここで初めて分かる。10 µs を超えるなら方針再考。
 
+解析の入口は `analyze_tempering`（§7 収束判定）。50 ns ブロックごとに走らせ、`verdict` が
+`weights_converged` になった時点を「重み収束にかかる時間」として記録する。
+
 ---
 
 ## 5. Phase 2 — SEUS の実装（2–3 週間、MDClaw 側）
@@ -431,17 +434,44 @@ memo 2026-09-06 の前例（steering / umbrella は `prod` ラベル `steered_X 
 
 ### 収束判定（`analyze` ノードのチェック）
 
-- 有効重みの後半区間でのドリフト
-- rung / 窓占有率の偏り（論文は低温側 rung の過剰占有を報告。重みを高温側に傾ける補正を検討）
-- 往復回数
-- 落ちたら `continue_from` で延長ブランチを張る。ラダーや窓の自動調整（受理率を見て rung を挿す）は
-  エージェントに判断させる。
+SST2 側は `analyze_tempering`（2026-09-18 実装、`mdclaw/analyze/tempering.py`）が担う。
+walker の `run_sst2` prod 葉を親にした analyze ノードで、`tempering.csv` から全 rung の MBAR、
+`weights.json`（次段の固定重み）、`tempering_frames.csv`（フレームごとの rung と 300 K 重み。
+surrogate 用の λ 付きデータ形式）、`verdict` を出す。判定基準:
+
+- 全 rung を訪問していること（未訪問なら rung を挿す）
+- 各 walker の on-the-fly 重みと、各 walker 単独の MBAR が、プールした MBAR f_k から 2.5 kJ/mol
+  （300 K の 1 kT）以内
+- walker ごとに往復 5 回以上、rung 変化率 0.1 以上
+- 落ちたら `verdict_reasons` に従って `continue_from` で延長、罠にはまった walker は
+  `weights.json` を初期重みにして別 seed で張り直す、ラダーが粗ければ rung を挿して適応段階をやり直す。
+
+1KXV 50 ns ブロックの判定: H3 のみは walker 間で最上段 f_k が 15 kJ/mol 違い `weights_drifting`
+（延長が必要）、H3 + 殻も同様、二面角のみは seed 1 が往復 1 回で罠。
+SEUS 側は `run_seus` の `seus.json` と MBAR（別セッション）。
 
 ### surrogate へ渡す形
 
 重みを落とさない。T_ref の rung のフレームを並べて学習させると biased な分布を学ぶ。
 MBAR 重みで resample して非重み付きにする（ESS は減る）か、重み付き損失にするかを明示的に選ぶ。
 特徴量は H3 の backbone dihedral を主軸に、framework align 後の Cartesian と接触マップを併記。
+
+### データセット生成の方針（2026-09-17、ユーザー決定: surrogate は動力学ではなくアンサンブル）
+
+surrogate / 基盤モデルの教師は 300 K の p(x | 配列) だけでよい（時間発展は学習しない）。
+これで SST2 の熱力学データがそのまま教師になり、300 K の通常 MD 群れ（動力学用）は不要。
+
+- **エンジン**: SST2、solute は Kabat 位置で定義した H3 + 環境セット、Boltz-2 の予測構造（複数サンプル）から出発。
+  結晶出発は推論時の分布とずれる。MPS 8 本詰め、緩衝 10 Å。
+- **全 rung を使う**: 各フレームに λ（rung）と MBAR 重みを付けて保存し、温度条件付きの生成モデルとして学習する。
+  300 K だけ再重み付けすると ESS は 25 % 程度（1KXV H3 のみ: 2,449 / 10,000）だが、λ 条件付きなら全フレームが教師になる。
+- **配列セットは 3 層**: 幅（1,000–2,000 配列 × 1 walker × 200–300 ns、H3 長・framework 族・電荷で層化）、
+  深さ（100 配列 × 3 × 1 µs、収束基準と検証）、変異近傍（20 親 × 30 変異体 × 300 ns、Δp(x) の学習）。
+  合計 1 万–1.5 万 GPU 時間。均一に 1,000 × 3 × 1 µs は 4.4 万 GPU 時間（1KXV 実測 0.0145 GPU 時間/ns）で非効率。
+- **能動的に選ぶ**: 幅の層の半分でモデルを一度学習し、モデル試料の force field 再重み付け ESS が低い配列や
+  モデル間不一致が大きい配列を次に回す。
+- **細部**: 適応段階の初期重みを solute 原子数からの回帰で与えて適応 50 → 10–20 ns、出力 20–50 ps、
+  1 µs は 500 ns × 2 ブロック（gpu パーティション上限 4 日、1 本 275 ns/日）。
 
 ---
 

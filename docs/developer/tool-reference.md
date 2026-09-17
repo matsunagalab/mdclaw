@@ -439,8 +439,9 @@ signature, update the relevant section here and the matching skill examples.
   the reference temperature; rung moves every `exchange_interval_ps` are
   Gibbs draws over all rungs. The tempering runs in a separate process
   (`python -m SST2.driver` from the GPL-2.0 matsunagalab/SST2 fork, branch
-  `mdclaw`, located via `sst2_home` / `MDCLAW_SST2_HOME`); MDClaw never
-  imports SST2. Artifacts: `trajectory.dcd`, `energy.dat`, `state.xml`,
+  `mdclaw`, bundled in the runtime image and pinned by `MDCLAW_SST2_REVISION`;
+  a development checkout is found via `sst2_home` / `MDCLAW_SST2_HOME`);
+  MDClaw never imports SST2. Artifacts: `trajectory.dcd`, `energy.dat`, `state.xml`,
   `final_structure.pdb`, `tempering.csv` (step, rung temperature, per-term
   energies, effective weights), `tempering.json` (rung, ladder, running
   averages, weights, provenance), `solute_indices.json`, `sst2_driver.log`.
@@ -511,6 +512,39 @@ signature, update the relevant section here and the matching skill examples.
   cannot shift their correspondence.
 - `fit_trajectory(...)`: aligns trajectories without changing frame count;
   downstream analyze nodes retain the ancestor `frame_times_ns` artifact.
+- `analyze_tempering(...)`: MBAR over the rungs of one or more `run_sst2`
+  walkers (`mdclaw/analyze/tempering.py`). Parents are the walkers' prod
+  leaves (one walker per parent; `production_chain` pools each
+  `continue_from` chain, `segment` takes the leaf block; `comparison` is
+  refused with `tempering_scope_unsupported`). From `tempering.csv` it builds
+  the reduced potential of every recorded configuration at every rung,
+  `u_m = beta_ref (sum_f lambda_m^f E_f + sqrt(lambda_m) E_pw)` (the terms
+  lambda does not scale cancel), runs pymbar MBAR, and writes `weights.json`
+  (the rung free energies `f_k` in kJ/mol, ready for `run_sst2
+  --weights-file`), `tempering_frames.csv` (one row per DCD frame: walker,
+  node, frame index, chain frame index, step, time, rung, temperature,
+  log-weight and normalised weight in the reference ensemble), a
+  `tempering_mbar.json` summary (`N_k`, `f_k` with errors, per-walker rung
+  occupancy, round trips, on-the-fly weights and single-walker MBAR, ESS) and
+  `tempering.png`. `verdict` is `weights_converged` when every rung was
+  visited, on-the-fly and per-walker weights sit within
+  `weights_tolerance_kj_mol` (default 2.5) of the pooled `f_k` and every
+  walker made `min_round_trips` (default 5); otherwise `weights_drifting`
+  with `verdict_reasons`. `discard_ns` drops a burn-in per walker,
+  `fixed_weights_only` keeps only fixed-weight blocks, `row_stride` thins the
+  report rows (frame rows are always kept). Walkers on one node must share
+  ladder, reference temperature, solute and fractional terms
+  (`tempering_walkers_incompatible`). Direct mode takes
+  `tempering_report_files` (+ `tempering_state_files`, `output_frequency_ps`).
+  The DCD frame count is read from the file header (no mdtraj plugin, whose
+  stdout chatter would corrupt the CLI JSON). Codes: `tempering_inputs_missing`,
+  `tempering_report_missing`, `tempering_report_invalid`,
+  `tempering_walkers_incompatible`, `tempering_scope_unsupported`,
+  `pymbar_not_installed`.
+- `analyze_rmsd(...)`, `analyze_distance(...)`, and `analyze_q_value(...)`:
+  write a CSV `time_ns` column only when a DAG-resolved `frame_times_ns`
+  artifact exists. Direct and legacy inputs without it produce frame-only CSVs
+  instead of assuming a fixed output cadence.
 - `analyze_rmsd(...)`, `analyze_distance(...)`, and `analyze_q_value(...)`:
   write a CSV `time_ns` column only when a DAG-resolved `frame_times_ns`
   artifact exists. Direct and legacy inputs without it produce frame-only CSVs

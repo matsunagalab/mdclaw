@@ -500,6 +500,8 @@ def run_sst2(
             shutil.move(str(s), str(d))
         for leftover in out_dir.glob(f"{prefix}_sst2*.xml"):
             leftover.unlink()  # periodic checkpoint copies of the state
+        for leftover in list(out_dir.glob(f"{prefix}_sst2.pdb")) + list(out_dir.glob(f"{prefix}_sst2.cif")) + list(out_dir.glob("tmp_*_pep.pdb")):
+            leftover.unlink()  # SST2's own copies of the input structure; the triple is the record
         with open(out_dir / "tempering.json") as fh:
             sidecar = json.load(fh)
         sidecar["artifact_paths"] = {k: str(out_dir / v) for k, v in {

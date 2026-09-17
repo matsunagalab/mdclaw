@@ -30,7 +30,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "input_resolution_blocked": "Resolve inputs via the DAG or provide explicit paths.",
 
     # --- solute tempering (run_sst2) ---
-    "sst2_not_installed": "Set MDCLAW_SST2_HOME to a checkout of the matsunagalab/SST2 fork (branch mdclaw) or install it, then rerun.",
+    "sst2_not_installed": "The runtime image bundles SST2; run inside it (or set MDCLAW_SST2_HOME to a checkout of the matsunagalab/SST2 fork for development), then rerun.",
     "sst2_solute_required": "Pass exactly one of --solute-selection (mdtraj DSL) or --solute-indices-file.",
     "sst2_solute_selection_invalid": "Fix the mdtraj selection; it must match a proper subset of the atoms, cut at residue boundaries.",
     "sst2_solute_includes_solvent": "The solute must be part of the solute molecules; the selection picked up water, ions or virtual sites. Add 'and protein' / a chain restriction, or rebuild the index file against this node's topology.pdb.",
@@ -39,6 +39,14 @@ GUARDRAIL_CODES: dict[str, str] = {
     "sst2_restart_missing": "The tempering sidecar of the parent node is missing; continue from a completed run_sst2 node or drop --restart-state-file.",
     "sst2_requires_pme": "Solute tempering needs explicit solvent with PME; build the topology without implicit solvent.",
     "sst2_driver_failed": "Read artifacts/sst2_driver.log in the node, fix the cause (platform, memory, selection), then branch and rerun.",
+
+    # --- solute tempering analysis (analyze_tempering) ---
+    "tempering_inputs_missing": "Parent the analyze node to completed run_sst2 prod nodes (one per walker), or pass --tempering-report-files; every segment needs its tempering.csv and ladder metadata.",
+    "tempering_report_missing": "The tempering.csv of a run_sst2 segment is gone; rerun that segment or drop it from the parents.",
+    "tempering_report_invalid": "The file is not a run_sst2 tempering.csv (needs Step, Aim Temp, E frac and E solvent-solute columns); point at the node's tempering_report artifact.",
+    "tempering_walkers_incompatible": "Pool only walkers of one condition: same ladder, reference temperature, solute and fractional terms. Analyze each condition on its own node.",
+    "tempering_scope_unsupported": "Create the analyze node with analysis_data_scope 'production_chain' (or 'segment') and the run_sst2 prod nodes as parents; analyze_tempering pools walkers itself.",
+    "pymbar_not_installed": "Run inside the MDClaw runtime image (pymbar is bundled) or install pymbar >= 4 in the environment.",
 
     "container_runtime_not_found": "Export MDCLAW_SLURM_PATH=\"$PATH\" from a host shell before submitting from inside the image, or run `mdclaw configure_container --runtime /abs/path/to/singularity`, then resubmit the same (still pending) node.",
 

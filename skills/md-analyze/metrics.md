@@ -22,6 +22,7 @@ mdclaw --job-dir <job_dir> --node-id <rmsd_analyze_node_id> analyze_rmsd
 | Native contact fraction | `analyze_q_value` | contacts vs a reference |
 | Frame alignment for viz / dim-reduction | `fit_trajectory` | prerequisite for some metrics |
 | Energy / temperature / volume / density | production `energy.dat` lineage or the combined energy artifact | not a separate analyze tool |
+| Solute tempering (SST2) rung reweighting, weight convergence, per-frame weights | `analyze_tempering` | parents are the `run_sst2` prod leaves; see `skills/md-analyze/tempering.md` |
 
 `analyze_distance --mode com` computes a geometric (unweighted) centroid and
 does not reproduce the mass-weighted, periodic OpenMM coordinate used by a

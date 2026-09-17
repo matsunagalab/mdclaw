@@ -22,6 +22,9 @@ from mdclaw.analyze.equilibration import (
 from mdclaw.analyze.registry import (
     register_analysis_result,
 )
+from mdclaw.analyze.tempering import (
+    analyze_tempering,
+)
 
 TOOLS = {
     fn.__name__: fn
@@ -35,6 +38,7 @@ TOOLS = {
         analyze_contact_frequency,
         detect_equilibration,
         register_analysis_result,
+        analyze_tempering,
     )
 }
 

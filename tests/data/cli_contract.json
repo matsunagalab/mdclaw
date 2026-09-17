@@ -60,6 +60,16 @@
     "requires_node": true,
     "server": "analyze"
   },
+  "analyze_tempering": {
+    "job_dir_is_data": false,
+    "node_type": "analyze",
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": true,
+    "server": "analyze"
+  },
   "boltz2_protein_from_seq": {
     "job_dir_is_data": false,
     "node_type": null,

@@ -221,6 +221,9 @@ def test_run_sst2_node_mode_and_continuation(xml_triple, tmp_path):
     assert n1["artifacts"]["tempering_state"] == "artifacts/tempering.json"
     assert n1["metadata"]["sampling_method"] == "sst2"
     assert n1["metadata"]["final_step"] == 100
+    leftovers = [p.name for p in (jd / "nodes" / prod1 / "artifacts").iterdir()
+                 if p.name.startswith("sst2_sst2") or p.name.startswith("tmp_")]
+    assert leftovers == [], leftovers   # SST2's own PDB/CIF copies are removed
 
     # continue the walker in a second node: sidecar and state come from prod1
     prod2 = _node("prod", continue_from=prod1)

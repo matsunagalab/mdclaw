@@ -104,7 +104,8 @@ For **PLUMED CV recording, steering or fixed umbrellas**, follow
 **`skills/md-production/plumed.md`**; this requires a PLUMED-capable runtime.
 For **enhanced sampling of a loop, peptide or binding site without a CV**
 (solute tempering, SST2), **read and follow `skills/md-production/sst2.md`**;
-this requires the SST2 fork on `MDCLAW_SST2_HOME`.
+the runtime image bundles the SST2 fork, and SST2 data is analyzed with
+`analyze_tempering` before any metric.
 
 ## Handoff
 
