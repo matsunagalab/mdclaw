@@ -71,6 +71,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "chain_ids_read_as_author": "Not an error: the requested chain ids matched author chains while the same letters are label ids of other chains in this entry, so they were read as author ids (the map is in the adjustment).",
     "parent_required": "Pass --parent-node-ids with one of the listed candidates, or create the missing parent stage first.",
     "missing_node_context": "Pass both --job-dir and --node-id for this workflow tool.",
+    "modeller_models_geometry_invalid": "Every MODELLER model has a folded aromatic ring or overlapping atoms (named in the error); build more models or change the random seed, then run a new node.",
     "water_residue_name_unrecognised": "A residue with water's composition (one O, up to two H) carries a name the loader does not know as water (listed in the error) and would be built flexible with repartitioned hydrogens; name water HOH or WAT in the prepared PDB, or exclude it, then run a new topo node.",
     "node_id_requires_job_dir": "--node-id was passed without --job-dir; pass both together.",
     "create_node_id_not_allowed": "Omit --node-id; use the node_id returned by create_node.",

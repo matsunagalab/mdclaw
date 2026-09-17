@@ -177,6 +177,7 @@
   "modeller_missing_residue_repair_failed",
   "modeller_missing_residue_repair_validation_failed",
   "modeller_nonstandard_residue_preservation_unsupported",
+  "modeller_models_geometry_invalid",
   "modeller_not_installed",
   "modeller_repair_numbering_unresolvable",
   "modeller_repair_reference_sequence_unavailable",

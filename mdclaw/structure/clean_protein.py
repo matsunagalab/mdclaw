@@ -2172,38 +2172,50 @@ def _repair_missing_residues_with_modeller(
             first_chain=str(chains[0].id),
             last_chain=run_last_chain,
         )
-        model_result = modeller_from_alignment(
-            template_pdb=str(run_template),
-            alignment_file=str(alignment_path),
-            template_code=input_path.stem,
-            target_code=f"{input_path.stem}_filled",
-            num_models=1,
-            loop_refinement=True,
-            loop_models=2,
-            # The split protein file can carry polymer modifications as HETATM
-            # (1A62 has three observed MSE residues). Excluding HETATM makes
-            # MODELLER drop those template positions and reject its otherwise
-            # identical alignment before the later PDBFixer MSE->MET conversion.
-            # It is also what makes the BLK block above visible to MODELLER.
-            hetatm=True,
-            # The default ceiling is 30; raise it so the largest gap present is
-            # actually refined rather than silently left as built.
-            loop_max_length=max(30, int(summary["max_segment_length"])),
-            # The repaired chain has to stay superposed on the structure it came
-            # from, or a membrane orientation or partner chain kept from the
-            # original lands in the wrong place.
-            template_frame=True,
-            # A disulfide whose cysteines fall inside a gap is invisible to MODELLER:
-            # it reads its restraints off the template, where those residues are not
-            # there at all. On 9UT9 chain A that left CYS363 and CYS366 -- bonded at
-            # 2.04 A where 9UTC resolves them -- 11.65 A apart. Declaring the bond
-            # downstream cannot undo that; it only hands minimisation a bond nine
-            # angstroms past equilibrium.
-            disulfide_patches=patch_resolution["positions"],
-            target_residue_sites=target_resolution["sites"],
-            random_seed=random_seed,
-            output_dir=str(out_dir),
-        )
+        # A loop model with a folded aromatic ring or overlapping atoms is rejected by
+        # modeller_from_alignment (modeller_models_geometry_invalid). Two models are
+        # usually enough; when both fail, build eight more with another seed once.
+        geometry_tries = ((2, random_seed, out_dir), (8, random_seed - 1, out_dir / "geometry_retry"))
+        for geometry_try_models, geometry_try_seed, geometry_try_dir in geometry_tries:
+            model_result = modeller_from_alignment(
+                template_pdb=str(run_template),
+                alignment_file=str(alignment_path),
+                template_code=input_path.stem,
+                target_code=f"{input_path.stem}_filled",
+                num_models=1,
+                loop_refinement=True,
+                loop_models=geometry_try_models,
+                # The split protein file can carry polymer modifications as HETATM
+                # (1A62 has three observed MSE residues). Excluding HETATM makes
+                # MODELLER drop those template positions and reject its otherwise
+                # identical alignment before the later PDBFixer MSE->MET conversion.
+                # It is also what makes the BLK block above visible to MODELLER.
+                hetatm=True,
+                # The default ceiling is 30; raise it so the largest gap present is
+                # actually refined rather than silently left as built.
+                loop_max_length=max(30, int(summary["max_segment_length"])),
+                # The repaired chain has to stay superposed on the structure it came
+                # from, or a membrane orientation or partner chain kept from the
+                # original lands in the wrong place.
+                template_frame=True,
+                # A disulfide whose cysteines fall inside a gap is invisible to MODELLER:
+                # it reads its restraints off the template, where those residues are not
+                # there at all. On 9UT9 chain A that left CYS363 and CYS366 -- bonded at
+                # 2.04 A where 9UTC resolves them -- 11.65 A apart. Declaring the bond
+                # downstream cannot undo that; it only hands minimisation a bond nine
+                # angstroms past equilibrium.
+                disulfide_patches=patch_resolution["positions"],
+                target_residue_sites=target_resolution["sites"],
+                random_seed=geometry_try_seed,
+                output_dir=str(geometry_try_dir),
+            )
+            if model_result.get("code") != "modeller_models_geometry_invalid":
+                break
+            outcome["warnings"].append(
+                f"modeller_models_geometry_invalid with {geometry_try_models} loop model(s) "
+                f"(seed {geometry_try_seed}): {'; '.join(model_result.get('errors') or [])[:400]}")
+        outcome["loop_models_used"] = geometry_try_models
+        outcome["random_seed_used"] = geometry_try_seed
         outcome["warnings"].extend(model_result.get("warnings", []))
         model_file = (model_result.get("selected_model") or {}).get("path")
         if model_result.get("success") and model_file and Path(model_file).is_file():

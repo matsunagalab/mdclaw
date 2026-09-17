@@ -332,6 +332,82 @@ def _restore_template_frame(
     return info
 
 
+# Heavy atoms of one residue closer than this are on top of each other; no bond is this short.
+_MODEL_OVERLAP_ANGSTROM = 1.0
+# Between residues, a template can already carry close contacts (a chimera of rigid pieces, a
+# deposit's clash) that minimisation parts; only near-coincident atoms mark a broken model.
+_MODEL_INTER_RESIDUE_OVERLAP_ANGSTROM = 0.5
+# Para positions of a six-membered aromatic ring sit 2.8 A apart; a folded ring brings them together.
+_AROMATIC_PARA_MIN_ANGSTROM = 2.0
+_AROMATIC_PARA_PAIRS = {
+    "PHE": (("CG", "CZ"), ("CD1", "CE2"), ("CD2", "CE1")),
+    "TYR": (("CG", "CZ"), ("CD1", "CE2"), ("CD2", "CE1")),
+    "TRP": (("CD2", "CH2"), ("CE2", "CZ3"), ("CE3", "CZ2")),
+}
+
+
+def _model_geometry_issues(model_path, max_issues: int = 10) -> list[str]:
+    """Stereochemical failures that DOPE does not penalise enough to rank them last.
+
+    MODELLER's loop refinement occasionally returns a model with an aromatic ring
+    folded onto itself: on 9OPW (hum-ecd-9opw-apo, 2026-09-18) the second of two
+    loop models had PHE A53 and PHE A373 with ring atoms 0.34 A apart, and it was
+    the lowest-DOPE model, so it was selected and its topology build later failed
+    with an unphysical energy (6e10-1e11 kJ/mol). The first loop model was clean.
+    Returns one line per problem: heavy atoms of one residue closer than 1.0 A,
+    heavy atoms of different residues closer than 0.5 A, and Phe/Tyr/Trp rings
+    whose para atoms are closer than 2.0 A. The inter-residue threshold is lower
+    because a template may legitimately carry close contacts between rigid pieces
+    that minimisation resolves (0.97 A in the medaka compact chimera).
+    """
+    import numpy as np
+
+    names, owners, residues, coords = [], [], {}, []
+    for line in Path(model_path).read_text().splitlines():
+        if not line.startswith(("ATOM", "HETATM")) or len(line) < 54:
+            continue
+        atom = line[12:16].strip()
+        element = (line[76:78].strip() if len(line) >= 78 else "") or atom[:1]
+        if element.upper() in ("H", "D") or atom.startswith("H"):
+            continue
+        key = (line[21], line[22:27].strip(), line[17:20].strip())
+        try:
+            xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+        except ValueError:                                   # not a fixed-column coordinate record
+            continue
+        residues.setdefault(key, {})[atom] = xyz
+        names.append(f"{key[2]} {key[0]}{key[1]} {atom}")
+        owners.append(key)
+        coords.append(xyz)
+    issues: list[str] = []
+    for (chain, number, resname), atoms in residues.items():
+        for a, b in _AROMATIC_PARA_PAIRS.get(resname, ()):
+            if a in atoms and b in atoms:
+                d = float(np.linalg.norm(np.subtract(atoms[a], atoms[b])))
+                if d < _AROMATIC_PARA_MIN_ANGSTROM:
+                    issues.append(f"{resname} {chain}{number}: ring folded, {a}-{b} {d:.2f} A")
+                    break
+    if coords:
+        X = np.asarray(coords)
+        try:
+            from scipy.spatial import cKDTree
+
+            close = sorted(cKDTree(X).query_pairs(_MODEL_OVERLAP_ANGSTROM))
+        except ImportError:                                  # pragma: no cover - scipy ships in the images
+            close = []
+            for i in range(0, len(X), 2000):
+                d = np.linalg.norm(X[i:i + 2000, None] - X[None], axis=2)
+                close += [(i + k, j) for k, j in zip(*np.where(d < _MODEL_OVERLAP_ANGSTROM)) if j > i + k]
+        for i, j in close:
+            d = float(np.linalg.norm(X[i] - X[j]))
+            if owners[i] != owners[j] and d >= _MODEL_INTER_RESIDUE_OVERLAP_ANGSTROM:
+                continue
+            issues.append(f"{names[i]} and {names[j]} overlap at {d:.2f} A")
+            if len(issues) >= max_issues:
+                break
+    return issues[:max_issues]
+
+
 def _has_modeller_license_env() -> bool:
     """Return True when the user provided a MODELLER license via env vars."""
     return any(
@@ -1143,10 +1219,40 @@ def _run_modeller_and_attach(
             fail_node(job_dir, node_id, errors=result["errors"])
         return result
 
+    # Reject models with folded rings or overlapping atoms before choosing by DOPE
+    # (see _model_geometry_issues). The runner already sorted by DOPE.
+    selection_reason = parsed.get("selection_reason", "unknown")
+    for model in successful_models:
+        model_path = Path(model.get("path") or model.get("name", ""))
+        if not model_path.is_absolute():
+            model_path = (out_dir / model_path).resolve()
+        model["geometry_issues"] = _model_geometry_issues(model_path) if model_path.exists() else ["model file missing"]
+    valid_models = [m for m in successful_models if not m["geometry_issues"]]
+    rejected = [m for m in successful_models if m["geometry_issues"]]
+    if not valid_models:
+        result["code"] = "modeller_models_geometry_invalid"
+        result["all_models"] = successful_models
+        result["errors"].append(
+            f"All {len(successful_models)} MODELLER model(s) have folded aromatic rings or "
+            "overlapping atoms: " + "; ".join(
+                f"{m.get('name')}: {', '.join(m['geometry_issues'][:3])}" for m in rejected))
+        result["hints"] = ["Build more models (num_models / loop_models) or change random_seed."]
+        if _node_mode:
+            fail_node(job_dir, node_id, errors=result["errors"])
+        return result
+    if rejected:
+        result["warnings"].append(
+            f"modeller_model_geometry_rejected: {len(rejected)} of {len(successful_models)} model(s) "
+            "rejected for folded aromatic rings or overlapping atoms before ranking by DOPE: "
+            + "; ".join(f"{m.get('name')}: {m['geometry_issues'][0]}" for m in rejected))
+    if selected_model.get("name") not in {m.get("name") for m in valid_models}:
+        selected_model = valid_models[0]
+        selection_reason = f"{selection_reason}_among_geometry_valid_models"
+
     result["all_models"] = successful_models
     result["selected_model"] = {
         **selected_model,
-        "selection_reason": parsed.get("selection_reason", "unknown"),
+        "selection_reason": selection_reason,
     }
 
     selected_path = Path(selected_model.get("path") or selected_model.get("name", ""))
