@@ -77,7 +77,7 @@ def test_prepare_node_context_includes_protonation_overrides(monkeypatch):
         process_ligands=True,
         histidine_states={"A:10": "HIE"},
         protonation_states={"A:11": "GLH"},
-        protonation_method="standard",
+        protonation_method="no-prediction",
         preserve_input_protonation=True,
         strip_input_caps=False,
         missing_residue_method=" AUTO ",
@@ -92,7 +92,7 @@ def test_prepare_node_context_includes_protonation_overrides(monkeypatch):
     assert result["success"] is True
     assert captured["histidine_states"] == {"A:10": "HIE"}
     assert captured["protonation_states"] == {"A:11": "GLH"}
-    assert captured["protonation_method"] == "standard"
+    assert captured["protonation_method"] == "no-prediction"
     assert captured["preserve_input_protonation"] is True
     assert captured["missing_residue_method"] == "auto"
 
@@ -319,7 +319,7 @@ def test_prepare_routes_overrides_between_same_chain_fragments(
     monkeypatch.setattr(pc, "clean_protein", clean)
     result = prepare_complex(
         structure_file=str(mini_pdb), output_dir=str(tmp_path / "out"),
-        select_chains=["A"], protonation_method="standard", **{argument: {target: "HIP"}},
+        select_chains=["A"], protonation_method="no-prediction", **{argument: {target: "HIP"}},
     )
     if target == "A:264":
         assert clean.call_count == 2

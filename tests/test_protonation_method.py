@@ -19,8 +19,8 @@ from mdclaw.structure.clean_protein import (
 
 def test_the_recorded_label_distinguishes_the_two_paths():
     assert _protonation_method_label(False) == "pdb2pqr+propka"
-    assert _protonation_method_label(True) == "pdb2pqr_standard_state"
-    assert set(PROTONATION_METHODS) == {"propka", "standard"}
+    assert _protonation_method_label(True) == "pdb2pqr_no_prediction"
+    assert set(PROTONATION_METHODS) == {"propka", "no-prediction"}
 
 
 def test_an_unknown_method_is_refused(tmp_path):
@@ -31,7 +31,7 @@ def test_an_unknown_method_is_refused(tmp_path):
     result = clean_protein(str(structure), protonation_method="propka-ish")
     assert result["success"] is False
     assert result["code"] == "invalid_parameter_value"
-    assert result["context"]["accepted_values"] == ["propka", "standard"]
+    assert result["context"]["accepted_values"] == ["propka", "no-prediction"]
 
 
 def test_requested_method_fails_closed_when_pdb2pqr_is_unavailable(
@@ -102,7 +102,7 @@ def test_requested_method_cannot_succeed_from_stale_pdb2pqr_output(
 
 @pytest.mark.parametrize("method,expected_flag", [
     ("propka", True),
-    ("standard", False),
+    ("no-prediction", False),
 ])
 def test_titration_flags_are_paired_with_their_values(method, expected_flag):
     """`--ffout` must keep its value whichever mode is selected.

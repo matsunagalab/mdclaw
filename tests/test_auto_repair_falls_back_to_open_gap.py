@@ -47,7 +47,7 @@ def stubbed_repair(monkeypatch):
 
 def test_auto_leaves_the_gap_open_with_a_warning(stubbed_repair, tmp_path):
     stubbed_repair.setattr(cp, "_resolve_missing_residue_method", lambda *a, **k: _decision("modeller", True))
-    result = cp.clean_protein(pdb_file=str(_pdb(tmp_path / "p.pdb")), protonation_method="standard")
+    result = cp.clean_protein(pdb_file=str(_pdb(tmp_path / "p.pdb")), protonation_method="no-prediction")
     assert result["success"], result.get("errors")
     assert result["missing_residue_method_used"] == "none"
     assert any("left open" in w for w in result["warnings"])
@@ -56,7 +56,7 @@ def test_auto_leaves_the_gap_open_with_a_warning(stubbed_repair, tmp_path):
 
 def test_an_explicit_modeller_request_still_fails(stubbed_repair, tmp_path):
     stubbed_repair.setattr(cp, "_resolve_missing_residue_method", lambda *a, **k: _decision("modeller", False))
-    result = cp.clean_protein(pdb_file=str(_pdb(tmp_path / "p.pdb")), protonation_method="standard",
+    result = cp.clean_protein(pdb_file=str(_pdb(tmp_path / "p.pdb")), protonation_method="no-prediction",
                               missing_residue_method="modeller")
     assert result["success"] is False
     assert result["code"] == "modeller_repair_numbering_unresolvable"

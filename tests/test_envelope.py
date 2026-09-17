@@ -332,7 +332,7 @@ class TestCliContract:
         res = clean_protein(pdb_file="missing.pdb", protonation_method="pdbfixer")
         assert res["success"] is False
         assert res["code"] == "invalid_parameter_value"
-        assert res["context"]["accepted_values"] == ["propka", "standard"]
+        assert res["context"]["accepted_values"] == ["propka", "no-prediction"]
 
 
 class TestStageToolAudit:

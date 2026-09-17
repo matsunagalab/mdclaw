@@ -624,7 +624,7 @@ def _apply_protonation_states_with_modeller(
                     f"Protonation target not found: {record['chain']}:{record['resnum']}"
                     f"{(':' + record.get('icode', '')) if record.get('icode') else ''}"
                     f"; {detail}. To put every titratable side chain in its "
-                    f"standard state, prefer protonation_method='standard' over "
+                    f"fixed (standard) state, prefer protonation_method='no-prediction' over "
                     f"naming residues."
                 )
                 continue

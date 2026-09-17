@@ -66,7 +66,10 @@ signature, update the relevant section here and the matching skill examples.
   `code="associated_ligands_require_selection"` instead of silently dropping
   ligand components. That refusal, like every refusal raised before the split
   has delivered the selection, leaves the prep node pending and rerunnable.
-- `clean_protein(...)`: PDBFixer plus pdb2pqr protonation, with fallback
+- `clean_protein(...)`: PDBFixer plus pdb2pqr protonation
+  (`protonation_method="propka"` predicts states at `ph`; `"no-prediction"`
+  keeps the force field's fixed states and ignores `ph`; `"standard"` is a
+  deprecated alias), with fallback
   paths and optional site-specific residue protonation overrides rebuilt via
   OpenMM `Modeller.addHydrogens(variants=...)`. `context_pdb_files` (the other
   pieces of a multi-piece prep, passed by `prepare_complex`) are present, cut

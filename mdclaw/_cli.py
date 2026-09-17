@@ -1223,9 +1223,51 @@ def _jsonable_default(value):
     return str(value)
 
 
+def _docstring_parameter_descriptions(fn) -> dict[str, str]:
+    """``{parameter: description}`` from a Google-style ``Args:`` block.
+
+    An agent that introspects a tool with ``--list-json`` before calling it
+    saw the parameter names and defaults but none of the meaning the docstring
+    already carries; in the 2026-09 campaigns four attempts translated a
+    request for standard ionisation states into ``--ph 7.0`` because nothing
+    in the listing said what ``protonation_method`` chooses between. Each
+    entry starts at a line ``name: text`` indented under ``Args:`` and runs
+    through the more-indented continuation lines; blank lines end it.
+    """
+    doc = inspect.getdoc(fn) or ""
+    lines = doc.split("\n")
+    descriptions: dict[str, str] = {}
+    in_args = False
+    name = None
+    indent = None
+    for line in lines:
+        stripped = line.strip()
+        if not in_args:
+            if stripped in ("Args:", "Arguments:", "Parameters:"):
+                in_args = True
+            continue
+        if not stripped:
+            name = None
+            continue
+        current_indent = len(line) - len(line.lstrip())
+        if stripped.endswith(":") and " " not in stripped and current_indent <= (indent or 0):
+            break  # the next section (Returns:, Raises:, ...)
+        head, sep, rest = stripped.partition(":")
+        is_new = (sep and head.replace("_", "").isalnum() and not head[0].isdigit()
+                  and (indent is None or current_indent <= indent))
+        if is_new:
+            name = head.strip()
+            indent = current_indent if indent is None else min(indent, current_indent)
+            descriptions[name] = rest.strip()
+        elif name is not None:
+            descriptions[name] = (descriptions[name] + " " + stripped).strip()
+    return {k: " ".join(v.split()) for k, v in descriptions.items() if v}
+
+
 def _tool_parameter_schemas(tool_name: str, fn) -> list[dict]:
     parameter_examples = tool_parameter_example_map(fn)
     job_dir_is_data = tool_job_dir_is_data(fn)
+    descriptions = _docstring_parameter_descriptions(fn)
     params = []
     for spec in _tool_param_specs(fn, requires_node=tool_requires_node(fn)):
         entry = {
@@ -1238,6 +1280,8 @@ def _tool_parameter_schemas(tool_name: str, fn) -> list[dict]:
             ),
             "default": None if spec.required else _jsonable_default(spec.default),
         }
+        if descriptions.get(spec.name):
+            entry["description"] = descriptions[spec.name]
         if spec.inner is bool:
             entry["cli_action"] = "boolean_optional"
             entry["accepted_cli_forms"] = [

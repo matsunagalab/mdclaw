@@ -132,7 +132,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "invalid_disulfide_patches": "Pass --disulfide-patches as a JSON list of [position, position] integer pairs (0-based over the target sequence), or via --json-input.",
     "modeller_missing_residue_repair_validation_failed": "Do not use the rejected model; inspect frame, residue-identity, count, and sequence errors, then regenerate a complete model preserving author numbering.",
     "modeller_repair_reference_sequence_unavailable": "The chain carries no single reference sequence to rebuild against; supply a structure with SEQRES or model it with modeller_from_alignment.",
-    "protonation_state_override_failed": "The named residue was not found. Address it by the chain IDs the prep node reports, not the deposit's; or ask for standard states with --protonation-method standard instead of naming residues.",
+    "protonation_state_override_failed": "The named residue was not found. Address it by the chain IDs the prep node reports, not the deposit's; or ask for fixed (standard) states with --protonation-method no-prediction instead of naming residues.",
     "protonation_method_unavailable": "Install/enable pdb2pqr, or explicitly disable hydrogen rebuilding; MDClaw will not replace a requested protonation method with a pH-ignoring fallback.",
     "protonation_method_failed": "Inspect the pdb2pqr error and fix the structure or method inputs before creating a new prep node; the requested protonation baseline was not applied.",
     "invalid_terminal_cap": "Use a supported terminal cap type.",

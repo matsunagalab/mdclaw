@@ -45,7 +45,7 @@ def pieces(tmp_path):
 def test_the_rebuilt_ring_clears_the_neighbouring_piece_with_context(pieces):
     piece1, piece2 = pieces
     result = clean_protein(pdb_file=str(piece1), context_pdb_files=[str(piece2)],
-                           protonation_method="standard")
+                           protonation_method="no-prediction")
     assert result["success"], result.get("errors")
     cleaned = _heavy(result["output_file"])
     assert any(r == ("TRP", 99, "CE2") for r in [(a[0], a[1], a[2]) for a in cleaned]), "ring not rebuilt"
@@ -110,5 +110,5 @@ def test_a_piece_with_nothing_missing_still_cleans_with_context(pieces, tmp_path
     # piece2 has no missing heavy atoms of its own
     full.write_text(piece2.read_text())
     result = clean_protein(pdb_file=str(full), context_pdb_files=[str(piece1)],
-                           protonation_method="standard")
+                           protonation_method="no-prediction")
     assert result["success"], result.get("errors")

@@ -97,29 +97,43 @@ builds the loop with them restrained, so the geometry is right at the point the
 bond is formed. Declaring the bond without that only hands minimisation a bond
 stretched several angstroms past equilibrium.
 
-## Standard states versus predicted ones
+## Fixed states versus predicted ones
 
-`--ph` alone runs propka, which predicts each titratable side chain's charge
-state from its local environment. At pH 7 that returns neutral ASH, GLH or LYN
-for some residues, which is a prediction, not a default.
+`prepare_complex` has two protonation methods and `--ph` belongs to only one:
 
-When the request asks for standard states - "charged aspartate, glutamate,
-lysine and arginine, neutral histidine and cysteine" is the usual phrasing -
-pass `--protonation-method standard`. It skips the prediction and keeps the
-force field's own states. Do not try to reach the same place by listing every
-residue propka moved in `--protonation-states`: that is one override per
-residue, each addressed by a chain ID whose space is easy to get wrong, and
-each a chance to fail the whole prep.
+- `--protonation-method propka` (the default) runs pdb2pqr with propka, which
+  predicts each titratable side chain's charge state from its local
+  environment at `--ph`. At pH 7 it still returns ASH, GLH, LYN or HIP for
+  some residues: measured over 39 campaign attempts that passed `--ph` alone,
+  it moved a residue off the fixed state in about one attempt in ten.
+- `--protonation-method no-prediction` skips the prediction and keeps the
+  force field's fixed states: Asp-, Glu-, Lys+, Arg+, His and Cys neutral (the
+  His tautomer, HID or HIE, is still chosen from hydrogen bonding). `--ph` is
+  ignored in this mode.
+
+When the request asks for standard or fixed states - "charged aspartate,
+glutamate, lysine and arginine, neutral histidine and cysteine" is the usual
+phrasing - pass `--protonation-method no-prediction`. `--ph 7.0` is not a
+substitute: it only changes the pH propka predicts at. Do not try to reach
+the fixed states by listing every residue propka moved in
+`--protonation-states` either: that is one override per residue, each
+addressed by a chain ID whose space is easy to get wrong, and each a chance
+to fail the whole prep. (`standard` is the old name of `no-prediction` and is
+still accepted with a deprecation warning.)
+
+The prep receipt says which method ran and names the residues left off the
+fixed state, e.g. `protonation propka pH 7.4 (2 non-fixed: HIP56, GLH303)`;
+read it before moving on when the request constrains protonation.
 
 Input protonation names are a separate choice. By default they do not override
-the selected baseline, so `standard` really means all-standard. Add
+the selected baseline, so `no-prediction` really means all-fixed. Add
 `--preserve-input-protonation` only when deposited ASH/GLH/LYN or histidine
 variants are part of the requested chemical state. This switch never controls
 CYX disulfides or metal-site CYM: those come from the disulfide and metal
 coordination contracts and remain structural chemistry in either mode.
 
 `--protonation-states` still wins where it is given, so the two combine: ask
-for standard states, then name the handful of sites that genuinely differ.
+for fixed states, then name the handful of sites that genuinely differ.
 
 ## Terminal caps
 

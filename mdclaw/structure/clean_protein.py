@@ -2558,12 +2558,31 @@ def _restrict_missing_to_window(fixer, chains, window) -> dict:
     return trimmed
 
 
-PROTONATION_METHODS = ("propka", "standard")
+PROTONATION_METHODS = ("propka", "no-prediction")
+
+# Earlier releases called the no-prediction path "standard". Campaign agents
+# read that name as "the standard method" and reached for ``--ph 7.0``
+# instead; the name now says what the path does. The alias stays accepted so
+# recorded commands and older skills keep working.
+DEPRECATED_PROTONATION_METHODS = {"standard": "no-prediction"}
 
 
-def _protonation_method_label(standard_state: bool) -> str:
+def normalize_protonation_method(value):
+    """``(canonical_value, warning_or_None)`` for a protonation method name.
+
+    Unknown values pass through unchanged so the caller's choice error still
+    lists them; only the deprecated alias is rewritten.
+    """
+    canonical = DEPRECATED_PROTONATION_METHODS.get(value)
+    if canonical is None:
+        return value, None
+    return canonical, (f"protonation_method '{value}' is deprecated; use "
+                       f"'{canonical}'")
+
+
+def _protonation_method_label(no_prediction: bool) -> str:
     """Recorded on the node so the choice is visible after the fact."""
-    return "pdb2pqr_standard_state" if standard_state else "pdb2pqr+propka"
+    return "pdb2pqr_no_prediction" if no_prediction else "pdb2pqr+propka"
 
 
 _CONTEXT_CHAIN_POOL = "zyxwvutsrqponmlkjihgfedcba9876543210ZYXWVUTSRQPONMLKJIHGFEDCBA"
@@ -2818,17 +2837,21 @@ def clean_protein(
         keep_water: Keep water molecules when removing heterogens (default: False)
         add_missing_atoms: Add missing heavy atoms (default: True)
         add_hydrogens: Add hydrogen atoms using the selected baseline (default: True)
-        ph: pH used by the propka baseline (default: 7.4; ignored by standard)
+        ph: pH for propka (default: 7.4); ignored by no-prediction.
         disulfide_pairs: Pre-defined disulfide bond pairs from Phase 1 analysis.
                         List of dicts with chain1, resnum1, chain2, resnum2, form_bond.
                         If provided, skips auto-detection and uses these pairs instead.
         histidine_states: Pre-defined histidine protonation states from Phase 1 analysis.
                          Dict mapping "chain:resnum" to state ("HID", "HIE", "HIP").
                          If provided, overlays these states after the selected baseline.
-        protonation_method: How titratable side chains get their charge state.
-                         "propka" (default) predicts each from its environment
-                         at `ph`; "standard" keeps the force field's standard
-                         state - charged Asp/Glu/Lys/Arg, neutral His/Cys.
+        protonation_method: propka (default) predicts each titratable side
+                         chain's state from its environment at `ph`;
+                         no-prediction skips the prediction and keeps the force
+                         field's fixed states (Asp-/Glu-/Lys+/Arg+, His and Cys
+                         neutral; the His tautomer is still chosen from hydrogen
+                         bonding). A request for 'standard states' means
+                         no-prediction, not --ph 7.0. 'standard' is a deprecated
+                         alias of no-prediction.
         preserve_input_protonation: Overlay explicit input ASH/GLH/LYN and
                          histidine variants on the selected baseline. False by
                          default, so ``standard`` means all-standard. CYX and
@@ -2864,13 +2887,16 @@ def clean_protein(
     """
     logger.info(f"Cleaning protein structure: {pdb_file}")
 
+    protonation_method, deprecated_method_warning = normalize_protonation_method(
+        protonation_method)
     if protonation_method not in PROTONATION_METHODS:
         return create_choice_error(
             "protonation_method", protonation_method, PROTONATION_METHODS,
-            hints=["'propka' predicts pKa-based states; 'standard' uses textbook "
-                   "states. Ligand protonation is a separate prepare_complex option."],
+            hints=["'propka' predicts pKa-based states at `ph`; 'no-prediction' keeps "
+                   "the force field's fixed states (a request for standard states). "
+                   "Ligand protonation is a separate prepare_complex option."],
         )
-    standard_state_protonation = protonation_method == "standard"
+    standard_state_protonation = protonation_method == "no-prediction"
     input_terminal_caps = detect_input_terminal_caps(pdb_file)
     
     # Initialize result structure for LLM error handling
@@ -2896,6 +2922,9 @@ def clean_protein(
         "protonation_override_method": None,
         "preserve_input_protonation": bool(preserve_input_protonation),
     }
+    if deprecated_method_warning:
+        result.setdefault("warnings", [])
+        result["warnings"].append(deprecated_method_warning)
 
     if input_terminal_caps:
         described = ", ".join(f"{c['chain']}:{c['resnum']} {c['resname']}"

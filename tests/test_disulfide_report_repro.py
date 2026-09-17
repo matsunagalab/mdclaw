@@ -34,7 +34,7 @@ def test_clean_declared_disulfide_strips_hg_and_keeps_both_residues(tmp_path, sh
             if shape == "flat" else {"cys1": {"chain": "A", "resnum": 1},
                                      "cys2": {"chain": "A", "resnum": 2}})
     result = clean_protein(str(source), add_missing_atoms=False, add_hydrogens=False,
-                           disulfide_pairs=[pair], protonation_method="standard")
+                           disulfide_pairs=[pair], protonation_method="no-prediction")
     assert result["success"], result
     output = Path(result["output_file"])
     atoms = [line for line in output.read_text().splitlines() if line.startswith(("ATOM  ", "HETATM"))]

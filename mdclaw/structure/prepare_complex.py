@@ -60,6 +60,7 @@ pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 from mdclaw.structure.clean_ligand import clean_ligand  # noqa: E402
 from mdclaw.structure.clean_protein import (  # noqa: E402
     _disulfide_pair_sites,
+    normalize_protonation_method,
     _prepare_standard_nucleic,
     _validate_declared_disulfides,
     clean_protein,
@@ -1363,7 +1364,7 @@ def prepare_complex(
             residue or seventy-seven, and the count is reported either way,
             under ``missing_residue_detection.terminal_excluded`` when they
             are left alone and ``.terminal_built`` when they are made.
-        ph: pH used by the propka baseline (default: 7.4; ignored by standard)
+        ph: pH for propka (default: 7.4); ignored by no-prediction.
         cap_termini: Backward-compatible shortcut to add ACE at the
                      N terminus and NME at the C terminus (default: False).
         n_terminal_cap: Optional one-sided N-terminal cap. Currently supports
@@ -1443,15 +1444,16 @@ def prepare_complex(
                          / ``"HIP"``. Only the keys present are overridden; the
                          rest keep their propka-derived state. Wins over
                          ``structure_analysis`` when both are provided.
-        protonation_method: How titratable side chains get their charge state.
-                         ``"propka"`` (default) predicts each one from its local
-                         environment at ``ph``. ``"standard"`` leaves that
-                         prediction out and keeps the force field's standard
-                         state: charged Asp/Glu/Lys/Arg, neutral His/Cys. Reach
-                         for it when the request asks for standard states
-                         rather than predicted ones - naming every residue
+        protonation_method: propka (default) predicts each titratable side
+                         chain's state from its environment at ``ph``;
+                         no-prediction skips the prediction and keeps the force
+                         field's fixed states (Asp-/Glu-/Lys+/Arg+, His and Cys
+                         neutral; the His tautomer is still chosen from hydrogen
+                         bonding). A request for 'standard states' means
+                         no-prediction, not --ph 7.0; naming every residue
                          propka moved through ``protonation_states`` is the
-                         slow way to the same place. Explicit
+                         slow way to the same place. ``"standard"`` is a
+                         deprecated alias of no-prediction. Explicit
                          ``protonation_states`` still win over either mode.
         preserve_input_protonation: Preserve explicit input ASH/GLH/LYN and
                          histidine variants as overrides on the selected
@@ -1561,6 +1563,10 @@ def prepare_complex(
     # Initialize result structure
     job_id = generate_job_id()
     result = _prepare_complex_initial_result(job_id, structure_file)
+    protonation_method, deprecated_method_warning = normalize_protonation_method(
+        protonation_method)
+    if deprecated_method_warning:
+        result["warnings"].append(deprecated_method_warning)
     result["source_bundle_file"] = _resolved_structure.get("source_bundle_file")
     result["source_selection_file"] = _resolved_structure.get("source_selection_file")
     result["source_selection"] = _resolved_structure.get("source_selection")
@@ -2598,6 +2604,14 @@ def prepare_complex(
                             "terminal_cap_hydrogen_completion"
                         )
                         for key in ("missing_residue_repair", "missing_residue_detection"):
+                            if clean_result.get(key) is not None:
+                                protein_result[key] = clean_result[key]
+                        # The protonation record, so the receipt can say which
+                        # method ran and which residues propka moved off the
+                        # force field's fixed state (campaign failures 2026-09-16
+                        # went unnoticed because nothing surfaced HIP/ASH/GLH).
+                        for key in ("protonation_method", "protonation_states",
+                                    "histidine_states", "requested_ph"):
                             if clean_result.get(key) is not None:
                                 protein_result[key] = clean_result[key]
                         protein_result["success"] = True

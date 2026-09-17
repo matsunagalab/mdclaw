@@ -144,6 +144,9 @@ use the HPacker-based `create_mutated_structure` branch in
 4. Run `inspect_molecules` and confirm Step 0b. Before creating `prep`, read
    `prep-chemistry.md` for the protonation baseline, and for caps, disulfides
    or a mutation/PTM branch where those apply; `branches.md` covers branching.
+   A request for standard or fixed ionisation states ("charged Asp/Glu/Lys/Arg,
+   neutral His/Cys") is `--protonation-method no-prediction`; `--ph 7.0` keeps
+   propka predicting and does not deliver it.
    Then create, explain, and run the `prep` node with `prepare_complex
    --solvent-type explicit|implicit|vacuum`. Read `inspection-and-chains.md` or
    `prepare-complex.md` when molecule selection is not trivial.

@@ -151,6 +151,74 @@ def _caps(protein: dict) -> Optional[str]:
     return f"N {n_cap or '-'} / C {c_cap or '-'}"
 
 
+# Residue names that are one hydrogen away from the force field's fixed state.
+# CYX (disulfide) and metal-site CYM are structural chemistry, not a
+# protonation choice, and are filtered out below.
+_NON_FIXED_PROTONATION_NAMES = {"ASH", "GLH", "LYN", "HIP", "CYM"}
+
+
+def _protonation_fact(result: dict, proteins: list) -> Optional[dict]:
+    """Method, pH and the residues off the fixed state, from the prep record.
+
+    Four campaign attempts (2026-09-16) lost a check on a HIP, ASH or GLH that
+    propka assigned while the request asked for fixed states; nothing in the
+    receipt said so. The method label comes from the protein records
+    (``pdb2pqr+propka`` / ``pdb2pqr_no_prediction``), the residues from the
+    per-chain ``protonation_states`` (ASH/GLH/LYN/CYM) and ``histidine_states``
+    (HIP) records; metal-site ligands declared in ``metal_sites`` are excluded.
+    """
+    labels = {p.get("protonation_method") for p in proteins if p.get("protonation_method")}
+    requested = _get(result, "preparation_summary.protonation_method")
+    if not labels and not requested:
+        return None
+    label = next(iter(labels)) if len(labels) == 1 else (requested or ", ".join(sorted(labels)))
+    if label in ("standard", "no-prediction"):
+        label = "pdb2pqr_no_prediction"
+    method = ("no-prediction" if "no_prediction" in str(label) or "standard" in str(label)
+              else "propka" if "propka" in str(label) else str(label))
+    ph = None
+    if method == "propka":
+        for protein in proteins:
+            if protein.get("requested_ph") is not None:
+                ph = protein.get("requested_ph")
+                break
+    metal_ligands = set()
+    for site in result.get("metal_sites") or []:
+        for item in (site.get("ligands") or []) if isinstance(site, dict) else []:
+            if isinstance(item, dict):
+                metal_ligands.add((str(item.get("chain") or ""), str(item.get("resnum") or "")))
+    moved = []
+    seen = set()
+    for protein in proteins:
+        for record in protein.get("protonation_states") or []:
+            if not isinstance(record, dict):
+                continue
+            state = str(record.get("state") or "")
+            chain, resnum = str(record.get("chain") or ""), str(record.get("resnum") or "")
+            if state not in _NON_FIXED_PROTONATION_NAMES or (chain, resnum) in seen:
+                continue
+            if state == "CYM" and (chain, resnum) in metal_ligands:
+                continue
+            seen.add((chain, resnum))
+            moved.append(f"{state}{chain}{resnum}" if chain else f"{state}{resnum}")
+        his = protein.get("histidine_states") if isinstance(protein.get("histidine_states"), dict) else {}
+        for key, state in his.items():
+            if state != "HIP":
+                continue
+            chain, _, resnum = str(key).partition(":")
+            if (chain, resnum) in seen:
+                continue
+            seen.add((chain, resnum))
+            moved.append(f"HIP{chain}{resnum}")
+    return _compact({
+        "method": method,
+        "label": label,
+        "ph": ph,
+        "non_fixed_states": moved or None,
+        "non_fixed_state_count": len(moved),
+    })
+
+
 def _facts_prep(result: dict) -> dict:
     proteins = [p for p in result.get("proteins") or [] if isinstance(p, dict)]
     chains = []
@@ -201,6 +269,7 @@ def _facts_prep(result: dict) -> dict:
     merge = _get(result, "merge_result.statistics") or {}
     facts = _compact({
         "chains": chains,
+        "protonation": _protonation_fact(result, proteins),
         "pieces": pieces or None,
         "ligands": ligands,
         "ligands_dropped": result.get("excluded_ligand_ids") or None,
@@ -246,6 +315,16 @@ def _summary_prep(facts: dict, result: dict) -> str:
         parts.append("0 ligands")
     if facts.get("disulfides"):
         parts.append(f"{len(facts['disulfides'])} disulfide(s)")
+    protonation = facts.get("protonation") or {}
+    if protonation.get("method"):
+        text = f"protonation {protonation['method']}"
+        if protonation.get("ph") is not None:
+            text += f" pH {protonation['ph']}"
+        moved = protonation.get("non_fixed_states") or []
+        if moved:
+            shown = ", ".join(moved[:6]) + (", ..." if len(moved) > 6 else "")
+            text += f" ({len(moved)} non-fixed: {shown})"
+        parts.append(text)
     if facts.get("atoms"):
         parts.append(f"{_n(facts['atoms'])} atoms")
     return "prepared: " + ", ".join(parts)

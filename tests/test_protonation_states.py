@@ -242,7 +242,7 @@ def test_extract_reports_assigned_states_as_auto_detected(tmp_path):
     ["pdb", "mmcif"],
 )
 @pytest.mark.parametrize("method,baseline", [
-    ("standard", "pdb2pqr_standard_state"),
+    ("no-prediction", "pdb2pqr_no_prediction"),
     ("propka", "pdb2pqr+propka"),
 ])
 def test_input_state_is_reapplied_for_both_structure_formats(
@@ -304,7 +304,7 @@ def test_input_state_is_reapplied_for_both_structure_formats(
 
 
 @pytest.mark.parametrize("method,baseline", [
-    ("standard", "pdb2pqr_standard_state"),
+    ("no-prediction", "pdb2pqr_no_prediction"),
     ("propka", "pdb2pqr+propka"),
 ])
 def test_input_state_does_not_override_baseline_unless_requested(

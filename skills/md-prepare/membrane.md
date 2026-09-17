@@ -49,6 +49,27 @@ mdclaw --job-dir <job_dir> --node-id <solv_node_id> embed_in_membrane \
   --water-model <requested-or-decided-model> --salt --saltcon 0.15
 ```
 
+## What decides the embed time
+
+Embedding is fast when the lipid patch comes from the cache and slow when it
+has to be built. The cache key is the patch, not the protein: `--lipids`,
+`--ratio`, `--water-model`, `--salt`/`--saltcon`, `--dist-wat`, `--leaflet`
+and `--patch-side` select the cached patch; `--dist` (lateral buffer) does not.
+Changing any key value, even `--dist-wat 10.0` to get a smaller box, misses
+the cache and rebuilds the patch on the host running `embed_in_membrane`:
+minutes on a GPU, 25 minutes or more on a CPU-only login node.
+
+The image bundles equilibrated patches for POPC, POPE, DPPC, DOPC,
+POPC:CHL1 4:1, POPC:POPE:CHL1 2:1:1 and DPPC:DOPC:CHL1 1:1:1, each with TIP3P
+and with OPC, all at the defaults `--dist-wat 17.5 --leaflet 23.0
+--saltcon 0.15`. For these, keep the defaults: a smaller box does not make
+embedding or MD meaningfully faster, a cache hit does. Change `--dist-wat` or
+`--leaflet` only when the request asks for a thicker water slab or membrane,
+and say so in the report.
+
+After the run, `result["patch_build"]` and `parameters.patch_equilibration_ran`
+say whether the patch was built or reused.
+
 `pdb_file` auto-resolves from the `prep` parent's `merged_pdb` artifact. If a
 manually oriented structure is required, register it on an explicit prep
 branch instead of overriding the solv input path. On success the solv node
@@ -105,7 +126,11 @@ protein, and neutralizes net charge by swapping bulk waters for ions. This
 converges reliably for cholesterol mixtures (e.g. `POPC:POPE:CHL1 2:1:1`) that
 full-box packing struggles with.
 
-- `--membrane-backend packmol-memgen`: force the legacy full-box packing path.
+- `--membrane-backend packmol-memgen`: the legacy full-box packing path. It
+  packs every lipid and water with Packmol on the CPU of the current host
+  (25 minutes or more for a GPCR on a login node) and is for debugging a
+  patch-tile failure only. It is not a way to avoid a patch cold build: for a
+  bundled composition there is no cold build to avoid.
 - `--membrane-backend auto`: try patch-tile first, fall back to packmol-memgen.
 
 ## Timing and cold-build
@@ -118,7 +143,17 @@ take several minutes on CPU. When this happens the tool prints a
 `patch_cold_build_notice`, and reports `patch_build` /
 `parameters.patch_equilibration_ran`. Tell the user up front that the first
 build of a new composition takes a few extra minutes and is cached for reuse.
-Common compositions are pre-built into a read-only bundled cache.
+Common compositions are pre-built into a read-only bundled cache (the list is
+in "What decides the embed time" above).
+
+The patch equilibration is part of preparation and runs wherever
+`embed_in_membrane` runs; it is not the production MD that belongs on Slurm,
+and switching backends to keep it off the login node makes the build slower,
+not faster. On a shared CPU-only host, do not start a cold build at all: keep
+a bundled composition at the default geometry, or stop and ask before
+requesting a new one. If the stderr shows the
+`[mdclaw] patch-tile: no cached membrane patch` notice on such a host, the
+node will run for a long time; report that rather than waiting it out.
 
 Membrane embedding is long-running: tens of minutes are normal for large or
 mixed systems, and CPU runs (including a cold patch equilibration) may exceed an
@@ -146,7 +181,7 @@ On retry, keep the requested lipid species, ratios, solute identity, solvent
 regime, and force-field intent fixed. Retries may adjust packing controls,
 random seed, or the recommended lateral box/buffer via `dist`; keep `leaflet`
 and `dist_wat` unchanged unless the user explicitly asks for a thicker
-membrane/water slab. Do not manually increase Packmol loop counts after a
+membrane/water slab (they are cache keys, see "What decides the embed time"). Do not manually increase Packmol loop counts after a
 failure unless running a deliberate debugging experiment. If the requested
 target appears infeasible, stop and report it rather than silently simplifying
 the system. Packmol may also write a raw `*_FORCED` PDB when it cannot find a

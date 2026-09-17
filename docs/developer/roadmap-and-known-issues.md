@@ -2,6 +2,138 @@
 
 ## Known Issues
 
+### Established Metal Site Is Not Held Through Minimisation (fix candidate)
+
+Observed 2026-09-16 in kimi-k3 v4, 062_metal_6w9c r3 (6W9C PLpro, ZN C402
+bound by Cys189/192/224). prep records the site as `metal_sites[0].established`
+with motif `ZN-Cys3` and the thiolates are built as CYM, but the topology is a
+plain non-bonded zinc and `run_minimization --restraint-atoms solute_heavy`
+does not cover the ion. In one replicate of three the zinc left two of its
+thiolates during minimisation (SG-Zn 1.9 A -> more than 6 A); the other two
+replicates, flag-identical, kept all three. Downstream, MDDataBench's
+metal-ligand exemption (3.5 A on `minimized_structure.pdb`) no longer covered
+CYM224 and the attempt failed the residue-atom-count check. Proposed fix:
+when prep establishes a metal site, `build_amber_system` should either add
+harmonic Zn-ligand distance restraints that `run_minimization` and
+`run_equilibration` keep by default (a `metal_site_restraints` parameter with
+an explicit off switch), or offer a bonded model; the topo receipt should state
+the metal model in `applied.facts` (today it has no metal entry). On the
+benchmark side, deriving the exemption from the declared site instead of a
+coordinate frame is recorded in the MDDataBench memo.
+
+### Skill Text Fixes from the glm-5.3-flash Campaign (fix candidates)
+
+From the transcripts of the five cli_skill_sif failures (memo 2026-09-16):
+
+1. `skills/md-prepare/membrane.md`: next to the embed example, say which
+   parameters select the cached patch (lipids, ratio, water model, salt,
+   `dist_wat`, `leaflet`, `patch_side`) and that changing any of them rebuilds
+   the patch on the current host (CPU on a login node: 25+ minutes); list the
+   bundled compositions and their geometry. Today the only mention of
+   `dist_wat` is in the Packmol-race retry paragraph, and an agent optimising
+   box size for speed chose `--dist-wat 10.0`.
+2. Same page: mark `--membrane-backend packmol-memgen` as a debugging path
+   that packs the whole box with packmol on the CPU and never as a way to
+   avoid a patch cold build. An agent chose it to avoid a cold build that
+   would not have happened.
+3. Expose the patch-cache probe as a tool (`probe_patch_cache` already exists
+   in `mdclaw/solvation/patch_membrane.py`) or report `hit`/`miss` and the
+   fingerprint parameters in `explain_node` for a solv node, so an agent can
+   check before embedding.
+4. `skills/md-prepare/SKILL.md` step 4 (or `defaults-and-guardrails.md`, which
+   every agent reads): state in one line that a request for standard ionisable
+   states means `--protonation-method no-prediction` (renamed from `standard` on 2026-09-17), not `--ph 7.0`; the rule now
+   lives only in `prep-chemistry.md`, which the failing agent never opened.
+5. `mdclaw/_receipt.py` prep facts: add the protonation method actually used
+   and a tally of non-default states (HIP, HID/HIE counts, ASH, GLH, LYN, CYM)
+   so a propka outcome that contradicts the request is visible in the receipt.
+
+### Prep Receipt Hides Auto-Included Glycan Chains (fix candidate)
+
+Observed 2026-09-14 in the glm-5.3-flash pilot, task 069_soluble_1aol (1AOL:
+protein label chain A, N-linked NAG on label chains B/C). The agent was told to
+leave the glycan out, ran `prepare_complex --select-chains A
+--protonation-method standard --solvent-type explicit`, and `split` applied
+`covalently_linked_glycan_chains_auto_included` (14 NAG on two chains). The
+result the agent saw carried no trace of it:
+
+- `message` / `applied.summary`: `prepared: 1 protein chain(s) A (228
+  residues), 0 ligands, 6 disulfide(s), 3,484 atoms`
+- `warnings_count`: 1 (only the ASN A168 HD21 - NAG B237 C1 close contact)
+- `applied.options.select_chains`: `not_reported`
+- the adjustment lives only under `split.selection_adjustments` and
+  `applied.facts.glycans` in `result.json`
+
+The agent reported "glycan excluded" from the summary, built and ran the
+glycosylated system, and the scorer saw seven backbone fragments (12/20). The
+same signature appeared in kimi-k3 campaign v2 on 069. Attempts that fail this
+way are rerun candidates after the fix, not evidence about the model.
+
+Proposed fix (`mdclaw/_receipt.py` and the prep envelope):
+
+1. Any selection adjustment that changes composition must appear in `message`
+   and `applied.summary`, e.g. `2 glycan chain(s) auto-included (NAG x14);
+   pass --include-types protein to leave them out`, and be echoed as a
+   structured warning with its code.
+2. `applied.options.select_chains` (and `include_types`) must report the
+   effective value rather than `not_reported`, so the requested-vs-applied
+   difference is visible in the receipt.
+3. Consider a hint on the prep result when a glycan was auto-included and the
+   study plan or `--conditions` names no glycan.
+
+Evidence: `/data1/rkp00079/rku00161/runs/glm-5.3-flash-skill-pilot/attempts/069_soluble_1aol/`
+(`agent.stdout.jsonl`, `workspace/study/jobs/main/nodes/prep_001/result.json`);
+`docs/memo.md` entry of 2026-09-14 on the glm-5.3-flash pilot.
+
+### Agent-Detached Processes Outlive a Timed-out Attempt (fix candidate, MDDataBench harness)
+
+Observed 2026-09-15, glm-5.3-flash campaign, 010_membrane_6kux r3. After
+`embed_in_membrane --membrane-backend packmol-memgen` hit pi's 1500 s command
+timeout, the agent wrote `continue_attempt.py` under `$TMPDIR` and started it
+detached; the attempt was sealed `agent_no_submission` at 1786 s, but 26
+minutes later the login node still ran its tree (python3 -> apptainer starter
+-> mdclaw embed -> packmol-memgen x2 -> packmol x2 at 100 % CPU). Killed by
+PID. Proposed fix: run each agent in its own session/cgroup (`setsid`, or a
+systemd scope where available) and kill the whole group at timeout, then
+verify with `pgrep -f <attempt dir>` and record `orphans_killed` in the
+result; `sweep_dead_jobs.py` could add the same scan for sealed attempts.
+
+### `--membrane-backend packmol-memgen` on a CPU-only Host (fix candidate)
+
+Same attempt: the legacy full-box backend packs the whole protein box with
+packmol-memgen (two `packmol` runs at 100 % CPU for over 25 minutes), while
+the default patch-tile backend embedded the same protein in about 70 s in r1
+and r2. The skill never suggests the flag. Proposed fix: refuse or warn before
+`begin_node` when `membrane_backend != "patch-tile"` and no GPU platform is
+available, with a hint naming the default; or drop the legacy backend from the
+CLI surface and keep it as an internal fallback.
+
+### Uncached Membrane Patch Build Runs on a CPU-only Login Node (fix candidate)
+
+Observed 2026-09-15 in the glm-5.3-flash campaign, 002_membrane_5zk3 r1. The
+agent passed `--dist-wat 10.0` (default and cached value 17.5); `dist_wat` is in
+the patch-cache fingerprint, so `embed_in_membrane` logged "no cached membrane
+patch ... building it once now" and ran the packmol + OpenMM patch equilibration
+on the login node's CPU for the remaining 25 minutes of the attempt's budget
+(8 threads on a shared node; the attempt timed out with `solv_001` still
+`running`). On a GPU the same build takes minutes.
+
+Proposed fix (`mdclaw/solvation/patch_membrane.py::ensure_membrane_patch` and
+the `embed_in_membrane` preflight):
+
+1. When the cache probe misses and no CUDA/OpenCL platform is available (or
+   `platform` resolves to CPU), refuse before `begin_node` with a stable code
+   (e.g. `membrane_patch_cache_miss_on_cpu`) whose hints name the cached
+   parameter set (`--dist-wat 17.5`, the bundled compositions) and an explicit
+   opt-in flag (`--allow-patch-build`) for hosts where the build is intended.
+2. Report the probe result (`hit` / `miss`, fingerprint, the differing
+   parameters) in the result envelope so the agent sees why a build started.
+3. Optionally exclude `dist_wat` from the fingerprint when it only changes the
+   water slab, if the patch geometry allows re-solvating a cached patch.
+
+Evidence: `/data1/rkp00079/rku00161/runs/glm-5.3-flash-skill-full/attempts/002_membrane_5zk3/cli_skill_sif__pi__rikyu-glm-5.3-flash__r1/workspace/.mddatabench/tmp/solv_err.log`;
+`docs/memo.md` entry of 2026-09-15.
+
 ### packmol-memgen NumPy Compatibility
 
 Some packmol-memgen versions still reference removed NumPy aliases.
