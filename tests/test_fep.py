@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -309,6 +310,36 @@ class TestAnalysis:
         assert report["mutation"]["label"] == "A:L99A"
         assert len(report["sources"]) == 2
 
+    def test_parent_and_child_indexes_are_not_double_counted(self, tmp_path):
+        """A fep -> fep child's index already chains the parent's segments;
+        parenting the analyze node to both must not count them twice."""
+        pytest.importorskip("pymbar")
+        files, _, _ = _harmonic_windows(tmp_path)
+        parent = json.loads(files[0].read_text())
+        child_dir = tmp_path / "fep_002"
+        child_dir.mkdir()
+        windows = {}
+        for k, rec in parent["windows"].items():
+            wdir = child_dir / f"window_{int(k):02d}"
+            wdir.mkdir()
+            shutil.copy(rec["segments"][0]["energies_file"], wdir / "energies.npz")
+            windows[k] = {"index": int(k), "segments": rec["segments"] + [
+                {"node_id": "fep_002", "energies_file": str(wdir / "energies.npz")}]}
+        child_file = child_dir / "fep_windows.json"
+        child_file.write_text(json.dumps({**parent, "node_id": "fep_002", "windows": windows}))
+        leaf_only = collect_windows([str(child_file)])
+        both = collect_windows([str(files[0]), str(child_file)])
+        assert not leaf_only["warnings"]
+        assert all(len(both["windows"][k]) == len(leaf_only["windows"][k]) == 2 for k in range(5))
+        assert both["warnings"] and "counted once" in both["warnings"][0]
+        res = analyze_fep(fep_windows_files=[str(files[0]), str(child_file)], output_dir=str(tmp_path / "out"),
+                          discard_fraction=0.0, subsample=False)
+        assert res["success"], res
+        assert res["n_samples_per_state"] == [800] * 5
+        assert any("counted once" in w for w in res["warnings"])
+        report = json.loads(Path(res["fep_result"]).read_text())
+        assert [seg["n_after_discard"] for seg in report["per_window"][0]["segments"]] == [400, 400]
+
     def test_incomplete_windows_fail_with_indices(self, tmp_path):
         pytest.importorskip("pymbar")
         files, _, _ = _harmonic_windows(tmp_path, split_nodes=True)
@@ -539,13 +570,36 @@ class TestVacuumPipeline:
             assert all(not Path(s["energies_file"]).is_absolute() for s in rec["segments"])
         assert rec["start_minimisation"]["after_kj_mol"] <= rec["start_minimisation"]["before_kj_mol"] + 1e-6
 
+        assert raw["extended_from"] is None
+        # fresh windows with (almost) no re-equilibration after the start minimisation are flagged
+        assert any("re-heat" in w for w in first["warnings"]), first["warnings"]
+
         # analysis refuses an incomplete protocol and names the missing windows
         partial = analyze_fep(fep_windows_files=[str(index_file)], output_dir=str(tmp_path / "an0"),
                               discard_fraction=0.0, subsample=False)
         assert partial["code"] == "fep_windows_incomplete" and "[2]" in partial["errors"][0]
 
+        # recovery of a "killed" node: sample only the missing window; the
+        # finished ones are carried into the new index unchanged
+        recover = run_fep(**common, lambda_indices="2", restart_windows_file=str(index_file),
+                          output_dir=str(tmp_path / "run"))
+        assert recover["success"], recover
+        assert recover["lambda_indices"] == [2] and recover["carried_over_windows"] == [0, 1]
+        idx_r = load_windows_index(recover["fep_windows"])
+        assert sorted(idx_r["windows"]) == [0, 1, 2]
+        assert all(len(idx_r["windows"][k]["segments"]) == 1 for k in (0, 1, 2))
+        assert idx_r["windows"][0]["segments"][0]["energies_file"] == str(
+            (index_file.parent / "window_00" / "energies.npz").resolve())
+        raw_r = json.loads(Path(recover["fep_windows"]).read_text())
+        assert not Path(raw_r["extended_from"]).is_absolute()
+        assert all(not Path(v).is_absolute() for rec in raw_r["windows"].values()
+                   for v in (rec.get("restarted_from"),) if v)
+        rec_res = analyze_fep(fep_windows_files=[recover["fep_windows"]], output_dir=str(tmp_path / "an_r"),
+                              discard_fraction=0.0, subsample=False)
+        assert rec_res["success"], rec_res
+        assert rec_res["n_samples_per_state"] == [20, 20, 20]
+
         # second node: window 2, plus continue windows 0-1 from the first index
-        # (the --restart-windows-file recovery path)
         second = run_fep(**common, lambda_indices="all", restart_windows_file=str(index_file),
                          output_dir=str(tmp_path / "run"))
         assert second["success"], second
@@ -554,6 +608,13 @@ class TestVacuumPipeline:
         assert len(idx2["windows"][0]["segments"]) == 2 and len(idx2["windows"][2]["segments"]) == 1
         assert idx2["windows"][0]["start_minimisation"] is None  # continued, not restarted from eq
         assert Path(idx2["windows"][0]["segments"][0]["energies_file"]).is_file()
+
+        # parenting the analysis to parent + child must not double count the parent's samples
+        both = analyze_fep(fep_windows_files=[str(index_file), second["fep_windows"]],
+                           output_dir=str(tmp_path / "an_both"), discard_fraction=0.0, subsample=False)
+        assert both["success"], both
+        assert both["n_samples_per_state"] == [40, 40, 20]
+        assert any("counted once" in w for w in both["warnings"])
 
         res = analyze_fep(fep_windows_files=[second["fep_windows"]], output_dir=str(tmp_path / "an"),
                           discard_fraction=0.0, subsample=False)
@@ -594,3 +655,9 @@ class TestVacuumPipeline:
         second = run_fep(**common, lambda_indices="0", restart_windows_file=first["fep_windows"],
                          pressure_bar=0, output_dir=str(tmp_path / "run"))
         assert second["success"] is False and second["code"] == "fep_windows_incompatible"
+        idx["pressure_bar"], idx["ensemble"] = None, "NVT"
+        Path(first["fep_windows"]).write_text(json.dumps(idx))
+        hot = run_fep(**common, lambda_indices="0", restart_windows_file=first["fep_windows"],
+                      temperature_kelvin=310.0, output_dir=str(tmp_path / "run"))
+        assert hot["success"] is False and hot["code"] == "fep_windows_incompatible"
+        assert "310.0 K" in hot["errors"][0]

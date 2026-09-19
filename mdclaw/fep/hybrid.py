@@ -148,6 +148,7 @@ class _BondedSpec:
     name: str
     plain_force: str          # openmm class name, e.g. "HarmonicBondForce"
     custom_force: str         # openmm class name, e.g. "CustomBondForce"
+    term: str                 # OpenMM's method stem: add{term} / addPer{term}Parameter / getNum{term}s
     n_atoms: int
     param_names: tuple[str, ...]
     mixed_energy: str
@@ -176,17 +177,17 @@ def _read_torsions(f):
 
 _BONDED_SPECS: tuple[_BondedSpec, ...] = (
     _BondedSpec(
-        "bonds", "HarmonicBondForce", "CustomBondForce", 2, ("r0", "k"),
+        "bonds", "HarmonicBondForce", "CustomBondForce", "Bond", 2, ("r0", "k"),
         "mix*0.5*k*(r-r0)^2", _bond_key, _read_bonds,
         lambda f, atoms, p: f.addBond(*atoms, *p),
     ),
     _BondedSpec(
-        "angles", "HarmonicAngleForce", "CustomAngleForce", 3, ("theta0", "k"),
+        "angles", "HarmonicAngleForce", "CustomAngleForce", "Angle", 3, ("theta0", "k"),
         "mix*0.5*k*(theta-theta0)^2", _angle_key, _read_angles,
         lambda f, atoms, p: f.addAngle(*atoms, *p),
     ),
     _BondedSpec(
-        "torsions", "PeriodicTorsionForce", "CustomTorsionForce", 4, ("periodicity", "phase", "k"),
+        "torsions", "PeriodicTorsionForce", "CustomTorsionForce", "Torsion", 4, ("periodicity", "phase", "k"),
         "mix*k*(1+cos(periodicity*theta-phase))", _torsion_key, _read_torsions,
         lambda f, atoms, p: f.addTorsion(*atoms, int(p[0]), p[1], p[2]),
     ),
@@ -412,7 +413,8 @@ class HybridSystemBuilder:
         plain = getattr(mm, spec.plain_force)
         shared, old, new = plain(), plain(), plain()
         mixed = getattr(mm, spec.custom_force)(spec.mixed_energy + _MIX)
-        add_per_term = getattr(mixed, f"addPer{spec.custom_force[6:-5]}Parameter")
+        add_mixed = getattr(mixed, f"add{spec.term}")
+        add_per_term = getattr(mixed, f"addPer{spec.term}Parameter")
         for name in ("side", *spec.param_names):
             add_per_term(name)
         mixed.addGlobalParameter("fep_core", STATE_A["fep_core"])
@@ -435,17 +437,18 @@ class HybridSystemBuilder:
                 for params in la:
                     spec.add(shared, key, params)
             else:
-                add_mixed = getattr(mixed, f"add{spec.custom_force[6:-5]}")
                 for params in la:
                     add_mixed(*key, [0.0, *params])
                 for params in lb:
                     add_mixed(*key, [1.0, *params])
                 self._count(f"{spec.name}_mixed")
-        n = f"getNum{spec.custom_force[6:-5]}s"
-        self._install(system, shared, GROUP_SHARED, f"{spec.name}_shared", getattr(shared, n)())
-        self._install(system, old, GROUP_DUMMY_OLD, f"{spec.name}_dummy_old", getattr(old, n)())
-        self._install(system, new, GROUP_DUMMY_NEW, f"{spec.name}_dummy_new", getattr(new, n)())
-        self._install(system, mixed, GROUP_SHARED, None, getattr(mixed, n)())
+        def _n_terms(force) -> int:
+            return getattr(force, f"getNum{spec.term}s")()
+
+        self._install(system, shared, GROUP_SHARED, f"{spec.name}_shared", _n_terms(shared))
+        self._install(system, old, GROUP_DUMMY_OLD, f"{spec.name}_dummy_old", _n_terms(old))
+        self._install(system, new, GROUP_DUMMY_NEW, f"{spec.name}_dummy_new", _n_terms(new))
+        self._install(system, mixed, GROUP_SHARED, None, _n_terms(mixed))
 
     # -- CMAP (ff19SB) ------------------------------------------------------
     def _add_cmap(self, system, fa, fb) -> None:

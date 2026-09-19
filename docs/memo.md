@@ -7,6 +7,16 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-19 — FEP 再レビュー対応（N1–N9）: 親+子の二重計上と、回収／部分延長で窓が落ちる件
+
+`a8b3987` の再レビューで新規に挙がった 9 件に対応。Medium の 2 件はいずれも索引の扱い。
+
+- **N1（親 fep と延長子を両方 analyze の親にすると segment が二重計上）**: `collect_windows` が解決後の `energies_file`（realpath）をキーに窓ごとに重複を落とし、`"N segment(s) were listed by more than one parent index … counted once"` を warning に出す。レビューの調和振動子トイ（葉のみ 800 → 親+子 1200 で誤差が 0.0369 → 0.0302 に縮む）を `test_parent_and_child_indexes_are_not_double_counted` で固定（親+子でも [800]×5、warning あり）。真空 e2e でも親+子 → [40, 40, 20] を確認。
+- **N2（回収／部分延長で再サンプルしない親窓が子の索引から落ちる）**: `run_fep` は `parent_windows` にあって `indices` に無い窓の record を segment そのままで索引に載せる（`carried_over_windows` を索引・result・metadata に記録、部分書き出しにも最初から含める）。回収は `--lambda-indices 7-20` だけで済み、延長を絞っても葉が常に全窓を持つ。真空 e2e: 0–1 済みの索引に `--lambda-indices 2` → 索引 [0,1,2]、0/1 は 1 segment のまま、`analyze_fep` [20,20,20]。`windows.md` の回収例を `--lambda-indices 7-20` に変更（`all` は済んだ窓ももう 1 回回す旨を明記）。
+- N3: 延長／回収時に温度も親索引と照合（`fep_windows_incompatible`、テスト追加）。N4: `per_segment[].n_after_discard` を segment 自身の数に（テストで [400, 400] を確認）。N5: `extended_from` と各 record の `restarted_from` も索引ディレクトリ相対に（`load_windows_index` で解決）。N6: `run_fep` の入力解決失敗を `analyze_fep` と同じく pending 維持に揃えた（何も走っていないので同じノードを再実行できる。`run_production` は begin_node + fail_node で terminal 化する前例だが、そちらは据え置き）。N7: eq から始める窓で `equilibration_time_ns < 0.05` なら warning（開始最小化で箱全体の熱運動が消える: A6W λ=0 窓で −6.72×10⁴ → −7.76×10⁴ kJ/mol）。`windows.md` に「fresh 窓は ≥ 0.1 ns、継続窓は 0」を追記。smoke で使った 0.02 ns は短かった。N8: `_BondedSpec.term`（"Bond"/"Angle"/"Torsion"）を明示し文字列スライスを廃止。N9: `_is_alchemical` を job 全体の `fep_mutation` 判定から「ノードの topo 祖先に `fep_protocol` artifact があるか」のノード単位判定に（通常 topo と hybrid topo が同居する job で通常枝の eq が prod のまま）。
+
+テスト: fep 47 本（slow 含む）、既定セット + 関連 666 本 pass、ruff clean。
+
 ## 2026-09-19 — FEP レビュー対応: 窓開始配置・部分失敗の回収・相対パス・bonded 三重複の統合（branch `feat/fep-hybrid-topology`）
 
 前エントリの実装に対するレビュー（A: 実運用前、B: 契約・頑健性、C: 簡素化、D: 細部、E: テスト）を一括で対応した。最初の実装は `0100a38` としてコミット済み。

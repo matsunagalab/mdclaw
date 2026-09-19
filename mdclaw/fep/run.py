@@ -97,13 +97,13 @@ def load_windows_index(path: str | Path) -> dict:
         data = json.loads(Path(path).read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise FepRunError(code="fep_windows_missing", message=f"cannot read {path}: {exc}") from exc
-    for key in ("fep_protocol_file", "system_xml_file", "topology_pdb_file"):
+    for key in ("fep_protocol_file", "system_xml_file", "topology_pdb_file", "extended_from"):
         if data.get(key):
             data[key] = str(resolve_index_path(data[key], path))
     windows: dict[int, dict] = {}
     for k, record in (data.get("windows") or {}).items():
         record = dict(record)
-        for key in ("state_file", "energies_file", "trajectory_file"):
+        for key in ("state_file", "energies_file", "trajectory_file", "restarted_from"):
             if record.get(key):
                 record[key] = str(resolve_index_path(record[key], path))
         record["segments"] = [
@@ -290,7 +290,7 @@ def _write_index(index_file: Path, payload: dict, windows: dict[int, dict], *, c
     rel_windows = {}
     for i, record in sorted(windows.items()):
         rec = dict(record)
-        for key in ("state_file", "energies_file", "trajectory_file"):
+        for key in ("state_file", "energies_file", "trajectory_file", "restarted_from"):
             if rec.get(key):
                 rec[key] = rel_to(rec[key], base)
         rec["segments"] = [{**seg, "energies_file": rel_to(seg["energies_file"], base)} for seg in rec["segments"]]
@@ -332,7 +332,9 @@ def run_fep(
     windows. To recover the windows of a failed / killed fep node, create a
     new fep node under the same ``eq`` parent and pass its partial index as
     ``--restart-windows-file``: windows it contains are continued, the
-    others start from the eq state.
+    others start from the eq state. Parent windows that are not re-sampled are
+    carried into the new index unchanged, so the leaf always covers every
+    window sampled so far.
 
     Args:
         lambda_indices: Windows to run: ``"all"`` (default; or the parent
@@ -369,6 +371,7 @@ def run_fep(
     node_mode = bool(job_dir and node_id)
 
     def _fail(code: str, message: str, **extra) -> dict:
+        extra = {k: v for k, v in extra.items() if k not in ("success", "code", "message", "errors", "warnings")}
         return fail_tool(result, code, message, job_dir=job_dir, node_id=node_id, extra=extra or None)
 
     # --- argument checks that must not spend the node ---------------------
@@ -387,20 +390,23 @@ def run_fep(
     # --- DAG resolution ---------------------------------------------------
     eq_final_ensemble = eq_pressure_bar = topology_hmr = None
     if node_mode:
-        from mdclaw._node import begin_node, fail_node, resolve_node_inputs, validate_node_execution_context
+        from mdclaw._node import begin_node, resolve_node_inputs, validate_node_execution_context
 
         inputs = resolve_node_inputs(job_dir, node_id, "fep")
         if "input_resolution_error" in inputs:
+            # Nothing ran: the node stays pending (same as analyze_fep) so the
+            # DAG can be fixed and the same node run again.
             err = inputs["input_resolution_error"]
             code = inputs.get("input_resolution_code") or "input_resolution_blocked"
-            begin_node(job_dir, node_id)
-            fail_node(job_dir, node_id, errors=[err], code=code)
-            return create_validation_error(
-                "job_dir/node_id", err,
-                expected="fep node under an eq (or one fep) node whose topo was built by build_hybrid_system",
-                actual=f"job_dir={job_dir}, node_id={node_id}",
-                context_extra={"input_resolution_errors": inputs.get("input_resolution_errors", [])},
-                code=code,
+            return _fail(
+                code=code, message=err,
+                **create_validation_error(
+                    "job_dir/node_id", err,
+                    expected="fep node under an eq (or one fep) node whose topo was built by build_hybrid_system",
+                    actual=f"job_dir={job_dir}, node_id={node_id}",
+                    context_extra={"input_resolution_errors": inputs.get("input_resolution_errors", [])},
+                    code=code,
+                ),
             )
         system_xml_file = system_xml_file or inputs.get("system_xml_file")
         topology_pdb_file = topology_pdb_file or inputs.get("topology_pdb_file")
@@ -485,10 +491,15 @@ def run_fep(
     if pressure_bar is not None and not xml_inputs.is_periodic:
         pressure_bar = None  # vacuum: no box to couple a barostat to
     if parent_index_meta and (parent_index_meta.get("pressure_bar") or None) != pressure_bar:
-        return _fail(code="fep_windows_incompatible", message=
-                     f"the parent windows were sampled at pressure_bar={parent_index_meta.get('pressure_bar')} "
+        return _fail(code="fep_windows_incompatible",
+                     message=f"the parent windows were sampled at pressure_bar={parent_index_meta.get('pressure_bar')} "
                      f"({parent_index_meta.get('ensemble')}), this node would use {pressure_bar}; "
                      "MBAR cannot pool different ensembles — match --pressure-bar")
+    parent_t = parent_index_meta.get("temperature_kelvin")
+    if parent_t is not None and abs(float(parent_t) - float(temperature_kelvin)) > 1e-6:
+        return _fail(code="fep_windows_incompatible",
+                     message=f"the parent windows were sampled at {parent_t} K, this node would use {temperature_kelvin} K; "
+                     "one index chains one temperature — match --temperature-kelvin")
     ensemble = "NPT" if pressure_bar else "NVT"
 
     # --- node context -----------------------------------------------------
@@ -533,6 +544,12 @@ def run_fep(
     if eq_restart is None and not parent_windows:
         result["warnings"].append(
             "No equilibrated restart state: windows start from the topology state.xml with fresh velocities.")
+    fresh = [i for i in indices if i not in parent_windows]
+    if fresh and equilibration_time_ns < 0.05:
+        result["warnings"].append(
+            f"windows {fresh} start from the eq state and are minimised at their lambda first, which removes the "
+            f"thermal energy of the whole box; equilibration_time_ns={equilibration_time_ns} leaves little time to "
+            "re-heat before sampling. Use >= 0.1 ns for windows that do not continue a fep parent.")
 
     # --- sample ---------------------------------------------------------
     index_file = out_dir / "fep_windows.json"
@@ -549,9 +566,14 @@ def run_fep(
         "ensemble": ensemble,
         "timestep_fs": float(timestep_fs),
         "hmr": bool(hmr),
-        "extended_from": parent_index_meta.get("index_file"),
+        "extended_from": rel_to(parent_index_meta["index_file"], out_dir) if parent_index_meta else None,
+        # Parent windows this node does not re-sample are copied into its index
+        # unchanged, so the leaf of a chain always lists every window sampled
+        # so far (a partial recovery or a narrowed extension stays analysable
+        # from the leaf alone).
+        "carried_over_windows": sorted(i for i in parent_windows if i not in indices),
     }
-    windows_index: dict[int, dict] = {}
+    windows_index: dict[int, dict] = {i: dict(rec) for i, rec in parent_windows.items() if i not in indices}
     t_start = time.time()
     for i in indices:
         window = protocol_windows[i]
@@ -573,6 +595,7 @@ def run_fep(
             code = exc.code if isinstance(exc, FepRunError) else "fep_sampling_failed"
             return _fail(code, f"window {i} failed: {type(exc).__name__}: {exc}",
                          completed_windows=sorted(windows_index),
+                         sampled_windows=[w["index"] for w in result["windows"]],
                          fep_windows=str(index_file) if windows_index else None)
         segments = list(parent.get("segments", [])) if parent else []
         segments.append({
@@ -604,6 +627,7 @@ def run_fep(
         "timestep_fs": float(timestep_fs),
         "hmr": bool(hmr),
         "extended_from_fep": bool(parent_windows),
+        "carried_over_windows": index_payload["carried_over_windows"],
         "wall_time_s": round(time.time() - t_start, 1),
     })
     if node_mode:
@@ -626,6 +650,7 @@ def run_fep(
                 "hmr": bool(hmr),
                 "platform": result.get("platform"),
                 "extended_from_fep": bool(parent_windows),
+                "carried_over_windows": index_payload["carried_over_windows"],
                 "ns_per_day": [w.get("ns_per_day") for w in result["windows"]],
             },
             warnings=result["warnings"],

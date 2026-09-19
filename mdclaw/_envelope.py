@@ -53,15 +53,30 @@ _SOLV_PREFERENCE = {"membrane": "embed_in_membrane"}
 # membrane, OpenMM force fields) that a skill selects deliberately.
 _STAGE_PREFERENCE = {"source": "fetch_structure", "prep": "prepare_complex",
                      "solv": "solvate_structure", "topo": "build_amber_system"}
-# A job whose topo is a hybrid topology (progress params carry fep_mutation)
-# samples lambda windows instead of production and analyses them with MBAR.
+# A branch whose topo is a hybrid topology (build_hybrid_system) samples
+# lambda windows instead of production and analyses them with MBAR.
 _ALCHEMICAL_FORWARD = {"eq": "fep"}
-_ALCHEMICAL_PREFERENCE = {"topo": "build_hybrid_system", "fep": "run_fep", "analyze": "analyze_fep"}
+_ALCHEMICAL_PREFERENCE = {"fep": "run_fep", "analyze": "analyze_fep"}
 _ALCHEMICAL_ANALYZE_CONDITIONS = '{"analysis_data_scope": "alchemical"}'
 
 
-def _is_alchemical(params: dict) -> bool:
-    return bool(params.get("fep_mutation"))
+def _is_alchemical(job_dir: str, node_id: Optional[str], nodes: dict) -> bool:
+    """True when the node's nearest topo ancestor carries a ``fep_protocol``
+    artifact. Decided per branch, so a job that holds both a plain and a
+    hybrid topology keeps its plain branch on ``prod``."""
+    seen: set[str] = set()
+    queue = [node_id] if node_id else []
+    while queue:
+        nid = queue.pop(0)
+        if nid in seen:
+            continue
+        seen.add(nid)
+        info = nodes.get(nid) or {}
+        if info.get("type") == "topo":
+            node = _read_node(job_dir, nid) or {}
+            return "fep_protocol" in (node.get("artifacts") or {})
+        queue.extend(info.get("parents") or [])
+    return False
 _OPEN = frozenset({"pending", "queued", "running"})
 
 # Standalone helpers agents reach for when they mean a stage. The helper does
@@ -180,7 +195,7 @@ def _read_node(job_dir: str, node_id: str) -> Optional[dict]:
         return None
 
 
-def stage_tools_for(node_type: Optional[str], tools: dict, params: dict) -> list[str]:
+def stage_tools_for(node_type: Optional[str], tools: dict, params: dict, *, alchemical: bool = False) -> list[str]:
     """Tools declared for a node type, the regime's preferred one first."""
     if not node_type:
         return []
@@ -188,7 +203,7 @@ def stage_tools_for(node_type: Optional[str], tools: dict, params: dict) -> list
     preferred = _STAGE_PREFERENCE.get(node_type)
     if node_type == "solv":
         preferred = _SOLV_PREFERENCE.get(str(params.get("solvent_regime") or ""), preferred)
-    if _is_alchemical(params):
+    if alchemical:
         preferred = _ALCHEMICAL_PREFERENCE.get(node_type, preferred)
     if preferred in names:
         names.remove(preferred)
@@ -261,7 +276,7 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
                 step["reason"] = (f"{node_id} cannot run until parent {blocker_id} "
                                   f"({blocker_status}) is completed")
                 return step
-        stage_tools = stage_tools_for(node_type, tools, params)
+        stage_tools = stage_tools_for(node_type, tools, params, alchemical=_is_alchemical(job_dir, node_id, nodes))
         run = _run_command(job_dir, node_id, stage_tools[0] if stage_tools else None)
         step = {"action": "run", "node_id": node_id, "node_type": node_type,
                 "stage_tools": stage_tools, "run_command": run, "inputs": "auto_resolved"}
@@ -270,7 +285,8 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
         return step
     if status == "completed":
         forward = CANONICAL_FORWARD_NODE_TYPE.get(node_type)
-        if _is_alchemical(params):
+        alchemical = _is_alchemical(job_dir, node_id, nodes)
+        if alchemical:
             forward = _ALCHEMICAL_FORWARD.get(node_type, forward)
         if not forward:
             return {"action": "done", "node_id": node_id, "node_type": node_type}
@@ -285,7 +301,7 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
             step = next_step(job_dir, open_children[0], tools, nodes, params, _depth=_depth + 1)
             if step:
                 return step
-        stage_tools = stage_tools_for(forward, tools, params)
+        stage_tools = stage_tools_for(forward, tools, params, alchemical=alchemical)
         run = _run_command(job_dir, "<new>", stage_tools[0] if stage_tools else None)
         create = (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} "
                   f"--node-type {forward} --parent-node-ids {node_id}")

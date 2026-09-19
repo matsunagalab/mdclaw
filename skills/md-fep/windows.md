@@ -56,27 +56,43 @@ mdclaw --job-dir <job> --node-id <fep_a_ext> run_fep --sampling-time-ns 5 \
 ```
 
 Parent the final `analyze` node to the **leaf** of each chain (the extension
-nodes), not to both parent and child. Extension keeps the parent's ensemble;
-`run_fep` refuses (`fep_windows_incompatible`) a `--pressure-bar` that differs
-from the parent's.
+nodes), not to both parent and child: the leaf's index already chains the
+parent's segments (windows the child did not re-sample are carried over
+unchanged, so the leaf always lists every window sampled so far). If both are
+given anyway, `analyze_fep` counts each segment once and warns. Extension
+keeps the parent's ensemble and temperature; `run_fep` refuses
+(`fep_windows_incompatible`) a `--pressure-bar` or `--temperature-kelvin`
+that differs from the parent's.
 
 ## Recovering a killed node
 
 `run_fep` rewrites `artifacts/fep_windows.json` after every window, so a node
 that failed at window 7 of 21 still indexes windows 0–6 (`"complete": false`).
 A failed node cannot be a parent. Instead create a new `fep` node under the
-same `eq` parent and hand it the partial index; the windows it lists are
-continued from their saved states, the missing ones start from the eq state:
+same `eq` parent and hand it the partial index, naming only the windows that
+are still missing; the finished ones are copied into the new index as they
+are (no re-sampling), so the new node alone covers the whole protocol:
 
 ```bash
 mdclaw create_node --job-dir <job> --node-type fep --parent-node-ids <eq_id> --label fep_recover
-mdclaw --job-dir <job> --node-id <fep_recover> run_fep --lambda-indices all \
+mdclaw --job-dir <job> --node-id <fep_recover> run_fep --lambda-indices 7-20 \
   --restart-windows-file <job>/nodes/<failed_fep>/artifacts/fep_windows.json \
-  --sampling-time-ns 5 --platform CUDA
+  --sampling-time-ns 5 --equilibration-time-ns 0.1 --platform CUDA
 ```
 
-The new index chains the old segments (paths are relative, so the job
-directory may be moved first). Parent the `analyze` node to the new node only.
+(`--lambda-indices all` would instead continue the finished windows for
+another `--sampling-time-ns` as well.) Paths in the index are relative, so
+the job directory may be moved first. Parent the `analyze` node to the new
+node only.
+
+## Equilibration per window
+
+A window that starts from the `eq` state is first minimised at its own λ
+(this is what lets small→large mutations start at all), which also removes
+the thermal motion of the whole box. Give such windows at least
+`--equilibration-time-ns 0.1` to re-heat and re-equilibrate the NPT box
+before samples are taken; `run_fep` warns below 0.05 ns. Windows that
+continue a fep parent are already at their λ and need `0`.
 
 ## Replicas
 

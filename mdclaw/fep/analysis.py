@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -93,8 +94,30 @@ def collect_windows(window_index_files: list[str]) -> dict:
             merged.setdefault(int(key), []).extend(record.get("segments") or [])
     if not merged or reference is None:
         raise FepAnalysisError(code="fep_windows_missing", message="no windows found in the fep parents")
+    # A fep -> fep child's index already chains its parent's segments. When
+    # the analyze node is parented to both (against the advice in
+    # skills/md-fep/windows.md) the same energies.npz would enter MBAR twice
+    # and shrink the error estimate; keep the first occurrence of each file.
+    warnings: list[str] = []
+    n_dup = 0
+    for k, segments in merged.items():
+        seen: set[str] = set()
+        unique = []
+        for seg in segments:
+            key = os.path.realpath(seg.get("energies_file") or "")
+            if key in seen:
+                n_dup += 1
+                continue
+            seen.add(key)
+            unique.append(seg)
+        merged[k] = unique
+    if n_dup:
+        warnings.append(
+            f"{n_dup} segment(s) were listed by more than one parent index (a fep node and its extension child); "
+            "each was counted once. Parent the analyze node to the leaf of each fep chain only.")
     temperature = reference.get("temperature_kelvin")
     return {
+        "warnings": warnings,
         "protocol": protocol,
         "protocol_file": reference.get("fep_protocol_file"),
         "temperature_kelvin": float(temperature) if temperature is not None else None,
@@ -150,14 +173,15 @@ def _window_samples(segments: list[dict], own_index: int, n_states: int, discard
     n_raw = 0
     for seg in segments:
         u = _load_segment(seg, n_states, discard_fraction)
-        n_raw += u.shape[1]
-        if u.shape[1] == 0:
+        n_after_discard = int(u.shape[1])
+        n_raw += n_after_discard
+        if n_after_discard == 0:
             continue
         if subsample:
             u, info = _subsample(u, own_index, timeseries)
         else:
-            info = {"g": 1.0, "n_used": int(u.shape[1])}
-        per_segment.append({"node_id": seg.get("node_id"), "n_after_discard": int(n_raw), **info})
+            info = {"g": 1.0, "n_used": n_after_discard}
+        per_segment.append({"node_id": seg.get("node_id"), "n_after_discard": n_after_discard, **info})
         blocks.append(u)
     if not blocks:
         raise FepAnalysisError(code="fep_windows_missing", message="a window has no samples left after discarding")
@@ -328,6 +352,7 @@ def analyze_fep(
                 code="fep_windows_missing", message="pass --job-dir/--node-id (fep parents) or --fep-windows-files")
         collected = collect_windows(fep_windows_files)
         protocol = collected["protocol"]
+        result["warnings"].extend(collected["warnings"])
     except FepAnalysisError as exc:
         # Nothing ran: the node stays pending so the parents can be fixed.
         return fail_tool(result, exc.code, str(exc), job_dir=job_dir, node_id=node_id)

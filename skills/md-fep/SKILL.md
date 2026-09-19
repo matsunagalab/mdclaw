@@ -116,7 +116,8 @@ first; its prep PDB is the input for the tripeptide.
    node (`--parent-node-ids <fep_id> ... --equilibration-time-ns 0`); samples
    are chained. Each window starting from the eq state is minimised at its own
    λ first, so small→large mutations do not start from solvent overlapping the
-   appearing side chain.
+   appearing side chain; keep `--equilibration-time-ns 0.1` (or more) for such
+   windows so the box re-heats before sampling.
 
 5. **Estimate the leg.**
 

@@ -592,12 +592,16 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   (`"complete": false` until the last), with all paths relative to the index
   file so a job directory can be moved. Extension (`fep` parent, exactly one)
   continues the parent's per-window states, chains its segments, and only
-  accepts the parent's windows and ensemble; `restart_windows_file` does the
-  same from an explicit (possibly partial) index, which is how a killed
-  node's finished windows are recovered under a new node. Ensemble follows
-  the eq node (NPT pressure inherited, NVT stays NVT; `pressure_bar` 0 forces
-  NVT); timestep/HMR follow the topology. Argument errors are reported before
-  the node starts (it stays pending). Trajectories are off by default
+  accepts the parent's windows, ensemble and temperature; `restart_windows_file`
+  does the same from an explicit (possibly partial) index, which is how a
+  killed node's finished windows are recovered under a new node. Parent
+  windows that are not re-sampled are carried into the new index unchanged
+  (`carried_over_windows`), so a chain's leaf always lists every window.
+  Ensemble follows the eq node (NPT pressure inherited, NVT stays NVT;
+  `pressure_bar` 0 forces NVT); timestep/HMR follow the topology. Argument
+  and input-resolution errors are reported before the node starts (it stays
+  pending). A fresh window with `equilibration_time_ns` below 0.05 gets a
+  warning (the start minimisation cools the box). Trajectories are off by default
   (`trajectory_interval_ps`). Declared `lambda_indices` conditions are
   matched against the flag's own spelling. Codes:
   `fep_hybrid_topology_required`, `fep_lambda_index_invalid`,
@@ -607,7 +611,9 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   with `analysis_data_scope: alchemical`; `mdclaw/fep/analysis.py`): merges
   the parents' `fep_windows.json` (protocols compared by content; temperature
   and pressure/ensemble must match because `u_kn` carries pV/kT; same index
-  across parents = pooled replicas), drops `discard_fraction` (0.1) of every
+  across parents = pooled replicas; a segment listed by both a fep node and
+  its extension child is counted once, with a warning), drops
+  `discard_fraction` (0.1) of every
   segment, subsamples each segment separately to independent frames with
   `pymbar.timeseries` (segments are separate trajectories), pools, and runs
   MBAR. Writes
