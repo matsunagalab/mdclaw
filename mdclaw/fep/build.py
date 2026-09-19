@@ -46,6 +46,7 @@ from mdclaw.fep.mapping import (
 from mdclaw.fep.mutant import MutantBuildError, MutationSpec, parse_single_mutation, write_mutant_pdb
 from mdclaw.fep.protocol import ProtocolError, build_protocol, windows_from_schedule
 from mdclaw.sidechain_packer import PROTEIN_RESNAME_TO_ONE
+from mdclaw.simulation._base import resolve_platform_name
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,7 @@ def hybrid_topology(top_a, top_b, mapping: HybridMapping):
     return out
 
 
-def _write_hybrid_state(system, positions_nm, platform_name: str, path: Path):
+def _write_hybrid_state(system, positions_nm, platform_name: str, path: Path, platform_properties: Optional[dict] = None):
     """Serialize the state-A ``State`` (virtual sites recomputed) and return
     ``(potential_energy_kj_mol, positions_nm)`` so the topology PDB uses the
     same coordinates."""
@@ -144,7 +145,8 @@ def _write_hybrid_state(system, positions_nm, platform_name: str, path: Path):
     from openmm import unit
 
     integrator = openmm.VerletIntegrator(0.001 * unit.picoseconds)
-    context = openmm.Context(system, integrator, openmm.Platform.getPlatformByName(platform_name))
+    context = openmm.Context(system, integrator, openmm.Platform.getPlatformByName(platform_name),
+                             dict(platform_properties or {}))
     context.setPositions(positions_nm * unit.nanometer)
     for name, value in STATE_A.items():
         context.setParameter(name, value)
@@ -177,7 +179,7 @@ class _Inputs:
 def _resolve_inputs(
     *, job_dir, node_id, mutation, pdb_file, forcefield, water_model, hmr, is_membrane,
     ligand_chemistry, disulfide_bonds, box_dimensions, mutant_backend, n_windows, lambda_schedule,
-    softcore_alpha, output_name,
+    softcore_alpha, output_name, platform="auto",
 ) -> _Inputs:
     """Force field / water model from the DAG (or the explicit arguments) and,
     in node mode, the solvated PDB plus solvation metadata."""
@@ -215,6 +217,7 @@ def _resolve_inputs(
                 "hmr": hmr, "is_membrane": is_membrane, "mutant_backend": mutant_backend,
                 "n_windows": n_windows, "lambda_schedule": lambda_schedule,
                 "softcore_alpha": softcore_alpha, "output_name": output_name,
+                "platform": platform,
             },
             pdb_file=pdb_file, ligand_chemistry=ligand_chemistry, modxna_params=None,
             disulfide_bonds=disulfide_bonds, glycan_metadata=None, glycan_linkages=None,
@@ -289,14 +292,16 @@ class _Assembled:
     sys_a: Any
     sys_b: Any
     platform: str
+    platform_properties: dict
     relaxation: dict
     validation: dict
 
 
 def _assemble_hybrid(endstates: dict, spec: MutationSpec, *, softcore_alpha: float,
-                     endpoint_tolerance_kj_mol: float) -> _Assembled:
+                     endpoint_tolerance_kj_mol: float, platform_name: Optional[str] = None,
+                     platform_properties: Optional[dict] = None) -> _Assembled:
     """Load both end states, map the mutated residue, build / relax / validate
-    the hybrid System."""
+    the hybrid System. ``platform_name`` None picks the fastest available."""
     import numpy as np
     import openmm
     from openmm import unit
@@ -331,16 +336,18 @@ def _assemble_hybrid(endstates: dict, spec: MutationSpec, *, softcore_alpha: flo
         mapping = map_mutation(atom_records_from_topology(top_a), atom_records_from_topology(top_b), res_a,
                                old_bonds=bonds_from_topology(top_a), new_bonds=bonds_from_topology(top_b))
         build = build_hybrid(sys_a, pos_a, sys_b, pos_b, mapping, softcore_alpha=softcore_alpha)
-        platform = fastest_platform_name()
-        relaxation = relax_dummy_atoms(build, platform_name=platform)
+        platform = platform_name or fastest_platform_name()
+        relaxation = relax_dummy_atoms(build, platform_name=platform, platform_properties=platform_properties)
         validation = validate_endpoints(build, sys_a, sys_b, platform_name=platform,
+                                        platform_properties=platform_properties,
                                         tolerance_kj_mol=endpoint_tolerance_kj_mol)
     except (MappingError, HybridBuildError) as exc:
         raise BuildStepError(exc.code, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise BuildStepError(code="fep_hybrid_build_failed", message=f"{type(exc).__name__}: {exc}") from exc
     return _Assembled(build=build, top_a=top_a, top_b=top_b, sys_a=sys_a, sys_b=sys_b, platform=platform,
-                      relaxation=relaxation, validation=validation)
+                      platform_properties=dict(platform_properties or {}), relaxation=relaxation,
+                      validation=validation)
 
 
 def _write_artifacts(
@@ -365,7 +372,7 @@ def _write_artifacts(
         top_h = hybrid_topology(asm.top_a, asm.top_b, asm.build.mapping)
         files["system_xml"].write_text(openmm.XmlSerializer.serialize(asm.build.system))
         energy, final_positions = _write_hybrid_state(asm.build.system, asm.build.positions_nm, asm.platform,
-                                                      files["state_xml"])
+                                                      files["state_xml"], asm.platform_properties)
         with files["topology_pdb"].open("w") as fh:
             PDBFile.writeFile(top_h, final_positions * unit.nanometer, fh, keepIds=True)
     except Exception as exc:  # noqa: BLE001
@@ -436,6 +443,8 @@ def build_hybrid_system(
     lambda_schedule: Optional[str] = None,
     softcore_alpha: float = DEFAULT_SOFTCORE_ALPHA,
     endpoint_tolerance_kj_mol: float = 1.0,
+    platform: str = "auto",
+    device_index: Optional[str] = None,
     output_name: str = "system",
     output_dir: Optional[str] = None,
     job_dir: Optional[str] = None,
@@ -468,6 +477,9 @@ def build_hybrid_system(
         softcore_alpha: Beutler soft-core alpha for the dummy LJ terms.
         endpoint_tolerance_kj_mol: Allowed |E_hybrid - E_reference| at each
             end state (scaled up automatically for large systems).
+        platform / device_index: OpenMM platform for the dummy relaxation and
+            the end-point energies (``auto`` = fastest available, which takes
+            a GPU when there is one; pass ``CPU`` on a shared login node).
         output_name / output_dir / job_dir / node_id: standard mdclaw knobs.
 
     Returns:
@@ -499,12 +511,16 @@ def build_hybrid_system(
     except ProtocolError as exc:
         return fail_tool(result, exc.code, str(exc), job_dir=job_dir, node_id=node_id)
     try:
+        platform_name, platform_properties = resolve_platform_name(platform, device_index)
+    except ValueError as exc:
+        return fail_tool(result, code="invalid_parameter_value", message=str(exc), job_dir=job_dir, node_id=node_id)
+    try:
         inputs = _resolve_inputs(
             job_dir=job_dir, node_id=node_id, mutation=mutation, pdb_file=pdb_file, forcefield=forcefield,
             water_model=water_model, hmr=hmr, is_membrane=is_membrane, ligand_chemistry=ligand_chemistry,
             disulfide_bonds=disulfide_bonds, box_dimensions=box_dimensions, mutant_backend=mutant_backend,
             n_windows=n_windows, lambda_schedule=lambda_schedule, softcore_alpha=softcore_alpha,
-            output_name=output_name)
+            output_name=output_name, platform=platform)
         spec = parse_single_mutation(mutation, inputs.pdb_file)
     except BuildStepError as exc:
         return _fail(exc)
@@ -538,7 +554,8 @@ def build_hybrid_system(
         endstates = _build_endstates(inputs, spec, Path(mutant["mutant_pdb"]), out_dir, hmr=hmr)
         result["warnings"].extend(endstates.pop("warnings"))
         asm = _assemble_hybrid(endstates, spec, softcore_alpha=softcore_alpha,
-                               endpoint_tolerance_kj_mol=endpoint_tolerance_kj_mol)
+                               endpoint_tolerance_kj_mol=endpoint_tolerance_kj_mol,
+                               platform_name=platform_name, platform_properties=platform_properties)
         result["warnings"].extend(asm.build.report.get("warnings") or [])
         written = _write_artifacts(asm, endstates, spec, mutant, windows, inputs, out_dir, output_name=output_name,
                                    softcore_alpha=softcore_alpha, hmr=hmr, warnings=result["warnings"])

@@ -7,6 +7,20 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-19 — FEP テスト計算エージェントからのフィードバック 7 件: 検証のうえ全件採用
+
+別エージェントが T4L/1MEL 系で Phase 1 を回した際の報告。各項目をコードと実データで裏取りしてから直した（主張どおりでなかった箇所は明記）。
+
+1. **`inspect_cluster` が異種 GPU パーティションを最後のノード行で上書き** — 事実。`_parse_sinfo_text` も JSON 経路も `gpu_type` / `gpus_per_node` をノード行ごとに代入していた。両経路をノード行 → `_aggregate_partitions` に統一: `gpu_type` は 1 種類のときだけ、`gpu_types` / `gpu_inventory`（モデルごとの nodes・gpus_per_node・node_list）/ `node_gres`（生 GRES + GresUsed）を追加、`gpus_per_node` は最大値、混在パーティションは warning。JSON 経路は現代の `gres: {total, used}` dict と `nodes.nodes[]` も読むようにした（以前は文字列前提で GPU を拾えなかった）。フォールバック warning は**既に出ていた**が、sinfo の stderr（`serializer/json`）を添えるようにした。GresUsed は `sinfo -N -h -O NodeList,GresUsed` を best-effort で追加取得。報告のクラスタ構成（floyd a6000×7 / m1 / n2,n4 1080×10 / n5 2080×9、JSON 無し）をテストで再現し、`gpu_type=None`, `gpu_types=[1080,2080,a6000,rtx8000]`, inventory, total_gpus=38 を固定。
+2. **ホスト python で slurm ツールを走らせると「X not found in PATH」が約 40 行** — 事実。`BaseToolWrapper` を module レベルで 8+13+13 個作っており import ごとに warning。`_common.py` にモジュール集合を置いてツール名ごとに 1 回だけ warn。
+3. **`bootstrap_md_workflow` の既定 `workflow_steps` が prod 固定、かつ `--plan` で複数 job を宣言しても最初の job 分しか生成されない** — 事実（後者は報告に無かったが同じ穴）。`sampling_stage: prod|fep` を追加し、宣言された全 job について既定 steps を生成。`md-fep` SKILL step 1 に `--sampling-stage fep`。
+4. **`External-bond patcher could not pair … VAL#2.N, SER#133.C` がキャップ無し鎖末端で必ず出る** — 事実で、FEP に限らず `build_amber_system` 全般の誤検知（Trp-cage folded の amber_metadata にも `ASN#1.N, SER#20.C` で出ていた）。候補列挙が残基名で mid-chain テンプレートを引くため末端の N/C が「相手待ち」になる。鎖の先頭残基の N / 末尾残基の C（蛋白質残基のみ）を候補から外した。Trp-cage WT を再ビルドして `unpaired_external_atom_count` 2 → 0、A6W tripeptide の直接ビルドでも warning 無しを確認。
+5. **`submit_array_job` の結果に `slurm_job_id` が無い** — 事実（`parent_job_id` にはあった）。`slurm_job_id = parent_id` も返すようにし、`--dependency afterok:<slurm_job_id>` が single/array で同じ欄で組める。
+6. **SKILL step 1 と step 6 のパス表現の二重化** — 表現を統一（artifact キー `merged_pdb` と実パスを同じ文で併記）。
+7. **`build_hybrid_system` が端点検証で無断で GPU を掴む** — 事実（`fastest_platform_name()` 固定）。`--platform` / `--device-index` を追加（`resolve_platform_name`）し relax / validate / state 書き出しに通した。a6w tripeptide（5k 原子）を `--platform CPU` で直接ビルド: 40 s、端点差 −0.001 / −0.003 kJ/mol。
+
+採用しなかったもの: なし。テスト: slurm / study / fep / disulfide / registry / cli / guardrail 383 本 pass、tests/ 全体（slow 除外）pass、ruff clean。
+
 ## 2026-09-19 — FEP 干渉レビュー: hybrid `topology.pdb` の残基名正規化（pinned guard 赤）と SST2 の同根の穴
 
 FEP 以外への干渉を調べたレビューで、`tests/test_pdb_export_resname_guard.py::test_pdb_writefile_inventory_is_pinned` が赤になる 1 件が出た。根は `hybrid_topology()` が `PDBFile(wt.topology.pdb).topology` の残基名をコピーすること: ローダーが HIE/CYX/ASH/GLH/LYN/WAT → HIS/CYS/ASP/GLU/LYS/HOH に正規化するので、`build_amber_system` の `topology.pdb` が復元している変異名が hybrid の `topology.pdb` では失われる（Trp-cage の開発 run では変異名残基が無く、水は溶媒和段で既に HOH だったため見えなかった）。物理は `system.xml` なので無関係、影響は md-report の Methods（プロトン化状態）・resname 選択・deposit・可視化。

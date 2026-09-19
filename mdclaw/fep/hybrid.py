@@ -739,6 +739,7 @@ def relax_dummy_atoms(
     build: HybridBuild,
     *,
     platform_name: Optional[str] = None,
+    platform_properties: Optional[dict] = None,
     max_iterations: int = 500,
 ) -> dict:
     """Minimise the appearing atoms' coordinates with every other atom frozen.
@@ -776,7 +777,8 @@ def relax_dummy_atoms(
     integrator = openmm.VerletIntegrator(0.001 * unit.picoseconds)
     if platform_name is None:
         platform_name = "Reference" if mapping.n_hybrid <= 4000 else "CPU"
-    context = openmm.Context(system, integrator, openmm.Platform.getPlatformByName(platform_name))
+    context = openmm.Context(system, integrator, openmm.Platform.getPlatformByName(platform_name),
+                             dict(platform_properties or {}))
     context.setPositions(build.positions_nm * unit.nanometer)
     set_lambda_state(context, STATE_B)
     groups_b = {GROUP_SHARED, GROUP_DUMMY_NEW, GROUP_NONBONDED}
@@ -810,14 +812,15 @@ def relax_dummy_atoms(
 
 
 def _energy_kj(system, positions_nm: np.ndarray, platform_name: Optional[str], *, groups=None,
-               parameters: Optional[dict[str, float]] = None, box=None) -> float:
+               parameters: Optional[dict[str, float]] = None, box=None,
+               platform_properties: Optional[dict] = None) -> float:
     import openmm
     from openmm import unit
 
     integrator = openmm.VerletIntegrator(0.001 * unit.picoseconds)
     if platform_name:
         platform = openmm.Platform.getPlatformByName(platform_name)
-        context = openmm.Context(system, integrator, platform)
+        context = openmm.Context(system, integrator, platform, dict(platform_properties or {}))
     else:
         context = openmm.Context(system, integrator)
     if box is not None:
@@ -848,6 +851,7 @@ def validate_endpoints(
     system_a, system_b,
     *,
     platform_name: Optional[str] = None,
+    platform_properties: Optional[dict] = None,
     tolerance_kj_mol: float = 1.0,
 ) -> dict:
     """Compare the hybrid at both end states with the plain A / B Systems.
@@ -872,12 +876,13 @@ def validate_endpoints(
     pos_h = build.positions_nm
     pos_a = hybrid_positions_to_state(pos_h, mapping.old_to_hybrid, system_a.getNumParticles())
     pos_b = hybrid_positions_to_state(pos_h, mapping.new_to_hybrid, system_b.getNumParticles())
-    e_hyb_a = _energy_kj(hybrid, pos_h, platform_name, groups=groups_a, parameters=STATE_A, box=box)
-    e_hyb_b = _energy_kj(hybrid, pos_h, platform_name, groups=groups_b, parameters=STATE_B, box=box)
-    e_a = _energy_kj(a_sys, pos_a, platform_name, box=box)
-    e_b = _energy_kj(b_sys, pos_b, platform_name, box=box)
-    e_dummy_old = _energy_kj(build.system, pos_h, platform_name, groups={GROUP_DUMMY_OLD}, box=box)
-    e_dummy_new = _energy_kj(build.system, pos_h, platform_name, groups={GROUP_DUMMY_NEW}, box=box)
+    pp = platform_properties
+    e_hyb_a = _energy_kj(hybrid, pos_h, platform_name, groups=groups_a, parameters=STATE_A, box=box, platform_properties=pp)
+    e_hyb_b = _energy_kj(hybrid, pos_h, platform_name, groups=groups_b, parameters=STATE_B, box=box, platform_properties=pp)
+    e_a = _energy_kj(a_sys, pos_a, platform_name, box=box, platform_properties=pp)
+    e_b = _energy_kj(b_sys, pos_b, platform_name, box=box, platform_properties=pp)
+    e_dummy_old = _energy_kj(build.system, pos_h, platform_name, groups={GROUP_DUMMY_OLD}, box=box, platform_properties=pp)
+    e_dummy_new = _energy_kj(build.system, pos_h, platform_name, groups={GROUP_DUMMY_NEW}, box=box, platform_properties=pp)
     diff_a, diff_b = e_hyb_a - e_a, e_hyb_b - e_b
     scale = max(abs(e_a), abs(e_b), 1.0)
     tol = max(tolerance_kj_mol, 2e-6 * scale)

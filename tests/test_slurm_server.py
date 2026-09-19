@@ -130,6 +130,63 @@ class TestInspectCluster:
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
     @patch("mdclaw.slurm._base.run_command")
+    def test_mixed_gpu_partition_keeps_every_model(self, mock_run, mock_check, tmp_path, monkeypatch):
+        """One queue over a6000 / RTX8000 / 1080 / 2080 nodes used to come out as
+        gpu_type '2080', gpus_per_node 9: the last node line overwrote the
+        partition. The site's sinfo has no JSON serializer plugin."""
+        monkeypatch.chdir(tmp_path)
+        text_output = (
+            "PARTITION NODELIST STATE GRES TIMELIMIT MEMORY CPUS\n"
+            "gpu* floyd mixed gpu:a6000:7(S:0-1) infinite 515000 64\n"
+            "gpu* m1 idle gpu:rtx8000:2 infinite 256000 32\n"
+            "gpu* n2 alloc gpu:1080:10 infinite 128000 40\n"
+            "gpu* n4 idle gpu:1080:10 infinite 128000 40\n"
+            "gpu* n5 idle gpu:2080:9 infinite 128000 40\n"
+            "cpu c1 idle (null) infinite 64000 64\n"
+        )
+        gres_used = "floyd gpu:a6000:3(IDX:0-2)\nm1 gpu:0\nn2 gpu:1080:10(IDX:0-9)\nn4 gpu:0\nn5 gpu:0\n"
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, "sinfo --json", stderr="sinfo: fatal: Unable to find plugin: serializer/json"),
+            _mock_run_command(stdout=text_output),
+            _mock_run_command(stdout=gres_used),
+        ]
+        result = inspect_cluster()
+        assert result["success"] is True
+        assert any("text fallback" in w and "serializer/json" in w for w in result["warnings"])
+        gpu = next(p for p in result["partitions"] if p["name"] == "gpu")
+        assert gpu["gpu_type"] is None                      # more than one model: no single answer
+        assert gpu["gpu_types"] == ["1080", "2080", "a6000", "rtx8000"]
+        assert gpu["gpus_per_node"] == 10 and gpu["nodes"] == 5
+        assert gpu["gpu_inventory"]["a6000"] == {"nodes": 1, "gpus_per_node": 7, "node_list": ["floyd"]}
+        assert gpu["gpu_inventory"]["1080"] == {"nodes": 2, "gpus_per_node": 10, "node_list": ["n2", "n4"]}
+        floyd = next(n for n in gpu["node_gres"] if n["node"] == "floyd")
+        assert floyd["gres_used"] == "gpu:a6000:3(IDX:0-2)" and floyd["gpus"] == 7
+        assert result["gpu_types"] == ["1080", "2080", "a6000", "rtx8000"]
+        assert result["total_gpus"] == 7 + 2 + 10 + 10 + 9
+        assert any("mix GPU models" in w for w in result["warnings"])
+        cpu = next(p for p in result["partitions"] if p["name"] == "cpu")
+        assert cpu["gpu_types"] == [] and cpu["gpus_per_node"] == 0
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_json_per_node_entries_with_gres_dict(self, mock_run, mock_check, tmp_path, monkeypatch):
+        """Modern sinfo --json: one entry per node, gres as {total, used}."""
+        monkeypatch.chdir(tmp_path)
+        sinfo_json = {"sinfo": [
+            {"partition": {"name": "gpu"}, "nodes": {"total": 1, "nodes": ["g1"]},
+             "gres": {"total": "gpu:a100:4", "used": "gpu:a100:1(IDX:0)"}, "node": {"state": ["MIXED"]}},
+            {"partition": {"name": "gpu"}, "nodes": {"total": 1, "nodes": ["g2"]},
+             "gres": {"total": "gpu:h100:8", "used": "gpu:0"}, "node": {"state": ["IDLE"]}},
+        ]}
+        mock_run.return_value = _mock_run_command(stdout=json.dumps(sinfo_json))
+        result = inspect_cluster()
+        gpu = result["partitions"][0]
+        assert gpu["gpu_types"] == ["a100", "h100"] and gpu["nodes"] == 2 and gpu["gpu_type"] is None
+        assert {n["node"]: n["gres_used"] for n in gpu["node_gres"]} == {"g1": "gpu:a100:1(IDX:0)", "g2": "gpu:0"}
+        assert result["total_gpus"] == 12
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_config_file_written(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         sinfo_json = {"sinfo": [{"partition": {"name": "default"}, "nodes": {"total": 1}, "gres": ""}]}

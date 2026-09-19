@@ -314,6 +314,9 @@ def run_command(
         raise
 
 
+_MISSING_TOOLS_WARNED: set = set()
+
+
 class BaseToolWrapper:
     """Wrapper for external CLI tools such as pdb4amber and cpptraj."""
 
@@ -326,7 +329,12 @@ class BaseToolWrapper:
         self.tool_name = tool_name
         self.conda_env = conda_env
         self.executable = self._find_executable()
-        if warn_missing and not self.executable:
+        # Several modules instantiate a wrapper for the same tool at import
+        # time; the CLI imports them all, so on a host without AmberTools
+        # (the login node running the Slurm tools) this said "cpptraj not
+        # found" eight times and "pdb2pqr not found" thirteen. Once per tool.
+        if warn_missing and not self.executable and tool_name not in _MISSING_TOOLS_WARNED:
+            _MISSING_TOOLS_WARNED.add(tool_name)
             logger.warning(f"{tool_name} not found in PATH")
 
     def _find_executable(self) -> Optional[str]:

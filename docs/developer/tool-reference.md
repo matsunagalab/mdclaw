@@ -565,7 +565,9 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   everything else in the residue is a dummy in one state), fuses the two
   Systems (`fep/hybrid.py`), relaxes the appearing atoms at state B with the
   rest frozen, and checks that the hybrid reproduces both end-state energies
-  at λ=0/1 (`endpoint_tolerance_kj_mol`, default 1). Writes the ordinary XML
+  at λ=0/1 (`endpoint_tolerance_kj_mol`, default 1; `platform` /
+  `device_index` pick the OpenMM platform for these energies, `auto` = the
+  fastest available). Writes the ordinary XML
   triple (the hybrid `topology.pdb` keeps the end states' Amber
   protonation-state / water names: `PDBFile` normalises them on load, so
   `restore_topology_resnames_from_pdb` puts them back on the loaded
@@ -683,7 +685,12 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
 
 ## `slurm/`
 
-- `inspect_cluster(...)`: discover partitions, GPUs, and local policy.
+- `inspect_cluster(...)`: discover partitions, GPUs, and local policy. A
+  partition that mixes GPU models reports `gpu_type: null` and lists them in
+  `gpu_types` / `gpu_inventory` (nodes and GPUs per model) / `node_gres`
+  (raw GRES and, when sinfo knows it, GresUsed per node) so a caller can pin
+  `--gres gpu:<model>:N`; the text fallback (sinfo without the JSON
+  serializer plugin) is announced in `warnings`.
 - `submit_job(...)`: submit one SLURM job and link it to an optional DAG node.
   For a linked node and a literal `mdclaw ... run_production` (or
   `python -m mdclaw._cli ...`) command, `condition_preflight` reports the
@@ -707,7 +714,10 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   (`container_runtime_not_found`). `configure_container --runtime` pins the
   binary or its command name.
 - `submit_array_job(...)`: submit one SLURM array where each task maps to a DAG
-  node command. Shares the same `--platform`-driven GPU autodetection as
+  node command. The array parent id is returned as both `parent_job_id` and
+  `slurm_job_id` (the latter is what `submit_job` returns, so
+  `--dependency afterok:<slurm_job_id>` reads the same field for either).
+  Shares the same `--platform`-driven GPU autodetection as
   `submit_job`; a single GPU-platform task command flips the whole array to
   `--gpus 1`, and it applies the same container-command guard.
   Each task also receives the same production condition preflight before any
@@ -799,7 +809,10 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   campaigns.
 - `bootstrap_md_workflow(...)`: create or reuse the canonical
   `study_dir/study.json` + `study_plan.json` + `jobs/<job_id>/progress.json`
-  layout for any MD workflow, including simple one-system direct runs.
+  layout for any MD workflow, including simple one-system direct runs. Default
+  `workflow_steps` are written for every job the `plan` declares;
+  `sampling_stage` (`prod` default, `fep` for hybrid-topology FEP) names the
+  stage after `eq`.
 - `add_study_job(...)`: register existing or planned jobs.
 - `list_study_jobs(...)`, `summarize_study(...)`: inspect study state.
 - `record_study_plan(...)`, `get_study_plan(...)`, `list_study_plans(...)`:

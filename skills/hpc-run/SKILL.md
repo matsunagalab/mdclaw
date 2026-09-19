@@ -27,7 +27,10 @@ from the DAG.
   `topo` (and, for `prod`, a completed `eq`) parent, and no conflicting running
   work.
 - Cluster resources/policy if unknown: inspect with `mdclaw inspect_cluster`
-  and `mdclaw show_policy`; when policy is missing or the user gives limits,
+  and `mdclaw show_policy`. A partition whose `gpu_type` is `null` mixes GPU
+  models: read its `gpu_inventory` / `node_gres` and pin the model with
+  `--extra-sbatch "--gres=gpu:<model>:1"` instead of trusting `gpus_per_node`.
+  When policy is missing or the user gives limits,
   set it explicitly with `mdclaw set_policy` (partitions, GPU/time/memory
   caps, default partition). For containerized compute nodes, run
   `mdclaw configure_container --image /abs/path/mdclaw.sif --extra-flags=--nv`;

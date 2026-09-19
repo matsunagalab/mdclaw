@@ -428,6 +428,7 @@ from mdclaw.amber.forcefield_constants import (  # noqa: E402
 from mdclaw.amber.glycam_topology import _normalize_glycam_topology  # noqa: E402
 from mdclaw.amber.topology_bonds import _patch_ligand_molecule_internal_bonds, _patch_template_internal_bonds  # noqa: E402
 from mdclaw.amber.topology_validation import _build_topology_validation_report, _unique_messages  # noqa: E402
+from mdclaw.sidechain_packer import PROTEIN_RESNAME_TO_ONE  # noqa: E402
 
 
 def _residue_matches_template_heavy_atoms(residue: Any, template: Any) -> bool:
@@ -1374,6 +1375,20 @@ def _run_openmmforcefields_build(
                 )
         ext_candidates: list[tuple[Any, int, str]] = []
         ext_budget: dict[int, int] = {}
+        # The template looked up by residue name is the mid-chain one, whose
+        # N and C both expect a peptide partner. At an uncapped chain end there
+        # is none by construction (the force field matches the N-/C-terminal
+        # variant there), so those two atoms are not candidates; otherwise
+        # every uncapped protein reported "could not pair VAL#2.N, SER#133.C".
+        chain_ends: set[tuple[int, str]] = set()
+        for chain in omm_topology.chains():
+            chain_residues = list(chain.residues())
+            if not chain_residues:
+                continue
+            if chain_residues[0].name in PROTEIN_RESNAME_TO_ONE:
+                chain_ends.add((chain_residues[0].index, "N"))
+            if chain_residues[-1].name in PROTEIN_RESNAME_TO_ONE:
+                chain_ends.add((chain_residues[-1].index, "C"))
         for residue in omm_topology.residues():
             if has_explicit_glycam_plan and (
                 residue.name == _GLYCAM_LINKED_ASN_RESNAME
@@ -1391,6 +1406,8 @@ def _run_openmmforcefields_build(
             for name, expected in template_external_count.items():
                 atom = atom_by_name.get(name)
                 if atom is None:
+                    continue
+                if (residue.index, name) in chain_ends:
                     continue
                 remaining = expected - cross_bonds_per_atom.get(atom.index, 0)
                 if remaining <= 0:

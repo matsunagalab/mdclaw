@@ -27,41 +27,142 @@ from mdclaw.slurm import _base
 from mdclaw.slurm.config import CONTAINER_SOURCE_MODES, _is_partition_allowed, _load_cluster_config, _save_cluster_config, validate_container_flags
 
 
+_GRES_GPU_RE = re.compile(r"gpu:(?:([^:,(]+):)?(\d+)")
+
+
+def _parse_gpu_gres(gres: Any) -> tuple[Optional[str], int]:
+    """``gpu:a6000:7(S:0-1)`` -> ``("a6000", 7)``; ``gpu:2`` -> ``(None, 2)``;
+    no GPU entry -> ``(None, 0)``."""
+    if not isinstance(gres, str) or "gpu" not in gres:
+        return None, 0
+    m = _GRES_GPU_RE.search(gres)
+    if not m:
+        return None, 0
+    return (m.group(1) or None), int(m.group(2))
+
+
 def _parse_sinfo_text(stdout: str) -> list[dict]:
-    """Parse sinfo text output (fallback for old SLURM without --json)."""
-    partitions: dict[str, dict] = {}
+    """Per-node rows from ``sinfo -N -o "%P %N %T %G %l %m %c"`` (fallback for
+    SLURM without ``--json``)."""
+    rows = []
     for line in stdout.strip().splitlines()[1:]:  # skip header
         parts = line.split()
         if len(parts) < 7:
             continue
-        name = parts[0].rstrip("*")
-        state = parts[2]
-        gres = parts[3] if len(parts) > 3 else "(null)"
+        rows.append({
+            "partition": parts[0].rstrip("*"),
+            "node": parts[1],
+            "state": parts[2],
+            "gres": parts[3] if parts[3] != "(null)" else "",
+            "gres_used": None,
+            "max_time": parts[4],
+            "memory_mb": int(parts[5]) if parts[5].isdigit() else None,
+        })
+    return rows
 
-        if name not in partitions:
-            partitions[name] = {
-                "name": name,
-                "state": "up" if state in ("idle", "mixed", "alloc", "allocated") else state,
-                "nodes": 0,
-                "gpus_per_node": 0,
-                "gpu_type": None,
-                "max_time": parts[4] if len(parts) > 4 else "infinite",
-                "memory_mb": int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else None,
-            }
 
-        partitions[name]["nodes"] += 1
+def _parse_gres_used_text(stdout: str) -> dict[str, str]:
+    """``sinfo -N -h -O "NodeList:40,GresUsed:80"`` -> ``{node: gres_used}``."""
+    used: dict[str, str] = {}
+    for line in stdout.strip().splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            used.setdefault(parts[0], parts[1])
+    return used
 
-        if gres and gres != "(null)":
-            # Parse GRES like gpu:a100:4 or gpu:2
-            m = re.match(r"gpu:(?:([^:]+):)?(\d+)", gres)
-            if m:
-                gpu_type = m.group(1)
-                gpu_count = int(m.group(2))
-                partitions[name]["gpus_per_node"] = gpu_count
-                if gpu_type:
-                    partitions[name]["gpu_type"] = gpu_type
 
-    return list(partitions.values())
+def _parse_sinfo_json(data: dict) -> list[dict]:
+    """Per-node rows from ``sinfo --json`` (one entry per node and partition
+    on SLURM >= 21.08; older dumps carry partition-level entries with a node
+    total, which become one row with ``node_count`` set)."""
+    rows = []
+    for entry in data.get("sinfo", data.get("nodes", [])) or []:
+        pname = entry.get("partition", {})
+        if isinstance(pname, dict):
+            pname = pname.get("name", "unknown")
+        pname = str(pname).rstrip("*")
+        nodes = entry.get("nodes", {}) if isinstance(entry.get("nodes"), dict) else {}
+        names = nodes.get("nodes") or nodes.get("hostnames") or []
+        if not names:
+            single = entry.get("name", "") or entry.get("hostname", "")
+            names = [single] if single else []
+        gres = entry.get("gres", "")
+        gres_used = None
+        if isinstance(gres, dict):
+            gres_used = gres.get("used")
+            gres = gres.get("total", "")
+        if not isinstance(gres, str):
+            gres = ""
+        tl = entry.get("time", {})
+        if isinstance(tl, dict):
+            tl = tl.get("maximum")
+        mem = entry.get("memory", {})
+        if isinstance(mem, dict):
+            mem = mem.get("maximum")
+        node_state = entry.get("node", {})
+        if isinstance(node_state, dict):
+            node_state = node_state.get("state")
+        if isinstance(node_state, list):
+            node_state = ",".join(str(x) for x in node_state)
+        base = {"partition": pname, "state": str(node_state or "up"), "gres": gres, "gres_used": gres_used,
+                "max_time": str(tl) if tl else None, "memory_mb": mem}
+        if names:
+            for name in names:
+                rows.append({**base, "node": str(name)})
+        else:
+            rows.append({**base, "node": None, "node_count": int(nodes.get("total") or 1)})
+    return rows
+
+
+def _aggregate_partitions(rows: list[dict]) -> list[dict]:
+    """Fold per-node rows into partitions without letting the last node win.
+
+    A partition that mixes GPU models (one queue over a6000, RTX8000, 1080 ...
+    nodes) keeps every model: ``gpu_type`` is set only when the partition has
+    exactly one, ``gpu_types`` lists them all, ``gpu_inventory`` gives the node
+    count / GPUs per node / node names per model, and ``node_gres`` carries the
+    raw per-node GRES (and GresUsed when available) so a caller can write
+    ``--gres gpu:a6000:1`` and see what is free. ``gpus_per_node`` is the
+    maximum over the partition's nodes.
+    """
+    parts: dict[str, dict] = {}
+    for row in rows:
+        name = row["partition"]
+        p = parts.setdefault(name, {
+            "name": name, "state": "up", "nodes": 0, "node_list": [], "gpus_per_node": 0,
+            "gpu_type": None, "gpu_types": [], "gpu_inventory": {}, "node_gres": [],
+            "max_time": None, "memory_mb": None,
+        })
+        count = int(row.get("node_count") or 1)
+        p["nodes"] += count
+        node = row.get("node")
+        if node and node not in p["node_list"]:
+            p["node_list"].append(node)
+        state = str(row.get("state") or "")
+        if state and state.split(",")[0].lower() not in ("idle", "mixed", "alloc", "allocated", "up", "completing"):
+            p["state"] = state if p["state"] == "up" else p["state"]
+        if p["max_time"] is None and row.get("max_time"):
+            p["max_time"] = row["max_time"]
+        if p["memory_mb"] is None and row.get("memory_mb"):
+            p["memory_mb"] = row["memory_mb"]
+        gpu_type, gpus = _parse_gpu_gres(row.get("gres"))
+        if gpus:
+            p["gpus_per_node"] = max(p["gpus_per_node"], gpus)
+            key = gpu_type or "gpu"
+            inv = p["gpu_inventory"].setdefault(key, {"nodes": 0, "gpus_per_node": gpus, "node_list": []})
+            inv["nodes"] += count
+            inv["gpus_per_node"] = max(inv["gpus_per_node"], gpus)
+            if node and node not in inv["node_list"]:
+                inv["node_list"].append(node)
+            p["node_gres"].append({
+                "node": node, "gres": row.get("gres"), "gres_used": row.get("gres_used"),
+                "gpu_type": gpu_type, "gpus": gpus, "state": state or None,
+            })
+    for p in parts.values():
+        types = sorted(k for k in p["gpu_inventory"] if k != "gpu")
+        p["gpu_types"] = types
+        p["gpu_type"] = types[0] if len(types) == 1 else None
+    return list(parts.values())
 
 
 # ---------------------------------------------------------------------------
@@ -83,8 +184,10 @@ def inspect_cluster(output_file: Optional[str] = None) -> dict:
         dict with:
           - success: bool
           - config_file: str - Path to saved config
-          - partitions: list[dict] - Partition details
-          - gpu_types: list[str] - Available GPU types
+          - partitions: list[dict] - Partition details (``gpu_type`` when the
+            partition has one GPU model, ``gpu_types`` / ``gpu_inventory`` /
+            ``node_gres`` when it mixes models)
+          - gpu_types: list[str] - Available GPU types (all partitions)
           - total_nodes: int
           - total_gpus: int
           - errors: list[str]
@@ -107,83 +210,52 @@ def inspect_cluster(output_file: Optional[str] = None) -> dict:
         )}
 
     timeout = get_timeout("slurm")
-    partitions = []
+    rows: list[dict] = []
 
     # Try JSON output first (SLURM 21.08+)
     try:
         proc = _base.run_command(["sinfo", "--json"], timeout=timeout)
-        data = json.loads(proc.stdout)
-        sinfo_nodes = data.get("sinfo", data.get("nodes", []))
-
-        part_map: dict[str, dict] = {}
-        for entry in sinfo_nodes:
-            # sinfo --json returns partition-level entries
-            pname = entry.get("partition", {})
-            if isinstance(pname, dict):
-                pname = pname.get("name", "unknown")
-            pname = str(pname).rstrip("*")
-
-            if pname not in part_map:
-                part_map[pname] = {
-                    "name": pname,
-                    "state": "up",
-                    "nodes": 0,
-                    "node_list": [],
-                    "gpus_per_node": 0,
-                    "gpu_type": None,
-                    "max_time": None,
-                    "memory_mb": None,
-                }
-
-            part_map[pname]["nodes"] = entry.get("nodes", {}).get("total", 0) or \
-                part_map[pname]["nodes"] + 1
-
-            # Collect node names
-            node_name = entry.get("name", "") or entry.get("hostname", "")
-            if node_name and node_name not in part_map[pname]["node_list"]:
-                part_map[pname]["node_list"].append(node_name)
-
-            # Parse GRES for GPUs
-            gres = entry.get("gres", "") or entry.get("tres", "")
-            if isinstance(gres, str) and "gpu" in gres:
-                m = re.search(r"gpu:(?:([^:,]+):)?(\d+)", gres)
-                if m:
-                    if m.group(1):
-                        part_map[pname]["gpu_type"] = m.group(1)
-                    part_map[pname]["gpus_per_node"] = int(m.group(2))
-
-            # Time limit
-            tl = entry.get("time", {})
-            if isinstance(tl, dict):
-                tl = tl.get("maximum", None)
-            if tl and part_map[pname]["max_time"] is None:
-                part_map[pname]["max_time"] = str(tl)
-
-            # Memory
-            mem = entry.get("memory", {})
-            if isinstance(mem, dict):
-                mem = mem.get("maximum", None)
-            if mem and part_map[pname]["memory_mb"] is None:
-                part_map[pname]["memory_mb"] = mem
-
-        partitions = list(part_map.values())
-
-    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError):
-        # Fallback to text parsing
-        result["warnings"].append("sinfo --json not supported, using text fallback")
+        rows = _parse_sinfo_json(json.loads(proc.stdout))
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+        # Fallback to text parsing (also the path on sites whose sinfo lacks
+        # the JSON serializer plugin: "fatal: Unable to find plugin:
+        # serializer/json").
+        detail = ""
+        if isinstance(e, subprocess.CalledProcessError):
+            detail = (e.stderr or e.stdout or "").strip().splitlines()[-1:] or [""]
+            detail = f" ({detail[0][:120]})" if detail[0] else ""
+        result["warnings"].append(f"sinfo --json not supported, using text fallback{detail}")
         try:
             proc = _base.run_command(
                 ["sinfo", "-N", "-o", "%P %N %T %G %l %m %c"],
                 timeout=timeout,
             )
-            partitions = _parse_sinfo_text(proc.stdout)
+            rows = _parse_sinfo_text(proc.stdout)
         except subprocess.CalledProcessError as e:
             result["errors"].append(f"sinfo failed: {e}")
             return result
+        # GresUsed is a separate long-format field; best effort, older sinfo
+        # versions do not know it.
+        try:
+            proc = _base.run_command(
+                ["sinfo", "-N", "-h", "-O", "NodeList:40,GresUsed:80"], timeout=timeout)
+            used = _parse_gres_used_text(proc.stdout)
+            for row in rows:
+                if row.get("node") in used:
+                    row["gres_used"] = used[row["node"]]
+        except Exception:  # noqa: BLE001 - informational only
+            pass
 
     except Exception as e:
         result["errors"].append(f"Cluster inspection failed: {e}")
         return result
+
+    partitions = _aggregate_partitions(rows)
+    mixed = [p["name"] for p in partitions if len(p["gpu_types"]) > 1]
+    if mixed:
+        result["warnings"].append(
+            f"partition(s) {mixed} mix GPU models; see gpu_inventory / node_gres and pin the model with "
+            "--gres gpu:<type>:N (gpu_type is null for them)")
 
     # Collect GPU types and totals
     gpu_types = set()
@@ -191,10 +263,12 @@ def inspect_cluster(output_file: Optional[str] = None) -> dict:
     total_gpus = 0
     for p in partitions:
         total_nodes += p.get("nodes", 0)
-        gpn = p.get("gpus_per_node", 0)
-        total_gpus += gpn * p.get("nodes", 0)
-        if p.get("gpu_type"):
-            gpu_types.add(p["gpu_type"])
+        inventory = p.get("gpu_inventory") or {}
+        if inventory:
+            total_gpus += sum(inv["gpus_per_node"] * inv["nodes"] for inv in inventory.values())
+        else:
+            total_gpus += p.get("gpus_per_node", 0) * p.get("nodes", 0)
+        gpu_types.update(p.get("gpu_types") or ([p["gpu_type"]] if p.get("gpu_type") else []))
 
     result["partitions"] = partitions
     result["gpu_types"] = sorted(gpu_types)

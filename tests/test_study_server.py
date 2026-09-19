@@ -120,6 +120,28 @@ def test_bootstrap_md_workflow_uses_solvent_regime_for_workflow_steps(tmp_path):
     ]
 
 
+def test_bootstrap_md_workflow_fep_plan_lists_fep_steps_for_every_declared_job(tmp_path):
+    """An FEP study bootstrapped with --plan '{"jobs": [folded, unfolded]}' used
+    to get prod/analyze steps for the first job only."""
+    study_dir = tmp_path / "fep_study"
+    result = bootstrap_md_workflow(
+        str(study_dir),
+        question="ddG of L99A",
+        job_id="folded",
+        sampling_stage="fep",
+        plan={"jobs": [{"job_id": "folded", "purpose": "folded leg"},
+                       {"job_id": "unfolded", "purpose": "tripeptide leg"}]},
+    )
+    assert result["success"] is True, result
+    plan = json.loads((study_dir / "study_plan.json").read_text())["plan"]
+    steps = [(s["job_id"], s["node_type"]) for s in plan["workflow_steps"]]
+    chain = ["source", "prep", "solv", "topo", "min", "eq", "fep", "analyze"]
+    assert steps == [("folded", st) for st in chain] + [("unfolded", st) for st in chain]
+    assert not any(st == "prod" for _, st in steps)
+    bad = bootstrap_md_workflow(str(tmp_path / "x"), question="q", sampling_stage="windows")
+    assert bad["success"] is False and "sampling_stage" in bad["errors"][0]
+
+
 @pytest.mark.parametrize("plan_id", [None, "revision-1"])
 def test_bootstrap_md_workflow_reuses_existing_plan(tmp_path, plan_id):
     study_dir = tmp_path / "study"

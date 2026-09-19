@@ -612,7 +612,9 @@ def submit_array_job(
     Returns:
         dict with:
           - success: bool
-          - parent_job_id: str — SLURM id of the array parent
+          - parent_job_id: str — SLURM id of the array parent (also returned
+            as ``slurm_job_id``; ``--dependency afterok:<id>`` on it waits
+            for every task)
           - array_spec: str — e.g. ``"0-2"`` or ``"0-9%3"``
           - tasks: list[dict] — per-task {array_task_id, slurm_job_id,
             job_dir, node_id, stdout_log, stderr_log}
@@ -624,6 +626,9 @@ def submit_array_job(
     result: dict[str, Any] = {
         "success": False,
         "parent_job_id": None,
+        # Same id under the name submit_job uses, so "--dependency
+        # afterok:<slurm_job_id>" reads the same field for both tools.
+        "slurm_job_id": None,
         "array_spec": None,
         "tasks": [],
         "script_file": None,
@@ -871,6 +876,7 @@ def submit_array_job(
             return result
         parent_id = m.group(1)
         result["parent_job_id"] = parent_id
+        result["slurm_job_id"] = parent_id
 
         # Per-task bookkeeping
         tracker_records: list[dict[str, Any]] = []

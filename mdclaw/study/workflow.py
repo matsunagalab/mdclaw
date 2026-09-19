@@ -118,11 +118,14 @@ def init_study(
         return result
 
 
-def _default_workflow_steps(job_id: str, solvent_regime: str) -> list[dict]:
+SAMPLING_STAGES = frozenset({"prod", "fep"})
+
+
+def _default_workflow_steps(job_id: str, solvent_regime: str, sampling_stage: str = "prod") -> list[dict]:
     stages = ["source", "prep"]
     if solvent_regime in {"explicit", "membrane"}:
         stages.append("solv")
-    stages.extend(["topo", "min", "eq", "prod", "analyze"])
+    stages.extend(["topo", "min", "eq", sampling_stage, "analyze"])
     return [
         {
             "step_id": f"{job_id}_{stage}",
@@ -157,8 +160,14 @@ def bootstrap_md_workflow(
     plan: Optional[dict] = None,
     pdb_id: Optional[str] = None,
     create_source_node: bool = True,
+    sampling_stage: str = "prod",
 ) -> dict:
     """Create the canonical study/plan/job layout for any MD workflow.
+
+    ``sampling_stage`` names the stage after ``eq`` in the default
+    ``workflow_steps``: ``prod`` (production MD) or ``fep`` (lambda windows on
+    a hybrid topology, ``md-fep``). Default steps are written for every job
+    the plan declares, not only ``job_id``.
 
     The job's ``source`` node is created as well (``create_source_node``), so
     the first stage command is the fetch itself; with ``pdb_id`` the entry is
@@ -198,6 +207,11 @@ def bootstrap_md_workflow(
             "execution_mode must be one of "
             f"{sorted(EXECUTION_MODES)} (got {execution_mode!r})"
         )
+    if sampling_stage not in SAMPLING_STAGES:
+        result["errors"].append(
+            f"sampling_stage must be one of {sorted(SAMPLING_STAGES)} (got {sampling_stage!r})"
+        )
+        return result
         return result
     try:
         sd = _resolve_study_dir(study_dir)
@@ -262,10 +276,15 @@ def bootstrap_md_workflow(
                 ["Run the planned analysis step after production completes."],
             )
             plan_payload.setdefault("decision", _default_decision())
-            plan_payload.setdefault(
-                "workflow_steps",
-                _default_workflow_steps(safe_job_id, solvent_regime),
-            )
+            if "workflow_steps" not in plan_payload:
+                declared = [
+                    job.get("job_id") for job in plan_payload.get("jobs", [])
+                    if isinstance(job, dict) and job.get("job_id")
+                ] or [safe_job_id]
+                plan_payload["workflow_steps"] = [
+                    step for jid in declared
+                    for step in _default_workflow_steps(str(jid), solvent_regime, sampling_stage)
+                ]
             plan_payload.setdefault(
                 "layout", {"type": "study_jobs", "job_root": "jobs"}
             )

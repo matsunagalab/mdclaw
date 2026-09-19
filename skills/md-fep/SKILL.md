@@ -69,15 +69,18 @@ first; its prep PDB is the input for the tripeptide.
 
    ```bash
    mdclaw bootstrap_md_workflow --study-dir <study> --job-id folded --pdb-id <id> \
-     --question "<ddG question>" \
+     --question "<ddG question>" --sampling-stage fep \
      --plan '{"jobs": [{"job_id": "folded", "purpose": "folded-protein leg"},
                        {"job_id": "unfolded", "purpose": "capped tripeptide leg"}]}'
    mdclaw bootstrap_md_workflow --study-dir <study> --job-id unfolded --question "<ddG question>"
    ```
 
-   Follow `skills/md-prepare/SKILL.md` for the folded leg through `solv`
-   (`prepare_complex` → `solvate_structure`). Keep the prep node's
-   `merged_pdb` artifact path; it is the tripeptide input in step 6.
+   (`--sampling-stage fep` makes the plan's `workflow_steps` say `fep`, not
+   `prod`, after `eq` for both jobs.) Follow `skills/md-prepare/SKILL.md` for
+   the folded leg through `solv` (`prepare_complex` → `solvate_structure`).
+   The prep result's `merged_pdb`
+   (`<folded>/nodes/<prep_id>/artifacts/merge/merged.pdb`) is the tripeptide
+   input in step 6.
 
 2. **Hybrid topology (folded).**
 
@@ -93,6 +96,9 @@ first; its prep PDB is the input for the tripeptide.
    fuses them, relaxes the appearing atoms, and validates that the hybrid
    reproduces both end-state energies at λ=0/1. Read
    `endpoint_validation.passed` in the result; if `false`, stop and report.
+   The relaxation and end-point energies use the fastest OpenMM platform,
+   i.e. a GPU when the host has one; on a shared login node pass
+   `--platform CPU` (or `--device-index N`) like the run tools.
 
 3. **Minimise and equilibrate** from the hybrid topo exactly as in
    `skills/md-equilibration/SKILL.md` (`run_minimization` → `run_equilibration`,
