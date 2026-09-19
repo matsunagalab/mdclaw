@@ -296,9 +296,17 @@ def bootstrap_md_workflow(
             if isinstance(job, dict)
         }
         if safe_job_id not in planned_job_ids:
+            result["code"] = "job_not_in_study_plan"
+            result["planned_job_ids"] = sorted(str(j) for j in planned_job_ids if j)
             result["errors"].append(
                 f"job_id {safe_job_id!r} is not present in study plan "
-                f"{plan_key!r}; use a matching job_id or revise the plan explicitly"
+                f"{plan_key!r} (planned: {result['planned_job_ids']}); use one of those job ids, "
+                "or add the job to the plan first"
+            )
+            result["next_action"] = (
+                f"mdclaw record_study_plan --study-dir {sd} --plan-id {plan_key} --overwrite true "
+                f"--plan '<the current plan with {{\"job_id\": \"{safe_job_id}\", ...}} appended to \"jobs\">' "
+                f"(read it with get_study_plan), then rerun bootstrap_md_workflow --job-id {safe_job_id}"
             )
             return result
 

@@ -411,6 +411,14 @@ class TestDag:
         an = create_node(str(jd), "analyze", parent_node_ids=[fep1["node_id"]],
                          conditions={"analysis_data_scope": "alchemical"})
         assert an["success"], an
+        # the CLI's nargs='+' hands "a,b" over as one token; it is split, not rejected
+        fep3 = create_node(str(jd), "fep", parent_node_ids=[eq])["node_id"]
+        complete(str(jd), fep3, {"fep_windows": "artifacts/fep_windows.json"})
+        joined = create_node(str(jd), "analyze", parent_node_ids=[f"{fep1['node_id']},{fep3}"],
+                             conditions={"analysis_data_scope": "alchemical"})
+        assert joined["success"], joined
+        from mdclaw._node import read_node
+        assert read_node(str(jd), joined["node_id"])["parent_node_ids"] == [fep1["node_id"], fep3]
         wrong = create_node(str(jd), "analyze", parent_node_ids=[fep1["node_id"]],
                             conditions={"analysis_data_scope": "production_chain"})
         assert wrong["success"] is False and wrong["code"] == "analyze_conditions_invalid"

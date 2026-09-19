@@ -17,6 +17,10 @@ from mdclaw.study._base import (
 )
 
 
+def _plan_job_ids(plan: dict) -> list[str]:
+    return [str(j.get("job_id")) for j in (plan or {}).get("jobs", []) if isinstance(j, dict) and j.get("job_id")]
+
+
 def record_study_plan(
     study_dir: str,
     plan: dict,
@@ -51,8 +55,9 @@ def record_study_plan(
         with file_lock(sd / "study.lock"):
             study = _load_study(sd)
             if plan_file.exists() and not overwrite:
+                result["code"] = "study_plan_exists"
                 result["errors"].append(
-                    f"study plan already exists at {plan_file}"
+                    f"study plan already exists at {plan_file}; pass --overwrite true to revise it"
                 )
                 return result
             plan_payload = {
@@ -78,6 +83,9 @@ def record_study_plan(
             "study_dir": str(sd),
             "plan_file": str(plan_file),
             "plan": record,
+            # The record nests the plan (``plan.plan.jobs``); the job ids are
+            # what callers check after adding a job, so surface them flat.
+            "job_ids": _plan_job_ids(plan_payload),
             "warnings": result["warnings"],
         })
         return result
@@ -110,6 +118,7 @@ def get_study_plan(study_dir: str, plan_id: Optional[str] = None) -> dict:
             "study_dir": str(sd),
             "plan_file": str(plan_file),
             "plan": data,
+            "job_ids": _plan_job_ids(data.get("plan") if isinstance(data, dict) else {}),
         })
         return result
     except Exception as exc:  # noqa: BLE001

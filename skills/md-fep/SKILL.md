@@ -129,7 +129,7 @@ first; its prep PDB is the input for the tripeptide.
 
    ```bash
    mdclaw create_node --job-dir <folded> --node-type analyze \
-     --parent-node-ids <fep_id>[,<fep_id2>,...] \
+     --parent-node-ids <fep_id> [<fep_id2> ...] \
      --conditions '{"analysis_data_scope": "alchemical"}'
    mdclaw --job-dir <folded> --node-id <analyze_id> analyze_fep
    ```

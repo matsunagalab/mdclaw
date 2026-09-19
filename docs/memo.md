@@ -21,6 +21,8 @@ add the correction and say what it overturns.
 
 採用しなかったもの: なし。テスト: slurm / study / fep / disulfide / registry / cli / guardrail 383 本 pass、tests/ 全体（slow 除外）pass、ruff clean。
 
+**追記（同日 17:00）— 追加フィードバック 3 件、いずれも事実。** (8) `--parent-node-ids a,b,c` は CLI の `nargs='+'` で 1 トークンになり `referenced_node_missing`。`md-fep` SKILL step 5 が `[,<fep_id2>,...]` と書いていたので skill の指示どおりで必ず踏む。`create_node` で `parent_node_ids` / `dependency_node_ids` をカンマ・空白で分割するようにし（ノード id はどちらも含まない）、skill 表記を `<fep_id> [<fep_id2> ...]` に直した。実 CLI で `fep_003,fep_005` → 親 2 つを確認。(9) `bootstrap_md_workflow` の「plan に無い job」拒否は `code` 無しで envelope が `unhandled_error` を付けていた。`job_not_in_study_plan` + `planned_job_ids` + `record_study_plan --overwrite true` を示す `next_action` に。(10) `record_study_plan` の `plan` は record（`plan.plan.jobs` と二重）で、失敗時・`overwrite=False` 時は `None`。成功時に flat な `job_ids` を追加（`get_study_plan` も）、既存 plan の拒否に `study_plan_exists` コード。guardrail 395 codes。
+
 ## 2026-09-19 — FEP 干渉レビュー: hybrid `topology.pdb` の残基名正規化（pinned guard 赤）と SST2 の同根の穴
 
 FEP 以外への干渉を調べたレビューで、`tests/test_pdb_export_resname_guard.py::test_pdb_writefile_inventory_is_pinned` が赤になる 1 件が出た。根は `hybrid_topology()` が `PDBFile(wt.topology.pdb).topology` の残基名をコピーすること: ローダーが HIE/CYX/ASH/GLH/LYN/WAT → HIS/CYS/ASP/GLU/LYS/HOH に正規化するので、`build_amber_system` の `topology.pdb` が復元している変異名が hybrid の `topology.pdb` では失われる（Trp-cage の開発 run では変異名残基が無く、水は溶媒和段で既に HOH だったため見えなかった）。物理は `system.xml` なので無関係、影響は md-report の Methods（プロトン化状態）・resname 選択・deposit・可視化。

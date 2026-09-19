@@ -227,6 +227,19 @@ def _invalid_node_type_error(requested, job_dir) -> dict:
     }
 
 
+def _split_node_id_list(values: Optional[list[str]]) -> Optional[list[str]]:
+    if values is None:
+        return None
+    if isinstance(values, str):
+        values = [values]
+    out: list[str] = []
+    for value in values:
+        for part in str(value).replace(",", " ").split():
+            if part not in out:
+                out.append(part)
+    return out
+
+
 def create_node(
     job_dir: str,
     node_type: str,
@@ -282,6 +295,12 @@ def create_node(
     node_type = normalize_node_type(node_type)
     if node_type is None:
         return _invalid_node_type_error(requested_node_type, job_dir)
+
+    # The CLI collects ``--parent-node-ids a b c`` with nargs='+'; agents also
+    # write ``a,b,c`` (one token), which used to fail as a missing node named
+    # "a,b,c". Node ids never contain commas or spaces, so split.
+    parent_node_ids = _split_node_id_list(parent_node_ids)
+    dependency_node_ids = _split_node_id_list(dependency_node_ids)
 
     # continue_from sugar: only for prod nodes, and only one of
     # continue_from / parent_node_ids may be given.

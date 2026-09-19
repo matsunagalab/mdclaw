@@ -21,6 +21,8 @@ GUARDRAIL_CODES: dict[str, str] = {
     "openmm_system_built": "System build succeeded; continue to min/eq/prod.",
     "unhandled_exception": "Report the structured error; do not retry blindly.",
     "unhandled_error": "Read the message and errors, fix the reported cause, then retry.",
+    "job_not_in_study_plan": "bootstrap_md_workflow only creates jobs the study plan declares; add the job with record_study_plan --overwrite true (jobs appended to the current plan from get_study_plan), or bootstrap with --plan listing every job up front.",
+    "study_plan_exists": "The plan id already exists; pass --overwrite true to record_study_plan to revise it, or use a new --plan-id.",
     "invalid_json_input": "Fix the JSON string or pass valid JSON via --json-input.",
     "tool_renamed": "The tool was consolidated; call the replacement tool named in the message.",
     "file_not_found": "Verify the path and rerun only after the file exists.",

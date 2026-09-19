@@ -812,11 +812,16 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   layout for any MD workflow, including simple one-system direct runs. Default
   `workflow_steps` are written for every job the `plan` declares;
   `sampling_stage` (`prod` default, `fep` for hybrid-topology FEP) names the
-  stage after `eq`.
+  stage after `eq`. A `job_id` the plan does not declare is refused with
+  `job_not_in_study_plan` (`planned_job_ids`, and a `next_action` naming
+  `record_study_plan --overwrite true`).
 - `add_study_job(...)`: register existing or planned jobs.
 - `list_study_jobs(...)`, `summarize_study(...)`: inspect study state.
 - `record_study_plan(...)`, `get_study_plan(...)`, `list_study_plans(...)`:
-  persist and inspect a lightweight scientific-question-to-MD-plan record. The
+  persist and inspect a lightweight scientific-question-to-MD-plan record
+  (`plan` is the stored record, so the plan body is `plan.plan`; `job_ids` is
+  the flat list of declared jobs; an existing plan id without `overwrite`
+  is `study_plan_exists`). The
   plan is study-level intent only; job DAGs remain the execution source of truth.
 - `record_study_log(...)`: append study-level JSONL logs behind a
   `--record-type` selector (`decision` / `question` / `token_usage`). Merges the

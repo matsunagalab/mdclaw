@@ -140,6 +140,21 @@ def test_bootstrap_md_workflow_fep_plan_lists_fep_steps_for_every_declared_job(t
     assert not any(st == "prod" for _, st in steps)
     bad = bootstrap_md_workflow(str(tmp_path / "x"), question="q", sampling_stage="windows")
     assert bad["success"] is False and "sampling_stage" in bad["errors"][0]
+    # a job the plan does not declare is refused with a stable code and the fix
+    missing = bootstrap_md_workflow(str(study_dir), question="ddG of L99A", job_id="apo")
+    assert missing["success"] is False and missing["code"] == "job_not_in_study_plan"
+    assert missing["planned_job_ids"] == ["folded", "unfolded"]
+    assert "record_study_plan" in missing["next_action"] and "--overwrite true" in missing["next_action"]
+    from mdclaw.study import get_study_plan, record_study_plan
+    current = get_study_plan(str(study_dir))
+    assert current["job_ids"] == ["folded", "unfolded"]
+    plan = current["plan"]["plan"]
+    plan["jobs"].append({"job_id": "apo", "purpose": "extra"})
+    again = record_study_plan(str(study_dir), plan, plan_id="active", overwrite=True)
+    assert again["success"] and again["job_ids"] == ["folded", "unfolded", "apo"]
+    refused = record_study_plan(str(study_dir), plan, plan_id="active", overwrite=False)
+    assert refused["success"] is False and refused["code"] == "study_plan_exists"
+    assert bootstrap_md_workflow(str(study_dir), question="ddG of L99A", job_id="apo")["success"]
 
 
 @pytest.mark.parametrize("plan_id", [None, "revision-1"])
