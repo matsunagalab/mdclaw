@@ -529,6 +529,86 @@ def _resolve_eq_ensemble_metadata(job_dir: str, node_id: str) -> dict:
     return result
 
 
+def _resolve_hybrid_topology_extras(job_dir: str, topo_id: Optional[str]) -> dict:
+    """``hybrid_manifest`` + ``fep_protocol`` from a ``build_hybrid_system`` topo.
+
+    Returns an empty dict when the topo is a plain (non-hybrid) build so the
+    caller can raise ``fep_hybrid_topology_required``.
+    """
+    result: dict = {}
+    if topo_id is None:
+        return result
+    manifest = _read_artifact_from_node(job_dir, topo_id, "hybrid_manifest")
+    protocol = _read_artifact_from_node(job_dir, topo_id, "fep_protocol")
+    if manifest:
+        result["hybrid_manifest_file"] = manifest
+    if protocol:
+        result["fep_protocol_file"] = protocol
+    return result
+
+
+def _resolve_fep_inputs(job_dir: str, node_id: str) -> dict:
+    """Inputs for a ``fep`` node: the hybrid XML triple, the eq restart state,
+    the topo's ``hybrid_manifest`` / ``fep_protocol``, and (for fep → fep
+    extension) the parent fep node's per-window state index."""
+    result: dict = {}
+    result.update(_resolve_topology_files(job_dir, node_id))
+    topo_id = result.get("topology_resolved_from_node_id")
+    extras = _resolve_hybrid_topology_extras(job_dir, topo_id)
+    if topo_id is not None and not (
+        extras.get("hybrid_manifest_file") and extras.get("fep_protocol_file")
+    ):
+        _record_input_resolution_error(
+            result,
+            f"fep_hybrid_topology_required: topo ancestor '{topo_id}' was not built "
+            f"by build_hybrid_system (missing hybrid_manifest / fep_protocol). "
+            f"Create a topo node with build_hybrid_system --mutation <spec> first.",
+        )
+    result.update(extras)
+    if topo_id is not None:
+        is_membrane = _read_metadata_field(job_dir, topo_id, "is_membrane")
+        if isinstance(is_membrane, bool):
+            result["is_membrane"] = is_membrane
+    # eq state = equilibrated lambda=0 end state (same atom count as the hybrid).
+    result.update(_resolve_md_restart(job_dir, node_id))
+    result.update(_resolve_eq_ensemble_metadata(job_dir, node_id))
+    # fep → fep: the parent's window index carries per-window states.
+    try:
+        node = read_node(job_dir, node_id)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        node = {}
+    for pid in node.get("parent_node_ids") or []:
+        windows = _read_artifact_from_node(job_dir, pid, "fep_windows")
+        if windows:
+            result["fep_parent_windows_file"] = windows
+            result["fep_parent_node_id"] = pid
+            break
+    return result
+
+
+def _resolve_analyze_fep_inputs(job_dir: str, node_id: str, parents: list[str]) -> dict:
+    """Analyze node whose parents are all ``fep`` windows: collect each parent's
+    ``fep_windows`` index plus the shared hybrid topology metadata."""
+    result: dict = {}
+    records = []
+    for pid in parents:
+        windows = _read_artifact_from_node(job_dir, pid, "fep_windows")
+        if windows is None:
+            _record_input_resolution_error(
+                result,
+                f"fep parent '{pid}' is missing its 'fep_windows' artifact; "
+                f"run_fep must complete on that node before analyze_fep.",
+            )
+            continue
+        records.append({"fep_node_id": pid, "fep_windows_file": windows})
+    result["fep_window_records"] = records
+    topo_id = _find_ancestor_node_id(job_dir, node_id, "topo")
+    result.update(_resolve_hybrid_topology_extras(job_dir, topo_id))
+    if topo_id is not None:
+        result["topology_resolved_from_node_id"] = topo_id
+    return result
+
+
 def resolve_node_inputs(
     job_dir: str,
     node_id: str,
@@ -720,6 +800,9 @@ def resolve_node_inputs(
         # requirement.
         result.update(_resolve_eq_ensemble_metadata(job_dir, node_id))
 
+    elif node_type == "fep":
+        result.update(_resolve_fep_inputs(job_dir, node_id))
+
     elif node_type == "analyze":
         # Analyze nodes resolve inputs based on how many parents they
         # have and whether those parents are prods or analyze nodes.
@@ -766,7 +849,12 @@ def resolve_node_inputs(
         if frame_times_ns:
             result["frame_times_ns_file"] = frame_times_ns
 
-        if n_parents == 1 and parent_types[0] == "prod":
+        if n_parents >= 1 and all(pt == "fep" for pt in parent_types):
+            # Alchemical shape: every parent is a fep window node; the
+            # analyze tool (analyze_fep) runs MBAR over their reduced
+            # potentials. No trajectory chain is involved.
+            result.update(_resolve_analyze_fep_inputs(job_dir, node_id, parents))
+        elif n_parents == 1 and parent_types[0] == "prod":
             # Phase 1 single-prod shape: trajectory + energy chain
             # collected chronologically along the prod lineage.
             trajectory_records = _walk_prod_trajectory_records_from(

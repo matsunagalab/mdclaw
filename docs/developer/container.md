@@ -242,6 +242,18 @@ singularity exec --no-home --bind "$PWD:/work" --pwd /work \
   mdclaw.sif python -m mdclaw._cli --list
 ```
 
+With `--no-home` the account's real home is still what `$HOME` points at, and
+it is read-only inside the container, so anything that writes a cache there
+(openmmforcefields' template cache during `build_amber_system`, ruff, JAX) fails
+with `Read-only file system: '/home/<user>/.cache'`. Pass a writable cache and
+home for tool runs, not only for lint:
+
+```bash
+singularity exec --no-home --bind "$PWD:/work" --pwd /work \
+  --env XDG_CACHE_HOME=/tmp/mdclaw-cache --env HOME=/tmp/mdclaw-home \
+  mdclaw.sif python -m mdclaw._cli <tool> ...
+```
+
 If that still fails outright, set `SINGULARITY_HOME` explicitly. A user namespace
 is not the answer. `bin/mdclaw` warns when it is about to launch Singularity from
 inside one. Its `MDCLAW_UID_MAP_FILE` environment variable exists only as a test

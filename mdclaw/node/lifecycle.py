@@ -206,7 +206,8 @@ def _invalid_node_type_error(requested, job_dir) -> dict:
     hints = [
         "Node types name DAG stages, not tools: source (fetch/register a structure), "
         "prep (prepare_complex: split, clean, merge), solv (solvate_structure or "
-        "embed_in_membrane), topo (build_amber_system), min, eq, prod, analyze.",
+        "embed_in_membrane), topo (build_amber_system or build_hybrid_system), min, eq, "
+        "prod, fep (run_fep lambda windows), analyze.",
         "Stage tools per type: mdclaw --workflow",
     ]
     return {
@@ -483,18 +484,19 @@ def create_node(
                         ),
                     }
                 pt = parent_entry.get("type")
-                if pt not in ("prod", "analyze"):
+                if pt not in ("prod", "fep", "analyze"):
                     return {
                         "success": False,
                         "code": "analyze_parent_invalid_type",
                         "error": (
-                            f"analyze parent must be a 'prod' or "
+                            f"analyze parent must be a 'prod', 'fep' or "
                             f"'analyze' node; got '{pid}' of type "
                             f"'{pt}'. For DCD concatenation from the "
                             "prod chain, parent one or more prods. For "
-                            "downstream analyses, parent the analyze "
-                            "node(s) whose combined_trajectory you "
-                            "want to consume."
+                            "alchemical free energies, parent the fep "
+                            "window nodes. For downstream analyses, "
+                            "parent the analyze node(s) whose outputs "
+                            "you want to consume."
                         ),
                     }
                 parent_types.append(pt)
@@ -503,11 +505,12 @@ def create_node(
                     "success": False,
                     "code": "analyze_parents_mixed",
                     "error": (
-                        "analyze nodes cannot mix prod and analyze "
+                        "analyze nodes cannot mix prod, fep and analyze "
                         f"parents; got {parent_types}. Decide which "
-                        "layer you're operating at: either concatenate "
-                        "prod chains (all parents = prod) OR consume "
-                        "already-concatenated analyze outputs (all "
+                        "layer you're operating at: concatenate prod "
+                        "chains (all parents = prod), estimate a free "
+                        "energy (all parents = fep), OR consume "
+                        "already-produced analyze outputs (all "
                         "parents = analyze)."
                     ),
                 }

@@ -48,6 +48,28 @@ GUARDRAIL_CODES: dict[str, str] = {
     "tempering_scope_unsupported": "Create the analyze node with analysis_data_scope 'production_chain' (or 'segment') and the run_sst2 prod nodes as parents; analyze_tempering pools walkers itself.",
     "pymbar_not_installed": "Run inside the MDClaw runtime image (pymbar is bundled) or install pymbar >= 4 in the environment.",
 
+    # --- free energy perturbation (build_hybrid_system / run_fep / analyze_fep) ---
+    "fep_mutation_spec_invalid": "Write the mutation as [CHAIN:]<wt one-letter><resseq><mut one-letter>, e.g. A:L99A, using the residue numbering of the prep PDB.",
+    "fep_mutation_residue_not_found": "The residue is not in the structure; check chain id and residue number against the prep PDB (or the tripeptide fragment).",
+    "fep_mutation_residue_ambiguous": "Several residues match the spec; add the chain id (A:L99A) or an insertion code.",
+    "fep_mutant_model_failed": "Side-chain modelling failed for this mutation; retry with --mutant-backend pdbfixer (or hpacker) and report the structured error.",
+    "fep_environment_mismatch": "Wild type and mutant end states differ outside the mutated residue (solvent count, ions, protonation); rebuild both from the same prep/solv node, or follow the ion adjustment described in the message.",
+    "fep_mapping_failed": "The two residues could not be aligned into a hybrid topology; report the message (atom naming or backbone mismatch) rather than retrying.",
+    "fep_unsupported_force": "The end-state force field uses a force type the hybrid builder does not interpolate; use a standard Amber protein force field (ff14SB/ff19SB) with explicit water.",
+    "fep_hybrid_build_failed": "The hybrid System could not be assembled; read the message, fix the reported cause (mutation, force field), then branch and rerun.",
+    "fep_endstate_build_failed": "build_amber_system failed for one end state; the nested result carries its own code — fix that first, then rerun build_hybrid_system.",
+    "fep_endpoint_validation_failed": "The hybrid at lambda=0/1 does not reproduce the end-state energies; report the energy table from the failure manifest — do not sample this topology.",
+    "fep_protocol_invalid": "Fix --lambda-schedule (JSON list of lambdas or parameter dicts, first window = wild type, last = mutant) or --n-windows (>= 3).",
+    "fep_lambda_index_invalid": "Use --lambda-indices like '0-6' or '0,3,7' within the protocol's window range, or omit it to sample all windows.",
+    "fep_hybrid_topology_required": "run_fep / analyze_fep need a topo ancestor built by build_hybrid_system; create that topo node (with --mutation) and re-branch min/eq from it.",
+    "fep_sampling_failed": "One lambda window crashed; read artifacts/failure/latest, then extend from the completed windows with a new fep node (--lambda-indices for the missing ones).",
+    "fep_windows_missing": "Parent the analyze node to completed run_fep nodes (or pass --fep-windows-files); each window needs its energies.npz.",
+    "fep_windows_incomplete": "Not every protocol window was sampled; add fep nodes for the listed indices (same eq parent, --lambda-indices) and parent the analyze node to all of them.",
+    "fep_windows_incompatible": "The parents were sampled with different protocols / temperatures; analyze one hybrid topology and temperature per analyze node.",
+    "fep_analysis_failed": "MBAR failed on these samples; check the per-window sample counts and overlap, sample longer, then rerun analyze_fep.",
+    "fep_result_invalid": "Pass the fep_result.json files written by analyze_fep (folded and unfolded legs) to estimate_ddg.",
+    "fep_tripeptide_extraction_failed": "Extract from a cleaned protein PDB (one entry per residue); the message names the residue that appears twice.",
+
     "container_runtime_not_found": "Export MDCLAW_SLURM_PATH=\"$PATH\" from a host shell before submitting from inside the image, or run `mdclaw configure_container --runtime /abs/path/to/singularity`, then resubmit the same (still pending) node.",
 
     # --- node / DAG context ---

@@ -172,6 +172,10 @@ Core schema v3 rules:
 - `eq` accepts `min` parents by default, with `topo` accepted only for legacy
   DAGs and prior `eq` parents for multi-stage equilibration chains
   (e.g. NPT compress -> NVT thermalize -> NPT relax).
+- `fep` (hybrid-topology FEP for one point mutation) sits where `prod` would:
+  its `topo` ancestor is built by `build_hybrid_system`, parents are `eq` or a
+  prior `fep` (extension), and `analyze_fep` consumes all-`fep` parents. Skill:
+  `skills/md-fep/`; design notes: `docs/research/fep-references.md`.
 - Each node owns `node.json`, `node.lock`, and `artifacts/`.
 - `progress.json` is a thin index plus cached summaries.
 - Events are append-only JSON files in `events/`.

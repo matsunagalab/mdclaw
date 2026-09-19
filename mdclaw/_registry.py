@@ -6,6 +6,7 @@ SERVER_REGISTRY = {
     "solvation": "mdclaw.solvation",
     "amber": "mdclaw.amber",
     "openmm_system": "mdclaw.openmm_system",
+    "fep": "mdclaw.fep",
     "md_simulation": "mdclaw.simulation",
     "genesis": "mdclaw.genesis",
     "surrogate": "mdclaw.surrogate",

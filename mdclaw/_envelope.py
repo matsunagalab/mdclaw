@@ -47,7 +47,7 @@ PROTECTED_KEYS = frozenset({
     "job_dir", "study_dir", "plan_file", "progress_file", "slurm_job_id",
     "summary", "required_action",
 })
-_BATCH_STAGES = frozenset({"min", "eq", "prod"})
+_BATCH_STAGES = frozenset({"min", "eq", "prod", "fep"})
 _SOLV_PREFERENCE = {"membrane": "embed_in_membrane"}
 # The normal-path tool of each stage; the others are variants (mutation, PTM,
 # membrane, OpenMM force fields) that a skill selects deliberately.
@@ -273,6 +273,10 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
             if step:
                 return step
         stage_tools = stage_tools_for(forward, tools, params)
+        if node_type == "fep" and "analyze_fep" in stage_tools:
+            # The analysis of lambda windows is MBAR, not a trajectory metric.
+            stage_tools.remove("analyze_fep")
+            stage_tools.insert(0, "analyze_fep")
         run = _run_command(job_dir, "<new>", stage_tools[0] if stage_tools else None)
         step = {"action": "create", "node_type": forward,
                 "create_command": (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} "

@@ -71,6 +71,7 @@ The plugin command namespace is prefixed:
 /mdclaw:md-equilibration
 /mdclaw:md-production
 /mdclaw:md-analyze
+/mdclaw:md-fep
 /mdclaw:hpc-run
 ```
 

@@ -30,6 +30,16 @@
     "requires_node": true,
     "server": "analyze"
   },
+  "analyze_fep": {
+    "job_dir_is_data": false,
+    "node_type": "analyze",
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": true,
+    "server": "fep"
+  },
   "analyze_q_value": {
     "job_dir_is_data": false,
     "node_type": "analyze",
@@ -98,6 +108,17 @@
     ],
     "requires_node": true,
     "server": "amber"
+  },
+  "build_hybrid_system": {
+    "job_dir_is_data": false,
+    "node_type": "topo",
+    "required_params": [
+      "job_dir",
+      "mutation",
+      "node_id"
+    ],
+    "requires_node": true,
+    "server": "fep"
   },
   "build_openmm_system": {
     "job_dir_is_data": false,
@@ -218,6 +239,16 @@
     "requires_node": true,
     "server": "solvation"
   },
+  "estimate_ddg": {
+    "job_dir_is_data": false,
+    "node_type": null,
+    "required_params": [
+      "folded",
+      "unfolded"
+    ],
+    "requires_node": false,
+    "server": "fep"
+  },
   "estimate_md_throughput": {
     "job_dir_is_data": false,
     "node_type": null,
@@ -257,6 +288,16 @@
     ],
     "requires_node": false,
     "server": "md_simulation"
+  },
+  "extract_tripeptide": {
+    "job_dir_is_data": false,
+    "node_type": null,
+    "required_params": [
+      "mutation",
+      "pdb_file"
+    ],
+    "requires_node": false,
+    "server": "fep"
   },
   "fetch_structure": {
     "job_dir_is_data": false,
@@ -577,6 +618,16 @@
     ],
     "requires_node": true,
     "server": "md_simulation"
+  },
+  "run_fep": {
+    "job_dir_is_data": false,
+    "node_type": "fep",
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": true,
+    "server": "fep"
   },
   "run_minimization": {
     "job_dir_is_data": false,

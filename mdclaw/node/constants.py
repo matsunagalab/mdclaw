@@ -8,11 +8,14 @@ logger = logging.getLogger(__name__)
 
 
 NODE_TYPES = frozenset({
-    "source", "prep", "solv", "topo", "min", "eq", "prod", "analyze",
+    "source", "prep", "solv", "topo", "min", "eq", "prod", "fep", "analyze",
 })
 
 
-NODE_TYPE_ORDER = ("source", "prep", "solv", "topo", "min", "eq", "prod", "analyze")
+# ``fep`` is the alchemical sibling of ``prod``: it samples lambda windows on
+# a hybrid topology built by ``build_hybrid_system`` (a ``topo`` tool) and
+# feeds ``analyze_fep`` instead of trajectory analysis.
+NODE_TYPE_ORDER = ("source", "prep", "solv", "topo", "min", "eq", "prod", "fep", "analyze")
 
 # Long names agents type for a stage; accepted silently by create_node.
 NODE_TYPE_ALIASES = {
@@ -23,6 +26,7 @@ NODE_TYPE_ALIASES = {
     "solvation": "solv", "solvate": "solv", "solvent": "solv",
     "preparation": "prep", "prepare": "prep",
     "analysis": "analyze", "analyse": "analyze",
+    "alchemical": "fep", "lambda": "fep", "window": "fep", "fep_window": "fep",
 }
 
 # Words agents invent from tool names, mapped to the stage that does that work
@@ -35,6 +39,7 @@ NODE_TYPE_SUGGESTIONS = {
     "membrane": "solv", "embed": "solv", "water": "solv", "box": "solv", "ions": "solv",
     "build": "topo", "amber": "topo", "openmm": "topo", "system": "topo", "forcefield": "topo",
     "md": "prod", "run": "prod", "simulation": "prod", "simulate": "prod", "dynamics": "prod",
+    "hybrid": "topo", "free_energy": "fep", "ddg": "fep", "mbar": "analyze",
     "trajectory": "analyze", "rmsd": "analyze", "rmsf": "analyze", "analyze_rmsd": "analyze",
 }
 
@@ -173,7 +178,10 @@ _ALLOWED_PARENT_TYPES = {
     # ensemble per node and per-stage restraint settings.
     "eq": frozenset({"min", "topo", "eq"}),
     "prod": frozenset({"eq", "prod"}),
-    "analyze": frozenset({"prod", "analyze"}),
+    # fep samples lambda windows on a hybrid topology from the equilibrated
+    # lambda=0 end state; fep → fep extends the same windows.
+    "fep": frozenset({"eq", "fep"}),
+    "analyze": frozenset({"prod", "fep", "analyze"}),
 }
 
 
@@ -189,7 +197,8 @@ _AUTO_PARENT_PREFERENCE = {
     "min": ("topo",),
     "eq": ("min", "topo"),
     "prod": ("eq",),
-    "analyze": ("prod",),
+    "fep": ("eq",),
+    "analyze": ("prod", "fep"),
 }
 
 
@@ -201,6 +210,8 @@ CANONICAL_FORWARD_NODE_TYPE = {
     "min": "eq",
     "eq": "prod",
     "prod": "analyze",
+    # fep replaces prod on a hybrid topology; its analysis is analyze_fep.
+    "fep": "analyze",
 }
 
 

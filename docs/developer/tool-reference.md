@@ -550,6 +550,69 @@ signature, update the relevant section here and the matching skill examples.
   artifact exists. Direct and legacy inputs without it produce frame-only CSVs
   instead of assuming a fixed output cadence.
 
+## `fep/`
+
+Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
+(no Perses/OpenFE dependency). Research notes and the design rationale are in
+`docs/research/fep-references.md`; the agent procedure is `skills/md-fep/`.
+
+- `build_hybrid_system(mutation, ...)` (`topo` node, `mdclaw/fep/build.py`):
+  parses `[CHAIN:]<wt><resseq><mut>` against the prep PDB
+  (`fep/mutant.py`), models the mutant side chain (HPacker, PDBFixer
+  fallback) and splices only that residue into a copy of the WT PDB, builds
+  both end states with `build_amber_system` (under
+  `artifacts/endstates/`), maps atoms (`fep/mapping.py`: backbone + CB core,
+  everything else in the residue is a dummy in one state), fuses the two
+  Systems (`fep/hybrid.py`), relaxes the appearing atoms at state B with the
+  rest frozen, and checks that the hybrid reproduces both end-state energies
+  at λ=0/1 (`endpoint_tolerance_kj_mol`, default 1). Writes the ordinary XML
+  triple plus `hybrid_manifest.json` (mapping, force counts, relaxation and
+  validation energies) and `fep_protocol.json` (`n_windows` / explicit
+  `lambda_schedule`; five global parameters `fep_elec_old`,
+  `fep_sterics_old`, `fep_core`, `fep_sterics_new`, `fep_elec_new`, phase
+  bounds λ=0.25/0.75). Downstream `min`/`eq` treat the hybrid as a normal
+  topology (λ=0 is the wild type). Charge-changing mutations pass with a
+  warning. Codes: `fep_mutation_spec_invalid`,
+  `fep_mutation_residue_not_found`, `fep_mutation_residue_ambiguous`,
+  `fep_mutant_model_failed`, `fep_endstate_build_failed`,
+  `fep_environment_mismatch`, `fep_mapping_failed`, `fep_unsupported_force`,
+  `fep_hybrid_build_failed`, `fep_endpoint_validation_failed`,
+  `fep_protocol_invalid`.
+- `run_fep(...)` (`fep` node; parents `eq` or `fep`, `mdclaw/fep/run.py`):
+  for each selected window (`lambda_indices`: all, `"0-6"`, `"0,3,7"`)
+  restarts from the eq state (or the parent fep node's per-window state when
+  extending), sets the window's global parameters, runs
+  `equilibration_time_ns` then `sampling_time_ns`, and every
+  `sample_interval_ps` evaluates the reduced potential at **all** protocol
+  windows (`u_kn` in kT, NPT adds pV) into
+  `window_XX/energies.npz`. `fep_windows.json` indexes windows → segment
+  chains (extension appends to the parent's chain). Ensemble follows the eq
+  node (`pressure_bar` inherited; 0 forces NVT); timestep/HMR follow the
+  topology. Trajectories are off by default (`trajectory_interval_ps`).
+  Declared `lambda_indices` conditions are matched against the flag's own
+  spelling. Codes: `fep_hybrid_topology_required`,
+  `fep_lambda_index_invalid`, `fep_protocol_invalid`, `fep_sampling_failed`.
+- `analyze_fep(...)` (`analyze` node whose parents are all `fep`,
+  `mdclaw/fep/analysis.py`): merges the parents' `fep_windows.json` (same
+  index across parents = pooled replicas; segments of a chain are
+  concatenated), drops `discard_fraction` (0.1) of every segment, subsamples
+  to independent frames with `pymbar.timeseries`, and runs MBAR. Writes
+  `fep_result.json` with `dG_kj_mol` / `dG_error_kj_mol` (and kcal/mol),
+  cumulative dG per window, per-phase contributions, neighbour overlaps
+  (warning below 0.03), the overlap matrix and per-window sample statistics.
+  Direct mode: `fep_windows_files`. Codes: `fep_windows_missing`,
+  `fep_windows_incomplete` (lists the unsampled indices),
+  `fep_windows_incompatible`, `fep_analysis_failed`, `pymbar_not_installed`.
+- `extract_tripeptide(pdb_file, mutation, flank=1, ...)` (helper, no node):
+  writes residues `i-flank..i+flank` of the mutated chain with the original
+  chain id and numbering (uncapped; the unfolded job's prep adds ACE/NME via
+  `--cap-termini`). Warns on chain ends and peptide-bond breaks. Codes:
+  `fep_mutation_residue_not_found`, `fep_tripeptide_extraction_failed`.
+- `estimate_ddg(folded, unfolded, ...)` (helper, no node):
+  `ddG = dG_folded − dG_unfolded` from two `fep_result.json`, errors in
+  quadrature, writes `ddg.json` and optionally a study-log decision. Code:
+  `fep_result_invalid`.
+
 ## `visualization/`
 
 - `render_structure_preview(...)`: PyMOL headless PNG rendering for PDB/mmCIF.

@@ -314,7 +314,7 @@ class TestCliContract:
         code = _run_cli(["--workflow"])
         assert code == 0
         out = capsys.readouterr().out
-        assert "source > prep > solv > topo > min > eq > prod > analyze" in out
+        assert "source > prep > solv > topo > min > eq > prod > fep > analyze" in out
         assert re.search(r"^  solv\s+solvate_structure.*embed_in_membrane", out, re.M)
         assert "Nodes run once" in out
         assert "bootstrap_md_workflow" in out

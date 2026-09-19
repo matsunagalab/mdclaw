@@ -32,6 +32,7 @@ DAG_RESOLVED_INPUTS = {
     "min": ("system_xml_file", "topology_pdb_file", "state_xml_file"),
     "eq": ("system_xml_file", "topology_pdb_file", "state_xml_file"),
     "prod": ("system_xml_file", "topology_pdb_file", "state_xml_file"),
+    "fep": ("system_xml_file", "topology_pdb_file", "state_xml_file", "fep_protocol_file"),
 }
 NODE_MODE_SUPERSEDED = ("output_dir",)
 
@@ -574,6 +575,47 @@ def _summary_prod(facts: dict, result: dict) -> str:
     return "production: " + ", ".join(parts)
 
 
+def _facts_fep(result: dict) -> dict:
+    windows = result.get("windows") if isinstance(result.get("windows"), list) else []
+    rates = [w.get("ns_per_day") for w in windows if isinstance(w, dict) and w.get("ns_per_day")]
+    return _compact({
+        "lambda_indices": result.get("lambda_indices"),
+        "n_protocol_windows": result.get("n_protocol_windows"),
+        "sampling_time_ns": windows[0].get("sampling_time_ns") if windows else None,
+        "ensemble": result.get("ensemble"),
+        "temperature_kelvin": result.get("temperature_kelvin"),
+        "pressure_bar": result.get("pressure_bar"),
+        "timestep_fs": result.get("timestep_fs"),
+        "hmr": result.get("hmr"),
+        "ns_per_day": round(sum(rates) / len(rates), 1) if rates else None,
+        "platform": result.get("platform"),
+    })
+
+
+def _summary_fep(facts: dict, result: dict) -> str:
+    parts = []
+    idx = facts.get("lambda_indices") or []
+    if idx:
+        span = f"{idx[0]}-{idx[-1]}" if len(idx) > 1 else str(idx[0])
+        parts.append(f"{len(idx)} of {facts.get('n_protocol_windows', '?')} windows ({span})")
+    if facts.get("sampling_time_ns") is not None:
+        parts.append(f"{facts['sampling_time_ns']:g} ns each" + (f" {facts['ensemble']}" if facts.get("ensemble") else ""))
+    conditions = []
+    if facts.get("temperature_kelvin") is not None:
+        conditions.append(f"{facts['temperature_kelvin']:g} K")
+    if facts.get("pressure_bar") is not None:
+        conditions.append(f"{facts['pressure_bar']:g} bar")
+    if conditions:
+        parts.append("at " + " / ".join(conditions))
+    if facts.get("timestep_fs") is not None:
+        parts.append(f"{facts['timestep_fs']:g} fs" + (", HMR" if facts.get("hmr") else ""))
+    if facts.get("ns_per_day"):
+        parts.append(f"{facts['ns_per_day']:g} ns/day")
+    if facts.get("platform"):
+        parts.append(f"platform {facts['platform']}")
+    return "fep windows: " + ", ".join(parts)
+
+
 def _facts_generic(result: dict) -> dict:
     facts = {}
     for key, value in result.items():
@@ -592,11 +634,12 @@ def _summary_generic(facts: dict, result: dict) -> str:
 
 _FACTS: dict[str, Callable[[dict], dict]] = {
     "source": _facts_source, "prep": _facts_prep, "solv": _facts_solv, "topo": _facts_topo,
-    "min": _facts_min, "eq": _facts_eq, "prod": _facts_prod,
+    "min": _facts_min, "eq": _facts_eq, "prod": _facts_prod, "fep": _facts_fep,
 }
 _SUMMARY: dict[str, Callable[[dict, dict], str]] = {
     "source": _summary_source, "prep": _summary_prep, "solv": _summary_solv,
     "topo": _summary_topo, "min": _summary_min, "eq": _summary_eq, "prod": _summary_prod,
+    "fep": _summary_fep,
 }
 
 

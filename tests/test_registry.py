@@ -20,7 +20,7 @@ class TestServerRegistry:
     """Test the SERVER_REGISTRY dict in _registry.py."""
 
     def test_registry_has_all_servers(self):
-        assert len(SERVER_REGISTRY) == 16
+        assert len(SERVER_REGISTRY) == 17
 
     def test_registry_keys(self):
         expected = {
@@ -29,6 +29,7 @@ class TestServerRegistry:
             "solvation",
             "amber",
             "openmm_system",
+            "fep",
             "md_simulation",
             "genesis",
             "surrogate",

@@ -102,6 +102,7 @@ the formal names from `CONTEXT.md`:
 | `min` | Minimization Node | Minimized state artifacts |
 | `eq` | Equilibration Node | Equilibrated state artifacts |
 | `prod` | Production Node | Production Segment artifacts |
+| `fep` | FEP Sampling Node | Lambda-window reduced potentials (hybrid topology only) |
 | `analyze` | Analysis Node | Analysis evidence artifacts |
 
 Inside a job, the `source` node acquires structural input, records a structural
@@ -115,6 +116,9 @@ assembly/chain choices, or generated prediction ensemble members from
 Boltz/BioEm-like tools. Generator-specific rank and confidence data live on
 the relevant candidate records and are surfaced through `list_source_candidates`.
 Variants then branch from `prep`, `solv`, `topo`, `min`, `eq`, or `prod`.
+A point-mutation FEP is the same chain with a hybrid `topo`
+(`build_hybrid_system`) and `fep` nodes in place of `prod`; see the `fep/`
+section of `tool-reference.md` and `skills/md-fep/`.
 
 Preparation nodes select one candidate, choose MD-relevant molecular
 components, clean and standardize them, record chemistry and provenance for
@@ -172,6 +176,7 @@ Node artifacts are intentionally local to each node:
 | `min` | `minimized_structure.pdb`, `minimized.xml`, `minimization_report.json`. |
 | `eq` | `equilibrated.pdb`, `equilibrated.xml`, `equilibrated.chk`, stage logs. |
 | `prod` | `trajectory.dcd`, `final_structure.pdb`, `state.xml`, `checkpoint.chk`, `energy.dat`. |
+| `fep` | `fep_windows.json`, `window_XX/energies.npz` (`u_kn`), `window_XX/state.xml`; parents `eq` (fresh) or `fep` (extension). Its `topo` ancestor must come from `build_hybrid_system`, which adds `hybrid_manifest.json` and `fep_protocol.json` to the topology triple. `analyze_fep` consumes all-`fep` parents. |
 
 The canonical study layout is:
 

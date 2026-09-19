@@ -599,7 +599,7 @@ class TestCreateNode:
         assert result["code"] == "invalid_node_type"
         assert "is not a node type" in result["error"]
         assert result["valid_node_types"] == [
-            "source", "prep", "solv", "topo", "min", "eq", "prod", "analyze"]
+            "source", "prep", "solv", "topo", "min", "eq", "prod", "fep", "analyze"]
 
     def test_invalid_parent_ref(self, job_dir):
         result = create_node(str(job_dir), "solv",
