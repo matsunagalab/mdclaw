@@ -580,6 +580,7 @@ def _facts_fep(result: dict) -> dict:
     rates = [w.get("ns_per_day") for w in windows if isinstance(w, dict) and w.get("ns_per_day")]
     return _compact({
         "lambda_indices": result.get("lambda_indices"),
+        "carried_over_windows": result.get("carried_over_windows") or None,
         "n_protocol_windows": result.get("n_protocol_windows"),
         "sampling_time_ns": windows[0].get("sampling_time_ns") if windows else None,
         "ensemble": result.get("ensemble"),
@@ -597,7 +598,9 @@ def _summary_fep(facts: dict, result: dict) -> str:
     idx = facts.get("lambda_indices") or []
     if idx:
         span = f"{idx[0]}-{idx[-1]}" if len(idx) > 1 else str(idx[0])
-        parts.append(f"{len(idx)} of {facts.get('n_protocol_windows', '?')} windows ({span})")
+        carried = facts.get("carried_over_windows") or []
+        parts.append(f"{len(idx)} of {facts.get('n_protocol_windows', '?')} windows ({span})"
+                     + (f" (+{len(carried)} carried over)" if carried else ""))
     if facts.get("sampling_time_ns") is not None:
         parts.append(f"{facts['sampling_time_ns']:g} ns each" + (f" {facts['ensemble']}" if facts.get("ensemble") else ""))
     conditions = []

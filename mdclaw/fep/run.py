@@ -14,9 +14,9 @@ The node artifact ``fep_windows.json`` indexes them; it is rewritten after
 every window so a node killed half-way still leaves a usable partial index
 (``"complete": false``). For ``fep -> fep`` extension the parent node's
 segments are chained into the child's index, so analysis sees the full
-sample set without copying files. All paths inside the index are relative to
-the index file's own directory: the job directory can be moved or analysed
-from another host.
+sample set without copying files. No artifact carries an absolute path: the
+index and each ``window.json`` record paths relative to their own directory,
+so the job directory can be moved or analysed from another host.
 
 Starting a window from the equilibrated lambda=0 state: the appearing atoms
 were non-interacting ghosts during ``eq``, so solvent may sit on top of them.
@@ -277,7 +277,13 @@ def sample_window(
 
     retry = run_with_halved_timestep(f"fep window {window['index']}", timestep_fs, _run, log=logger)
     outcome["nan_retry"] = {"retried": retry["retried"], "attempts": retry["attempts"]} if retry["retried"] else None
-    (out_dir / "window.json").write_text(json.dumps(outcome, indent=2))
+    # window.json follows the same convention as the index: paths relative to
+    # the file's own directory. The returned record keeps absolute paths for
+    # the caller, which relativises them against the index.
+    on_disk = {**outcome, **{k: rel_to(outcome[k], out_dir)
+                             for k in ("state_file", "energies_file", "trajectory_file", "restarted_from")
+                             if outcome.get(k)}}
+    (out_dir / "window.json").write_text(json.dumps(on_disk, indent=2))
     return outcome
 
 
@@ -360,10 +366,14 @@ def run_fep(
 
     Returns:
         Dict with ``fep_windows`` (index file), per-window ``windows``
-        records, ``lambda_indices``, timing, and ``code`` on failure
+        records, ``lambda_indices`` (sampled here), ``carried_over_windows``
+        (copied from the parent index), timing, and ``code`` on failure
         (``fep_hybrid_topology_required``, ``fep_lambda_index_invalid``,
         ``fep_protocol_invalid``, ``fep_windows_missing``,
-        ``invalid_parameter_value``, ``fep_sampling_failed``).
+        ``invalid_parameter_value``, ``fep_sampling_failed``). A sampling
+        failure also reports ``fep_windows`` (the partial index, always on
+        disk), ``indexed_windows`` (every window that index lists) and
+        ``sampled_windows`` (the subset this node finished).
     """
     from mdclaw._node import fail_tool
 
@@ -437,17 +447,20 @@ def run_fep(
                 raise FepRunError(code="fep_windows_incompatible",
                                   message=f"{restart_windows_file} was sampled with {parent_index_meta.get('n_protocol_windows')} "
                                   f"protocol windows, this topology has {len(protocol_windows)}")
-            for i, rec in parent_windows.items():
-                if not (rec.get("state_file") and Path(rec["state_file"]).is_file()):
-                    raise FepRunError(code="fep_windows_missing",
-                                      message=f"window {i} of {restart_windows_file} has no restart state.xml; "
-                                      "it cannot be extended")
         extending = bool(node_mode and inputs.get("fep_parent_windows_file"))
         if lambda_indices in (None, "", "all") and extending:
             # fep -> fep extension: the parent's set, unless the user narrows it.
             indices = sorted(parent_windows)
         else:
             indices = parse_lambda_indices(lambda_indices, len(protocol_windows))
+        # Only windows that are continued need a restart state; carried-over
+        # windows need nothing beyond their energies (checked by analyze_fep).
+        for i in indices:
+            rec = parent_windows.get(i)
+            if rec is not None and not (rec.get("state_file") and Path(rec["state_file"]).is_file()):
+                raise FepRunError(code="fep_windows_missing",
+                                  message=f"window {i} of {restart_windows_file} has no restart state.xml; "
+                                  "it cannot be continued (drop it from --lambda-indices to carry it over as is)")
         if extending:
             outside = [i for i in indices if i not in parent_windows]
             if outside:
@@ -574,6 +587,10 @@ def run_fep(
         "carried_over_windows": sorted(i for i in parent_windows if i not in indices),
     }
     windows_index: dict[int, dict] = {i: dict(rec) for i, rec in parent_windows.items() if i not in indices}
+    # Written before the first window and after every window: whatever is
+    # in the index (carried-over or freshly sampled) is on disk when a window
+    # fails, so the failure result never points at a file that does not exist.
+    _write_index(index_file, index_payload, windows_index, complete=False)
     t_start = time.time()
     for i in indices:
         window = protocol_windows[i]
@@ -593,10 +610,12 @@ def run_fep(
             )
         except Exception as exc:  # noqa: BLE001
             code = exc.code if isinstance(exc, FepRunError) else "fep_sampling_failed"
+            # indexed_windows = everything the partial index lists (carried-over
+            # plus sampled here); sampled_windows = the ones this node ran.
             return _fail(code, f"window {i} failed: {type(exc).__name__}: {exc}",
-                         completed_windows=sorted(windows_index),
+                         indexed_windows=sorted(windows_index),
                          sampled_windows=[w["index"] for w in result["windows"]],
-                         fep_windows=str(index_file) if windows_index else None)
+                         fep_windows=str(index_file))
         segments = list(parent.get("segments", [])) if parent else []
         segments.append({
             "node_id": node_id, "energies_file": record["energies_file"],

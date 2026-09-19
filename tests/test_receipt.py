@@ -178,6 +178,21 @@ class TestStageFacts:
         assert receipt["summary"] == ("production: 1.2 ns NPT, at 310 K / 1 bar, 4 fs, HMR, from eq_002, "
                                       "integrator settings changed from the restart (see warnings), platform CUDA")
 
+    def test_fep_receipt_shows_carried_over_windows(self):
+        windows = [{"index": i, "sampling_time_ns": 5.0, "ns_per_day": 100.0} for i in range(7, 21)]
+        result = {"lambda_indices": list(range(7, 21)), "carried_over_windows": list(range(0, 7)),
+                  "n_protocol_windows": 21, "windows": windows, "ensemble": "NPT",
+                  "temperature_kelvin": 300.0, "pressure_bar": 1.0, "timestep_fs": 4.0, "hmr": True,
+                  "platform": "CUDA"}
+        receipt = build_receipt(tool_name="run_fep", node_type="fep", result=result,
+                                explicit={"lambda_indices": "7-20"}, node_mode=True)
+        assert receipt["summary"] == ("fep windows: 14 of 21 windows (7-20) (+7 carried over), 5 ns each NPT, "
+                                      "at 300 K / 1 bar, 4 fs, HMR, 100 ns/day, platform CUDA")
+        assert receipt["facts"]["carried_over_windows"] == list(range(0, 7))
+        plain = build_receipt(tool_name="run_fep", node_type="fep",
+                              result={**result, "carried_over_windows": []}, explicit={}, node_mode=True)
+        assert "carried over" not in plain["summary"]
+
     def test_unknown_stage_gets_the_generic_receipt(self):
         receipt = build_receipt(tool_name="analyze_rmsd", node_type="analyze",
                                 result={"success": True, "frames": 100, "output_file": "/r.csv"},

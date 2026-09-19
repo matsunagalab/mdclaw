@@ -588,15 +588,21 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   `sample_interval_ps` it evaluates the reduced potential at **all** protocol
   windows (`u_kn` in kT, NPT adds pV) into `window_XX/energies.npz`. A NaN
   is retried at a halved timestep (`nan_retry.py`). `fep_windows.json`
-  indexes windows → segment chains and is rewritten after every window
-  (`"complete": false` until the last), with all paths relative to the index
-  file so a job directory can be moved. Extension (`fep` parent, exactly one)
+  indexes windows → segment chains and is written before the first window and
+  after every window (`"complete": false` until the last), so a sampling
+  failure always reports an existing partial index (`indexed_windows` = what
+  it lists, `sampled_windows` = what this node finished). No artifact holds an
+  absolute path: the index and each `window_XX/window.json` are relative to
+  their own directory, so a job directory can be moved. Extension (`fep`
+  parent, exactly one)
   continues the parent's per-window states, chains its segments, and only
   accepts the parent's windows, ensemble and temperature; `restart_windows_file`
   does the same from an explicit (possibly partial) index, which is how a
   killed node's finished windows are recovered under a new node. Parent
   windows that are not re-sampled are carried into the new index unchanged
-  (`carried_over_windows`), so a chain's leaf always lists every window.
+  (`carried_over_windows`; they need only their `energies.npz`, a `state.xml`
+  is required only for windows that are continued), so a chain's leaf always
+  lists every window.
   Ensemble follows the eq node (NPT pressure inherited, NVT stays NVT;
   `pressure_bar` 0 forces NVT); timestep/HMR follow the topology. Argument
   and input-resolution errors are reported before the node starts (it stays

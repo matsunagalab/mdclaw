@@ -165,6 +165,51 @@ class TestNextStep:
         assert "trace_failure" in step["trace_command"]
         assert f"--node-type prep --parent-node-ids {source}" in step["create_command"]
 
+    def test_alchemical_routing_is_decided_per_branch(self, job_dir):
+        """A plain topo branch and a hybrid topo branch under the same solv:
+        the plain eq forwards to prod, the hybrid eq to fep, the hybrid fep to
+        an alchemical analyze node, and a pending fep runs run_fep."""
+        tools = _tools()
+        source = _complete(job_dir, "source", {"source_bundle": "artifacts/sb.json"})
+        prep = _complete(job_dir, "prep", {"merged_pdb": "artifacts/m.pdb"}, parent_node_ids=[source])
+        solv = _complete(job_dir, "solv", {"solvated_pdb": "artifacts/s.pdb"}, parent_node_ids=[prep])
+        triple = {"system_xml": "artifacts/sys.xml", "topology_pdb": "artifacts/t.pdb", "state_xml": "artifacts/st.xml"}
+        plain_topo = _complete(job_dir, "topo", triple, parent_node_ids=[solv])
+        hybrid_topo = _complete(job_dir, "topo", {**triple, "hybrid_manifest": "artifacts/hybrid_manifest.json",
+                                                  "fep_protocol": "artifacts/fep_protocol.json"},
+                                parent_node_ids=[solv])
+        eqs = {}
+        for label, topo in (("plain", plain_topo), ("hybrid", hybrid_topo)):
+            mn = _complete(job_dir, "min", {"state": "artifacts/min.xml"}, parent_node_ids=[topo])
+            eqs[label] = _complete(job_dir, "eq", {"state": "artifacts/eq.xml"}, parent_node_ids=[mn])
+        # the job-level flag build_hybrid_system sets must not leak into the plain branch
+        update_job_params(str(job_dir), {"fep_mutation": "A:L99A"})
+
+        plain = next_step(str(job_dir), eqs["plain"], tools)
+        assert plain["action"] == "create" and plain["node_type"] == "prod"
+        assert plain["stage_tools"][0] == "run_production"
+        assert "--conditions" not in plain["create_command"]
+
+        hybrid = next_step(str(job_dir), eqs["hybrid"], tools)
+        assert hybrid["action"] == "create" and hybrid["node_type"] == "fep"
+        assert hybrid["stage_tools"] == ["run_fep"]
+        assert f"--parent-node-ids {eqs['hybrid']}" in hybrid["create_command"]
+        assert "submit_job" in hybrid["batch_command"]
+
+        fep = create_node(str(job_dir), "fep", parent_node_ids=[eqs["hybrid"]])["node_id"]
+        pending = next_step(str(job_dir), fep, tools)
+        assert pending["action"] == "run" and pending["stage_tools"][0] == "run_fep"
+        assert f"--node-id {fep} run_fep" in pending["run_command"]
+        # a created-but-unrun fep child is what the completed eq points at next
+        assert next_step(str(job_dir), eqs["hybrid"], tools)["node_id"] == fep
+
+        complete_node(str(job_dir), fep, artifacts={"fep_windows": "artifacts/fep_windows.json"})
+        done = next_step(str(job_dir), fep, tools)
+        assert done["action"] == "create" and done["node_type"] == "analyze"
+        assert done["stage_tools"][0] == "analyze_fep"
+        assert '"analysis_data_scope": "alchemical"' in done["create_command"]
+        assert done["optional"] is True
+
     def test_membrane_regime_prefers_embed_in_membrane(self):
         tools = _tools()
         assert stage_tools_for("solv", tools, {"solvent_regime": "membrane"})[0] == "embed_in_membrane"

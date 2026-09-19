@@ -17,6 +17,8 @@ add the correction and say what it overturns.
 
 テスト: fep 47 本（slow 含む）、既定セット + 関連 666 本 pass、ruff clean。
 
+**追記（同日 14:10）— 三巡目の小さな指摘 6 件。** (1) 索引をループ前にも `complete: false` で書き、最初の窓で落ちても carried-over 窓を含む部分索引が必ずディスクにある（失敗 result の `fep_windows` が存在しないファイルを指さない）。(2) `state.xml` の要求は継続する窓（`indices` に含まれる親窓）だけに限定; carry-over 窓は `energies.npz` だけでよい（エラー文に「`--lambda-indices` から外せば carry over される」と案内）。(3) 失敗 result の `completed_windows` を `indexed_windows`（索引が列挙する全窓）に改名、`sampled_windows`（このノードが完了した窓）と区別を docstring に明記。(4) `window.json` も自身のディレクトリ相対に（`energies.npz` / `state.xml` / `restarted_from`）; 「索引に絶対パスなし」を「artifacts に絶対パスなし」に広げた。(5) `_summary_fep` に `(+N carried over)`。(6) `tests/test_envelope.py::test_alchemical_routing_is_decided_per_branch`: 同じ solv の下に plain topo 枝と hybrid topo 枝（`fep_protocol` artifact あり）を作り、job params に `fep_mutation` を入れた状態で、plain eq → prod / `run_production`、hybrid eq → fep / `run_fep` + batch_command、pending fep → run `run_fep`、completed fep → analyze + `alchemical` conditions を固定。真空 e2e にも「最初の窓で crash → 部分索引 [0, 1]」「state.xml 無しの窓は継続不可・carry-over 可」「window.json 相対」を追加、receipt テストに fep ケース追加。既定セット + 関連 668 本 pass。
+
 ## 2026-09-19 — FEP レビュー対応: 窓開始配置・部分失敗の回収・相対パス・bonded 三重複の統合（branch `feat/fep-hybrid-topology`）
 
 前エントリの実装に対するレビュー（A: 実運用前、B: 契約・頑健性、C: 簡素化、D: 細部、E: テスト）を一括で対応した。最初の実装は `0100a38` としてコミット済み。

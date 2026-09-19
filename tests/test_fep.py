@@ -568,6 +568,10 @@ class TestVacuumPipeline:
         for rec in raw["windows"].values():
             assert not Path(rec["state_file"]).is_absolute()
             assert all(not Path(s["energies_file"]).is_absolute() for s in rec["segments"])
+        # ... and so is every path in the per-window record (relative to its own directory)
+        wj = json.loads((index_file.parent / "window_00" / "window.json").read_text())
+        assert wj["energies_file"] == "energies.npz" and wj["state_file"] == "state.xml"
+        assert wj["restarted_from"] is None
         assert rec["start_minimisation"]["after_kj_mol"] <= rec["start_minimisation"]["before_kj_mol"] + 1e-6
 
         assert raw["extended_from"] is None
@@ -598,6 +602,39 @@ class TestVacuumPipeline:
                               discard_fraction=0.0, subsample=False)
         assert rec_res["success"], rec_res
         assert rec_res["n_samples_per_state"] == [20, 20, 20]
+        # a continued window's record points back at the state it started from
+        wj2 = json.loads((Path(recover["fep_windows"]).parent / "window_02" / "window.json").read_text())
+        assert not Path(wj2["restarted_from"] or "x").is_absolute() or wj2["restarted_from"] is None
+
+        # a failure on the very first window still leaves the carried-over
+        # windows in a partial index on disk
+        import mdclaw.fep.run as run_mod
+
+        def _boom(**kwargs):
+            raise RuntimeError("simulated crash before the first sample")
+
+        monkeypatch.setattr(run_mod, "sample_window", _boom)
+        crashed = run_fep(**common, lambda_indices="2", restart_windows_file=str(index_file),
+                          output_dir=str(tmp_path / "run"))
+        monkeypatch.undo()
+        assert crashed["success"] is False and crashed["code"] == "fep_sampling_failed"
+        assert crashed["indexed_windows"] == [0, 1] and crashed["sampled_windows"] == []
+        partial_idx = json.loads(Path(crashed["fep_windows"]).read_text())
+        assert partial_idx["complete"] is False and sorted(partial_idx["windows"]) == ["0", "1"]
+        assert partial_idx["carried_over_windows"] == [0, 1]
+
+        # a carried-over window needs no state.xml (only continued ones do)
+        state1 = index_file.parent / "window_01" / "state.xml"
+        hidden = state1.with_suffix(".hidden")
+        state1.rename(hidden)
+        no_state = run_fep(**common, lambda_indices="1", restart_windows_file=str(index_file),
+                           output_dir=str(tmp_path / "run"))
+        assert no_state["success"] is False and no_state["code"] == "fep_windows_missing"
+        assert "carry it over" in no_state["errors"][0]
+        carried = run_fep(**common, lambda_indices="2", restart_windows_file=str(index_file),
+                          output_dir=str(tmp_path / "run"))
+        assert carried["success"] and carried["carried_over_windows"] == [0, 1]
+        hidden.rename(state1)
 
         # second node: window 2, plus continue windows 0-1 from the first index
         second = run_fep(**common, lambda_indices="all", restart_windows_file=str(index_file),
