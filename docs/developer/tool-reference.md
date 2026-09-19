@@ -566,9 +566,11 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   Systems (`fep/hybrid.py`), relaxes the appearing atoms at state B with the
   rest frozen, and checks that the hybrid reproduces both end-state energies
   at λ=0/1 (`endpoint_tolerance_kj_mol`, default 1). Writes the ordinary XML
-  triple plus `hybrid_manifest.json` (mapping, force counts, relaxation and
-  validation energies) and `fep_protocol.json` (`n_windows` / explicit
-  `lambda_schedule`; five global parameters `fep_elec_old`,
+  triple plus `hybrid_manifest.json` — the single record of the build
+  (mapping, force counts, end-state files, relaxation and validation
+  energies; the tool result and node metadata carry only a summary) — and
+  `fep_protocol.json` (`n_windows` / explicit `lambda_schedule`, a strictly
+  increasing list of lambdas from 0 to 1; five global parameters `fep_elec_old`,
   `fep_sterics_old`, `fep_core`, `fep_sterics_new`, `fep_elec_new`, phase
   bounds λ=0.25/0.75). Downstream `min`/`eq` treat the hybrid as a normal
   topology (λ=0 is the wild type). Charge-changing mutations pass with a
@@ -580,23 +582,35 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   `fep_protocol_invalid`.
 - `run_fep(...)` (`fep` node; parents `eq` or `fep`, `mdclaw/fep/run.py`):
   for each selected window (`lambda_indices`: all, `"0-6"`, `"0,3,7"`)
-  restarts from the eq state (or the parent fep node's per-window state when
-  extending), sets the window's global parameters, runs
-  `equilibration_time_ns` then `sampling_time_ns`, and every
-  `sample_interval_ps` evaluates the reduced potential at **all** protocol
-  windows (`u_kn` in kT, NPT adds pV) into
-  `window_XX/energies.npz`. `fep_windows.json` indexes windows → segment
-  chains (extension appends to the parent's chain). Ensemble follows the eq
-  node (`pressure_bar` inherited; 0 forces NVT); timestep/HMR follow the
-  topology. Trajectories are off by default (`trajectory_interval_ps`).
-  Declared `lambda_indices` conditions are matched against the flag's own
-  spelling. Codes: `fep_hybrid_topology_required`,
-  `fep_lambda_index_invalid`, `fep_protocol_invalid`, `fep_sampling_failed`.
-- `analyze_fep(...)` (`analyze` node whose parents are all `fep`,
-  `mdclaw/fep/analysis.py`): merges the parents' `fep_windows.json` (same
-  index across parents = pooled replicas; segments of a chain are
-  concatenated), drops `discard_fraction` (0.1) of every segment, subsamples
-  to independent frames with `pymbar.timeseries`, and runs MBAR. Writes
+  restarts from the eq state, minimises briefly at the window's lambda (the
+  appearing atoms were ghosts during eq, so solvent may overlap them), then
+  runs `equilibration_time_ns` and `sampling_time_ns`; every
+  `sample_interval_ps` it evaluates the reduced potential at **all** protocol
+  windows (`u_kn` in kT, NPT adds pV) into `window_XX/energies.npz`. A NaN
+  is retried at a halved timestep (`nan_retry.py`). `fep_windows.json`
+  indexes windows → segment chains and is rewritten after every window
+  (`"complete": false` until the last), with all paths relative to the index
+  file so a job directory can be moved. Extension (`fep` parent, exactly one)
+  continues the parent's per-window states, chains its segments, and only
+  accepts the parent's windows and ensemble; `restart_windows_file` does the
+  same from an explicit (possibly partial) index, which is how a killed
+  node's finished windows are recovered under a new node. Ensemble follows
+  the eq node (NPT pressure inherited, NVT stays NVT; `pressure_bar` 0 forces
+  NVT); timestep/HMR follow the topology. Argument errors are reported before
+  the node starts (it stays pending). Trajectories are off by default
+  (`trajectory_interval_ps`). Declared `lambda_indices` conditions are
+  matched against the flag's own spelling. Codes:
+  `fep_hybrid_topology_required`, `fep_lambda_index_invalid`,
+  `fep_protocol_invalid`, `fep_windows_missing`, `fep_windows_incompatible`,
+  `fep_parent_ambiguous`, `invalid_parameter_value`, `fep_sampling_failed`.
+- `analyze_fep(...)` (`analyze` node whose parents are all `fep`, created
+  with `analysis_data_scope: alchemical`; `mdclaw/fep/analysis.py`): merges
+  the parents' `fep_windows.json` (protocols compared by content; temperature
+  and pressure/ensemble must match because `u_kn` carries pV/kT; same index
+  across parents = pooled replicas), drops `discard_fraction` (0.1) of every
+  segment, subsamples each segment separately to independent frames with
+  `pymbar.timeseries` (segments are separate trajectories), pools, and runs
+  MBAR. Writes
   `fep_result.json` with `dG_kj_mol` / `dG_error_kj_mol` (and kcal/mol),
   cumulative dG per window, per-phase contributions, neighbour overlaps
   (warning below 0.03), the overlap matrix and per-window sample statistics.
@@ -610,8 +624,9 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   `fep_mutation_residue_not_found`, `fep_tripeptide_extraction_failed`.
 - `estimate_ddg(folded, unfolded, ...)` (helper, no node):
   `ddG = dG_folded − dG_unfolded` from two `fep_result.json`, errors in
-  quadrature, writes `ddg.json` and optionally a study-log decision. Code:
-  `fep_result_invalid`.
+  quadrature, writes `ddg_<mutation>.json` to `output_file`, else
+  `<study_dir>/evidence/` (plus a study-log decision), else `outputs/` —
+  never into a completed node's `artifacts/`. Code: `fep_result_invalid`.
 
 ## `visualization/`
 

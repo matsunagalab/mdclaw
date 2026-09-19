@@ -108,17 +108,22 @@ first; its prep PDB is the input for the tripeptide.
    ```
 
    One `fep` node may sample all windows serially (default) or a subset with
-   `--lambda-indices 0-6`; for HPC, create one `fep` node per subset under the
-   same `eq` parent and submit them with `submit_array_job`
-   (`skills/md-fep/windows.md`). Extend converged-but-noisy windows with a
-   child `fep` node (`--parent-node-ids <fep_id>`); samples are chained.
+   `--lambda-indices 0-6`. Over ~1 ns per window, or on HPC, create one `fep`
+   node per subset under the same `eq` parent and submit them with
+   `submit_array_job` (`skills/md-fep/windows.md`): a killed node then loses
+   one subset, and its finished windows are recoverable from the partial
+   `fep_windows.json`. Extend converged-but-noisy windows with a child `fep`
+   node (`--parent-node-ids <fep_id> ... --equilibration-time-ns 0`); samples
+   are chained. Each window starting from the eq state is minimised at its own
+   λ first, so small→large mutations do not start from solvent overlapping the
+   appearing side chain.
 
 5. **Estimate the leg.**
 
    ```bash
    mdclaw create_node --job-dir <folded> --node-type analyze \
      --parent-node-ids <fep_id>[,<fep_id2>,...] \
-     --conditions '{"analysis_data_scope": "production_chain"}'
+     --conditions '{"analysis_data_scope": "alchemical"}'
    mdclaw --job-dir <folded> --node-id <analyze_id> analyze_fep
    ```
 
@@ -138,7 +143,8 @@ first; its prep PDB is the input for the tripeptide.
      --cap-termini true <same --ph / protonation options as folded>
    ```
 
-   Then `solvate_structure` (`--dist 8` is enough for a tripeptide), `build_hybrid_system`
+   Then `solvate_structure --dist 10` (a tripeptide needs no 15 Å buffer; keep
+   the image gap above the 10 Å cutoff), `build_hybrid_system`
    with the **same** `--mutation`, `--forcefield`, `--water-model`,
    `--n-windows`/`--lambda-schedule`, then min → eq → `run_fep` → `analyze_fep`.
 
@@ -162,7 +168,9 @@ first; its prep PDB is the input for the tripeptide.
 | `fep_endpoint_validation_failed` | Do not sample. Report the energy table from the failure manifest. |
 | `fep_hybrid_topology_required` | The topo ancestor is not a hybrid; create a topo node with `build_hybrid_system` and re-branch min/eq. |
 | `fep_windows_incomplete` | Create `fep` nodes for the listed indices (same eq parent), parent the analyze node to all of them. |
-| `fep_sampling_failed` | Read `artifacts/failure/latest`; extend from completed windows with a new `fep` node. |
+| `fep_sampling_failed` | Read `artifacts/failure/latest`; recover the finished windows with a new `fep` node under the eq parent and `--restart-windows-file` (`skills/md-fep/windows.md`). |
+| `fep_windows_incompatible`, `fep_parent_ambiguous`, `fep_lambda_index_invalid` on extension | One fep parent per child, same `--pressure-bar`, only the parent's windows. |
+| `invalid_parameter_value` | The node is still pending: fix the argument and run the same node again. |
 | low `neighbour_overlap` warning | Densify lambdas there (`skills/md-fep/convergence.md`). |
 
 ## Handoff

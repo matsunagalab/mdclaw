@@ -22,6 +22,7 @@ condition field. Supported values:
 | `segment` | Analyze the parent Production Segment only. |
 | `production_chain` | Analyze the full Production Chain ending at the parent leaf. |
 | `comparison` | Compare exactly two parent `analyze` nodes. |
+| `alchemical` | MBAR over the lambda windows of the parent `fep` nodes (`analyze_fep`); required when every parent is a `fep` node, rejected otherwise. |
 
 A single production parent can mean either the parent Production Segment or the
 full Production Chain ending at that leaf, depending on the declared scope. A
@@ -40,8 +41,8 @@ internal name is kept for existing tools even when the data scope is
   cross-branch subject namespace or correspondence.
 - For `analysis_data_scope="comparison"`, `analysis_subjects` and
   `comparison_mapping` are **required**.
-- For `segment` and `production_chain`, `analysis_subjects` is optional unless a
-  metric-specific tool requires a subject.
+- For `segment`, `production_chain` and `alchemical`, `analysis_subjects` is
+  optional unless a metric-specific tool requires a subject.
 - Subject entries only require a unique `label` at this layer. Descriptor fields
   such as `chain_id`, `selection`, `residue_range`, or `resname` remain
   metric-specific.

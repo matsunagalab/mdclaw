@@ -80,7 +80,12 @@ NODE_STATUS_ALIASES = {
 }
 
 
-ANALYSIS_DATA_SCOPES = frozenset({"segment", "production_chain", "comparison"})
+# ``alchemical``: the parents are ``fep`` window nodes and the analysis is
+# MBAR over their reduced potentials (analyze_fep); there is no production
+# chain to walk.
+ANALYSIS_DATA_SCOPES = frozenset({"segment", "production_chain", "comparison", "alchemical"})
+# Human-readable stage chain for --workflow: prod and fep are alternatives.
+STAGE_CHAIN_TEXT = "source > prep > solv > topo > min > eq > {prod | fep} > analyze"
 
 
 COMPARISON_MAPPING_TYPES = frozenset({"residue_number", "atom_selection"})

@@ -140,10 +140,11 @@ Production continuations are represented as new Production Nodes in the same
 Production Chain. The timeline metadata continues from the selected ancestor,
 but each Production Segment writes its own node-owned artifacts.
 
-Analysis nodes declare an Analysis Data Scope (`segment`, `production_chain`, or
-`comparison`) so a single production parent can mean the parent Production
-Segment or the full Production Chain, and a comparison node consumes exactly two
-analyze parents. The field-level condition contract — allowed values,
+Analysis nodes declare an Analysis Data Scope (`segment`, `production_chain`,
+`comparison`, or `alchemical`) so a single production parent can mean the parent
+Production Segment or the full Production Chain, a comparison node consumes
+exactly two analyze parents, and an alchemical node (parents all `fep`) runs
+MBAR over lambda windows where no production chain exists. The field-level condition contract — allowed values,
 `analysis_subjects` / `comparison_mapping` ownership, the `residue_number` and
 `atom_selection` mapping formats, and the pre-execution validation rules — lives
 in [Analysis Node Condition Contract](analysis-node-contract.md). The rationale

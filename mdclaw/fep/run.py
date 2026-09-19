@@ -10,15 +10,26 @@ subset via ``--lambda-indices`` and share the same ``eq`` parent.
 
 Per-window artifacts (``artifacts/window_XX/``): ``state.xml`` (restart),
 ``energies.npz`` (``u_kn`` in kT, times, potential, volume), ``window.json``.
-The node artifact ``fep_windows.json`` indexes them and, for ``fep -> fep``
-extension, chains the parent node's segments so analysis sees the full
-sample set without copying files.
+The node artifact ``fep_windows.json`` indexes them; it is rewritten after
+every window so a node killed half-way still leaves a usable partial index
+(``"complete": false``). For ``fep -> fep`` extension the parent node's
+segments are chained into the child's index, so analysis sees the full
+sample set without copying files. All paths inside the index are relative to
+the index file's own directory: the job directory can be moved or analysed
+from another host.
+
+Starting a window from the equilibrated lambda=0 state: the appearing atoms
+were non-interacting ghosts during ``eq``, so solvent may sit on top of them.
+Each window therefore minimises briefly *at its own lambda* before the
+discarded equilibration segment, which removes those overlaps before the
+integrator sees them (windows continued from a parent fep node skip this).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -31,31 +42,83 @@ from mdclaw.fep.hybrid import FEP_PARAMETERS
 from mdclaw.fep.protocol import ProtocolError, load_protocol, parse_lambda_indices
 from mdclaw.simulation._base import (
     WORKING_DIR,
-    _fail_node_if_running,
     _resolve_topology_run_settings,
+    resolve_platform_name,
 )
 
 logger = logging.getLogger(__name__)
 
-WINDOWS_SCHEMA_VERSION = 1
+WINDOWS_SCHEMA_VERSION = 2
 # kJ/mol per (bar * nm^3): 1e5 Pa * 1e-27 m^3 * N_A / 1000
 _BAR_NM3_TO_KJ_MOL = 0.0602214076
 _KB_KJ_MOL_K = 0.008314462618
+START_MINIMISATION_ITERATIONS = 200
 
+
+class FepRunError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+# --------------------------------------------------------------------------- #
+# Index paths (relative to the index file's directory)                          #
+# --------------------------------------------------------------------------- #
 
 def _window_dirname(index: int) -> str:
     return f"window_{index:02d}"
 
 
-def _load_parent_windows(path: Optional[str]) -> dict:
-    if not path:
-        return {}
+def rel_to(path: str | Path, base: Path) -> str:
+    return os.path.relpath(Path(path).resolve(), Path(base).resolve())
+
+
+def resolve_index_path(rel: Optional[str], index_file: str | Path) -> Optional[Path]:
+    """Absolute path of an entry recorded in a ``fep_windows.json``.
+
+    Entries are relative to the index file's directory; absolute entries
+    (schema 1) pass through unchanged.
+    """
+    if not rel:
+        return None
+    p = Path(rel)
+    return p if p.is_absolute() else (Path(index_file).resolve().parent / p).resolve()
+
+
+def load_windows_index(path: str | Path) -> dict:
+    """Read a ``fep_windows.json`` and resolve its paths to absolute ones.
+
+    Returns the payload with ``windows`` as ``{int index: record}`` where
+    ``state_file`` / ``energies_file`` / ``trajectory_file`` and each
+    segment's ``energies_file`` are absolute. Raises ``FepRunError``
+    (``fep_windows_missing``) when the file cannot be read.
+    """
     try:
         data = json.loads(Path(path).read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return {int(k): v for k, v in (data.get("windows") or {}).items()}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise FepRunError(code="fep_windows_missing", message=f"cannot read {path}: {exc}") from exc
+    for key in ("fep_protocol_file", "system_xml_file", "topology_pdb_file"):
+        if data.get(key):
+            data[key] = str(resolve_index_path(data[key], path))
+    windows: dict[int, dict] = {}
+    for k, record in (data.get("windows") or {}).items():
+        record = dict(record)
+        for key in ("state_file", "energies_file", "trajectory_file"):
+            if record.get(key):
+                record[key] = str(resolve_index_path(record[key], path))
+        record["segments"] = [
+            {**seg, "energies_file": str(resolve_index_path(seg.get("energies_file"), path))}
+            for seg in record.get("segments") or []
+        ]
+        windows[int(k)] = record
+    data["windows"] = windows
+    data["index_file"] = str(Path(path).resolve())
+    return data
 
+
+# --------------------------------------------------------------------------- #
+# One window                                                                    #
+# --------------------------------------------------------------------------- #
 
 def _evaluate_all_windows(context, protocol_windows: list[dict], current: dict[str, float]) -> np.ndarray:
     """Potential energy (kJ/mol) of the current configuration at every window."""
@@ -80,6 +143,7 @@ def sample_window(
     system_factory,
     out_dir: Path,
     restart_state: Optional[Path],
+    minimise_start: bool,
     temperature_kelvin: float,
     pressure_bar: Optional[float],
     timestep_fs: float,
@@ -88,118 +152,150 @@ def sample_window(
     sample_interval_ps: float,
     trajectory_interval_ps: float,
     platform_name: Optional[str],
-    device_index: Optional[str],
+    platform_properties: dict,
     random_seed: Optional[int],
 ) -> dict:
-    """Run one window and write its artifacts; returns the window record."""
+    """Run one window and write its artifacts; returns the window record
+    (paths absolute — the caller relativises them for the index).
+
+    A NaN during dynamics is retried once per halving of the timestep down
+    to 1 fs (:func:`mdclaw.simulation.nan_retry.run_with_halved_timestep`).
+    """
     import openmm
     from openmm import unit
     from openmm.app import DCDReporter
 
     from mdclaw._common import new_simulation
+    from mdclaw.simulation.nan_retry import run_with_halved_timestep
     from mdclaw.simulation.restart import _load_state_into_simulation, _save_state_atomic
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    system = system_factory()
     is_periodic = bool(xml_inputs.is_periodic)
-    ensemble = "NVT"
-    if pressure_bar is not None and pressure_bar > 0 and is_periodic:
-        system.addForce(openmm.MonteCarloBarostat(pressure_bar * unit.bar, temperature_kelvin * unit.kelvin, 25))
-        ensemble = "NPT"
-    integrator = openmm.LangevinMiddleIntegrator(
-        temperature_kelvin * unit.kelvin, 1.0 / unit.picosecond, timestep_fs * unit.femtoseconds)
-    if random_seed is not None:
-        integrator.setRandomNumberSeed(int(random_seed) + int(window["index"]) + 1)
-    kwargs: dict[str, Any] = {}
-    if platform_name:
-        kwargs["platform"] = openmm.Platform.getPlatformByName(platform_name)
-        if device_index and platform_name in ("CUDA", "OpenCL"):
-            kwargs["platformProperties"] = {"DeviceIndex": str(device_index)}
-    simulation = new_simulation(xml_inputs.topology, system, integrator, **kwargs)
-    platform_used = simulation.context.getPlatform().getName()
-
-    if restart_state is not None:
-        _load_state_into_simulation(
-            simulation, restart_state, is_periodic=is_periodic,
-            temperature_kelvin=temperature_kelvin, random_seed=random_seed)
-    else:
-        simulation.context.setPositions(xml_inputs.positions)
-        if is_periodic and xml_inputs.box_vectors is not None:
-            simulation.context.setPeriodicBoxVectors(*xml_inputs.box_vectors)
-        simulation.context.setVelocitiesToTemperature(temperature_kelvin * unit.kelvin)
+    ensemble = "NPT" if (pressure_bar is not None and pressure_bar > 0 and is_periodic) else "NVT"
     params = dict(window["parameters"])
-    for name, value in params.items():
-        simulation.context.setParameter(name, value)
-
-    steps_per_ps = 1000.0 / timestep_fs
-    eq_steps = int(round(equilibration_time_ns * 1000.0 * steps_per_ps))
-    interval_steps = max(1, int(round(sample_interval_ps * steps_per_ps)))
+    kT = _KB_KJ_MOL_K * temperature_kelvin
+    pv_factor = (pressure_bar * _BAR_NM3_TO_KJ_MOL) if ensemble == "NPT" else 0.0
     n_samples = int(round(sampling_time_ns * 1000.0 / sample_interval_ps))
     if n_samples < 1:
-        raise ValueError("sampling_time_ns / sample_interval_ps gives no samples")
+        raise FepRunError(code="invalid_parameter_value",
+                          message="sampling_time_ns / sample_interval_ps gives no samples")
+    outcome: dict[str, Any] = {}
 
-    t0 = time.time()
-    if eq_steps > 0:
-        simulation.step(eq_steps)
-    if trajectory_interval_ps and trajectory_interval_ps > 0:
-        traj_steps = max(1, int(round(trajectory_interval_ps * steps_per_ps)))
-        simulation.reporters.append(DCDReporter(str(out_dir / "trajectory.dcd"), traj_steps))
+    def _run(ts_fs: float) -> None:
+        system = system_factory()
+        if ensemble == "NPT":
+            system.addForce(openmm.MonteCarloBarostat(pressure_bar * unit.bar, temperature_kelvin * unit.kelvin, 25))
+        integrator = openmm.LangevinMiddleIntegrator(
+            temperature_kelvin * unit.kelvin, 1.0 / unit.picosecond, ts_fs * unit.femtoseconds)
+        if random_seed is not None:
+            integrator.setRandomNumberSeed(int(random_seed) + int(window["index"]) + 1)
+        kwargs: dict[str, Any] = {}
+        if platform_name:
+            kwargs["platform"] = openmm.Platform.getPlatformByName(platform_name)
+            if platform_properties:
+                kwargs["platformProperties"] = dict(platform_properties)
+        simulation = new_simulation(xml_inputs.topology, system, integrator, **kwargs)
+        platform_used = simulation.context.getPlatform().getName()
 
-    kT = _KB_KJ_MOL_K * temperature_kelvin
-    u_kn = np.empty((len(protocol_windows), n_samples), dtype=float)
-    potential = np.empty(n_samples, dtype=float)
-    volume = np.empty(n_samples, dtype=float)
-    times_ps = np.empty(n_samples, dtype=float)
-    pv_factor = (pressure_bar * _BAR_NM3_TO_KJ_MOL) if ensemble == "NPT" else 0.0
-    for n in range(n_samples):
-        simulation.step(interval_steps)
-        energies = _evaluate_all_windows(simulation.context, protocol_windows, params)
-        if not np.all(np.isfinite(energies)):
-            raise RuntimeError(f"non-finite energy at window {window['index']} sample {n}")
-        state = simulation.context.getState()
-        box = state.getPeriodicBoxVectors(asNumpy=True).value_in_unit(unit.nanometer)
-        vol = float(abs(np.linalg.det(box))) if is_periodic else 0.0
-        u_kn[:, n] = (energies + pv_factor * vol) / kT
-        potential[n] = energies[window["index"]]
-        volume[n] = vol
-        times_ps[n] = (eq_steps + (n + 1) * interval_steps) / steps_per_ps
-    for reporter in simulation.reporters:
-        try:
-            reporter._out.close()  # noqa: SLF001 - DCDReporter has no public close
-        except Exception:  # noqa: BLE001
-            pass
-    simulation.reporters.clear()
-    wall = time.time() - t0
+        if restart_state is not None:
+            _load_state_into_simulation(
+                simulation, restart_state, is_periodic=is_periodic,
+                temperature_kelvin=temperature_kelvin, random_seed=random_seed)
+        else:
+            simulation.context.setPositions(xml_inputs.positions)
+            if is_periodic and xml_inputs.box_vectors is not None:
+                simulation.context.setPeriodicBoxVectors(*xml_inputs.box_vectors)
+            simulation.context.setVelocitiesToTemperature(temperature_kelvin * unit.kelvin)
+        for name, value in params.items():
+            simulation.context.setParameter(name, value)
 
-    state_file = out_dir / "state.xml"
-    _save_state_atomic(simulation, state_file)
-    energies_file = out_dir / "energies.npz"
-    np.savez_compressed(energies_file, u_kn=u_kn, time_ps=times_ps, potential_kj_mol=potential,
-                        volume_nm3=volume, lambda_index=int(window["index"]))
-    record = {
-        "index": int(window["index"]),
-        "lambda": window.get("lambda"),
-        "parameters": params,
-        "ensemble": ensemble,
-        "platform": platform_used,
-        "restarted_from": str(restart_state) if restart_state else None,
-        "equilibration_time_ns": float(equilibration_time_ns),
-        "sampling_time_ns": float(n_samples * sample_interval_ps / 1000.0),
-        "sample_interval_ps": float(sample_interval_ps),
-        "n_samples": int(n_samples),
-        "steps": int(eq_steps + n_samples * interval_steps),
-        "wall_time_s": round(wall, 1),
-        "ns_per_day": round((eq_steps + n_samples * interval_steps) / steps_per_ps / 1000.0 / wall * 86400.0, 2)
-        if wall > 0 else None,
-        "mean_potential_kj_mol": float(potential.mean()),
-        "mean_volume_nm3": float(volume.mean()) if is_periodic else None,
-        "state_file": str(state_file),
-        "energies_file": str(energies_file),
-        "trajectory_file": str(out_dir / "trajectory.dcd") if trajectory_interval_ps else None,
-    }
-    (out_dir / "window.json").write_text(json.dumps(record, indent=2))
-    del simulation, integrator, system
-    return record
+        start_min = None
+        if minimise_start:
+            e0 = simulation.context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+            openmm.LocalEnergyMinimizer.minimize(simulation.context, maxIterations=START_MINIMISATION_ITERATIONS)
+            e1 = simulation.context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+            simulation.context.setVelocitiesToTemperature(temperature_kelvin * unit.kelvin)
+            start_min = {"iterations": START_MINIMISATION_ITERATIONS, "before_kj_mol": float(e0), "after_kj_mol": float(e1)}
+
+        steps_per_ps = 1000.0 / ts_fs
+        eq_steps = int(round(equilibration_time_ns * 1000.0 * steps_per_ps))
+        interval_steps = max(1, int(round(sample_interval_ps * steps_per_ps)))
+        t0 = time.time()
+        if eq_steps > 0:
+            simulation.step(eq_steps)
+        if trajectory_interval_ps and trajectory_interval_ps > 0:
+            traj_steps = max(1, int(round(trajectory_interval_ps * steps_per_ps)))
+            simulation.reporters.append(DCDReporter(str(out_dir / "trajectory.dcd"), traj_steps))
+
+        u_kn = np.empty((len(protocol_windows), n_samples), dtype=float)
+        potential = np.empty(n_samples, dtype=float)
+        volume = np.empty(n_samples, dtype=float)
+        times_ps = np.empty(n_samples, dtype=float)
+        for n in range(n_samples):
+            simulation.step(interval_steps)
+            energies = _evaluate_all_windows(simulation.context, protocol_windows, params)
+            if not np.all(np.isfinite(energies)):
+                raise RuntimeError(f"non-finite energy (NaN) at window {window['index']} sample {n}")
+            box = simulation.context.getState().getPeriodicBoxVectors(asNumpy=True).value_in_unit(unit.nanometer)
+            vol = float(abs(np.linalg.det(box))) if is_periodic else 0.0
+            u_kn[:, n] = (energies + pv_factor * vol) / kT
+            potential[n] = energies[window["index"]]
+            volume[n] = vol
+            times_ps[n] = (eq_steps + (n + 1) * interval_steps) / steps_per_ps
+        simulation.reporters.clear()  # DCDReporter closes its file on garbage collection
+        wall = time.time() - t0
+
+        state_file = out_dir / "state.xml"
+        _save_state_atomic(simulation, state_file)
+        energies_file = out_dir / "energies.npz"
+        np.savez_compressed(energies_file, u_kn=u_kn, time_ps=times_ps, potential_kj_mol=potential,
+                            volume_nm3=volume, lambda_index=int(window["index"]))
+        total_steps = eq_steps + n_samples * interval_steps
+        outcome.update({
+            "index": int(window["index"]),
+            "lambda": window.get("lambda"),
+            "parameters": params,
+            "ensemble": ensemble,
+            "platform": platform_used,
+            "restarted_from": str(restart_state) if restart_state else None,
+            "start_minimisation": start_min,
+            "timestep_fs": float(ts_fs),
+            "equilibration_time_ns": float(equilibration_time_ns),
+            "sampling_time_ns": float(n_samples * sample_interval_ps / 1000.0),
+            "sample_interval_ps": float(sample_interval_ps),
+            "n_samples": int(n_samples),
+            "steps": int(total_steps),
+            "wall_time_s": round(wall, 1),
+            "ns_per_day": round(total_steps / steps_per_ps / 1000.0 / wall * 86400.0, 2) if wall > 0 else None,
+            "mean_potential_kj_mol": float(potential.mean()),
+            "mean_volume_nm3": float(volume.mean()) if is_periodic else None,
+            "state_file": str(state_file),
+            "energies_file": str(energies_file),
+            "trajectory_file": str(out_dir / "trajectory.dcd") if trajectory_interval_ps else None,
+        })
+        del simulation, integrator, system
+
+    retry = run_with_halved_timestep(f"fep window {window['index']}", timestep_fs, _run, log=logger)
+    outcome["nan_retry"] = {"retried": retry["retried"], "attempts": retry["attempts"]} if retry["retried"] else None
+    (out_dir / "window.json").write_text(json.dumps(outcome, indent=2))
+    return outcome
+
+
+# --------------------------------------------------------------------------- #
+# Tool                                                                          #
+# --------------------------------------------------------------------------- #
+
+def _write_index(index_file: Path, payload: dict, windows: dict[int, dict], *, complete: bool) -> None:
+    base = index_file.parent
+    rel_windows = {}
+    for i, record in sorted(windows.items()):
+        rec = dict(record)
+        for key in ("state_file", "energies_file", "trajectory_file"):
+            if rec.get(key):
+                rec[key] = rel_to(rec[key], base)
+        rec["segments"] = [{**seg, "energies_file": rel_to(seg["energies_file"], base)} for seg in rec["segments"]]
+        rel_windows[str(i)] = rec
+    index_file.write_text(json.dumps({**payload, "complete": complete, "windows": rel_windows}, indent=2))
 
 
 @node_tool(node_type="fep")
@@ -221,6 +317,7 @@ def run_fep(
     state_xml_file: Optional[str] = None,
     fep_protocol_file: Optional[str] = None,
     restart_from: Optional[str] = None,
+    restart_windows_file: Optional[str] = None,
     output_dir: Optional[str] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
@@ -231,18 +328,24 @@ def run_fep(
     hybrid XML triple, ``fep_protocol.json`` and the equilibrated restart
     state from the DAG. With a ``fep`` parent the same windows continue from
     that node's per-window states and the new samples are chained to the
-    parent's (extension); pass ``--lambda-indices`` to sample a subset.
+    parent's (extension); pass ``--lambda-indices`` for a subset of *those*
+    windows. To recover the windows of a failed / killed fep node, create a
+    new fep node under the same ``eq`` parent and pass its partial index as
+    ``--restart-windows-file``: windows it contains are continued, the
+    others start from the eq state.
 
     Args:
         lambda_indices: Windows to run: ``"all"`` (default; or the parent
             fep node's set when extending), ``"0-6"``, ``"0,3,7"``.
         sampling_time_ns: Production sampling per window (after
-            ``equilibration_time_ns`` of discarded relaxation at that lambda).
-        sample_interval_ps: Interval between reduced-potential evaluations;
-            every sample evaluates the energy at all windows.
+            ``equilibration_time_ns`` of discarded relaxation at that lambda;
+            use ``--equilibration-time-ns 0`` when extending).
+        sample_interval_ps: Interval between reduced-potential evaluations.
+            Every sample costs one energy evaluation per protocol window
+            (21 by default), so 1 ps at 4 fs is ~8 % overhead; halving the
+            interval doubles that.
         temperature_kelvin / pressure_bar: Ensemble. ``pressure_bar`` omitted
-            inherits the eq node's NPT pressure (1 bar default for periodic
-            systems); ``0`` forces NVT.
+            follows the eq node (NPT pressure, or NVT); ``0`` forces NVT.
         timestep_fs / hmr: Inherited from the topology (4 fs with HMR).
         trajectory_interval_ps: ``> 0`` writes ``trajectory.dcd`` per window
             (off by default; ddG needs only energies).
@@ -250,39 +353,51 @@ def run_fep(
         system_xml_file / topology_pdb_file / state_xml_file /
             fep_protocol_file / restart_from: explicit inputs outside node
             mode.
+        restart_windows_file: ``fep_windows.json`` (complete or partial) whose
+            windows are continued instead of starting from ``restart_from``.
 
     Returns:
         Dict with ``fep_windows`` (index file), per-window ``windows``
         records, ``lambda_indices``, timing, and ``code`` on failure
         (``fep_hybrid_topology_required``, ``fep_lambda_index_invalid``,
-        ``fep_protocol_invalid``, ``fep_sampling_failed``).
+        ``fep_protocol_invalid``, ``fep_windows_missing``,
+        ``invalid_parameter_value``, ``fep_sampling_failed``).
     """
-    result: dict = {
-        "success": False,
-        "tool": "run_fep",
-        "errors": [],
-        "warnings": [],
-        "windows": [],
-    }
-    _node_mode = bool(job_dir and node_id)
-    parent_windows: dict[int, dict] = {}
-    eq_final_ensemble = None
-    eq_pressure_bar = None
-    topology_hmr = None
-    if _node_mode:
-        from mdclaw._node import resolve_node_inputs, validate_node_execution_context
+    from mdclaw._node import fail_tool
+
+    result: dict = {"success": False, "tool": "run_fep", "errors": [], "warnings": [], "windows": []}
+    node_mode = bool(job_dir and node_id)
+
+    def _fail(code: str, message: str, **extra) -> dict:
+        return fail_tool(result, code, message, job_dir=job_dir, node_id=node_id, extra=extra or None)
+
+    # --- argument checks that must not spend the node ---------------------
+    for name, value, lo in (("sampling_time_ns", sampling_time_ns, 0.0), ("sample_interval_ps", sample_interval_ps, 0.0),
+                            ("equilibration_time_ns", equilibration_time_ns, -1e-12), ("temperature_kelvin", temperature_kelvin, 0.0)):
+        if not isinstance(value, (int, float)) or value <= lo:
+            return _fail(code="invalid_parameter_value", message=f"{name} must be > {max(lo, 0.0):g}, got {value!r}")
+    if int(round(sampling_time_ns * 1000.0 / sample_interval_ps)) < 1:
+        return _fail(code="invalid_parameter_value", message=
+                     f"sampling_time_ns={sampling_time_ns} at sample_interval_ps={sample_interval_ps} gives no samples")
+    try:
+        platform_name, platform_properties = resolve_platform_name(platform, device_index)
+    except ValueError as exc:
+        return _fail(code="invalid_parameter_value", message=str(exc))
+
+    # --- DAG resolution ---------------------------------------------------
+    eq_final_ensemble = eq_pressure_bar = topology_hmr = None
+    if node_mode:
+        from mdclaw._node import begin_node, fail_node, resolve_node_inputs, validate_node_execution_context
 
         inputs = resolve_node_inputs(job_dir, node_id, "fep")
         if "input_resolution_error" in inputs:
             err = inputs["input_resolution_error"]
-            code = "fep_hybrid_topology_required" if "fep_hybrid_topology_required" in err else "input_resolution_blocked"
-            from mdclaw._node import begin_node, fail_node
-
+            code = inputs.get("input_resolution_code") or "input_resolution_blocked"
             begin_node(job_dir, node_id)
-            fail_node(job_dir, node_id, errors=[err])
+            fail_node(job_dir, node_id, errors=[err], code=code)
             return create_validation_error(
                 "job_dir/node_id", err,
-                expected="fep node under an eq (or fep) node whose topo was built by build_hybrid_system",
+                expected="fep node under an eq (or one fep) node whose topo was built by build_hybrid_system",
                 actual=f"job_dir={job_dir}, node_id={node_id}",
                 context_extra={"input_resolution_errors": inputs.get("input_resolution_errors", [])},
                 code=code,
@@ -292,39 +407,93 @@ def run_fep(
         state_xml_file = state_xml_file or inputs.get("state_xml_file")
         fep_protocol_file = fep_protocol_file or inputs.get("fep_protocol_file")
         restart_from = restart_from or inputs.get("restart_from")
-        parent_windows = _load_parent_windows(inputs.get("fep_parent_windows_file"))
+        restart_windows_file = restart_windows_file or inputs.get("fep_parent_windows_file")
         eq_final_ensemble = inputs.get("eq_final_ensemble")
         eq_pressure_bar = inputs.get("eq_pressure_bar")
         topology_hmr = inputs.get("topology_hmr")
     hmr, _implicit, timestep_fs = _resolve_topology_run_settings(
         hmr=hmr, implicit_solvent=None, topology_hmr=topology_hmr, timestep_fs=timestep_fs)
-
     if not (system_xml_file and topology_pdb_file and fep_protocol_file):
-        return _fail_node_if_running(job_dir, node_id, {
-            **result, **create_validation_error(
-                "system_xml_file/topology_pdb_file/fep_protocol_file",
-                "the hybrid XML triple and fep_protocol.json are required",
-                expected="node mode under build_hybrid_system, or explicit paths",
-                code="fep_hybrid_topology_required"),
-        })
+        return _fail(code="fep_hybrid_topology_required", message=
+                     "the hybrid XML triple and fep_protocol.json are required "
+                     "(node mode under build_hybrid_system, or explicit paths)")
+
+    # --- protocol, parent windows, window selection -----------------------
+    parent_windows: dict[int, dict] = {}
+    parent_index_meta: dict = {}
     try:
         protocol = load_protocol(fep_protocol_file)
         protocol_windows = protocol["windows"]
-        if lambda_indices is None and parent_windows:
+        if restart_windows_file:
+            parent_index_meta = load_windows_index(restart_windows_file)
+            parent_windows = parent_index_meta["windows"]
+            if parent_index_meta.get("n_protocol_windows") not in (None, len(protocol_windows)):
+                raise FepRunError(code="fep_windows_incompatible",
+                                  message=f"{restart_windows_file} was sampled with {parent_index_meta.get('n_protocol_windows')} "
+                                  f"protocol windows, this topology has {len(protocol_windows)}")
+            for i, rec in parent_windows.items():
+                if not (rec.get("state_file") and Path(rec["state_file"]).is_file()):
+                    raise FepRunError(code="fep_windows_missing",
+                                      message=f"window {i} of {restart_windows_file} has no restart state.xml; "
+                                      "it cannot be extended")
+        extending = bool(node_mode and inputs.get("fep_parent_windows_file"))
+        if lambda_indices in (None, "", "all") and extending:
+            # fep -> fep extension: the parent's set, unless the user narrows it.
             indices = sorted(parent_windows)
         else:
             indices = parse_lambda_indices(lambda_indices, len(protocol_windows))
-    except ProtocolError as exc:
-        return _fail_node_if_running(job_dir, node_id, {
-            **result, **create_validation_error("lambda_indices", str(exc), code=exc.code)})
+        if extending:
+            outside = [i for i in indices if i not in parent_windows]
+            if outside:
+                raise FepRunError(code="fep_lambda_index_invalid",
+                                  message=f"windows {outside} are not in the parent fep node "
+                                  f"({sorted(parent_windows)}); a fep -> fep child extends its parent's windows only. "
+                                  "Sample new windows in a sibling node under the eq parent.")
+    except (ProtocolError, FepRunError) as exc:
+        return _fail(exc.code, str(exc))
 
+    # --- hybrid System ----------------------------------------------------
+    from mdclaw.simulation.xml_contract import _deserialize_xml_system, _load_xml_topology_inputs
+
+    try:
+        xml_text = Path(system_xml_file).read_text()
+        missing = [p for p in FEP_PARAMETERS if f'name="{p}"' not in xml_text]
+        if missing:
+            raise FepRunError(code="fep_hybrid_topology_required",
+                              message=f"system.xml is not a hybrid topology (missing global parameters {missing})")
+        del xml_text
+        xml_inputs = _load_xml_topology_inputs(
+            system_xml_file=system_xml_file, topology_pdb_file=topology_pdb_file, state_xml_file=state_xml_file)
+    except FepRunError as exc:
+        return _fail(exc.code, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return _fail(code="fep_hybrid_topology_required", message=f"could not load the hybrid XML triple: {type(exc).__name__}: {exc}")
+
+    # --- ensemble -------------------------------------------------------
     if pressure_bar is None:
-        pressure_bar = float(eq_pressure_bar) if (eq_final_ensemble == "NPT" and eq_pressure_bar) else 1.0
+        if eq_final_ensemble == "NPT":
+            pressure_bar = float(eq_pressure_bar) if eq_pressure_bar else 1.0
+        elif eq_final_ensemble == "NVT":
+            pressure_bar = None
+        elif parent_index_meta.get("pressure_bar") is not None or parent_index_meta.get("ensemble"):
+            pressure_bar = parent_index_meta.get("pressure_bar")
+        else:
+            pressure_bar = 1.0
+            result["warnings"].append("eq ensemble unknown; sampling NPT at 1 bar (pass --pressure-bar 0 for NVT).")
     if pressure_bar is not None and pressure_bar <= 0:
         pressure_bar = None
+    if pressure_bar is not None and not xml_inputs.is_periodic:
+        pressure_bar = None  # vacuum: no box to couple a barostat to
+    if parent_index_meta and (parent_index_meta.get("pressure_bar") or None) != pressure_bar:
+        return _fail(code="fep_windows_incompatible", message=
+                     f"the parent windows were sampled at pressure_bar={parent_index_meta.get('pressure_bar')} "
+                     f"({parent_index_meta.get('ensemble')}), this node would use {pressure_bar}; "
+                     "MBAR cannot pool different ensembles — match --pressure-bar")
+    ensemble = "NPT" if pressure_bar else "NVT"
 
-    if _node_mode:
-        from mdclaw._node import begin_node, fail_node_from_result
+    # --- node context -----------------------------------------------------
+    if node_mode:
+        from mdclaw._node import fail_node_from_result
 
         ctx = validate_node_execution_context(
             job_dir, node_id, "fep",
@@ -355,117 +524,89 @@ def run_fep(
     else:
         from mdclaw._common import create_unique_subdir
 
-        out_dir = create_unique_subdir(Path(output_dir) if output_dir else WORKING_DIR, "fep")
+        out_dir = create_unique_subdir(Path(output_dir) if output_dir else WORKING_DIR, "fep").resolve()
     result["output_dir"] = str(out_dir)
-
-    from mdclaw.simulation.xml_contract import _deserialize_xml_system, _load_xml_topology_inputs
-
-    try:
-        xml_inputs = _load_xml_topology_inputs(
-            system_xml_file=system_xml_file, topology_pdb_file=topology_pdb_file, state_xml_file=state_xml_file)
-        probe = _deserialize_xml_system(xml_inputs)
-    except Exception as exc:  # noqa: BLE001
-        result["errors"].append(f"could not load the hybrid XML triple: {type(exc).__name__}: {exc}")
-        result["code"] = "fep_hybrid_topology_required"
-        return _fail_node_if_running(job_dir, node_id, result)
-    globals_present = set()
-    for force in probe.getForces():
-        if hasattr(force, "getNumGlobalParameters"):
-            globals_present.update(force.getGlobalParameterName(i) for i in range(force.getNumGlobalParameters()))
-    missing = [p for p in FEP_PARAMETERS if p not in globals_present]
-    if missing:
-        result["errors"].append(f"system.xml is not a hybrid topology (missing global parameters {missing})")
-        result["code"] = "fep_hybrid_topology_required"
-        return _fail_node_if_running(job_dir, node_id, result)
-    del probe
-
-    platform_name = None
-    if platform and platform.lower() != "auto":
-        names = {"cuda": "CUDA", "opencl": "OpenCL", "cpu": "CPU", "reference": "Reference"}
-        platform_name = names.get(platform.lower())
-        if platform_name is None:
-            result["errors"].append(f"Unknown platform '{platform}' (auto, CUDA, OpenCL, CPU, Reference)")
-            result["code"] = "invalid_parameter_value"
-            return _fail_node_if_running(job_dir, node_id, result)
-
-    def _system_factory():
-        return _deserialize_xml_system(xml_inputs)
 
     eq_restart = Path(restart_from) if restart_from else None
     if eq_restart is not None and not eq_restart.is_file():
-        result["errors"].append(f"restart state not found: {eq_restart}")
-        result["code"] = "file_not_found"
-        return _fail_node_if_running(job_dir, node_id, result)
+        return _fail(code="file_not_found", message=f"restart state not found: {eq_restart}")
     if eq_restart is None and not parent_windows:
         result["warnings"].append(
             "No equilibrated restart state: windows start from the topology state.xml with fresh velocities.")
 
-    windows_index: dict[str, dict] = {}
+    # --- sample ---------------------------------------------------------
+    index_file = out_dir / "fep_windows.json"
+    index_payload = {
+        "schema_version": WINDOWS_SCHEMA_VERSION,
+        "node_id": node_id,
+        "fep_protocol_file": rel_to(fep_protocol_file, out_dir),
+        "system_xml_file": rel_to(xml_inputs.system_xml_path, out_dir),
+        "topology_pdb_file": rel_to(xml_inputs.topology_pdb_path, out_dir),
+        "n_protocol_windows": len(protocol_windows),
+        "lambda_indices": indices,
+        "temperature_kelvin": float(temperature_kelvin),
+        "pressure_bar": pressure_bar,
+        "ensemble": ensemble,
+        "timestep_fs": float(timestep_fs),
+        "hmr": bool(hmr),
+        "extended_from": parent_index_meta.get("index_file"),
+    }
+    windows_index: dict[int, dict] = {}
     t_start = time.time()
     for i in indices:
         window = protocol_windows[i]
         parent = parent_windows.get(i)
-        restart_state = Path(parent["state_file"]) if parent and parent.get("state_file") else eq_restart
-        if parent and not (parent.get("state_file") and Path(parent["state_file"]).is_file()):
-            result["warnings"].append(f"window {i}: parent fep state missing; restarting from the eq state")
-            restart_state = eq_restart
-        logger.info("run_fep: window %d/%d (lambda=%s)", i, len(protocol_windows), window.get("lambda"))
+        restart_state = Path(parent["state_file"]) if parent else eq_restart
+        logger.info("run_fep: window %d/%d (lambda=%s)%s", i, len(protocol_windows), window.get("lambda"),
+                    " continuing" if parent else "")
         try:
             record = sample_window(
                 window=window, protocol_windows=protocol_windows, xml_inputs=xml_inputs,
-                system_factory=_system_factory, out_dir=out_dir / _window_dirname(i),
-                restart_state=restart_state, temperature_kelvin=temperature_kelvin,
-                pressure_bar=pressure_bar, timestep_fs=timestep_fs,
+                system_factory=lambda: _deserialize_xml_system(xml_inputs), out_dir=out_dir / _window_dirname(i),
+                restart_state=restart_state, minimise_start=parent is None,
+                temperature_kelvin=temperature_kelvin, pressure_bar=pressure_bar, timestep_fs=timestep_fs,
                 equilibration_time_ns=equilibration_time_ns, sampling_time_ns=sampling_time_ns,
                 sample_interval_ps=sample_interval_ps, trajectory_interval_ps=trajectory_interval_ps,
-                platform_name=platform_name, device_index=device_index, random_seed=random_seed,
+                platform_name=platform_name, platform_properties=platform_properties, random_seed=random_seed,
             )
         except Exception as exc:  # noqa: BLE001
-            result["errors"].append(f"window {i} failed: {type(exc).__name__}: {exc}")
-            result["code"] = "fep_sampling_failed"
-            result["completed_windows"] = sorted(int(k) for k in windows_index)
-            return _fail_node_if_running(job_dir, node_id, result)
+            code = exc.code if isinstance(exc, FepRunError) else "fep_sampling_failed"
+            return _fail(code, f"window {i} failed: {type(exc).__name__}: {exc}",
+                         completed_windows=sorted(windows_index),
+                         fep_windows=str(index_file) if windows_index else None)
         segments = list(parent.get("segments", [])) if parent else []
         segments.append({
             "node_id": node_id, "energies_file": record["energies_file"],
             "n_samples": record["n_samples"], "sampling_time_ns": record["sampling_time_ns"],
             "equilibration_time_ns": record["equilibration_time_ns"],
         })
-        windows_index[str(i)] = {**record, "segments": segments,
-                                 "total_sampling_time_ns": round(sum(s["sampling_time_ns"] for s in segments), 6)}
+        windows_index[i] = {**record, "segments": segments,
+                            "total_sampling_time_ns": round(sum(s["sampling_time_ns"] for s in segments), 6)}
         result["windows"].append(record)
         result["platform"] = record["platform"]
+        # Partial index after every window: a node killed by the scheduler
+        # still leaves its finished windows recoverable (--restart-windows-file).
+        _write_index(index_file, index_payload, windows_index, complete=False)
 
-    index_payload = {
-        "schema_version": WINDOWS_SCHEMA_VERSION,
-        "node_id": node_id,
-        "fep_protocol_file": str(Path(fep_protocol_file).resolve()),
-        "system_xml_file": str(xml_inputs.system_xml_path),
-        "topology_pdb_file": str(xml_inputs.topology_pdb_path),
-        "n_protocol_windows": len(protocol_windows),
-        "lambda_indices": indices,
-        "temperature_kelvin": float(temperature_kelvin),
-        "pressure_bar": pressure_bar,
-        "ensemble": "NPT" if pressure_bar else "NVT",
-        "timestep_fs": float(timestep_fs),
-        "hmr": bool(hmr),
-        "windows": windows_index,
-    }
-    index_file = out_dir / "fep_windows.json"
-    index_file.write_text(json.dumps(index_payload, indent=2))
+    _write_index(index_file, index_payload, windows_index, complete=True)
+    retried = [w["index"] for w in result["windows"] if w.get("nan_retry")]
+    if retried:
+        result["warnings"].append(f"windows {retried} hit a NaN and were rerun at a halved timestep; "
+                                  "their samples are valid but slower")
     result.update({
         "success": True,
         "fep_windows": str(index_file),
         "lambda_indices": indices,
         "n_protocol_windows": len(protocol_windows),
-        "ensemble": index_payload["ensemble"],
+        "ensemble": ensemble,
         "pressure_bar": pressure_bar,
         "temperature_kelvin": float(temperature_kelvin),
         "timestep_fs": float(timestep_fs),
         "hmr": bool(hmr),
+        "extended_from_fep": bool(parent_windows),
         "wall_time_s": round(time.time() - t_start, 1),
     })
-    if _node_mode:
+    if node_mode:
         from mdclaw._node import complete_node
 
         complete_node(
@@ -480,7 +621,7 @@ def run_fep(
                 "sample_interval_ps": float(sample_interval_ps),
                 "temperature_kelvin": float(temperature_kelvin),
                 "pressure_bar": pressure_bar,
-                "ensemble": index_payload["ensemble"],
+                "ensemble": ensemble,
                 "timestep_fs": float(timestep_fs),
                 "hmr": bool(hmr),
                 "platform": result.get("platform"),
@@ -492,4 +633,4 @@ def run_fep(
     return result
 
 
-__all__ = ["run_fep", "sample_window"]
+__all__ = ["FepRunError", "load_windows_index", "rel_to", "resolve_index_path", "run_fep", "sample_window"]

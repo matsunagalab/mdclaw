@@ -43,6 +43,26 @@ def _resolve_topology_run_settings(
 
 
 
+_PLATFORM_NAMES = {"cuda": "CUDA", "opencl": "OpenCL", "cpu": "CPU", "reference": "Reference"}
+
+
+def resolve_platform_name(platform: Optional[str], device_index: Optional[str] = None) -> Tuple[Optional[str], Dict[str, str]]:
+    """``("CUDA", {"DeviceIndex": "1"})`` from the CLI's ``--platform`` /
+    ``--device-index``; ``(None, {})`` for ``auto``.
+
+    Raises ``ValueError`` for an unknown platform name.
+    """
+    if not platform or platform.lower() == "auto":
+        return None, {}
+    name = _PLATFORM_NAMES.get(platform.lower())
+    if name is None:
+        raise ValueError(f"Unknown platform '{platform}'. Valid options: auto, CUDA, OpenCL, CPU, Reference")
+    properties: Dict[str, str] = {}
+    if device_index and name in ("CUDA", "OpenCL"):
+        properties["DeviceIndex"] = str(device_index)
+    return name, properties
+
+
 def _node_artifact_path(path: Optional[str]) -> str:
     """Convert an absolute output path into a node-relative artifact path."""
     if not path:

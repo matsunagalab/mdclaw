@@ -11,6 +11,7 @@ names and coordinates, which is what makes the atom mapping trivial.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import tempfile
 from dataclasses import dataclass
@@ -74,6 +75,12 @@ class MutationSpec:
         }
 
 
+_MUTATION_CODES = {
+    "mutation_residue_not_found": "fep_mutation_residue_not_found",
+    "mutation_ambiguous": "fep_mutation_residue_ambiguous",
+}
+
+
 def parse_single_mutation(spec: str, pdb_file: str | Path) -> MutationSpec:
     """Parse ``L99A`` / ``A:L99A`` against the residues present in ``pdb_file``."""
     residues = read_protein_residues(pdb_file)
@@ -82,7 +89,7 @@ def parse_single_mutation(spec: str, pdb_file: str | Path) -> MutationSpec:
     try:
         mutation_map, normalized = parse_mutation_specs([spec], residues)
     except ValueError as exc:
-        code = "fep_mutation_residue_not_found" if "not found" in str(exc) else "fep_mutation_spec_invalid"
+        code = _MUTATION_CODES.get(getattr(exc, "code", None), "fep_mutation_spec_invalid")
         raise MutantBuildError(code=code, message=str(exc)) from exc
     if len(mutation_map) != 1:
         raise MutantBuildError(
@@ -242,8 +249,8 @@ def model_mutant_residue(
         )
     pdb_lines = pdb_path.read_text().splitlines()
     warnings: list[str] = []
-    with tempfile.TemporaryDirectory(prefix="mdclaw_fep_mutant_") as tmp:
-        wd = Path(work_dir) if work_dir else Path(tmp)
+    with contextlib.ExitStack() as stack:
+        wd = Path(work_dir) if work_dir else Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="mdclaw_fep_mutant_")))
         wd.mkdir(parents=True, exist_ok=True)
         if backend in ("auto", "hpacker"):
             try:

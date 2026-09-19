@@ -523,6 +523,33 @@ def create_node(
                 }
             if (
                 isinstance(conditions, dict)
+                and conditions.get("analysis_data_scope") == "alchemical"
+                and (not parent_types or set(parent_types) != {"fep"})
+            ):
+                return {
+                    "success": False,
+                    "code": "analyze_conditions_invalid",
+                    "error": (
+                        "analysis_data_scope 'alchemical' requires fep parents "
+                        f"(got {sorted(set(parent_types))}); parent the analyze node to the "
+                        "completed run_fep nodes."
+                    ),
+                }
+            if (
+                isinstance(conditions, dict)
+                and conditions.get("analysis_data_scope") != "alchemical"
+                and parent_types and set(parent_types) == {"fep"}
+            ):
+                return {
+                    "success": False,
+                    "code": "analyze_conditions_invalid",
+                    "error": (
+                        "analyze nodes over fep parents use analysis_data_scope "
+                        "'alchemical' (analyze_fep runs MBAR; there is no production chain)."
+                    ),
+                }
+            if (
+                isinstance(conditions, dict)
                 and conditions.get("analysis_data_scope") == "comparison"
                 and (len(parents) != 2 or set(parent_types) != {"analyze"})
             ):
@@ -1041,6 +1068,29 @@ def fail_node_from_result(
             ))
             result["hints"] = hints
     return result
+
+
+def fail_tool(
+    result: dict,
+    code: str,
+    message: str,
+    *,
+    job_dir: str | None = None,
+    node_id: str | None = None,
+    extra: dict | None = None,
+) -> dict:
+    """Stamp a structured failure (``code`` / ``message`` / ``errors``) on a
+    tool result and, in node mode, record it on the node.
+
+    A node that has not started stays ``pending`` (fix the arguments and run
+    it again); a running node becomes ``failed``. Returns ``result`` so call
+    sites can ``return fail_tool(...)``.
+    """
+    result.update({"success": False, "code": code, "message": message, "error_type": "ValidationError"})
+    result.setdefault("errors", []).append(message)
+    if extra:
+        result.update(extra)
+    return fail_node_from_result(job_dir, node_id, result, default_error=message)
 
 
 # ── Progress-level cached summaries ────────────────────────────────────────

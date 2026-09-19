@@ -7,7 +7,27 @@ add the correction and say what it overturns.
 
 ---
 
-## 2026-09-19 — 1 点変異 ddG の hybrid-topology FEP を `mdclaw/fep/` に実装（未コミット）
+## 2026-09-19 — FEP レビュー対応: 窓開始配置・部分失敗の回収・相対パス・bonded 三重複の統合（branch `feat/fep-hybrid-topology`）
+
+前エントリの実装に対するレビュー（A: 実運用前、B: 契約・頑健性、C: 簡素化、D: 細部、E: テスト）を一括で対応した。最初の実装は `0100a38` としてコミット済み。
+
+**A1/A2（small→large の窓開始配置と端状態ビルド）— 予測どおり顕在化し、対策が効いた。** 溶媒和済み W6A tripeptide（`unfolded/topo_002/artifacts/mutant_input.pdb`）から `extract_tripeptide --mutation A:A6W` で ALA 中心の断片を切り、`jobs/a6w_smoke` として prep → solv（`--dist 10`、3,875 原子）→ `build_hybrid_system --mutation A:A6W`（HPacker、端点差 0.064 / 0.053 kJ/mol、appearing 15 原子、mutant 端状態ビルドは通る = A2 は問題なし）→ min → eq → `run_fep` 21 窓 × (0.02 + 0.05 ns) → `analyze_fep`。**λ ≥ 0.75 の窓は eq 状態のエネルギーが +2.4×10⁸ kJ/mol**（水が TRP 環の位置に入り込んだまま hard LJ が入る）。`run_fep` に入れた「窓の λ で `LocalEnergyMinimizer` 200 反復 → 速度再設定 → 平衡化」で全窓 −77,200 kJ/mol 前後に落ち、21 窓とも NaN 再試行なしで完走（97.9 ns/day）。λ ≤ 0.7 は soft-core が効いて開始エネルギー −6.1〜−6.7×10⁴ kJ/mol と穏やか。dG_A6W(tripeptide) = +1.09 ± 2.43 kJ/mol（窓 0.05 ns、独立サンプル 10–45/窓で誤差は当てにならない）; 順方向 W6A の −7.37 ± 1.47 と符号は整合、大きさは 2σ 差で、開始構造（HPacker の TRP 回転異性体 vs 結晶）とサンプリング長を考えると往復一致の検証にはならない。往復一致は窓 ≥ 1 ns で別途。
+
+**A3（部分失敗の回収）**: `fep_windows.json` を窓ごとに書き直す（`"complete": false` → 最後に true）。失敗ノードは親になれないので、`run_fep --restart-windows-file <failed>/artifacts/fep_windows.json` を追加: 索引にある窓はその state から継続（segment 連結）、無い窓は eq から開始。`windows.md` に「1 ノード = 窓サブセット」を 1 ns/窓超の既定として明記、guardrail 文も実装に合わせた。真空 e2e テストで部分索引 → 回復 → 解析（[40, 40, 20] サンプル）を固定。
+
+**A4（絶対パス）**: 索引スキーマ v2。`state_file` / `energies_file` / segment / protocol / XML は索引ファイルのディレクトリ相対（`os.path.relpath`）、親鎖のコピー時に再相対化。`load_windows_index` が解決し、v1 の絶対パスも素通しで読める。プロトコル一致は文字列比較でなく `protocols_equivalent`（λ 列 + 5 成分 + 変異ラベル）。テストで job ディレクトリを移動して再解析し同じ dG を確認。
+
+**B**: eq→次段の `next` が prod を指していた件（B1）は `_envelope` に表 `_ALCHEMICAL_FORWARD = {"eq": "fep"}` / `_ALCHEMICAL_PREFERENCE`（progress params の `fep_mutation` で判定）を置き、analyze の create_command に `--conditions '{"analysis_data_scope": "alchemical"}'` を付ける。`--workflow` は `eq > {prod | fep} > analyze`。B2: pressure 既定は eq の ensemble に従う（NVT eq なら NVT、不明なら警告付き 1 bar、真空は常に NVT）。B3: 親索引が読めない／親集合外の `--lambda-indices`／親と異なる `--pressure-bar` はすべてエラー（`fep_windows_missing` / `fep_lambda_index_invalid` / `fep_windows_incompatible`）。B4: `parse_lambda_indices` は `ProtocolError(fep_lambda_index_invalid)`、`sampling_time_ns` 等は `begin_node` 前に `invalid_parameter_value`（ノードは pending のまま）、`parse_mutation_specs` は `MutationSpecError(code=...)` を投げるようにして文字列照合を消した。B5: `windows_from_schedule` は 0→1 の厳密増加スカラー列のみ（dict 形は削除 = C5）、`collect_windows` は温度に加え pressure/ensemble を照合。B6: segment 単位で discard → subsample → pool（`per_window[k].segments` に内訳）。B7: `estimate_ddg` の既定出力は `<study>/evidence/ddg_<mut>.json`、無ければ `outputs/`（完了ノードの artifacts には書かない）。B8: `ANALYSIS_DATA_SCOPES` に `alchemical` を追加、fep 親には必須・他では拒否。B9: `asymmetric_core_exceptions > 0` を hybrid_report の warning に。B10/B11: 分散補正の欠落と hybrid 残基の CONECT を `fep-references.md` §3 と docstring に既知の近似・制限として明記。
+
+**C**: `_add_bonds/_angles/_torsions` を `_BondedSpec` 表 + `_add_bonded` 1 本に（hybrid.py −110 行、端点テスト 5 変異で回帰確認）。exception 分類は `dummy_switch` 表で 1 ブロック、`_CmapSink` クラスは dict + 関数に。`build_hybrid_system` を `_resolve_inputs / _build_endstates / _assemble_hybrid / _write_artifacts` に分割し、`hybrid_manifest.json` を唯一の正（`mapping_summary`, `statistics` もここ）にして node metadata は `fep.{mutation, n_windows, endpoint_validation_passed}` に絞った。`result["mutation"]` は文字列のまま、dict は `mutation_spec`。`find_residue_index` 削除（`build.locate_residue_index` に統一）、`old_by_name_index` → `_record_at`。core 結合不一致の自己修復は `fep_mapping_failed` で停止。probe の System 逆シリアライズは XML テキストの `name="fep_*"` 検査に。`resolve_platform_name` を `simulation/_base.py` に追加（fep のみ使用）。`fail_tool` を `node/lifecycle.py` に置き、fep 3 ツールの失敗ブロックを統一。
+
+**D**: `mutant_model/` は残す。`extract_tripeptide` の空 chain ID を `" "` に正規化。DCDReporter の private close は削除。`run_with_halved_timestep` を窓ごとに適用。`CORE_CANDIDATE_NAMES` に `HB`（VAL→ILE で端点差 < tol を確認）。`--sample-interval-ps` のコスト注記。延長例に `--equilibration-time-ns 0`。tripeptide の `--dist 10`。
+
+**テスト**: `TestHybridVacuum` を LEU→ALA / GLY→PRO / LEU→PHE / ALA→TRP / VAL→ILE に拡張、`TestVacuumPipeline`（真空 3 窓 e2e: 引数検証コード、相対パス、部分索引回復、segment 連結、移動後再解析、pressure 不一致拒否）を追加。既定セット + fep 関連 665 本 pass、ruff clean、guardrail golden 再生成（393 codes）。
+
+**未着手**: 実測 ddG があり変異体も折り畳む系での定量検証（T4 lysozyme L99A など、窓 ≥ 5 ns、複数 replica）、往復（W6A ↔ A6W）一致の確認、非平衡スイッチング、電荷変化の有限サイズ補正、結合親和性 leg。
+
+## 2026-09-19 — 1 点変異 ddG の hybrid-topology FEP を `mdclaw/fep/` に実装（`0100a38`）
 
 外部 FEP フレームワークに依存せず、OpenMM 標準 API だけで hybrid System を組む `fep` サーバーを追加した。新ノード型は `fep` 1 つ（親 `eq` / `fep`、子 `fep` / `analyze`）、hybrid 構築は `topo` の一種 `build_hybrid_system` として既存スパインに挿す。ツール 5 本: `build_hybrid_system`（topo）、`run_fep`（fep）、`analyze_fep`（analyze）、`extract_tripeptide` / `estimate_ddg`（ノード無しヘルパー）。設計と参考実装（pmx / Perses / OpenFE / GROMACS / GENESIS）の比較は `docs/research/fep-references.md`、契約は `tool-reference.md` の `fep/` 節、手順は `skills/md-fep/`（SKILL + `windows.md` + `convergence.md`）。
 

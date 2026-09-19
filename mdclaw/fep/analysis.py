@@ -24,7 +24,7 @@ import numpy as np
 
 from mdclaw._common import create_validation_error, ensure_directory
 from mdclaw._tool_meta import node_tool
-from mdclaw.fep.protocol import PHASE_BOUNDS, load_protocol
+from mdclaw.fep.protocol import PHASE_BOUNDS, ProtocolError, load_protocol, protocols_equivalent
 
 logger = logging.getLogger(__name__)
 
@@ -43,86 +43,86 @@ class FepAnalysisError(RuntimeError):
 # Window collection                                                             #
 # --------------------------------------------------------------------------- #
 
-def _read_windows_index(path: str) -> dict:
-    try:
-        return json.loads(Path(path).read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        raise FepAnalysisError(code="fep_windows_missing", message=f"cannot read {path}: {exc}") from exc
-
-
 def collect_windows(window_index_files: list[str]) -> dict:
     """Merge the ``fep_windows.json`` files of several fep nodes.
 
-    Returns ``{"protocol_file", "temperature_kelvin", "pressure_bar",
-    "n_protocol_windows", "windows": {index: [segment, ...]}}``. The same
-    index appearing in two parents (independent replicas) simply pools its
-    segments.
+    Returns ``{"protocol", "protocol_file", "temperature_kelvin",
+    "pressure_bar", "ensemble", "n_protocol_windows", "windows": {index:
+    [segment, ...]}, "sources"}``. The same index appearing in two parents
+    (independent replicas) pools its segments. Paths are resolved relative to
+    each index file (:func:`mdclaw.fep.run.load_windows_index`); protocols are
+    compared by content, ensembles (temperature, pressure) must match because
+    the reduced potential carries ``pV/kT``.
     """
+    from mdclaw.fep.run import FepRunError, load_windows_index
+
     merged: dict[int, list[dict]] = {}
-    protocol_file = None
-    temperature = None
-    pressure = None
-    n_protocol = None
+    reference: Optional[dict] = None
+    protocol: Optional[dict] = None
     sources = []
     for path in window_index_files:
-        data = _read_windows_index(path)
-        sources.append({"file": path, "node_id": data.get("node_id"), "lambda_indices": data.get("lambda_indices")})
-        if protocol_file is None:
-            protocol_file = data.get("fep_protocol_file")
-            temperature = data.get("temperature_kelvin")
-            pressure = data.get("pressure_bar")
-            n_protocol = data.get("n_protocol_windows")
+        try:
+            data = load_windows_index(path)
+        except FepRunError as exc:
+            raise FepAnalysisError(code=exc.code, message=str(exc)) from exc
+        sources.append({"file": str(Path(path).resolve()), "node_id": data.get("node_id"),
+                        "lambda_indices": data.get("lambda_indices"), "complete": data.get("complete", True)})
+        if not data.get("complete", True):
+            logger.warning("%s is a partial index (run_fep did not finish); using its finished windows", path)
+        try:
+            this_protocol = load_protocol(data["fep_protocol_file"])
+        except (KeyError, ProtocolError) as exc:
+            raise FepAnalysisError(code="fep_windows_missing", message=f"{path}: protocol unreadable: {exc}") from exc
+        if reference is None:
+            reference, protocol = data, this_protocol
         else:
-            if data.get("fep_protocol_file") != protocol_file or data.get("n_protocol_windows") != n_protocol:
+            if not protocols_equivalent(protocol, this_protocol):
                 raise FepAnalysisError(
-                    code="fep_windows_incompatible", message=f"{path} was sampled with a different protocol ({data.get('fep_protocol_file')}) "
-                    f"than {protocol_file}; analyze one hybrid topology at a time",
-                )
-            if abs(float(data.get("temperature_kelvin") or 0) - float(temperature or 0)) > 1e-6:
+                    code="fep_windows_incompatible",
+                    message=f"{path} was sampled with a different lambda protocol than {reference['index_file']}; "
+                    "analyze one hybrid topology at a time")
+            if abs(float(data.get("temperature_kelvin") or 0) - float(reference.get("temperature_kelvin") or 0)) > 1e-6:
+                raise FepAnalysisError(code="fep_windows_incompatible", message=f"{path} was sampled at a different temperature")
+            if (data.get("pressure_bar") or None) != (reference.get("pressure_bar") or None):
                 raise FepAnalysisError(
-                    code="fep_windows_incompatible", message=f"{path} was sampled at a different temperature")
-        for key, record in (data.get("windows") or {}).items():
-            segments = record.get("segments") or []
-            merged.setdefault(int(key), []).extend(segments)
-    if not merged:
+                    code="fep_windows_incompatible",
+                    message=f"{path} was sampled at pressure_bar={data.get('pressure_bar')} ({data.get('ensemble')}) but "
+                    f"{reference['index_file']} at {reference.get('pressure_bar')}; the reduced potential includes pV/kT, "
+                    "so NPT and NVT windows cannot be pooled")
+        for key, record in data["windows"].items():
+            merged.setdefault(int(key), []).extend(record.get("segments") or [])
+    if not merged or reference is None:
         raise FepAnalysisError(code="fep_windows_missing", message="no windows found in the fep parents")
+    temperature = reference.get("temperature_kelvin")
     return {
-        "protocol_file": protocol_file,
+        "protocol": protocol,
+        "protocol_file": reference.get("fep_protocol_file"),
         "temperature_kelvin": float(temperature) if temperature is not None else None,
-        "pressure_bar": pressure,
-        "n_protocol_windows": int(n_protocol) if n_protocol is not None else None,
+        "pressure_bar": reference.get("pressure_bar"),
+        "ensemble": reference.get("ensemble"),
+        "n_protocol_windows": len(protocol["windows"]),
         "windows": merged,
         "sources": sources,
     }
 
 
-def _load_window_samples(segments: list[dict], n_states: int, discard_fraction: float) -> tuple[np.ndarray, dict]:
-    """Concatenate one window's segments; drop the first ``discard_fraction``
-    of *each* segment (each restart re-equilibrates a little)."""
-    blocks = []
-    kept = dropped = 0
-    for seg in segments:
-        path = seg.get("energies_file")
-        if not path or not Path(path).is_file():
-            raise FepAnalysisError(code="fep_windows_missing", message=f"energies file missing for a segment: {path}")
-        with np.load(path) as data:
-            u = np.asarray(data["u_kn"], dtype=float)
-        if u.shape[0] != n_states:
-            raise FepAnalysisError(
-                code="fep_windows_incompatible", message=f"{path} has {u.shape[0]} states, protocol has {n_states}")
-        n_drop = int(math.floor(u.shape[1] * discard_fraction))
-        dropped += n_drop
-        u = u[:, n_drop:]
-        kept += u.shape[1]
-        if u.shape[1]:
-            blocks.append(u)
-    if not blocks:
-        raise FepAnalysisError(code="fep_windows_missing", message="a window has no samples left after discarding")
-    return np.concatenate(blocks, axis=1), {"n_raw": kept + dropped, "n_after_discard": kept}
+def _load_segment(seg: dict, n_states: int, discard_fraction: float) -> np.ndarray:
+    """One segment's ``u_kn`` with the first ``discard_fraction`` dropped
+    (each restart re-equilibrates a little)."""
+    path = seg.get("energies_file")
+    if not path or not Path(path).is_file():
+        raise FepAnalysisError(code="fep_windows_missing", message=f"energies file missing for a segment: {path}")
+    with np.load(path) as data:
+        u = np.asarray(data["u_kn"], dtype=float)
+    if u.shape[0] != n_states:
+        raise FepAnalysisError(
+            code="fep_windows_incompatible", message=f"{path} has {u.shape[0]} states, protocol has {n_states}")
+    return u[:, int(math.floor(u.shape[1] * discard_fraction)):]
 
 
 def _subsample(u_k: np.ndarray, own_index: int, timeseries) -> tuple[np.ndarray, dict]:
-    """Statistically independent subset using the window's own reduced potential."""
+    """Statistically independent subset of one *contiguous* time series,
+    using the window's own reduced potential."""
     series = u_k[own_index]
     if series.size < 10:
         return u_k, {"g": 1.0, "n_used": int(series.size)}
@@ -135,6 +135,36 @@ def _subsample(u_k: np.ndarray, own_index: int, timeseries) -> tuple[np.ndarray,
     if len(indices) < 5:
         return u_k, {"g": float(g), "n_used": int(series.size), "subsampling": "too_few_kept"}
     return u_k[:, indices], {"g": float(g), "t0": int(t0), "n_used": len(indices)}
+
+
+def _window_samples(segments: list[dict], own_index: int, n_states: int, discard_fraction: float,
+                    subsample: bool, timeseries) -> tuple[np.ndarray, dict]:
+    """Load, discard, subsample each segment *separately*, then pool.
+
+    Segments are separate trajectories (an extension continues from the
+    parent's last frame, replicas are unrelated), so equilibration detection
+    and the statistical inefficiency are computed per segment; concatenating
+    first would let ``detect_equilibration`` discard a whole replica.
+    """
+    blocks, per_segment = [], []
+    n_raw = 0
+    for seg in segments:
+        u = _load_segment(seg, n_states, discard_fraction)
+        n_raw += u.shape[1]
+        if u.shape[1] == 0:
+            continue
+        if subsample:
+            u, info = _subsample(u, own_index, timeseries)
+        else:
+            info = {"g": 1.0, "n_used": int(u.shape[1])}
+        per_segment.append({"node_id": seg.get("node_id"), "n_after_discard": int(n_raw), **info})
+        blocks.append(u)
+    if not blocks:
+        raise FepAnalysisError(code="fep_windows_missing", message="a window has no samples left after discarding")
+    u_k = np.concatenate(blocks, axis=1)
+    g_max = max(float(x.get("g", 1.0)) for x in per_segment)
+    return u_k, {"n_raw": n_raw, "n_segments": len(blocks), "n_used": int(u_k.shape[1]), "g": g_max,
+                 "segments": per_segment}
 
 
 # --------------------------------------------------------------------------- #
@@ -166,14 +196,10 @@ def run_mbar(
     n_k = np.zeros(n_states, dtype=int)
     per_window = []
     for k in range(n_states):
-        u_k, info = _load_window_samples(windows[k], n_states, discard_fraction)
-        if subsample:
-            u_k, sub = _subsample(u_k, k, timeseries)
-        else:
-            sub = {"g": 1.0, "n_used": int(u_k.shape[1])}
+        u_k, info = _window_samples(windows[k], k, n_states, discard_fraction, subsample, timeseries)
         n_k[k] = u_k.shape[1]
         u_blocks.append(u_k)
-        per_window.append({"index": k, "lambda": protocol["windows"][k].get("lambda"), **info, **sub})
+        per_window.append({"index": k, "lambda": protocol["windows"][k]["lambda"], **info})
     u_kn = np.concatenate(u_blocks, axis=1)
     mbar = pymbar.MBAR(u_kn, n_k)
     fe = mbar.compute_free_energy_differences()
@@ -184,10 +210,10 @@ def run_mbar(
     neighbour = [float(overlap[k, k + 1]) for k in range(n_states - 1)]
     cumulative = [float(delta_f[0, k] * kT) for k in range(n_states)]
     cumulative_err = [float(d_delta_f[0, k] * kT) for k in range(n_states)]
-    lambdas = [w.get("lambda") for w in protocol["windows"]]
+    lambdas = [float(w["lambda"]) for w in protocol["windows"]]
 
     def _phase_dg(lo: float, hi: float) -> Optional[float]:
-        idx = [k for k, lam in enumerate(lambdas) if lam is not None and lo - 1e-9 <= lam <= hi + 1e-9]
+        idx = [k for k, lam in enumerate(lambdas) if lo - 1e-9 <= lam <= hi + 1e-9]
         if len(idx) < 2:
             return None
         return float((delta_f[idx[0], idx[-1]]) * kT)
@@ -252,7 +278,7 @@ def analyze_fep(
     """MBAR free energy of one alchemical leg from its ``fep`` windows.
 
     Node mode: an ``analyze`` node created with
-    ``--conditions '{"analysis_data_scope": "production_chain"}'`` whose
+    ``--conditions '{"analysis_data_scope": "alchemical"}'`` whose
     parents are the ``fep`` nodes covering every window of the protocol
     (one node, or the members of a job array). Extension chains
     (``fep -> fep``) are followed automatically through each window's
@@ -273,10 +299,15 @@ def analyze_fep(
         ``fep_windows_incomplete``, ``fep_windows_incompatible``,
         ``pymbar_not_installed``.
     """
+    from mdclaw._node import fail_tool
+
     result: dict = {"success": False, "tool": "analyze_fep", "errors": [], "warnings": []}
     node_mode = bool(job_dir and node_id)
     parent_ids: list[str] = []
     hybrid_manifest_file = None
+    if not isinstance(discard_fraction, (int, float)) or not 0.0 <= discard_fraction < 1.0:
+        return fail_tool(result, code="invalid_parameter_value", message=f"discard_fraction must be in [0, 1), got {discard_fraction!r}",
+                         job_dir=job_dir, node_id=node_id)
     try:
         if node_mode:
             from mdclaw._node import resolve_node_inputs
@@ -296,17 +327,10 @@ def analyze_fep(
             raise FepAnalysisError(
                 code="fep_windows_missing", message="pass --job-dir/--node-id (fep parents) or --fep-windows-files")
         collected = collect_windows(fep_windows_files)
-        protocol = load_protocol(collected["protocol_file"])
-    except Exception as exc:  # noqa: BLE001
-        code = getattr(exc, "code", "fep_windows_missing")
-        result["errors"].append(str(exc))
-        result["code"] = code
-        if node_mode:
-            from mdclaw._node import begin_node, fail_node
-
-            begin_node(job_dir, node_id)
-            fail_node(job_dir, node_id, errors=result["errors"], code=code)
-        return result
+        protocol = collected["protocol"]
+    except FepAnalysisError as exc:
+        # Nothing ran: the node stays pending so the parents can be fixed.
+        return fail_tool(result, exc.code, str(exc), job_dir=job_dir, node_id=node_id)
 
     if node_mode:
         from mdclaw._node import begin_node
@@ -324,21 +348,9 @@ def analyze_fep(
             discard_fraction=discard_fraction, subsample=subsample,
         )
     except FepAnalysisError as exc:
-        result["errors"].append(str(exc))
-        result["code"] = exc.code
-        if node_mode:
-            from mdclaw._node import fail_node
-
-            fail_node(job_dir, node_id, errors=result["errors"], code=exc.code)
-        return result
+        return fail_tool(result, exc.code, str(exc), job_dir=job_dir, node_id=node_id)
     except Exception as exc:  # noqa: BLE001
-        result["errors"].append(f"{type(exc).__name__}: {exc}")
-        result["code"] = "fep_analysis_failed"
-        if node_mode:
-            from mdclaw._node import fail_node
-
-            fail_node(job_dir, node_id, errors=result["errors"], code="fep_analysis_failed")
-        return result
+        return fail_tool(result, code="fep_analysis_failed", message=f"{type(exc).__name__}: {exc}", job_dir=job_dir, node_id=node_id)
 
     result["warnings"].extend(mbar.pop("warnings"))
     report = {
@@ -347,6 +359,7 @@ def analyze_fep(
         "protocol_file": collected["protocol_file"],
         "hybrid_manifest_file": hybrid_manifest_file,
         "pressure_bar": collected["pressure_bar"],
+        "ensemble": collected["ensemble"],
         "fep_parent_node_ids": parent_ids,
         "fep_windows_files": fep_windows_files,
         "sources": collected["sources"],
@@ -420,13 +433,15 @@ def estimate_ddg(
     ``ddG = dG_mut(folded) - dG_mut(unfolded)`` with the sign convention of
     ``ddG_folding = dG_fold(mutant) - dG_fold(wild type)``: positive means the
     mutation destabilises the fold. Errors add in quadrature. No node state is
-    touched; the report is written next to the folded result (or to
-    ``output_file``) and appended to the study log when ``study_dir`` is given.
+    touched (completed analyze nodes are immutable, so nothing is written into
+    their ``artifacts/``): the report goes to ``output_file``, else
+    ``<study_dir>/evidence/ddg_<mutation>.json`` when ``study_dir`` is given
+    (and the study log gets an entry), else ``outputs/ddg_<mutation>.json``.
 
     Args:
         folded: ``fep_result.json`` of the folded-protein leg.
         unfolded: ``fep_result.json`` of the capped-tripeptide leg.
-        output_file: Where to write ``ddg.json`` (default: beside ``folded``).
+        output_file: Where to write the ddG report (default: see above).
         study_dir: Optional study to append a ``record_study_log`` entry to.
     """
     result: dict = {"success": False, "tool": "estimate_ddg", "errors": [], "warnings": []}
@@ -462,7 +477,13 @@ def estimate_ddg(
         },
         "warnings": list(result["warnings"]),
     }
-    out = Path(output_file) if output_file else Path(folded).resolve().parent / "ddg.json"
+    tag = (report["mutation"] or "ddg").replace(":", "_")
+    if output_file:
+        out = Path(output_file)
+    elif study_dir:
+        out = Path(study_dir) / "evidence" / f"ddg_{tag}.json"
+    else:
+        out = Path("outputs").resolve() / f"ddg_{tag}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2))
     result.update({"success": True, "ddg_file": str(out), **{k: v for k, v in report.items() if k != "warnings"}})

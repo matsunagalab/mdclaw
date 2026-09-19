@@ -53,6 +53,15 @@ _SOLV_PREFERENCE = {"membrane": "embed_in_membrane"}
 # membrane, OpenMM force fields) that a skill selects deliberately.
 _STAGE_PREFERENCE = {"source": "fetch_structure", "prep": "prepare_complex",
                      "solv": "solvate_structure", "topo": "build_amber_system"}
+# A job whose topo is a hybrid topology (progress params carry fep_mutation)
+# samples lambda windows instead of production and analyses them with MBAR.
+_ALCHEMICAL_FORWARD = {"eq": "fep"}
+_ALCHEMICAL_PREFERENCE = {"topo": "build_hybrid_system", "fep": "run_fep", "analyze": "analyze_fep"}
+_ALCHEMICAL_ANALYZE_CONDITIONS = '{"analysis_data_scope": "alchemical"}'
+
+
+def _is_alchemical(params: dict) -> bool:
+    return bool(params.get("fep_mutation"))
 _OPEN = frozenset({"pending", "queued", "running"})
 
 # Standalone helpers agents reach for when they mean a stage. The helper does
@@ -179,6 +188,8 @@ def stage_tools_for(node_type: Optional[str], tools: dict, params: dict) -> list
     preferred = _STAGE_PREFERENCE.get(node_type)
     if node_type == "solv":
         preferred = _SOLV_PREFERENCE.get(str(params.get("solvent_regime") or ""), preferred)
+    if _is_alchemical(params):
+        preferred = _ALCHEMICAL_PREFERENCE.get(node_type, preferred)
     if preferred in names:
         names.remove(preferred)
         names.insert(0, preferred)
@@ -259,6 +270,8 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
         return step
     if status == "completed":
         forward = CANONICAL_FORWARD_NODE_TYPE.get(node_type)
+        if _is_alchemical(params):
+            forward = _ALCHEMICAL_FORWARD.get(node_type, forward)
         if not forward:
             return {"action": "done", "node_id": node_id, "node_type": node_type}
         # A child of the forward type that is already created but not run is
@@ -273,14 +286,12 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
             if step:
                 return step
         stage_tools = stage_tools_for(forward, tools, params)
-        if node_type == "fep" and "analyze_fep" in stage_tools:
-            # The analysis of lambda windows is MBAR, not a trajectory metric.
-            stage_tools.remove("analyze_fep")
-            stage_tools.insert(0, "analyze_fep")
         run = _run_command(job_dir, "<new>", stage_tools[0] if stage_tools else None)
-        step = {"action": "create", "node_type": forward,
-                "create_command": (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} "
-                                   f"--node-type {forward} --parent-node-ids {node_id}"),
+        create = (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} "
+                  f"--node-type {forward} --parent-node-ids {node_id}")
+        if forward == "analyze" and node_type == "fep":
+            create += f" --conditions {shlex.quote(_ALCHEMICAL_ANALYZE_CONDITIONS)}"
+        step = {"action": "create", "node_type": forward, "create_command": create,
                 "stage_tools": stage_tools, "run_command": run, "inputs": "auto_resolved",
                 "optional": forward == "analyze"}
         if forward in _BATCH_STAGES:

@@ -43,7 +43,7 @@ from mdclaw._envelope import (
 )
 from mdclaw._registry import SERVER_REGISTRY
 from mdclaw.node.snapshot import describe_nodes, node_missing_error, nodes_of_type
-from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE, NODE_TYPE_ORDER
+from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE, NODE_TYPE_ORDER, STAGE_CHAIN_TEXT
 from mdclaw._tool_meta import (
     tool_job_dir_is_data,
     tool_node_type,
@@ -1455,7 +1455,7 @@ def _print_tool_list(tools: dict[str, dict]) -> None:
     print("MDClaw tools. Stage tools run with --job-dir/--node-id and record node state;")
     print("everything else is a standalone helper or a DAG/cluster utility.")
     print("Workflow: mdclaw --workflow. One tool's parameters: mdclaw --list-json <tool>.")
-    print("\nStage tools by DAG stage (" + " > ".join(NODE_TYPE_ORDER) + "):")
+    print("\nStage tools by DAG stage (" + STAGE_CHAIN_TEXT + "):")
     stage_names: set[str] = set()
     for node_type, names in _stage_tools_by_type(tools).items():
         if names:
@@ -1490,7 +1490,7 @@ def _workflow_text(tools: dict[str, dict]) -> str:
     lines = [
         "MDClaw job DAG (schema v3)",
         "",
-        "Stages, in order:  " + " > ".join(NODE_TYPE_ORDER),
+        "Stages, in order:  " + STAGE_CHAIN_TEXT,
         "Stage tools (run with --job-dir/--node-id; inputs resolve from the parent node):",
     ]
     for node_type, names in _stage_tools_by_type(tools).items():

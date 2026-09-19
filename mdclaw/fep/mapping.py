@@ -22,11 +22,12 @@ from typing import Iterable, Optional
 
 # Atom names that are allowed to be shared between the two residue types.
 # Backbone (including terminal variants) plus the beta carbon and its
-# hydrogens. ``HA2``/``HA3`` are glycine-only so a X->GLY mutation maps
-# nothing beyond the backbone heavy atoms and H.
+# hydrogens (``HB`` is the single beta hydrogen of ILE/THR/VAL). ``HA2``/``HA3``
+# are glycine-only so a X->GLY mutation maps nothing beyond the backbone
+# heavy atoms and H.
 CORE_CANDIDATE_NAMES = frozenset({
     "N", "H", "H1", "H2", "H3", "CA", "HA", "C", "O", "OXT",
-    "CB", "HB1", "HB2", "HB3",
+    "CB", "HB", "HB1", "HB2", "HB3",
 })
 
 
@@ -213,24 +214,23 @@ def map_mutation(
             continue
         core_pairs.append((a.index, b.index))
 
-    # Core-core bonds must agree in both states; otherwise drop one atom of
-    # the offending pair from the core (a hydrogen first, never CA).
+    # Core-core bonds must agree in both states. With backbone + CB as the
+    # core this never fires for standard residues; if it does, the two
+    # structures disagree about the backbone and silently dropping atoms would
+    # hide that, so stop.
     if old_bonds is not None and new_bonds is not None:
-        while True:
-            bad = _first_inconsistent_core_pair(core_pairs, old_bonds, new_bonds)
-            if bad is None:
-                break
-            a1, a2 = bad
-            r1, r2 = old_by_name_index(old_res, a1), old_by_name_index(old_res, a2)
-            if r1.name == "CA" or (r2.element == "H" and r1.element != "H"):
-                drop = a2
-            else:
-                drop = a1
-            core_pairs = [p for p in core_pairs if p[0] != drop]
+        bad = _first_inconsistent_core_pair(core_pairs, old_bonds, new_bonds)
+        if bad is not None:
+            n1, n2 = _record_at(old_res, bad[0]).name, _record_at(old_res, bad[1]).name
+            raise MappingError(
+                code="fep_mapping_failed",
+                message=f"core atoms {n1}-{n2} of residue {old_res[0].residue_name}{old_res[0].residue_id} are bonded in "
+                "one state but not the other; the wild-type and mutant structures disagree about the backbone",
+            )
 
     core_a_set = {a for a, _ in core_pairs}
     core_b_set = {b for _, b in core_pairs}
-    if not any(old_by_name_index(old_res, a).name == "CA" for a in core_a_set):
+    if not any(_record_at(old_res, a).name == "CA" for a in core_a_set):
         raise MappingError(code="fep_mapping_failed", message="backbone CA is not shared between the two states")
 
     unique_old = [r.index for r in old_res if r.index not in core_a_set]
@@ -260,7 +260,7 @@ def map_mutation(
         raise MappingError(code="fep_mapping_failed", message="internal error: mutant atoms not fully mapped")
 
     taken = [r.name for r in old_res]
-    pdb_names = _unique_pdb_names(taken, [new_by_name_index(new_res, b).name for b in unique_new])
+    pdb_names = _unique_pdb_names(taken, [_record_at(new_res, b).name for b in unique_new])
 
     return HybridMapping(
         n_hybrid=n_hybrid,
@@ -292,29 +292,14 @@ def _first_inconsistent_core_pair(
     return None
 
 
-def old_by_name_index(records: list[AtomRecord], index: int) -> AtomRecord:
+def _record_at(records: list[AtomRecord], index: int) -> AtomRecord:
     for r in records:
         if r.index == index:
             return r
     raise KeyError(index)
 
 
-new_by_name_index = old_by_name_index
-
-
-def find_residue_index(records: list[AtomRecord], chain_id: str, residue_id: str) -> int:
-    """Locate a residue by chain id and residue number (as in the PDB)."""
-    matches = sorted({
-        r.residue_index for r in records
-        if r.chain_id == str(chain_id) and r.residue_id == str(residue_id)
-    })
-    if not matches:
-        raise MappingError(
-            code="fep_mutation_residue_not_found", message=f"no residue {residue_id} in chain {chain_id!r}",
-        )
-    if len(matches) > 1:
-        raise MappingError(
-            code="fep_mutation_residue_ambiguous", message=f"residue {residue_id} in chain {chain_id!r} matches {len(matches)} residues "
-            f"(insertion codes or repeated numbering); renumber the prepared structure",
-        )
-    return matches[0]
+__all__ = [
+    "CORE_CANDIDATE_NAMES", "AtomRecord", "HybridMapping", "MappingError",
+    "atom_records_from_topology", "bonds_from_topology", "map_mutation",
+]

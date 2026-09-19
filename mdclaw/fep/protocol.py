@@ -87,19 +87,8 @@ def _validate_parameter_dict(values: dict, index: int) -> dict[str, float]:
     return out
 
 
-def windows_from_schedule(schedule: Optional[Sequence[Any]] = None, n_windows: Optional[int] = None) -> list[dict]:
-    """Resolve the window list from ``--lambda-schedule`` / ``--n-windows``.
-
-    ``schedule`` may be a list of scalar lambdas or a list of explicit
-    parameter dicts (optionally carrying ``lambda``). ``None`` gives the
-    evenly spaced default of ``n_windows`` windows.
-    """
-    if schedule is None:
-        lambdas = default_lambdas(n_windows or DEFAULT_N_WINDOWS)
-        return [
-            {"index": i, "lambda": lam, "parameters": lambda_to_parameters(lam)}
-            for i, lam in enumerate(lambdas)
-        ]
+def _parse_lambda_list(schedule: Any) -> list[float]:
+    """``"0,0.1,1"`` / ``"[0, 0.1, 1]"`` / ``[0, 0.1, 1]`` -> list of floats."""
     if isinstance(schedule, str):
         text = schedule.strip()
         if text.startswith("["):
@@ -108,34 +97,48 @@ def windows_from_schedule(schedule: Optional[Sequence[Any]] = None, n_windows: O
             except json.JSONDecodeError as exc:
                 raise ProtocolError(code="fep_protocol_invalid", message=f"lambda_schedule is not valid JSON: {exc}") from exc
         else:
-            try:
-                schedule = [float(tok) for tok in text.replace(";", ",").split(",") if tok.strip()]
-            except ValueError as exc:
-                raise ProtocolError(
-                    code="fep_protocol_invalid", message="lambda_schedule must be comma-separated lambdas (e.g. '0,0.1,...,1') or a JSON list",
-                ) from exc
-    if not isinstance(schedule, (list, tuple)) or len(schedule) < 2:
-        raise ProtocolError(code="fep_protocol_invalid", message="lambda_schedule must be a list with at least two windows")
-    windows = []
-    for i, item in enumerate(schedule):
-        if isinstance(item, dict):
-            lam = item.get("lambda")
-            params = {k: v for k, v in item.items() if k != "lambda"}
-            if not params:
-                if lam is None:
-                    raise ProtocolError(code="fep_protocol_invalid", message=f"window {i}: empty schedule entry")
-                params = lambda_to_parameters(lam)
-            params = _validate_parameter_dict(params, i)
-            windows.append({"index": i, "lambda": None if lam is None else float(lam), "parameters": params})
-        else:
-            lam = float(item)
-            windows.append({"index": i, "lambda": lam, "parameters": lambda_to_parameters(lam)})
-    first, last = windows[0]["parameters"], windows[-1]["parameters"]
-    if any(abs(first[k] - STATE_A[k]) > 1e-9 for k in FEP_PARAMETERS):
-        raise ProtocolError(code="fep_protocol_invalid", message="the first window must be state A (wild type)")
-    if any(abs(last[k] - STATE_B[k]) > 1e-9 for k in FEP_PARAMETERS):
-        raise ProtocolError(code="fep_protocol_invalid", message="the last window must be state B (mutant)")
-    return windows
+            schedule = [tok for tok in text.replace(";", ",").split(",") if tok.strip()]
+    if not isinstance(schedule, (list, tuple)):
+        raise ProtocolError(code="fep_protocol_invalid", message="lambda_schedule must be a list of lambdas")
+    try:
+        lambdas = [float(x) for x in schedule]
+    except (TypeError, ValueError) as exc:
+        raise ProtocolError(
+            code="fep_protocol_invalid",
+            message="lambda_schedule must be scalar lambdas in [0, 1] (e.g. '0,0.1,...,1' or a JSON list of numbers)",
+        ) from exc
+    return lambdas
+
+
+def windows_from_schedule(schedule: Optional[Sequence[Any]] = None, n_windows: Optional[int] = None) -> list[dict]:
+    """Resolve the window list from ``--lambda-schedule`` / ``--n-windows``.
+
+    ``schedule`` is a strictly increasing list of scalar lambdas from 0 to 1
+    (CSV string, JSON string, or a Python sequence); ``None`` gives the evenly
+    spaced default of ``n_windows`` windows. Every window carries the five
+    resolved global parameters so the file, not this function, is the
+    contract downstream.
+    """
+    if schedule is None:
+        lambdas = default_lambdas(n_windows or DEFAULT_N_WINDOWS)
+    else:
+        lambdas = _parse_lambda_list(schedule)
+    if len(lambdas) < 2:
+        raise ProtocolError(code="fep_protocol_invalid", message="lambda_schedule must have at least two windows")
+    if abs(lambdas[0]) > 1e-9 or abs(lambdas[-1] - 1.0) > 1e-9:
+        raise ProtocolError(
+            code="fep_protocol_invalid",
+            message=f"lambda_schedule must start at 0 (wild type) and end at 1 (mutant), got {lambdas[0]}..{lambdas[-1]}")
+    for prev, cur in zip(lambdas, lambdas[1:]):
+        if cur <= prev:
+            raise ProtocolError(
+                code="fep_protocol_invalid",
+                message=f"lambda_schedule must be strictly increasing (found {prev} followed by {cur}); "
+                "neighbour overlap and phase sums assume index order = lambda order")
+    return [
+        {"index": i, "lambda": lam, "parameters": lambda_to_parameters(lam)}
+        for i, lam in enumerate(lambdas)
+    ]
 
 
 def build_protocol(
@@ -173,27 +176,60 @@ def load_protocol(path: str | Path) -> dict:
     for i, w in enumerate(windows):
         w["parameters"] = _validate_parameter_dict(w.get("parameters", {}), i)
         w.setdefault("index", i)
+        if not isinstance(w.get("lambda"), (int, float)):
+            raise ProtocolError(code="fep_protocol_invalid", message=f"{p}: window {i} has no scalar lambda")
+        w["lambda"] = float(w["lambda"])
     return data
 
 
+def protocols_equivalent(a: dict, b: dict) -> bool:
+    """Same windows (lambda + parameters) and mutation label: the samples of
+    two fep nodes may be pooled by MBAR."""
+    wa, wb = a.get("windows") or [], b.get("windows") or []
+    if len(wa) != len(wb):
+        return False
+    for x, y in zip(wa, wb):
+        if abs(float(x["lambda"]) - float(y["lambda"])) > 1e-9:
+            return False
+        if any(abs(x["parameters"][k] - y["parameters"][k]) > 1e-9 for k in FEP_PARAMETERS):
+            return False
+    return (a.get("mutation") or {}).get("label") == (b.get("mutation") or {}).get("label")
+
+
 def parse_lambda_indices(spec: Any, n_windows: int) -> list[int]:
-    """``None`` -> all windows; list/int/"0-4,7" -> explicit sorted subset."""
+    """``None`` -> all windows; list/int/"0-4,7" -> explicit sorted subset.
+
+    Raises ``ProtocolError(code="fep_lambda_index_invalid")`` for anything
+    that is not a non-negative index or ``lo-hi`` range inside the protocol.
+    """
     if spec is None or spec == "" or spec == "all":
         return list(range(n_windows))
-    if isinstance(spec, int):
-        items = [spec]
-    elif isinstance(spec, str):
-        items = []
-        for tok in spec.replace(" ", "").split(","):
-            if not tok:
-                continue
-            if "-" in tok:
-                lo, hi = tok.split("-", 1)
-                items.extend(range(int(lo), int(hi) + 1))
-            else:
-                items.append(int(tok))
-    else:
-        items = [int(x) for x in spec]
+    try:
+        if isinstance(spec, bool):
+            raise ValueError(spec)
+        if isinstance(spec, int):
+            items = [spec]
+        elif isinstance(spec, str):
+            items = []
+            for tok in spec.replace(" ", "").split(","):
+                if not tok:
+                    continue
+                if "-" in tok:
+                    lo, hi = tok.split("-", 1)
+                    if not (lo.isdigit() and hi.isdigit()):
+                        raise ValueError(tok)
+                    items.extend(range(int(lo), int(hi) + 1))
+                else:
+                    if not tok.isdigit():
+                        raise ValueError(tok)
+                    items.append(int(tok))
+        else:
+            items = [int(x) for x in spec]
+    except (TypeError, ValueError) as exc:
+        raise ProtocolError(
+            code="fep_lambda_index_invalid",
+            message=f"lambda_indices {spec!r} is not a comma-separated list of indices / 'lo-hi' ranges",
+        ) from exc
     out = sorted(set(items))
     bad = [i for i in out if i < 0 or i >= n_windows]
     if bad or not out:
@@ -206,5 +242,5 @@ def parse_lambda_indices(spec: Any, n_windows: int) -> list[int]:
 __all__ = [
     "DEFAULT_N_WINDOWS", "PHASE_BOUNDS", "PROTOCOL_SCHEMA_VERSION", "ProtocolError",
     "build_protocol", "default_lambdas", "lambda_to_parameters", "load_protocol",
-    "parse_lambda_indices", "windows_from_schedule",
+    "parse_lambda_indices", "protocols_equivalent", "windows_from_schedule",
 ]

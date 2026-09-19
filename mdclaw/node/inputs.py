@@ -560,10 +560,12 @@ def _resolve_fep_inputs(job_dir: str, node_id: str) -> dict:
     ):
         _record_input_resolution_error(
             result,
-            f"fep_hybrid_topology_required: topo ancestor '{topo_id}' was not built "
-            f"by build_hybrid_system (missing hybrid_manifest / fep_protocol). "
+            f"topo ancestor '{topo_id}' was not built by build_hybrid_system "
+            f"(missing hybrid_manifest / fep_protocol). "
             f"Create a topo node with build_hybrid_system --mutation <spec> first.",
         )
+        code = "fep_hybrid_topology_required"
+        result["input_resolution_code"] = code
     result.update(extras)
     if topo_id is not None:
         is_membrane = _read_metadata_field(job_dir, topo_id, "is_membrane")
@@ -572,17 +574,38 @@ def _resolve_fep_inputs(job_dir: str, node_id: str) -> dict:
     # eq state = equilibrated lambda=0 end state (same atom count as the hybrid).
     result.update(_resolve_md_restart(job_dir, node_id))
     result.update(_resolve_eq_ensemble_metadata(job_dir, node_id))
-    # fep → fep: the parent's window index carries per-window states.
+    # fep → fep: the parent's window index carries per-window states. One
+    # parent only: pooling several parents is the analyze node's job.
     try:
         node = read_node(job_dir, node_id)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         node = {}
+    fep_parents = []
     for pid in node.get("parent_node_ids") or []:
+        try:
+            if read_node(job_dir, pid).get("node_type") == "fep":
+                fep_parents.append(pid)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            continue
+    if len(fep_parents) > 1:
+        _record_input_resolution_error(
+            result,
+            f"a fep node extends exactly one fep parent, got {fep_parents}; create one child per "
+            f"parent (their windows are pooled by the analyze node).",
+        )
+        code = "fep_parent_ambiguous"
+        result["input_resolution_code"] = code
+    elif fep_parents:
+        pid = fep_parents[0]
+        result["fep_parent_node_id"] = pid
         windows = _read_artifact_from_node(job_dir, pid, "fep_windows")
         if windows:
             result["fep_parent_windows_file"] = windows
-            result["fep_parent_node_id"] = pid
-            break
+        else:
+            _record_input_resolution_error(
+                result, f"fep parent '{pid}' has no fep_windows artifact; it must complete run_fep first.")
+            code = "fep_windows_missing"
+            result["input_resolution_code"] = code
     return result
 
 

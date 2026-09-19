@@ -65,6 +65,7 @@
   "fep_mutation_residue_ambiguous",
   "fep_mutation_residue_not_found",
   "fep_mutation_spec_invalid",
+  "fep_parent_ambiguous",
   "fep_protocol_invalid",
   "fep_result_invalid",
   "fep_sampling_failed",

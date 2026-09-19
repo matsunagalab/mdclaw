@@ -54,7 +54,10 @@ MDClaw の既存スパインに `fep` を挿すだけで表現できると判断
 | 電荷 | ダミー: 基本電荷 0 + offset (`fep_elec_old`/`fep_elec_new` × q)。core: A→B を `fep_core` で線形。 | Perses と同じ。 |
 | LJ（ダミー） | `NonbondedForce` では ε=0、Beutler soft-core の `CustomNonbondedForce` を (ダミー × rest) interaction group で追加。old と new は互いに見えない。 | endpoint catastrophe 回避。 |
 | 1-4 exception | core–core: offset 補間。core–ダミー: 電荷は elec λ、ε は sterics λ でスケール。old–new: 0。 | 排除集合は全非結合 force で一致させる（CUDA の要件）。 |
-| 分散補正 | 端点検証時のみ無効化 | 比較の一貫性。 |
+| 非対称 core exception | 片側の状態でのみ excluded / 1-4 な core 対は、直接 Coulomb の exception で通常対相互作用へ補間する（`asymmetric_core_exceptions` として警告） | この exception には PME の reciprocal 項が無いので、端点は erf 分だけ元 System とずれる。backbone+CB core では実質発生しない経路。 |
+| 分散補正 | 端点検証時は全 System で無効化。**既知の近似**: ダミーは `NonbondedForce` で ε=0、soft-core force は long-range correction 無しなので、変異側鎖分の LJ tail は全 λ で欠落する（ΔG から tail_B − tail_A が抜ける） | 側鎖数原子分で小さく、両 leg で同じ項なので ddG では相殺する。 |
+| `topology.pdb` の CONECT | hybrid 残基は WT の残基名を保つため、`PDBFile.writeFile` は追加原子の結合を CONECT に書かない（標準残基名は結合をテンプレートから推定する規約） | 物理は `system.xml` にあり影響はイメージング・可視化側のみ。既知の制限として `hybrid_topology` docstring に記載。 |
+| 窓の開始配置 | eq（λ=0）状態から始める窓は、その窓の λ で `LocalEnergyMinimizer` を短く（200 反復）かけてから平衡化する（`run_fep`） | eq 中 appearing 原子はゴーストで溶媒がその体積に入り込むため、λ≥0.75 の hard LJ で始めると重なりから non-finite になる。fep 親から継続する窓は不要。NaN は timestep 半減で 1 回再試行（`nan_retry`）。 |
 | ダミー緩和 | 構築後、appearing 原子だけを状態 B で最小化（他は質量 0、制約は剛い調和結合に置換） | HPacker/PDBFixer 由来の側鎖はそのままでは歪んでいることがある（GLY→PRO で 8×10⁴ kJ/mol）。 |
 | 端点検証 | λ=0 / λ=1 で hybrid（group 0+ダミー bonded+3）と元 System の差 ≤ 1 kJ/mol | OpenFE の品質基準。CUDA 単精度で 0.1 kJ/mol 程度の差は正常。 |
 
@@ -68,7 +71,9 @@ MDClaw の既存スパインに `fep` を挿すだけで表現できると判断
 | 0.25 → 0.75 | `fep_sterics_old`: 1 → 0, `fep_sterics_new`: 0 → 1, `fep_core`: 0 → 1 |
 | 0.75 → 1 | `fep_elec_new`: 0 → 1（新側鎖の電荷 on） |
 
-既定は等間隔 21 窓。`--lambda-schedule` でスカラー列または成分 dict 列を明示できる。
+既定は等間隔 21 窓。`--lambda-schedule` は 0 から 1 への厳密増加なスカラー λ 列のみ（CSV / JSON）。
+成分 dict 列は受け付けない: 隣接 overlap と位相分解が「index 順 = λ 順」を前提にするため、
+非単調・非スカラーな窓は `fep_protocol_invalid` で拒否する。
 中間窓で系の総電荷が非整数になりうる点は PME の中和背景に任せ、有限サイズ補正は
 行わない（`build_hybrid_system` が警告を出す）。
 
@@ -109,6 +114,12 @@ pmx の折り畳み安定性プロトコルに倣い、capped tripeptide (ACE-X(
 - ACE-X-NME（真空, amber14, Reference platform）で LEU→ALA, GLY→PRO, LEU→PHE
   ほか: 端点差 < 1e-3 kJ/mol（`tests/test_fep.py::TestHybridVacuum`）。
 - 20 残基ペプチド A:W6A、ff19SB/OPC、8.5k 原子: 端点差 0.12 kJ/mol（CUDA）、
-  3 窓 × 0.02 ns のサンプリングと `fep → fep` 延長が動作（`/tmp/fep_dev`、
-  `docs/memo.md` 参照）。
+  両 leg 21 窓 × 0.2–0.25 ns で ddG = +4.67 ± 0.49 kcal/mol（`docs/memo.md`）。
+  W6A は large→small で appearing 原子が HB1 一個のため、窓開始配置の問題は
+  この系では顕在化しない。
+- 真空 ACE-LEU-NME → ALA の 3 窓で `run_fep` → `fep_windows.json` → `analyze_fep`
+  を直接モードで通す end-to-end（相対パス、部分索引からの回復、segment 連結、
+  ディレクトリ移動後の再解析; `tests/test_fep.py::TestVacuumPipeline`）。
 - 調和振動子トイ問題で MBAR が解析解を再現（`tests/test_fep.py::TestAnalysis`）。
+- small→large（A:A6W、溶媒和 tripeptide）の smoke は `docs/memo.md` の該当日の
+  エントリを参照。

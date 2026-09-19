@@ -29,7 +29,11 @@ Design rules (pmx / GROMACS-style single-residue hybrid):
 - Dummy nonbonded interactions are removed with linear charge scaling
   (``NonbondedForce`` parameter offsets) and Beutler soft-core LJ in a
   ``CustomNonbondedForce`` restricted to (dummy x rest) interaction groups.
-  Disappearing and appearing atoms never see each other.
+  Disappearing and appearing atoms never see each other. Known
+  approximation: the dummies carry epsilon = 0 in the ``NonbondedForce`` and
+  the soft-core force has no long-range correction, so the analytic LJ tail
+  of the mutated side chain is absent at every lambda (a few side-chain atoms
+  out of thousands; identical in both legs, cancels in ddG).
 - Shared-atom nonbonded differences interpolate linearly through
   ``fep_core`` offsets (particles and 1-4 exceptions).
 - ff19SB CMAP terms of the mutated residue are mixed through a
@@ -129,6 +133,65 @@ def _torsion_key(i: int, j: int, k: int, m: int) -> tuple[int, int, int, int]:
 
 def _quantity_value(q, unit):
     return q.value_in_unit(unit) if hasattr(q, "value_in_unit") else float(q)
+
+
+@dataclass(frozen=True)
+class _BondedSpec:
+    """How one bonded force type is split into shared / dummy / mixed parts.
+
+    ``read(force) -> iter of (atoms, params)`` and ``add(force, atoms, params)``
+    are the plain-force accessors; ``mixed_energy`` is the ``Custom*Force``
+    expression in terms of the per-term ``param_names`` and the ``side``
+    parameter (0 = state A term, 1 = state B term).
+    """
+
+    name: str
+    plain_force: str          # openmm class name, e.g. "HarmonicBondForce"
+    custom_force: str         # openmm class name, e.g. "CustomBondForce"
+    n_atoms: int
+    param_names: tuple[str, ...]
+    mixed_energy: str
+    key: Any                  # canonical atom-tuple key
+    read: Any                 # force -> iterable of (atoms, params)
+    add: Any                  # (force, atoms, params) -> None
+
+
+def _read_bonds(f):
+    for idx in range(f.getNumBonds()):
+        i, j, r0, k = f.getBondParameters(idx)
+        yield (i, j), (r0._value, k._value)
+
+
+def _read_angles(f):
+    for idx in range(f.getNumAngles()):
+        i, j, k, t0, kk = f.getAngleParameters(idx)
+        yield (i, j, k), (t0._value, kk._value)
+
+
+def _read_torsions(f):
+    for idx in range(f.getNumTorsions()):
+        i, j, k, m, n, phase, kk = f.getTorsionParameters(idx)
+        yield (i, j, k, m), (float(n), phase._value, kk._value)
+
+
+_BONDED_SPECS: tuple[_BondedSpec, ...] = (
+    _BondedSpec(
+        "bonds", "HarmonicBondForce", "CustomBondForce", 2, ("r0", "k"),
+        "mix*0.5*k*(r-r0)^2", _bond_key, _read_bonds,
+        lambda f, atoms, p: f.addBond(*atoms, *p),
+    ),
+    _BondedSpec(
+        "angles", "HarmonicAngleForce", "CustomAngleForce", 3, ("theta0", "k"),
+        "mix*0.5*k*(theta-theta0)^2", _angle_key, _read_angles,
+        lambda f, atoms, p: f.addAngle(*atoms, *p),
+    ),
+    _BondedSpec(
+        "torsions", "PeriodicTorsionForce", "CustomTorsionForce", 4, ("periodicity", "phase", "k"),
+        "mix*k*(1+cos(periodicity*theta-phase))", _torsion_key, _read_torsions,
+        lambda f, atoms, p: f.addTorsion(*atoms, int(p[0]), p[1], p[2]),
+    ),
+)
+_MIX = "; mix = (1-side)*(1-fep_core) + side*fep_core"
 
 
 def kabsch_transform(mobile: np.ndarray, target: np.ndarray):
@@ -251,9 +314,8 @@ class HybridSystemBuilder:
                     code="fep_unsupported_force", message=f"multiple {name} objects per System are not supported",
                 )
 
-        self._add_bonds(system, forces_a.get("HarmonicBondForce"), forces_b.get("HarmonicBondForce"))
-        self._add_angles(system, forces_a.get("HarmonicAngleForce"), forces_b.get("HarmonicAngleForce"))
-        self._add_torsions(system, forces_a.get("PeriodicTorsionForce"), forces_b.get("PeriodicTorsionForce"))
+        for spec in _BONDED_SPECS:
+            self._add_bonded(system, spec, forces_a.get(spec.plain_force), forces_b.get(spec.plain_force))
         self._add_cmap(system, forces_a.get("CMAPTorsionForce"), forces_b.get("CMAPTorsionForce"))
         nb_a = forces_a.get("NonbondedForce")
         nb_b = forces_b.get("NonbondedForce")
@@ -342,139 +404,48 @@ class HybridSystemBuilder:
         self._count("constraints", len(seen))
 
     # -- bonded terms -------------------------------------------------------
-    def _add_bonds(self, system, fa, fb) -> None:
+    def _add_bonded(self, system, spec: _BondedSpec, fa, fb) -> None:
+        """Split one bonded force type into shared / dummy-old / dummy-new
+        plain forces plus a ``Custom*Force`` for shared terms whose parameters
+        differ between the states."""
         mm = self.mm
-        shared, old, new = mm.HarmonicBondForce(), mm.HarmonicBondForce(), mm.HarmonicBondForce()
-        mixed = mm.CustomBondForce(
-            "mix*0.5*k*(r-r0)^2; mix = (1-side)*(1-fep_core) + side*fep_core")
-        for p in ("side", "r0", "k"):
-            mixed.addPerBondParameter(p)
+        plain = getattr(mm, spec.plain_force)
+        shared, old, new = plain(), plain(), plain()
+        mixed = getattr(mm, spec.custom_force)(spec.mixed_energy + _MIX)
+        add_per_term = getattr(mixed, f"addPer{spec.custom_force[6:-5]}Parameter")
+        for name in ("side", *spec.param_names):
+            add_per_term(name)
         mixed.addGlobalParameter("fep_core", STATE_A["fep_core"])
-        core_a: dict[tuple, list] = {}
-        core_b: dict[tuple, list] = {}
-        if fa is not None:
-            f = fa[0]
-            for idx in range(f.getNumBonds()):
-                i, j, r0, k = f.getBondParameters(idx)
-                hi, hj = self.a2h[i], self.a2h[j]
-                cat = self._classify((hi, hj))
-                if cat == "old":
-                    old.addBond(hi, hj, r0, k)
-                else:
-                    core_a.setdefault(_bond_key(hi, hj), []).append((r0._value, k._value))
-        if fb is not None:
-            f = fb[0]
-            for idx in range(f.getNumBonds()):
-                i, j, r0, k = f.getBondParameters(idx)
-                hi, hj = self.b2h[i], self.b2h[j]
-                cat = self._classify((hi, hj))
-                if cat == "new":
-                    new.addBond(hi, hj, r0, k)
-                else:
-                    core_b.setdefault(_bond_key(hi, hj), []).append((r0._value, k._value))
-        for key in sorted(set(core_a) | set(core_b)):
-            la, lb = core_a.get(key, []), core_b.get(key, [])
-            if _term_lists_close(la, lb):
-                for r0, k in la:
-                    shared.addBond(key[0], key[1], r0, k)
-            else:
-                for r0, k in la:
-                    mixed.addBond(key[0], key[1], [0.0, r0, k])
-                for r0, k in lb:
-                    mixed.addBond(key[0], key[1], [1.0, r0, k])
-                self._count("bonds_mixed")
-        self._install(system, shared, GROUP_SHARED, "bonds_shared", shared.getNumBonds())
-        self._install(system, old, GROUP_DUMMY_OLD, "bonds_dummy_old", old.getNumBonds())
-        self._install(system, new, GROUP_DUMMY_NEW, "bonds_dummy_new", new.getNumBonds())
-        self._install(system, mixed, GROUP_SHARED, None, mixed.getNumBonds())
 
-    def _add_angles(self, system, fa, fb) -> None:
-        mm = self.mm
-        shared, old, new = mm.HarmonicAngleForce(), mm.HarmonicAngleForce(), mm.HarmonicAngleForce()
-        mixed = mm.CustomAngleForce(
-            "mix*0.5*k*(theta-theta0)^2; mix = (1-side)*(1-fep_core) + side*fep_core")
-        for p in ("side", "theta0", "k"):
-            mixed.addPerAngleParameter(p)
-        mixed.addGlobalParameter("fep_core", STATE_A["fep_core"])
-        core_a: dict[tuple, list] = {}
-        core_b: dict[tuple, list] = {}
-        if fa is not None:
-            f = fa[0]
-            for idx in range(f.getNumAngles()):
-                i, j, k, t0, kk = f.getAngleParameters(idx)
-                h = (self.a2h[i], self.a2h[j], self.a2h[k])
-                if self._classify(h) == "old":
-                    old.addAngle(*h, t0, kk)
+        core: dict[str, dict[tuple, list]] = {"a": {}, "b": {}}
+        for side, force, remap, dummy_kind, dummy_force in (
+            ("a", fa, self.a2h, "old", old), ("b", fb, self.b2h, "new", new),
+        ):
+            if force is None:
+                continue
+            for atoms, params in spec.read(force[0]):
+                h = tuple(remap[i] for i in atoms)
+                if self._classify(h) == dummy_kind:
+                    spec.add(dummy_force, h, params)
                 else:
-                    core_a.setdefault(_angle_key(*h), []).append((t0._value, kk._value))
-        if fb is not None:
-            f = fb[0]
-            for idx in range(f.getNumAngles()):
-                i, j, k, t0, kk = f.getAngleParameters(idx)
-                h = (self.b2h[i], self.b2h[j], self.b2h[k])
-                if self._classify(h) == "new":
-                    new.addAngle(*h, t0, kk)
-                else:
-                    core_b.setdefault(_angle_key(*h), []).append((t0._value, kk._value))
-        for key in sorted(set(core_a) | set(core_b)):
-            la, lb = core_a.get(key, []), core_b.get(key, [])
+                    core[side].setdefault(spec.key(*h), []).append(params)
+        for key in sorted(set(core["a"]) | set(core["b"])):
+            la, lb = core["a"].get(key, []), core["b"].get(key, [])
             if _term_lists_close(la, lb):
-                for t0, kk in la:
-                    shared.addAngle(*key, t0, kk)
+                for params in la:
+                    spec.add(shared, key, params)
             else:
-                for t0, kk in la:
-                    mixed.addAngle(*key, [0.0, t0, kk])
-                for t0, kk in lb:
-                    mixed.addAngle(*key, [1.0, t0, kk])
-                self._count("angles_mixed")
-        self._install(system, shared, GROUP_SHARED, "angles_shared", shared.getNumAngles())
-        self._install(system, old, GROUP_DUMMY_OLD, "angles_dummy_old", old.getNumAngles())
-        self._install(system, new, GROUP_DUMMY_NEW, "angles_dummy_new", new.getNumAngles())
-        self._install(system, mixed, GROUP_SHARED, None, mixed.getNumAngles())
-
-    def _add_torsions(self, system, fa, fb) -> None:
-        mm = self.mm
-        shared, old, new = mm.PeriodicTorsionForce(), mm.PeriodicTorsionForce(), mm.PeriodicTorsionForce()
-        mixed = mm.CustomTorsionForce(
-            "mix*k*(1+cos(periodicity*theta-phase)); mix = (1-side)*(1-fep_core) + side*fep_core")
-        for p in ("side", "periodicity", "phase", "k"):
-            mixed.addPerTorsionParameter(p)
-        mixed.addGlobalParameter("fep_core", STATE_A["fep_core"])
-        core_a: dict[tuple, list] = {}
-        core_b: dict[tuple, list] = {}
-        if fa is not None:
-            f = fa[0]
-            for idx in range(f.getNumTorsions()):
-                i, j, k, m, n, phase, kk = f.getTorsionParameters(idx)
-                h = (self.a2h[i], self.a2h[j], self.a2h[k], self.a2h[m])
-                if self._classify(h) == "old":
-                    old.addTorsion(*h, n, phase, kk)
-                else:
-                    core_a.setdefault(_torsion_key(*h), []).append((float(n), phase._value, kk._value))
-        if fb is not None:
-            f = fb[0]
-            for idx in range(f.getNumTorsions()):
-                i, j, k, m, n, phase, kk = f.getTorsionParameters(idx)
-                h = (self.b2h[i], self.b2h[j], self.b2h[k], self.b2h[m])
-                if self._classify(h) == "new":
-                    new.addTorsion(*h, n, phase, kk)
-                else:
-                    core_b.setdefault(_torsion_key(*h), []).append((float(n), phase._value, kk._value))
-        for key in sorted(set(core_a) | set(core_b)):
-            la, lb = core_a.get(key, []), core_b.get(key, [])
-            if _term_lists_close(la, lb):
-                for n, phase, kk in la:
-                    shared.addTorsion(*key, int(n), phase, kk)
-            else:
-                for n, phase, kk in la:
-                    mixed.addTorsion(*key, [0.0, n, phase, kk])
-                for n, phase, kk in lb:
-                    mixed.addTorsion(*key, [1.0, n, phase, kk])
-                self._count("torsions_mixed")
-        self._install(system, shared, GROUP_SHARED, "torsions_shared", shared.getNumTorsions())
-        self._install(system, old, GROUP_DUMMY_OLD, "torsions_dummy_old", old.getNumTorsions())
-        self._install(system, new, GROUP_DUMMY_NEW, "torsions_dummy_new", new.getNumTorsions())
-        self._install(system, mixed, GROUP_SHARED, None, mixed.getNumTorsions())
+                add_mixed = getattr(mixed, f"add{spec.custom_force[6:-5]}")
+                for params in la:
+                    add_mixed(*key, [0.0, *params])
+                for params in lb:
+                    add_mixed(*key, [1.0, *params])
+                self._count(f"{spec.name}_mixed")
+        n = f"getNum{spec.custom_force[6:-5]}s"
+        self._install(system, shared, GROUP_SHARED, f"{spec.name}_shared", getattr(shared, n)())
+        self._install(system, old, GROUP_DUMMY_OLD, f"{spec.name}_dummy_old", getattr(old, n)())
+        self._install(system, new, GROUP_DUMMY_NEW, f"{spec.name}_dummy_new", getattr(new, n)())
+        self._install(system, mixed, GROUP_SHARED, None, getattr(mixed, n)())
 
     # -- CMAP (ff19SB) ------------------------------------------------------
     def _add_cmap(self, system, fa, fb) -> None:
@@ -499,27 +470,26 @@ class HybridSystemBuilder:
         terms_a = _terms(fa[0], self.a2h) if fa is not None else []
         terms_b = _terms(fb[0], self.b2h) if fb is not None else []
 
-        class _CmapSink:
-            def __init__(sink):
-                sink.force = mm.CMAPTorsionForce()
-                sink.map_index: dict[tuple, int] = {}
+        # One CMAPTorsionForce per group; each distinct map is added once.
+        forces = {k: mm.CMAPTorsionForce() for k in ("shared", "old", "new")}
+        map_index: dict[tuple[str, tuple], int] = {}
 
-            def add(sink, atoms, cmap):
-                if cmap not in sink.map_index:
-                    sink.map_index[cmap] = sink.force.addMap(cmap[0], list(cmap[1]))
-                sink.force.addTorsion(sink.map_index[cmap], *atoms)
+        def _add(group: str, atoms, cmap) -> None:
+            key = (group, cmap)
+            if key not in map_index:
+                map_index[key] = forces[group].addMap(cmap[0], list(cmap[1]))
+            forces[group].addTorsion(map_index[key], *atoms)
 
-        shared, old, new = _CmapSink(), _CmapSink(), _CmapSink()
         core_a: dict[tuple, tuple] = {}
         core_b: dict[tuple, tuple] = {}
         for atoms, cmap in terms_a:
             if self._classify(atoms) == "old":
-                old.add(atoms, cmap)
+                _add("old", atoms, cmap)
             else:
                 core_a[atoms] = cmap
         for atoms, cmap in terms_b:
             if self._classify(atoms) == "new":
-                new.add(atoms, cmap)
+                _add("new", atoms, cmap)
             else:
                 core_b[atoms] = cmap
         n_mixed = 0
@@ -527,7 +497,7 @@ class HybridSystemBuilder:
             ca, cb = core_a.get(atoms), core_b.get(atoms)
             if ca is not None and cb is not None and ca[0] == cb[0] and all(
                     _close(x, y, 1e-9) for x, y in zip(ca[1], cb[1])):
-                shared.add(atoms, ca)
+                _add("shared", atoms, ca)
                 continue
             # Residue-specific CMAP differs between the two states: mix the
             # two maps through a CustomCVForce.
@@ -543,9 +513,12 @@ class HybridSystemBuilder:
             n_mixed += 1
         if n_mixed:
             self._count("cmap_mixed", n_mixed)
-        self._install(system, shared.force, GROUP_SHARED, "cmap_shared", shared.force.getNumTorsions())
-        self._install(system, old.force, GROUP_DUMMY_OLD, "cmap_dummy_old", old.force.getNumTorsions())
-        self._install(system, new.force, GROUP_DUMMY_NEW, "cmap_dummy_new", new.force.getNumTorsions())
+        for group, force_group, count_key in (
+            ("shared", GROUP_SHARED, "cmap_shared"),
+            ("old", GROUP_DUMMY_OLD, "cmap_dummy_old"),
+            ("new", GROUP_DUMMY_NEW, "cmap_dummy_new"),
+        ):
+            self._install(system, forces[group], force_group, count_key, forces[group].getNumTorsions())
 
     def _install(self, system, force, group: int, count_key: Optional[str], n_terms: int) -> None:
         if n_terms == 0:
@@ -636,44 +609,47 @@ class HybridSystemBuilder:
             qj, sj, ej = params[j]
             return (qi * qj, 0.5 * (si + sj), math.sqrt(max(ei, 0.0) * max(ej, 0.0)))
 
+        # Dummy exceptions (1-4 terms touching a disappearing / appearing
+        # atom) are switched with the dummy's own elec / sterics parameters.
+        dummy_switch = {"old": (exc_a, "fep_elec_old", "fep_sterics_old"),
+                        "new": (exc_b, "fep_elec_new", "fep_sterics_new")}
         for key in sorted(set(exc_a) | set(exc_b)):
             i, j = key
-            pa, pb = exc_a.get(key), exc_b.get(key)
             cat = self._classify(key)
             exception_pairs.add(key)
-            if cat == "old":
-                qp, s, e = pa
+            if cat in dummy_switch:
+                source, elec, sterics = dummy_switch[cat]
+                qp, s, e = source[key]
                 idx = nb.addException(i, j, 0.0, _safe_sigma(s, e), 0.0)
                 if qp != 0.0:
-                    nb.addExceptionParameterOffset("fep_elec_old", idx, qp, 0.0, 0.0)
+                    nb.addExceptionParameterOffset(elec, idx, qp, 0.0, 0.0)
                 if e != 0.0:
-                    nb.addExceptionParameterOffset("fep_sterics_old", idx, 0.0, 0.0, e)
-                self._count("exceptions_dummy_old")
-            elif cat == "new":
-                qp, s, e = pb
-                idx = nb.addException(i, j, 0.0, _safe_sigma(s, e), 0.0)
-                if qp != 0.0:
-                    nb.addExceptionParameterOffset("fep_elec_new", idx, qp, 0.0, 0.0)
-                if e != 0.0:
-                    nb.addExceptionParameterOffset("fep_sterics_new", idx, 0.0, 0.0, e)
-                self._count("exceptions_dummy_new")
-            else:
-                if pa is None or pb is None:
-                    # Topological distance between two shared atoms changed
-                    # (ring closure): the pair is excluded / 1-4 in one state
-                    # only. Interpolate towards the plain pair interaction.
-                    self.report["asymmetric_core_exceptions"] += 1
-                    if pa is None:
-                        pa = _full_pair(params_a, i, j)
-                    else:
-                        pb = _full_pair(params_b, i, j)
-                qp, s, e = pa
-                idx = nb.addException(i, j, qp, _safe_sigma(s, e), e)
-                if not _params_close(pa, pb):
-                    nb.addExceptionParameterOffset(
-                        "fep_core", idx, pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2])
-                    self._count("exceptions_core_interpolated")
-                self._count("exceptions_core")
+                    nb.addExceptionParameterOffset(sterics, idx, 0.0, 0.0, e)
+                self._count(f"exceptions_dummy_{cat}")
+                continue
+            pa, pb = exc_a.get(key), exc_b.get(key)
+            if pa is None or pb is None:
+                # Topological distance between two shared atoms changed (ring
+                # closure): the pair is excluded / 1-4 in one state only.
+                # Interpolate towards the plain pair interaction. Note this
+                # exception is a direct Coulomb term (no PME reciprocal part),
+                # so the end point differs from the plain System by the erf
+                # part of one pair; the builder reports it as a warning.
+                self.report["asymmetric_core_exceptions"] += 1
+                pa = pa or _full_pair(params_a, i, j)
+                pb = pb or _full_pair(params_b, i, j)
+            qp, s, e = pa
+            idx = nb.addException(i, j, qp, _safe_sigma(s, e), e)
+            if not _params_close(pa, pb):
+                nb.addExceptionParameterOffset(
+                    "fep_core", idx, pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2])
+                self._count("exceptions_core_interpolated")
+            self._count("exceptions_core")
+        if self.report["asymmetric_core_exceptions"]:
+            self.report["warnings"].append(
+                f"{self.report['asymmetric_core_exceptions']} shared-atom pair(s) are excluded / 1-4 in one state "
+                "only; they are interpolated as direct Coulomb exceptions, which misses the PME reciprocal "
+                "part of that pair at one end point (small, cancels between legs).")
         # Disappearing and appearing atoms never interact.
         for ho in self.mapping.unique_old_hybrid:
             for hn in self.mapping.unique_new_hybrid:

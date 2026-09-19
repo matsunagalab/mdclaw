@@ -69,7 +69,8 @@ def extract_tripeptide(
 
     lines = src.read_text().splitlines()
     protein = [ln for ln in lines if ln.startswith(("ATOM  ", "HETATM")) and _is_standard_protein_atom(ln)]
-    chain_lines = [ln for ln in protein if ln[21] == spec.chain_id]
+    chain = spec.chain_id or " "  # blank chain ids are stored as a space in PDB column 22
+    chain_lines = [ln for ln in protein if ln[21] == chain]
     order: list[tuple[str, int, str]] = []
     for ln in chain_lines:
         key = _residue_key(ln)
@@ -79,7 +80,7 @@ def extract_tripeptide(
                     "pdb_file", f"chain {spec.chain_id} lists residue {key[1]}{key[2]} in two places; "
                     "extract from a cleaned protein PDB", code="fep_tripeptide_extraction_failed")}
             order.append(key)
-    target = (spec.chain_id, spec.resseq, spec.icode or "")
+    target = (chain, spec.resseq, spec.icode or "")
     if target not in order:
         return {**result, **create_validation_error(
             "mutation", f"{spec.label}: residue not found in chain {spec.chain_id}", code="fep_mutation_residue_not_found")}
@@ -106,7 +107,7 @@ def extract_tripeptide(
     body = []
     for serial, ln in enumerate(kept_lines, start=1):
         body.append(f"ATOM  {serial:5d}{ln[11:]}")
-    residues = [f"{k[0]}:{_resname_of(kept_lines, k)}{k[1]}{k[2]}" for k in keep]
+    residues = [f"{k[0].strip()}:{_resname_of(kept_lines, k)}{k[1]}{k[2]}" for k in keep]
     out.write_text("\n".join([
         f"REMARK   1 MDCLAW extract_tripeptide from {src.name} around {spec.label} (flank={flank})",
         "REMARK   1 uncapped fragment: run prepare_complex --cap-termini before solvation",

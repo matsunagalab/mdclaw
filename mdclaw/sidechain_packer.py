@@ -220,6 +220,16 @@ def read_protein_and_cap_residues(pdb_file: str | Path) -> list[ProteinResidue]:
 _MUTATION_RE = re.compile(r"^(?:(?P<chain>[^:]):)?(?P<from>[A-Z])(?P<resseq>-?\d+)(?P<icode>[A-Z]?)(?P<to>[A-Z])$")
 
 
+class MutationSpecError(ValueError):
+    """``parse_mutation_specs`` failure with a stable ``code``:
+    ``mutation_spec_invalid`` / ``mutation_residue_not_found`` /
+    ``mutation_ambiguous`` / ``mutation_wt_mismatch``."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 def parse_mutation_specs(
     mutation_specs: list[str] | tuple[str, ...] | None,
     residues: list[ProteinResidue],
@@ -238,7 +248,8 @@ def parse_mutation_specs(
             continue
         match = _MUTATION_RE.match(spec)
         if not match:
-            raise ValueError(
+            raise MutationSpecError(
+                "mutation_spec_invalid",
                 f"Invalid mutation spec '{raw}'. Use L99A or A:L99A notation "
                 f"(chain-qualified). Pass several mutations as separate tokens, "
                 f"e.g. --mutations L99A M102Q."
@@ -246,7 +257,7 @@ def parse_mutation_specs(
         from_code = match.group("from")
         to_code = match.group("to")
         if from_code not in AA_ONE_TO_THREE or to_code not in AA_ONE_TO_THREE:
-            raise ValueError(f"Unsupported amino-acid code in mutation spec '{raw}'")
+            raise MutationSpecError("mutation_spec_invalid", f"Unsupported amino-acid code in mutation spec '{raw}'")
         chain = match.group("chain")
         resseq = int(match.group("resseq"))
         icode = match.group("icode") or ""
@@ -257,16 +268,18 @@ def parse_mutation_specs(
             and (chain is None or residue.chain.upper() == chain.upper())
         ]
         if not candidates:
-            raise ValueError(f"Mutation target not found in input PDB: {raw}")
+            raise MutationSpecError("mutation_residue_not_found", f"Mutation target not found in input PDB: {raw}")
         if chain is None and len(candidates) > 1:
             chains = ", ".join(sorted({res.chain or "<blank>" for res in candidates}))
-            raise ValueError(
+            raise MutationSpecError(
+                "mutation_ambiguous",
                 f"Mutation target '{raw}' is ambiguous across chains: {chains}. "
                 "Use chain-qualified notation such as A:L99A."
             )
         residue = candidates[0]
         if residue.one_letter != from_code:
-            raise ValueError(
+            raise MutationSpecError(
+                "mutation_wt_mismatch",
                 f"Mutation spec '{raw}' expects {from_code} at {residue.chain or '<blank>'}:"
                 f"{residue.resseq}{residue.icode}, but input has {residue.one_letter}"
             )
