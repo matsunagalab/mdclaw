@@ -602,9 +602,6 @@ class TestVacuumPipeline:
                               discard_fraction=0.0, subsample=False)
         assert rec_res["success"], rec_res
         assert rec_res["n_samples_per_state"] == [20, 20, 20]
-        # a continued window's record points back at the state it started from
-        wj2 = json.loads((Path(recover["fep_windows"]).parent / "window_02" / "window.json").read_text())
-        assert not Path(wj2["restarted_from"] or "x").is_absolute() or wj2["restarted_from"] is None
 
         # a failure on the very first window still leaves the carried-over
         # windows in a partial index on disk
@@ -645,6 +642,13 @@ class TestVacuumPipeline:
         assert len(idx2["windows"][0]["segments"]) == 2 and len(idx2["windows"][2]["segments"]) == 1
         assert idx2["windows"][0]["start_minimisation"] is None  # continued, not restarted from eq
         assert Path(idx2["windows"][0]["segments"][0]["energies_file"]).is_file()
+        # a continued window's own record points back at the parent state it
+        # started from, as a path relative to that window's directory
+        w0_dir = Path(second["fep_windows"]).parent / "window_00"
+        wj0 = json.loads((w0_dir / "window.json").read_text())
+        assert wj0["restarted_from"] and not Path(wj0["restarted_from"]).is_absolute()
+        assert (w0_dir / wj0["restarted_from"]).resolve() == (index_file.parent / "window_00" / "state.xml").resolve()
+        assert idx2["windows"][0]["restarted_from"] == str((index_file.parent / "window_00" / "state.xml").resolve())
 
         # parenting the analysis to parent + child must not double count the parent's samples
         both = analyze_fep(fep_windows_files=[str(index_file), second["fep_windows"]],
