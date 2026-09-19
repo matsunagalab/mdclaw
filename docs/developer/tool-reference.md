@@ -566,7 +566,10 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   Systems (`fep/hybrid.py`), relaxes the appearing atoms at state B with the
   rest frozen, and checks that the hybrid reproduces both end-state energies
   at λ=0/1 (`endpoint_tolerance_kj_mol`, default 1). Writes the ordinary XML
-  triple plus `hybrid_manifest.json` — the single record of the build
+  triple (the hybrid `topology.pdb` keeps the end states' Amber
+  protonation-state / water names: `PDBFile` normalises them on load, so
+  `restore_topology_resnames_from_pdb` puts them back on the loaded
+  Topologies before the hybrid is derived) plus `hybrid_manifest.json` — the single record of the build
   (mapping, force counts, end-state files, relaxation and validation
   energies; the tool result and node metadata carry only a summary) — and
   `fep_protocol.json` (`n_windows` / explicit `lambda_schedule`, a strictly

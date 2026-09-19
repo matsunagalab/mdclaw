@@ -210,6 +210,35 @@ def test_restore_by_key_missing_source_returns_none(tmp_path):
 
 
 # --- shared min/eq/prod exporter: real OpenMM load (normalizes) -> restore ----
+def test_restore_topology_resnames_puts_source_names_on_the_loaded_object(tmp_path):
+    pytest.importorskip("openmm")
+    from openmm.app import PDBFile
+
+    from mdclaw.structure.pdb_utils import restore_topology_resnames_from_pdb
+
+    # A solvated topology.pdb: the water reuses the protein's chain and residue
+    # number, so a by-key overlay would refuse; atom order is still exact.
+    src = tmp_path / "topology.pdb"
+    src.write_text("\n".join([
+        _atom(1, "N", "HIE", "A", 11), _atom(2, "CA", "HIE", "A", 11),
+        _atom(3, "N", "CYX", "A", 12), _atom(4, "CA", "CYX", "A", 12),
+        _atom(5, "O", "WAT", "A", 11), _atom(6, "H1", "WAT", "A", 11), _atom(7, "H2", "WAT", "A", 11),
+        "END", "",
+    ]))
+    top = PDBFile(str(src)).topology
+    assert [r.name for r in top.residues()] == ["HIS", "CYS", "HOH"]   # the loader normalised them
+    report = restore_topology_resnames_from_pdb(top, src)
+    assert report == {"n_atoms": 7, "renamed_residues": 3}
+    assert [r.name for r in top.residues()] == ["HIE", "CYX", "WAT"]
+    # a second pass is a no-op; a count mismatch changes nothing and says so
+    assert restore_topology_resnames_from_pdb(top, src) == {"n_atoms": 7, "renamed_residues": 0}
+    short = tmp_path / "short.pdb"
+    short.write_text("\n".join([_atom(1, "N", "GLH", "A", 11), "END", ""]))
+    assert restore_topology_resnames_from_pdb(top, short) is None
+    assert [r.name for r in top.residues()] == ["HIE", "CYX", "WAT"]
+    assert restore_topology_resnames_from_pdb(top, tmp_path / "missing.pdb") is None
+
+
 def test_render_simulation_pdb_restores_names_after_openmm_load(tmp_path):
     pytest.importorskip("openmm")
     from openmm.app import PDBFile

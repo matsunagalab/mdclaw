@@ -26,7 +26,8 @@ NODE_TYPE_ALIASES = {
     "solvation": "solv", "solvate": "solv", "solvent": "solv",
     "preparation": "prep", "prepare": "prep",
     "analysis": "analyze", "analyse": "analyze",
-    "alchemical": "fep", "lambda": "fep", "window": "fep", "fep_window": "fep",
+    # Only fep-specific words: "window" / "lambda" are too generic for a shared alias table.
+    "alchemical": "fep", "fep_window": "fep",
 }
 
 # Words agents invent from tool names, mapped to the stage that does that work

@@ -16,8 +16,9 @@ EXPECTED and, for an export that round-trips OpenMM-normalized names, restore
 them after the write (``restore_resnames_from_source_pdb`` /
 ``restore_resnames_by_residue_key`` /
 ``restore_solute_identity_by_prefix`` /
-``render_simulation_pdb_preserving_resnames``) — or you removed a helper a
-``restore`` site relied on.
+``render_simulation_pdb_preserving_resnames``), or on the loaded Topology
+before deriving another one from it (``restore_topology_resnames_from_pdb``)
+— or you removed a helper a ``restore`` site relied on.
 """
 
 from pathlib import Path
@@ -29,6 +30,7 @@ MDCLAW = Path(__file__).resolve().parent.parent / "mdclaw"
 RESTORE_HELPERS = (
     "restore_resnames_from_source_pdb",
     "restore_resnames_by_residue_key",
+    "restore_topology_resnames_from_pdb",
     "restore_solute_identity_by_prefix",
     "render_simulation_pdb_preserving_resnames",
     "preserve_long_resnames_in_pdb_text",
@@ -63,6 +65,10 @@ EXPECTED = {
     # DNA/RNA chain (names OpenMM does not normalize) before the hydrogen
     # rebuild reads it back.
     "structure/clean_protein.py": (5, "restore"),
+    # The hybrid topology.pdb is derived from PDBFile-loaded end states (atoms
+    # appended to one residue), so the names are restored on the loaded
+    # Topology objects before the derivation rather than on the text after.
+    "fep/build.py": (1, "restore"),
 }
 
 

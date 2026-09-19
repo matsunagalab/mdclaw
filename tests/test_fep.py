@@ -702,3 +702,65 @@ class TestVacuumPipeline:
                       temperature_kelvin=310.0, output_dir=str(tmp_path / "run"))
         assert hot["success"] is False and hot["code"] == "fep_windows_incompatible"
         assert "310.0 K" in hot["errors"][0]
+
+    def test_hybrid_topology_pdb_keeps_amber_variant_names(self, tmp_path):
+        """``_assemble_hybrid`` / ``_write_artifacts`` on vacuum end states whose
+        ``topology.pdb`` spells the Amber protonation-state name (HIE): the
+        loader normalises it to HIS, the hybrid must write HIE again."""
+        import io
+
+        openmm = pytest.importorskip("openmm")
+        from openmm import app, unit
+
+        from mdclaw.fep.build import _Inputs, _assemble_hybrid, _write_artifacts
+        from mdclaw.fep.mutant import MutationSpec
+
+        ff = app.ForceField("amber14-all.xml")
+        endstates: dict = {}
+        for label, resname in (("wt", "HIS"), ("mut", "ALA")):
+            top, pos = TestHybridVacuum._peptide(resname, tmp_path)
+            system = ff.createSystem(top, nonbondedMethod=app.NoCutoff, constraints=app.HBonds)
+            sim = app.Simulation(top, system, openmm.VerletIntegrator(0.001), openmm.Platform.getPlatformByName("Reference"))
+            sim.context.setPositions(pos)
+            sim.minimizeEnergy(maxIterations=200)
+            state = sim.context.getState(getPositions=True, getVelocities=True, getEnergy=True)
+            d = tmp_path / "endstates" / label
+            d.mkdir(parents=True)
+            buf = io.StringIO()
+            app.PDBFile.writeFile(top, state.getPositions(), buf, keepIds=True)
+            # the topo contract writes the Amber name; PDBFile will read it back as HIS
+            text = buf.getvalue().replace(" HIS A", " HIE A")
+            (d / "topology.pdb").write_text(text)
+            (d / "system.xml").write_text(openmm.XmlSerializer.serialize(system))
+            (d / "state.xml").write_text(openmm.XmlSerializer.serialize(state))
+            endstates[label] = {"system_xml": str(d / "system.xml"), "topology_pdb": str(d / "topology.pdb"),
+                                "state_xml": str(d / "state.xml"), "system_net_charge_e": 0.0,
+                                "parameters": {}, "forcefield_provenance": None, "solvent_type": "vacuum"}
+        assert " HIE A" in Path(endstates["wt"]["topology_pdb"]).read_text()
+        spec = MutationSpec(chain_id="A", resseq=2, icode="", wt_resname="HIE", mut_resname="ALA", label="A:H2A")
+        asm = _assemble_hybrid(endstates, spec, softcore_alpha=0.5, endpoint_tolerance_kj_mol=1.0)
+        assert asm.validation["passed"], asm.validation
+        assert [r.name for r in asm.top_a.residues()] == ["ACE", "HIE", "NME"]
+        assert asm.build.mapping.residue_old_name == "HIE" and asm.build.mapping.residue_new_name == "ALA"
+
+        out = tmp_path / "out"
+        out.mkdir()
+        inputs = _Inputs(pdb_file=tmp_path / "x.pdb", forcefield="amber14", water_model=None, box_dimensions=None,
+                         is_membrane=False, ligand_chemistry=None, disulfide_bonds=None)
+        written = _write_artifacts(asm, endstates, spec, {"backend": "test", "mutant_pdb": "x"},
+                                   windows_from_schedule("0,0.5,1"), inputs, out, output_name="system",
+                                   softcore_alpha=0.5, hmr=False, warnings=[])
+        # (PDBFile writes non-standard names such as HIE as HETATM records, like every topo contract file)
+        records = [ln for ln in written["files"]["topology_pdb"].read_text().splitlines()
+                   if ln.startswith(("ATOM  ", "HETATM"))]
+        names = {ln[17:20] for ln in records}
+        assert "HIE" in names and "HIS" not in names
+        # the appended ALA atoms sit inside the HIE residue, so it holds every atom that is not ACE / NME
+        hie_atoms = [ln for ln in records if ln[17:20] == "HIE"]
+        assert len(hie_atoms) == asm.build.mapping.n_hybrid - sum(1 for r in asm.top_a.residues() if r.name != "HIE"
+                                                                   for _ in r.atoms())
+        assert written["manifest"]["mapping"]["residue"]["old_name"] == "HIE"
+        # the loader still reads the file (names are legal), and the count matches the System
+        reloaded = app.PDBFile(str(written["files"]["topology_pdb"]))
+        assert reloaded.topology.getNumAtoms() == asm.build.system.getNumParticles()
+        del unit

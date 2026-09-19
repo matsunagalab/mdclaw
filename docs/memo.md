@@ -7,6 +7,18 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-19 — FEP 干渉レビュー: hybrid `topology.pdb` の残基名正規化（pinned guard 赤）と SST2 の同根の穴
+
+FEP 以外への干渉を調べたレビューで、`tests/test_pdb_export_resname_guard.py::test_pdb_writefile_inventory_is_pinned` が赤になる 1 件が出た。根は `hybrid_topology()` が `PDBFile(wt.topology.pdb).topology` の残基名をコピーすること: ローダーが HIE/CYX/ASH/GLH/LYN/WAT → HIS/CYS/ASP/GLU/LYS/HOH に正規化するので、`build_amber_system` の `topology.pdb` が復元している変異名が hybrid の `topology.pdb` では失われる（Trp-cage の開発 run では変異名残基が無く、水は溶媒和段で既に HOH だったため見えなかった）。物理は `system.xml` なので無関係、影響は md-report の Methods（プロトン化状態）・resname 選択・deposit・可視化。
+
+**レビューの提案（`restore_resnames_by_residue_key` で書き戻し後にテキスト復元）は実際には効かない。** 実データで確認: 溶媒和済み `topology.pdb` は水を蛋白質と同じ chain A・残基番号 1.. で振るため、W6A folded の 20 蛋白質残基キーは全部が水と衝突（a6w_smoke も 5/5）。キー復元は曖昧キーを検出すると全体を拒否して `None` を返すので、何も復元されずに終わる。代わりに **`restore_topology_resnames_from_pdb(topology, source_pdb)`** を `structure/pdb_utils.py` に追加した: 元 PDB の ATOM/HETATM 残基名を原子順で読み、ロード済み Topology オブジェクトの残基名に戻す（`PDBFile` は原子順と個数を保つので正確; 個数不一致なら `None` で何も変えない）。`_assemble_hybrid` で両端状態の Topology にかけてから mapping / hybrid 派生をするので、hybrid `topology.pdb` も manifest の `old_name`/`new_name` も変異名を保つ。guard の `RESTORE_HELPERS` に追加、`"fep/build.py": (1, "restore")` を pin。テスト: `test_restore_topology_resnames_puts_source_names_on_the_loaded_object`（水が蛋白質と同キーの例で HIE/CYX/WAT を戻す、再適用は no-op、個数不一致は None）、`TestVacuumPipeline::test_hybrid_topology_pdb_keeps_amber_variant_names`（真空 HIE→ALA を `_assemble_hybrid` → `_write_artifacts` に通し、hybrid PDB が HIE で HIS を含まないこと、HETATM 記録数が hybrid 残基の原子数と一致すること、再ロードで粒子数が System と一致すること）。
+
+同じ guard は origin/main の時点で既に赤だった: `simulation/tempering.py`（SST2、`7ee4be8`）が `final_structure.pdb` を `PDBFile` ロード済み topology から直接 `writeFile` していて未登録・復元なし。`run_production` と同じ `render_simulation_pdb_preserving_resnames`（名前復元 + 最終 state の box + 周期系ならイメージング）に置き換えた。これで guard は green。
+
+小さい 2 件: `skills/md-analyze/SKILL.md` の scope 列挙に `alchemical` の存在を注記（md-fep の `analyze_fep` 用であり md-analyze は使わない）。`NODE_TYPE_ALIASES` から汎用語 `window` / `lambda` を外し `alchemical` / `fep_window` のみに（`create_node --node-type window` が黙って fep になるのを防ぐ）。
+
+テスト: tests/ 全体（slow 除外）2274 pass / 22 skipped、fep + node + envelope 282 pass、ruff clean。
+
 ## 2026-09-19 — FEP 再レビュー対応（N1–N9）: 親+子の二重計上と、回収／部分延長で窓が落ちる件
 
 `a8b3987` の再レビューで新規に挙がった 9 件に対応。Medium の 2 件はいずれも索引の扱い。

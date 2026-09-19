@@ -189,6 +189,41 @@ def restore_residue_numbering_from_reference(
     return str(target_path)
 
 
+def restore_topology_resnames_from_pdb(topology: Any, source_pdb: str | Path) -> Optional[dict]:
+    """Put a PDB's residue names back on the ``openmm.app.Topology`` that was
+    loaded from it, matched by atom order.
+
+    ``PDBFile`` normalizes Amber protonation-state and water names on load
+    (``HIE``/``HID``/``HIP``->``HIS``, ``CYX``->``CYS``, ``ASH``->``ASP``,
+    ``GLH``->``GLU``, ``LYN``->``LYS``, ``WAT``->``HOH``). Code that goes on to
+    *derive* a new Topology from the loaded one (the FEP hybrid topology, which
+    appends atoms to one residue) cannot restore the names on the text it
+    writes with the by-index helper (atom counts differ) nor with the by-key
+    helper (a solvated ``topology.pdb`` numbers its waters over the protein's
+    residue numbers in the same chain, so every protein key is ambiguous and
+    the overlay refuses). Fixing the names on the loaded object, before the
+    derivation, is exact: ``PDBFile`` keeps the record order and count.
+
+    Returns ``{"n_atoms", "renamed_residues"}`` or ``None`` when the source
+    cannot be read or its ``ATOM``/``HETATM`` count differs from the topology
+    (nothing is changed then).
+    """
+    try:
+        lines = Path(source_pdb).read_text().splitlines()
+    except OSError:
+        return None
+    names = [line.ljust(21)[17:21].strip().upper() for line in lines if line.startswith(("ATOM  ", "HETATM"))]
+    atoms = list(topology.atoms())
+    if len(names) != len(atoms) or not names:
+        return None
+    renamed: set = set()
+    for atom, name in zip(atoms, names):
+        if name and atom.residue.name != name:
+            atom.residue.name = name
+            renamed.add(atom.residue.index)
+    return {"n_atoms": len(atoms), "renamed_residues": len(renamed)}
+
+
 def restore_resnames_from_source_pdb(
     pdb_text: str, source_pdb: str | Path, *, atom_indices: Any = None
 ) -> Optional[str]:

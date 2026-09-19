@@ -74,7 +74,7 @@ Confirm these fields before running analysis:
 | Parameter | Value |
 |-----------|-------|
 | Target | job directory |
-| Analysis data scope | segment, production_chain, or comparison |
+| Analysis data scope | segment, production_chain, or comparison (`alchemical` exists for fep parents; that is `md-fep`'s `analyze_fep`, not this skill) |
 | Analysis subjects | optional for segment/production_chain; required for comparison |
 | Comparison mapping | required for different chains/topologies; initial types: `residue_number`, `atom_selection` |
 | Validation | require `analysis_data_scope`; comparison is binary/pairwise with two unique subject `label`s |

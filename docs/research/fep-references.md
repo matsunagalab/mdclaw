@@ -57,6 +57,7 @@ MDClaw の既存スパインに `fep` を挿すだけで表現できると判断
 | 非対称 core exception | 片側の状態でのみ excluded / 1-4 な core 対は、直接 Coulomb の exception で通常対相互作用へ補間する（`asymmetric_core_exceptions` として警告） | この exception には PME の reciprocal 項が無いので、端点は erf 分だけ元 System とずれる。backbone+CB core では実質発生しない経路。 |
 | 分散補正 | 端点検証時は全 System で無効化。**既知の近似**: ダミーは `NonbondedForce` で ε=0、soft-core force は long-range correction 無しなので、変異側鎖分の LJ tail は全 λ で欠落する（ΔG から tail_B − tail_A が抜ける） | 側鎖数原子分で小さく、両 leg で同じ項なので ddG では相殺する。 |
 | `topology.pdb` の CONECT | hybrid 残基は WT の残基名を保つため、`PDBFile.writeFile` は追加原子の結合を CONECT に書かない（標準残基名は結合をテンプレートから推定する規約） | 物理は `system.xml` にあり影響はイメージング・可視化側のみ。既知の制限として `hybrid_topology` docstring に記載。 |
+| `topology.pdb` の残基名 | 端状態の `topology.pdb` を `PDBFile` で読むと HIE/CYX/ASH/GLH/LYN/WAT が HIS/CYS/ASP/GLU/LYS/HOH に正規化されるので、hybrid Topology を派生する前に `restore_topology_resnames_from_pdb`（原子順で名前を戻す）を両端状態にかける | 溶媒和済み `topology.pdb` では水が蛋白質と同じ chain・残基番号を使うため、残基キーによる復元（`restore_resnames_by_residue_key`）は全キーが曖昧で拒否される。原子順は `PDBFile` が保つので正確。 |
 | 窓の開始配置 | eq（λ=0）状態から始める窓は、その窓の λ で `LocalEnergyMinimizer` を短く（200 反復）かけてから平衡化する（`run_fep`） | eq 中 appearing 原子はゴーストで溶媒がその体積に入り込むため、λ≥0.75 の hard LJ で始めると重なりから non-finite になる。fep 親から継続する窓は不要。NaN は timestep 半減で 1 回再試行（`nan_retry`）。 |
 | ダミー緩和 | 構築後、appearing 原子だけを状態 B で最小化（他は質量 0、制約は剛い調和結合に置換） | HPacker/PDBFixer 由来の側鎖はそのままでは歪んでいることがある（GLY→PRO で 8×10⁴ kJ/mol）。 |
 | 端点検証 | λ=0 / λ=1 で hybrid（group 0+ダミー bonded+3）と元 System の差 ≤ 1 kJ/mol | OpenFE の品質基準。CUDA 単精度で 0.1 kJ/mol 程度の差は正常。 |

@@ -92,6 +92,11 @@ def locate_residue_index(topology, chain_id: str, residue_id: str) -> int:
 def hybrid_topology(top_a, top_b, mapping: HybridMapping):
     """WT topology with the appearing atoms appended to the mutated residue.
 
+    Residue names are copied from ``top_a``; the caller restores the
+    end-state ``topology.pdb`` names on it first (``PDBFile`` normalises
+    HIE/CYX/ASH/... on load), so the hybrid ``topology.pdb`` carries the same
+    protonation-state names as every other topo node's.
+
     Known limitation: the residue keeps its wild-type name, and
     ``PDBFile.writeFile`` emits no CONECT records for standard residue names,
     so the appended atoms are unbonded when the PDB is re-read by tools that
@@ -297,9 +302,18 @@ def _assemble_hybrid(endstates: dict, spec: MutationSpec, *, softcore_alpha: flo
     from openmm import unit
     from openmm.app import PDBFile
 
+    from mdclaw.structure.pdb_utils import restore_topology_resnames_from_pdb
+
     try:
         top_a = PDBFile(endstates["wt"]["topology_pdb"]).topology
         top_b = PDBFile(endstates["mut"]["topology_pdb"]).topology
+        # PDBFile normalised HIE/CYX/ASH/GLH/LYN/WAT on load; the hybrid
+        # Topology copies residue names from these objects, so put the
+        # end-state topology.pdb names back first (atom order, exact).
+        for top, built in ((top_a, endstates["wt"]), (top_b, endstates["mut"])):
+            if restore_topology_resnames_from_pdb(top, built["topology_pdb"]) is None:
+                raise MappingError(code="fep_environment_mismatch",
+                                   message=f"{built['topology_pdb']} does not match the Topology loaded from it")
         sys_a = openmm.XmlSerializer.deserialize(Path(endstates["wt"]["system_xml"]).read_text())
         sys_b = openmm.XmlSerializer.deserialize(Path(endstates["mut"]["system_xml"]).read_text())
         state_a = openmm.XmlSerializer.deserialize(Path(endstates["wt"]["state_xml"]).read_text())

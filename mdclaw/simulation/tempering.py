@@ -512,14 +512,25 @@ def run_sst2(
         with open(out_dir / "tempering.json", "w") as fh:
             json.dump(sidecar, fh, indent=2)
 
-        # Final structure (PDB) for the analysis stage.
+        # Final structure (PDB) for the analysis stage. Same export path as
+        # min / eq / prod: PDBFile normalised the Amber protonation-state and
+        # water names when it loaded topology.pdb, so restore them from that
+        # source and write the box the coordinates belong to (the final
+        # state's, not the build-time CRYST1 the loaded topology carries).
         from openmm import XmlSerializer
         from openmm.app import PDBFile
+
+        from mdclaw.structure.pdb_utils import render_simulation_pdb_preserving_resnames
+
         with open(out_dir / "state.xml") as fh:
             final_state = XmlSerializer.deserialize(fh.read())
         topology = PDBFile(topology_pdb_file).topology
-        with open(out_dir / "final_structure.pdb", "w") as fh:
-            PDBFile.writeFile(topology, final_state.getPositions(), fh, keepIds=True)
+        periodic = topology.getPeriodicBoxVectors() is not None
+        (out_dir / "final_structure.pdb").write_text(render_simulation_pdb_preserving_resnames(
+            topology, final_state.getPositions(), topology_pdb_file,
+            box_vectors=final_state.getPeriodicBoxVectors() if periodic else None,
+            image=periodic, warnings=result["warnings"],
+        ))
 
         summary = _summarize_report(out_dir / "tempering.csv", ladder)
         steps = int(sidecar.get("step", 0))
