@@ -7,6 +7,64 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-20 — hybrid-topology FEP の実測検証: 1MEL VHH 5 変異を NAMD/CHARMM36 参照と比較
+
+`skills/md-fep` を最初から最後まで通して、既存の NAMD+CHARMM36 の ddG ラベル
+(`~/tmp/sim2real/data/source_labels/fep/`, 生データ `/data/{odas,kazu}/vhh_fep/`)
+を再現できるかを実測した。スタディは `/home/yasu/tmp/fep_bench_vhh_1mel`、
+結果の詳細は同ディレクトリの `RESULTS.md`。
+
+**構成**: 1MEL author chain B (VHH 単体, 残基 2-133) を共有 `prep`/`solv` から
+5 本の `topo` に分岐。ff19SB + OPC, 0.15 M NaCl, 立方体 76.74 Å (62,333 atoms),
+HMR 4 fs, NPT 300 K/1 bar, 21 窓 × 2 ns/leg, MBAR。unfolded は各変異ごとに
+`extract_tripeptide` で切り出した ACE-X-X-X-NME (5,062-6,463 atoms)。
+合計サンプリング 420 ns、SLURM 28 ジョブ、失敗ゼロ、A6000 3 枚で実時間 12.5 h。
+`build_hybrid_system` 10 件すべて endpoint validation 合格 (|ΔE| ≤ 0.007 kJ/mol)、
+`analyze_fep` 10 件すべて警告なし (overlap 0.054-0.115, leg 誤差 0.24-0.46 kJ/mol)。
+
+**結果 (kcal/mol, 正 = 不安定化)**
+
+| 変異 | MDClaw | 参照 | 差 |
+|---|---:|---:|---:|
+| L113A | +6.462 ± 0.108 | +6.206 | +0.256 |
+| V48A  | +3.863 ± 0.089 | +4.198 | -0.335 |
+| S105A | +0.083 ± 0.108 | +0.018 | +0.065 |
+| V64A  | -2.262 ± 0.113 | -2.553 | +0.291 |
+| H111A | +0.559 ± 0.154 | -6.629 | **+7.188** |
+
+H111A を除く 4 点で **Pearson r = 0.9975, MAE = 0.237, RMSE = 0.258, 符号一致 4/4**。
+力場・unfolded モデル・alchemical 経路・ジスルフィドがすべて違うことを考えると、
+2 手法を区別できる精度の下限に達している。
+
+**実装が熱力学的に正しいことの直接証拠**: MDClaw の hybrid 経路 (core が CB を保持、
+3 phase、soft-core) と NAMD の dual topology (CB から丸ごと annihilate) は *leg* の
+値が大きく違うが、その差は残基種ごとの定数で ddG では相殺する。folded 側オフセット
+(MDClaw folded − `scan.dat`) と unfolded 側オフセット (MDClaw tripeptide −
+`dG_unfold[wt]`) を比べると Leu 8.961/8.705、Val 19.551/19.886 と 20.021/19.730、
+Ser 13.099/13.034 と 0.06-0.34 kcal/mol で一致する。この不一致量がそのまま ddG 誤差。
+同一変換 (Val→Ala、写像も core 7 / 消失 9 / 出現 3 で一致) の V48A と V64A は
+unfolded leg が 0.156 kcal/mol 以内で一致し、参照が主張する 6.751 kcal/mol の差を
+6.125 で再現した。L113A は 1 ns → 2 ns 延長で +6.323 ± 0.148 → +6.462 ± 0.108
+(ドリフト 0.139 < 合成誤差 0.183) で time-forward にも整合。
+
+**H111A のずれは MDClaw ではなく参照ラベル側の欠陥**: His だけ folded/unfolded の
+オフセットが -2.487 と -9.674 で 7.19 ずれる。参照の unfolded leg は計算ではなく
+`/data/share/ddG.jl` の固定表 (`dG_unfold[H] = 29.0`) で、folded 側は HSD を使って
+いるのに、参照データ内に存在する capped peptide の X→Ala 実測は HSE 36.83 と
+HSP 22.45 のみで **HSD が無い**。29.0 はどちらとも一致せず両者の平均 (29.64) に近い。
+参照自身を自己整合させるには `dG_unfold[H] ≈ 21.84` が必要で、使われている値は
+7.2 kcal/mol 高い。影響するのは 844 ラベル中 4 行 (`1mel` H110A/D/Q/I、4idl には
+His-WT 行なし) だが、それらは 1mel で最も安定化側のラベル 2-5 位 (-6.6 〜 -7.9) を
+占めるので、1mel の安定化テールは実質この 1 残基の疑わしい参照値に支配されている。
+
+**参照プロトコル側のもう一つの問題**: `/data/odas/vhh_fep/1mel/3_psfgen/build.tcl` に
+`patch DISU` が無く、VHH の S-S 2 本が未結合のまま計算されている (平衡化後の SG-SG は
+C22-C96 3.76 Å, C33-C109 4.58 Å)。今回の MDClaw 側は 2 本とも形成している。
+選んだ 5 残基はいずれも Cys SG から 7 Å 以上離れており、上の一致度から見て
+少なくともこれらの位置では効いていない。
+
+---
+
 ## 2026-09-19 — FEP テスト計算エージェントからのフィードバック 7 件: 検証のうえ全件採用
 
 別エージェントが T4L/1MEL 系で Phase 1 を回した際の報告。各項目をコードと実データで裏取りしてから直した（主張どおりでなかった箇所は明記）。
