@@ -27,6 +27,23 @@ contract on the run side. min / eq / prod / analyze consume that triple via
 the DAG resolver; the run side never reconstructs a System from
 ForceField XML.
 
+## Design Principle
+
+**Skills state intent; tools enforce guardrails.**
+
+- A skill says *what to do and why*, in plain procedure a weak LLM can follow.
+  It is advice: it can be skipped, misread, or out of date.
+- A tool is the only layer that can refuse. Anything that must never happen
+  (wrong chemistry, a doomed submission, a double-run node) is checked in the
+  tool and answered with a stable `code`, a `next_action`, and the node left in
+  a recoverable state.
+- So when an agent makes a mistake, fix the tool first (guardrail, clearer
+  `next_action`), then shorten the skill. Do not patch a missing guardrail with
+  more skill prose, and prefer designs with few agent-side judgement calls over
+  ones that need a careful reader.
+
+Longer form: `docs/developer/architecture.md` (Mental Model).
+
 ## Where Things Live
 
 - `mdclaw/`: Python package and CLI dispatch. Each tool server is a
@@ -182,7 +199,10 @@ Core schema v3 rules:
   (`extract_tripeptide`, `leg_role = unfolded`), and `estimate_ddg` is the
   `comparison` analyze node over the two legs' `analyze_fep` nodes. A `prod`
   node under a hybrid topology is refused at input resolution
-  (`hybrid_topology_production_blocked`). Skill: `skills/md-fep/`; design
+  (`hybrid_topology_production_blocked`). A charge-changing mutation gets a
+  co-alchemical ion from `build_hybrid_system` (one bulk water becomes the
+  counter-ion, so both end states carry the same box charge); both legs must
+  agree on `charge_correction`. Skill: `skills/md-fep/`; design
   notes: `docs/research/fep-references.md`.
 - Each node owns `node.json`, `node.lock`, and `artifacts/`.
 - `progress.json` is a thin index plus cached summaries.

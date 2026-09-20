@@ -9,6 +9,12 @@ The skill tree lives under `skills/`; `.agents/skills/`, `.claude/skills/`, and
 `.codex/skills/` are discovery mirrors (symlinks or copies produced by
 `scripts/install-agent-skills.sh`). Edit only `skills/`.
 
+A skill states intent and procedure; it is never the safety layer. Anything
+that must not happen is enforced by a tool guardrail
+(`docs/developer/architecture.md`, "Skills State Intent; Tools Enforce
+Guardrails"). If a skill needs a long warning to keep agents out of trouble,
+the tool is missing a check.
+
 ## Layer model
 
 Every skill uses the same three tiers:

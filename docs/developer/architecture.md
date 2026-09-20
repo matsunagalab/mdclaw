@@ -23,6 +23,35 @@ The key design split is:
 - **Study planning records the scientific question, MD goal, planned jobs,
   analysis intent, and decision criteria without replacing per-job DAG state.**
 
+### Skills State Intent; Tools Enforce Guardrails
+
+This is the rule that decides where a fix goes.
+
+A skill is text an agent may skip, misread, or follow from a stale copy, and
+the agents range down to small models. So a skill carries only intent and
+procedure: what the scientific goal is, which tool expresses it, in what
+order. It never carries a safety property.
+
+A tool is code, so it is the only place a rule can actually hold. Every
+invariant lives there: inputs are resolved from the DAG rather than passed by
+the agent, a bad request is refused **before** anything runs, the refusal
+carries a stable `code` plus a concrete `next_action`, and the node stays
+`pending` (or is sealed with evidence) so the mistake is recoverable.
+
+Consequences for day-to-day work:
+
+- An agent error observed in a test run is a tool bug until proven otherwise:
+  add the guardrail or fix the misleading `next_action`, then trim the skill.
+  Adding a warning paragraph to a skill is the last resort, not the first.
+- A guardrail must name the fix, not just the violation. A refusal that points
+  nowhere (or at the wrong command) sends a weak agent into a loop.
+- Prefer refusing to warning when the outcome is certainly wrong; prefer
+  warning when a legitimate site or use case exists (see
+  `container_not_configured`). Never silently "fix" the request.
+- When choosing between feature designs, count the judgement calls left to the
+  agent. A method whose mistakes still produce a number (a bad atom mapping, a
+  wrong leg pairing) needs those choices made or checked by the tool.
+
 Deployment details live in `docs/agents/deployment.md`.
 
 ## Request Path
