@@ -744,11 +744,15 @@ def build_openmm_system(
         ]
     result["topology_notes"] = _unique_messages(result["topology_notes"])
 
-    # Coerce Pablo's int residue.id to str so PDBFile.writeFile(keepIds=True)
-    # doesn't choke on `len(int_id)`.
+    # Coerce Pablo's int residue.id / chain.id to str so
+    # PDBFile.writeFile(keepIds=True) doesn't choke on `len(int_id)` (chain ids
+    # come back as ints for solvent read from a solvated PDB).
     for res in modeller.topology.residues():
         if not isinstance(res.id, str):
             res.id = str(res.id)
+    for chain in modeller.topology.chains():
+        if not isinstance(chain.id, str):
+            chain.id = str(chain.id)
 
     _stage("serialization")
     try:

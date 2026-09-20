@@ -31,8 +31,9 @@ the drift.
 - Answering a stability question: 21 windows × 5 ns per leg, extended once if
   `dG_error_kj_mol > 1`. State the total sampling time in the answer.
 - Hydrophobic-to-small mutations (L→A, F→A, W→A) converge fastest; charged or
-  buried polar mutations and proline changes need the longer schedule and an
-  explicit statement of the finite-size caveat when net charge changes.
+  buried polar mutations and proline changes need the longer schedule. When
+  the net charge changes, state how it was treated (`charge_correction` in the
+  `build_hybrid_system` result: `coalchemical_ion`, or `none` with its caveat).
 
 ## What to report
 

@@ -38,9 +38,12 @@ Design rules (pmx / GROMACS-style single-residue hybrid):
   ``fep_core`` offsets (particles and 1-4 exceptions).
 - ff19SB CMAP terms of the mutated residue are mixed through a
   ``CustomCVForce``.
+- A charge-changing mutation turns one bulk water into a counter-ion through
+  the same ``fep_core`` offsets, so the box charge is the same at both end
+  states (:mod:`mdclaw.fep.coion`).
 
 Force groups: 0 = shared / lambda-mixed bonded, 1 = dummy-old bonded,
-2 = dummy-new bonded, 3 = nonbonded. Endpoint validation compares the
+2 = dummy-new bonded, 3 = nonbonded, 4 = co-alchemical ion tether. Endpoint validation compares the
 hybrid energy of groups {0, 3} against the plain A and B systems.
 """
 
@@ -251,6 +254,7 @@ class HybridSystemBuilder:
         mapping: HybridMapping,
         *,
         softcore_alpha: float = DEFAULT_SOFTCORE_ALPHA,
+        coalchemical_hybrid_atoms: Optional[set[int]] = None,
     ):
         import openmm  # local import keeps the module importable without OpenMM
 
@@ -259,6 +263,9 @@ class HybridSystemBuilder:
         self.system_b = system_b
         self.mapping = mapping
         self.alpha = float(softcore_alpha)
+        # Environment atoms allowed to differ between the end states: the
+        # water -> ion of a charge-changing mutation (mdclaw.fep.coion).
+        self.coion = set(coalchemical_hybrid_atoms or ())
         self.n = mapping.n_hybrid
         self.kind: list[str] = ["core"] * self.n
         for h in mapping.unique_old_hybrid:
@@ -582,7 +589,7 @@ class HybridSystemBuilder:
                 qb, sb, eb = _particle(nb_b, self.h2b[h])
                 params_a[h] = (qa, sa, ea)
                 params_b[h] = (qb, sb, eb)
-                if h not in residue_core and not _params_close((qa, sa, ea), (qb, sb, eb)):
+                if h not in residue_core and h not in self.coion and not _params_close((qa, sa, ea), (qb, sb, eb)):
                     raise HybridBuildError(
                         code="fep_environment_mismatch", message=f"environment atom (hybrid #{h}) has different nonbonded parameters in the "
                         f"two states: A={(qa, sa, ea)} B={(qb, sb, eb)}",
@@ -590,7 +597,7 @@ class HybridSystemBuilder:
                 idx = nb.addParticle(qa, sa, ea)
                 if not _params_close((qa, sa, ea), (qb, sb, eb)):
                     nb.addParticleParameterOffset("fep_core", idx, qb - qa, sb - sa, eb - ea)
-                    self._count("core_particles_interpolated")
+                    self._count("coion_particles_interpolated" if h in self.coion else "core_particles_interpolated")
 
         # Exceptions -------------------------------------------------------
         def _exceptions(force, remap):
@@ -721,9 +728,11 @@ def build_hybrid(
     mapping: HybridMapping,
     *,
     softcore_alpha: float = DEFAULT_SOFTCORE_ALPHA,
+    coalchemical_hybrid_atoms: Optional[set[int]] = None,
 ) -> HybridBuild:
     """Build the hybrid System and its starting coordinates."""
-    builder = HybridSystemBuilder(system_a, system_b, mapping, softcore_alpha=softcore_alpha)
+    builder = HybridSystemBuilder(system_a, system_b, mapping, softcore_alpha=softcore_alpha,
+                                  coalchemical_hybrid_atoms=coalchemical_hybrid_atoms)
     system = builder.build()
     positions = place_new_atom_positions(
         np.asarray(positions_a_nm, dtype=float), np.asarray(positions_b_nm, dtype=float), mapping)

@@ -94,6 +94,9 @@ def select_citations(subjects):
             if record["node_type"] == "topo" and isinstance(metadata.get("fep"), dict):
                 add("Gapsys2015pmx", subject, record, "/metadata/fep", "base_method", _FEP_DESIGN)
                 add("Beutler1994SoftCore", subject, record, "/metadata/fep", "method", _FEP_DESIGN)
+                if metadata["fep"].get("charge_correction") == "coalchemical_ion":
+                    add("Chen2018ChargeChangingFEP", subject, record, "/metadata/fep/charge_correction",
+                        "method", _FEP_DESIGN)
             analysis = metadata.get("analysis")
             if record["node_type"] == "analyze" and analysis == "fep_mbar":
                 add("Shirts2008MBAR", subject, record, "/metadata/analysis", "official_method", _PYMBAR)

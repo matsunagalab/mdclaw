@@ -350,7 +350,7 @@ def test_packaged_bibliography_matches_verified_audit():
     source = audit.read_text()
     packaged = Path(citations.__file__).with_name("references.bib").read_text()
     entries = list(re.finditer(r"@\w+\{([^,]+),\n.*?^\}", packaged, re.M | re.S))
-    assert len(entries) == len({m[1] for m in entries}) == 20
+    assert len(entries) == len({m[1] for m in entries}) == 21
     assert all(m[0] in source for m in entries)
 
 
@@ -412,8 +412,14 @@ def test_alchemical_lineage_is_reported_and_cited(tmp_path):
     assert {"Shirts2008MBAR", "Chodera2007Timeseries", "Chodera2016Equilibration", "Klimovich2015Guidelines",
             "Gapsys2015pmx", "Beutler1994SoftCore", "Seeliger2010Thermostability", "Tian2020ff19SB", "Izadi2014OPC",
             "Hopkins2015HMR"} <= selected
+    assert "Chen2018ChargeChangingFEP" not in selected  # W6A keeps the net charge
     bib = (tmp_path / "report" / "references.bib").read_text()
     assert "@article{Shirts2008MBAR" in bib and "10.1016/0009-2614(94)00397-1" in bib
+    # a charge-changing mutation built with the co-alchemical ion cites it
+    charged = tmp_path / "charged"
+    node(charged, "topo", "topo", metadata={"fep": {"mutation": "A:A14D", "charge_correction": "coalchemical_ion"}})
+    charged_keys = {e["key"] for e in generate_md_report(job_dir=str(charged))["report"]["citations"]["selected"]}
+    assert "Chen2018ChargeChangingFEP" in charged_keys
     # a plain MD subject cites none of the alchemical methods
     plain = tmp_path / "plain"
     node(plain, "prod", "prod", metadata={"hmr": True})

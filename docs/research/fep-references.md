@@ -67,6 +67,7 @@ MDClaw の既存スパインに `fep` を挿すだけで表現できると判断
 | `topology.pdb` の残基名 | 端状態の `topology.pdb` を `PDBFile` で読むと HIE/CYX/ASH/GLH/LYN/WAT が HIS/CYS/ASP/GLU/LYS/HOH に正規化されるので、hybrid Topology を派生する前に `restore_topology_resnames_from_pdb`（原子順で名前を戻す）を両端状態にかける | 溶媒和済み `topology.pdb` では水が蛋白質と同じ chain・残基番号を使うため、残基キーによる復元（`restore_resnames_by_residue_key`）は全キーが曖昧で拒否される。原子順は `PDBFile` が保つので正確。 |
 | 窓の開始配置 | eq（λ=0）状態から始める窓は、その窓の λ で `LocalEnergyMinimizer` を短く（200 反復）かけてから平衡化する（`run_fep`） | eq 中 appearing 原子はゴーストで溶媒がその体積に入り込むため、λ≥0.75 の hard LJ で始めると重なりから non-finite になる。fep 親から継続する窓は不要。NaN は timestep 半減で 1 回再試行（`nan_retry`）。 |
 | ダミー緩和 | 構築後、appearing 原子だけを状態 B で最小化（他は質量 0、制約は剛い調和結合に置換） | HPacker/PDBFixer 由来の側鎖はそのままでは歪んでいることがある（GLY→PRO で 8×10⁴ kJ/mol）。 |
+| 電荷変化変異 | 変異体端状態の System で、変異部位から最も遠いバルク水 1 分子（|Δq| 個、最大 2）の O をイオンの (q, σ, ε) に、H（4 点水なら EP も）を電荷 0 に書き換えてから hybrid を組む（`fep/coion.py`, Chen et al. JCTC 2018 の co-alchemical ion）。環境原子の差分は `fep_core` の offset で線形補間、分子は構築時座標に調和拘束（k = 1000 kJ/mol/nm²、force group 4）。イオンのパラメータは系内の同符号 1 価イオンからコピー | PME の一様背景電荷による有限サイズ誤差は箱の大きさと中身（水の数密度、溶質の低誘電体積）に依存し、folded と unfolded の箱で違うので ddG で相殺しない。両端状態の箱電荷を同じにすれば誤差源そのものが無くなる。Rocklin 補正は APBS 依存と代表構造・誘電率の判断点が増えるので採らない。水 → イオンの自由エネルギーは両 leg で同じバルク環境なので相殺。端点検証は書き換え後の変異体 System と比べるのでイオン端もそのまま検証される。中間 λ では箱電荷は 0 でない（イオンは core 相、新側鎖の電荷は第 3 相）が、自由エネルギーは端状態だけで決まる。塩が無い・箱が小さい場合は未補正に落とさず拒否。 |
 | 端点検証 | λ=0 / λ=1 で hybrid（group 0+ダミー bonded+3）と元 System の差 ≤ 1 kJ/mol | OpenFE の品質基準。CUDA 単精度で 0.1 kJ/mol 程度の差は正常。 |
 
 ## 4. λ プロトコル（`mdclaw/fep/protocol.py`）
@@ -119,7 +120,8 @@ chain ID と残基番号を保つので同じ `--mutation` 文字列がそのま
 - 非平衡スイッチング（pmx 流 Crooks/BAR）。
 - Replica exchange / REST 併用（Perses）。
 - 多重変異、挿入・欠失、非標準残基、リガンドの変換。
-- 電荷変化変異の有限サイズ補正（Rocklin 型）。
+- 電荷変化変異の Rocklin 型有限サイズ補正（PB 計算を伴う事後補正）。代わりに
+  co-alchemical ion を入れた（§3 の表、2026-09-20）。
 - 結合親和性 ddG の skill 化。`estimate_ddg --cycle binding`（complex / apo、
   `analysis_subjects` で leg を指名）は 2026-09-20 に入ったが、apo leg を派生させる
   prep ツール（リガンド除去 + `leg_role = apo`）と手順書はまだ無い。
@@ -127,8 +129,10 @@ chain ID と残基番号を保つので同じ `--mutation` 文字列がそのま
   なった: leg 内の全窓で同一の調和拘束（eq 座標基準）で、λ 差の reduced potential
   からは相殺するがアンサンブルは変える。折り畳み側だけに掛ける運用を skill に記載。
 - 端状態ビルダーは `--endstate-builder openmm --forcefield-xml …` で
-  `build_openmm_system` も選べる（2026-09-20）。真空 ACE-X-NME で端点検証を確認、
-  溶媒和系は CRYST1 を書いて渡す経路が未実走。
+  `build_openmm_system` も選べる（2026-09-20）。真空 ACE-X-NME で端点検証を確認。
+  溶媒和系（CRYST1 を書いて渡す経路）は co-alchemical ion の検証で初めて実走し、
+  `build_openmm_system` が溶媒の int の chain id で `PDBFile.writeFile` に落ちる
+  不具合を直した（同日）。
 
 ## 9. 検証状況
 

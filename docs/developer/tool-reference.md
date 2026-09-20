@@ -567,7 +567,16 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   `build_openmm_system` with `forcefield_xml` instead, for force fields
   outside the Amber catalog — the solvation box is written as a CRYST1
   record with the same 2 Å padding `build_amber_system` applies; prepared
-  ligands are not supported on that path), maps atoms (`fep/mapping.py`: backbone + CB core,
+  ligands are not supported on that path). For a charge-changing mutation in
+  a periodic box, `charge_correction="coalchemical_ion"` (default,
+  `fep/coion.py`) rewrites one bulk water of the mutant end state into a
+  counter-ion (parameters copied from an ion already in the System) before
+  the merge, so the builder interpolates it through `fep_core`, the end-point
+  check covers it, and both end states carry the same box charge; the
+  molecule is tethered in force group 4. Refuses with
+  `fep_coion_parameters_unavailable` / `fep_coion_box_too_small` /
+  `fep_coion_unsupported` rather than fall back; `"none"` runs uncorrected
+  with a warning. `estimate_ddg` requires both legs to agree on it. Maps atoms (`fep/mapping.py`: backbone + CB core,
   everything else in the residue is a dummy in one state), fuses the two
   Systems (`fep/hybrid.py`), relaxes the appearing atoms at state B with the
   rest frozen, and checks that the hybrid reproduces both end-state energies

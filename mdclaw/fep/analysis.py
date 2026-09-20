@@ -551,6 +551,8 @@ def _leg_settings(leg: dict) -> dict:
         if manifest:
             for key in ("forcefield", "water_model", "hmr", "softcore_alpha"):
                 out[key] = manifest.get(key)
+            # Manifests written before the co-alchemical ion existed ran uncorrected.
+            out["charge_correction"] = manifest.get("charge_correction") or "none"
         else:
             out["unverified"].append("hybrid_manifest")
     else:
@@ -560,8 +562,9 @@ def _leg_settings(leg: dict) -> dict:
 
 def check_legs_compatible(leg_f: dict, leg_u: dict, legs: tuple[str, str] = LEG_ROLES) -> tuple[list[str], list[str]]:
     """``(mismatches, warnings)``: the two legs must transform the same
-    mutation with the same lambda protocol, force field, water model, HMR and
-    ensemble, otherwise ddG mixes two different thermodynamic cycles. (A
+    mutation with the same lambda protocol, force field, water model, HMR,
+    ensemble and net-charge treatment, otherwise ddG mixes two different
+    thermodynamic cycles. (A
     positional restraint may differ: it is part of one leg's Hamiltonian at
     every lambda and cancels within that leg.)"""
     sf, su = _leg_settings(leg_f), _leg_settings(leg_u)
@@ -569,7 +572,7 @@ def check_legs_compatible(leg_f: dict, leg_u: dict, legs: tuple[str, str] = LEG_
     mismatches: list[str] = []
     warnings: list[str] = []
     for key in ("mutation", "temperature_kelvin", "pressure_bar", "n_states", "forcefield", "water_model", "hmr",
-                "softcore_alpha"):
+                "softcore_alpha", "charge_correction"):
         a, b = sf.get(key), su.get(key)
         if a is None or b is None:
             continue

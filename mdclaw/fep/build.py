@@ -27,6 +27,16 @@ from typing import Any, Dict, List, Optional
 
 from mdclaw._common import create_unique_subdir
 from mdclaw._tool_meta import node_tool
+from mdclaw.fep.coion import (
+    CHARGE_CORRECTIONS,
+    DEFAULT_RESTRAINT_K,
+    GROUP_COION_RESTRAINT,
+    CoIonError,
+    apply_coion_to_endstate,
+    coion_restraint_force,
+    plan_coalchemical_ions,
+    system_net_charge,
+)
 from mdclaw.fep.hybrid import (
     DEFAULT_SOFTCORE_ALPHA,
     STATE_A,
@@ -185,7 +195,7 @@ def _resolve_inputs(
     *, job_dir, node_id, mutation, pdb_file, forcefield, water_model, hmr, is_membrane,
     ligand_chemistry, disulfide_bonds, box_dimensions, mutant_backend, n_windows, lambda_schedule,
     softcore_alpha, output_name, platform="auto", phase_bounds=None, endstate_builder="amber",
-    forcefield_xml=None,
+    forcefield_xml=None, charge_correction="coalchemical_ion",
 ) -> _Inputs:
     """Force field / water model from the DAG (or the explicit arguments) and,
     in node mode, the solvated PDB plus solvation metadata."""
@@ -224,7 +234,7 @@ def _resolve_inputs(
                 "n_windows": n_windows, "lambda_schedule": lambda_schedule,
                 "softcore_alpha": softcore_alpha, "output_name": output_name,
                 "platform": platform, "phase_bounds": phase_bounds, "endstate_builder": endstate_builder,
-                "forcefield_xml": forcefield_xml,
+                "forcefield_xml": forcefield_xml, "charge_correction": charge_correction,
             },
             pdb_file=pdb_file, ligand_chemistry=ligand_chemistry, modxna_params=None,
             disulfide_bonds=disulfide_bonds, glycan_metadata=None, glycan_linkages=None,
@@ -317,15 +327,10 @@ def _build_endstates(inputs: _Inputs, spec: MutationSpec, mutant_pdb: Path, out_
             )
         out[label] = built
         out["warnings"].extend(f"[{label}] {w}" for w in built.get("warnings", []))
-    wt_charge, mut_charge = out["wt"].get("system_net_charge_e"), out["mut"].get("system_net_charge_e")
+    wt_charge = out["wt"].get("system_net_charge_e")
     if inputs.neutralization_expected and wt_charge is not None and abs(float(wt_charge)) > 1e-3:
         raise BuildStepError(code="neutralization_charge_mismatch",
                              message=f"the solvation step placed ions, yet the wild-type System has net charge {wt_charge} e")
-    if wt_charge is not None and mut_charge is not None and abs(float(mut_charge) - float(wt_charge)) > 1e-3:
-        out["warnings"].append(
-            f"Charge-changing mutation: system net charge {wt_charge:+.2f} e -> {mut_charge:+.2f} e. "
-            "PME applies a uniform neutralising background; the resulting ddG carries a finite-size "
-            "artefact that largely cancels between folded and unfolded legs but is not corrected here.")
     return out
 
 
@@ -340,11 +345,13 @@ class _Assembled:
     platform_properties: dict
     relaxation: dict
     validation: dict
+    charge_correction: dict = field(default_factory=dict)
 
 
 def _assemble_hybrid(endstates: dict, spec: MutationSpec, *, softcore_alpha: float,
                      endpoint_tolerance_kj_mol: float, platform_name: Optional[str] = None,
-                     platform_properties: Optional[dict] = None) -> _Assembled:
+                     platform_properties: Optional[dict] = None, charge_correction: str = "coalchemical_ion",
+                     periodic: bool = True) -> _Assembled:
     """Load both end states, map the mutated residue, build / relax / validate
     the hybrid System. ``platform_name`` None picks the fastest available."""
     import numpy as np
@@ -380,19 +387,59 @@ def _assemble_hybrid(endstates: dict, spec: MutationSpec, *, softcore_alpha: flo
                                message=f"mutated residue index differs between builds ({res_a} vs {res_b})")
         mapping = map_mutation(atom_records_from_topology(top_a), atom_records_from_topology(top_b), res_a,
                                old_bonds=bonds_from_topology(top_a), new_bonds=bonds_from_topology(top_b))
-        build = build_hybrid(sys_a, pos_a, sys_b, pos_b, mapping, softcore_alpha=softcore_alpha)
+        # Charge-changing mutation: a bulk water of the mutant end state
+        # becomes the compensating ion before the two states are merged, so
+        # the builder interpolates it and the end-point check covers it.
+        # The charge change is measured on the two Systems being merged, not
+        # read from the builders' reports: a missing report would otherwise
+        # read as "neutral" and skip the correction silently. Summed partial
+        # charges also follow the protonation state (ASP vs ASH, HIP vs HIE).
+        coion = None
+        charge_change = system_net_charge(sys_b) - system_net_charge(sys_a)
+        if abs(charge_change) > 1e-3 and periodic and charge_correction == "coalchemical_ion":
+            box_nm = np.asarray(state_b.getPeriodicBoxVectors(asNumpy=True).value_in_unit(unit.nanometer))
+            site_atoms = [a.index for a in list(top_b.residues())[res_b].atoms()]
+            coion = plan_coalchemical_ions(top_b, sys_b, pos_b, box_nm, site_atoms, charge_change)
+            apply_coion_to_endstate(sys_b, coion)
+        coion_hybrid = {mapping.new_to_hybrid[i] for i in coion.atoms} if coion else None
+        build = build_hybrid(sys_a, pos_a, sys_b, pos_b, mapping, softcore_alpha=softcore_alpha,
+                             coalchemical_hybrid_atoms=coion_hybrid)
         platform = platform_name or fastest_platform_name()
         relaxation = relax_dummy_atoms(build, platform_name=platform, platform_properties=platform_properties)
         validation = validate_endpoints(build, sys_a, sys_b, platform_name=platform,
                                         platform_properties=platform_properties,
                                         tolerance_kj_mol=endpoint_tolerance_kj_mol)
-    except (MappingError, HybridBuildError) as exc:
+        charge_report = _charge_correction_report(coion, build, charge_change, charge_correction, periodic)
+    except (MappingError, HybridBuildError, CoIonError) as exc:
         raise BuildStepError(exc.code, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise BuildStepError(code="fep_hybrid_build_failed", message=f"{type(exc).__name__}: {exc}") from exc
     return _Assembled(build=build, top_a=top_a, top_b=top_b, sys_a=sys_a, sys_b=sys_b, platform=platform,
                       platform_properties=dict(platform_properties or {}), relaxation=relaxation,
-                      validation=validation)
+                      validation=validation, charge_correction=charge_report)
+
+
+def _charge_correction_report(coion, build: HybridBuild, charge_change: float, requested: str, periodic: bool) -> dict:
+    """Tether the transforming water(s) and describe what was done about the
+    charge change (the record both legs of a ddG must agree on)."""
+    report: dict = {"method": "none", "charge_change_e": charge_change, "warnings": []}
+    if coion is None:
+        if abs(charge_change) > 1e-3 and periodic:
+            report["warnings"].append(
+                f"Charge-changing mutation ({charge_change:+.0f} e) run with --charge-correction {requested}: PME "
+                "neutralises the box with a uniform background, and the finite-size error of that differs between "
+                "the two legs, so it does not cancel in ddG. Report this with the result.")
+        return report
+    new_to_hybrid = build.mapping.new_to_hybrid
+    oxygens = [new_to_hybrid[w["oxygen"]] for w in coion.waters]
+    # After the end-point check on purpose: the tether is zero at the build
+    # coordinates and sits in its own group, outside both comparisons.
+    build.system.addForce(coion_restraint_force(oxygens, build.positions_nm))
+    report.update(coion.to_json())
+    report["hybrid_oxygen_indices"] = oxygens
+    report["restraint"] = {"force_constant_kj_mol_nm2": DEFAULT_RESTRAINT_K, "force_group": GROUP_COION_RESTRAINT,
+                           "reference": "build-time position"}
+    return report
 
 
 def _write_artifacts(
@@ -447,6 +494,8 @@ def _write_artifacts(
         "hmr": bool(hmr),
         "softcore_alpha": float(softcore_alpha),
         "phase_bounds": list(phase_bounds),
+        "charge_correction": asm.charge_correction.get("method", "none"),
+        "charge_correction_detail": {k: v for k, v in asm.charge_correction.items() if k != "warnings"},
         "n_windows": len(windows),
         "statistics": {"num_atoms": mapping.n_hybrid, "num_residues": n_residues},
     }
@@ -496,6 +545,7 @@ def build_hybrid_system(
     endpoint_tolerance_kj_mol: float = 1.0,
     endstate_builder: str = "amber",
     forcefield_xml: Optional[List[str]] = None,
+    charge_correction: str = "coalchemical_ion",
     platform: str = "auto",
     device_index: Optional[str] = None,
     output_name: str = "system",
@@ -541,6 +591,15 @@ def build_hybrid_system(
         forcefield_xml: OpenMM ForceField XML names / paths for
             ``endstate_builder="openmm"`` (e.g. ``amber14-all.xml
             amber14/tip3p.xml``). Ignored by the amber builder.
+        charge_correction: What to do when the mutation changes the net
+            charge (K->A, A->D, ...). ``"coalchemical_ion"`` (default) turns
+            one bulk water, far from the site and tethered there, into a
+            counter-ion along ``fep_core`` so the box charge is the same at
+            both end states; it needs salt ions in the box (parameters are
+            copied from one) and refuses otherwise. ``"none"`` runs
+            uncorrected and says so in a warning. Neutral mutations and
+            vacuum systems ignore it. Both legs of a ddG must use the same
+            setting.
         platform / device_index: OpenMM platform for the dummy relaxation and
             the end-point energies (``auto`` = fastest available, which takes
             a GPU when there is one; pass ``CPU`` on a shared login node).
@@ -554,7 +613,9 @@ def build_hybrid_system(
         (``fep_mutation_spec_invalid``, ``fep_mutant_model_failed``,
         ``fep_endstate_build_failed``, ``fep_environment_mismatch``,
         ``fep_mapping_failed``, ``fep_unsupported_force``,
-        ``fep_endpoint_validation_failed``, ``fep_protocol_invalid``).
+        ``fep_endpoint_validation_failed``, ``fep_protocol_invalid``,
+        ``fep_coion_parameters_unavailable``, ``fep_coion_box_too_small``,
+        ``fep_coion_unsupported``).
         Everything else (full mapping, end-state files, relaxation energies)
         is in ``hybrid_manifest.json``.
     """
@@ -570,6 +631,10 @@ def build_hybrid_system(
         return fail_tool(result, exc.code, str(exc), job_dir=job_dir, node_id=node_id, extra=exc.extra)
 
     # --- cheap, purely syntactic checks; the node stays pending on failure --
+    if charge_correction not in CHARGE_CORRECTIONS:
+        return fail_tool(result, code="invalid_parameter_value",
+                         message=f"charge_correction must be one of {CHARGE_CORRECTIONS}, got {charge_correction!r}",
+                         job_dir=job_dir, node_id=node_id)
     if endstate_builder not in ENDSTATE_BUILDERS:
         return fail_tool(result, code="invalid_parameter_value",
                          message=f"endstate_builder must be one of {ENDSTATE_BUILDERS}, got {endstate_builder!r}",
@@ -590,7 +655,7 @@ def build_hybrid_system(
             disulfide_bonds=disulfide_bonds, box_dimensions=box_dimensions, mutant_backend=mutant_backend,
             n_windows=n_windows, lambda_schedule=lambda_schedule, phase_bounds=phase_bounds,
             softcore_alpha=softcore_alpha, endstate_builder=endstate_builder, forcefield_xml=forcefield_xml,
-            output_name=output_name, platform=platform)
+            charge_correction=charge_correction, output_name=output_name, platform=platform)
         spec = parse_single_mutation(mutation, inputs.pdb_file)
     except BuildStepError as exc:
         return _fail(exc)
@@ -626,8 +691,10 @@ def build_hybrid_system(
         result["warnings"].extend(endstates.pop("warnings"))
         asm = _assemble_hybrid(endstates, spec, softcore_alpha=softcore_alpha,
                                endpoint_tolerance_kj_mol=endpoint_tolerance_kj_mol,
-                               platform_name=platform_name, platform_properties=platform_properties)
+                               platform_name=platform_name, platform_properties=platform_properties,
+                               charge_correction=charge_correction, periodic=bool(inputs.box_dimensions))
         result["warnings"].extend(asm.build.report.get("warnings") or [])
+        result["warnings"].extend(asm.charge_correction.get("warnings") or [])
         written = _write_artifacts(asm, endstates, spec, mutant, windows, inputs, out_dir, output_name=output_name,
                                    softcore_alpha=softcore_alpha, phase_bounds=bounds, hmr=hmr,
                                    endstate_builder=endstate_builder, forcefield_xml=forcefield_xml,
@@ -644,6 +711,7 @@ def build_hybrid_system(
         "n_windows": len(windows),
         "phase_bounds": list(bounds),
         "endstate_builder": endstate_builder,
+        "charge_correction": manifest["charge_correction_detail"],
         "statistics": manifest["statistics"],
     })
     if not validation.get("passed") or not validation.get("all_finite"):
@@ -685,7 +753,9 @@ def build_hybrid_system(
                 "system_artifact_kind": "openmm_system_xml",
                 "forcefield_provenance": wt_meta.get("forcefield_provenance"),
                 "fep": {"mutation": spec.label, "n_windows": len(windows), "phase_bounds": list(bounds),
-                        "endstate_builder": endstate_builder, "endpoint_validation_passed": True},
+                        "endstate_builder": endstate_builder, "endpoint_validation_passed": True,
+                        "charge_correction": manifest["charge_correction"],
+                        "charge_change_e": asm.charge_correction.get("charge_change_e")},
             },
             warnings=result["warnings"],
         )

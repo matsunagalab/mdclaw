@@ -7,6 +7,21 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-20 — 電荷変化変異の co-alchemical ion（`mdclaw/fep/coion.py`、branch `main`）
+
+電荷の変わる変異（K→A, A→D など）を、これまでは「PME の一様背景電荷、有限サイズ補正なし」の警告だけで通していた。両 leg で同じ Δq でも、誤差は箱の大きさと中身（水の数密度、溶質の低誘電体積）に依存するので folded と unfolded で相殺しない。Rocklin 型の事後補正は、APBS 依存・代表構造や誘電率の判断点が増える（間違えても数値が出る）ため**採らない**とユーザーと決めた（解析項だけの併記もやめる）。代わりに箱電荷を両端で同じに保つ。
+
+- **方式**: 変異体端状態の System で、変異部位から最も遠いバルク水の O をイオンの (q, σ, ε) に、H（4 点水の EP も）を電荷 0・ε 0 に書き換えてから hybrid を組む（Chen et al., JCTC 2018）。`HybridSystemBuilder` に `coalchemical_hybrid_atoms` を足し、その環境原子だけ `fep_environment_mismatch` を免除して既存の **`fep_core` offset で線形補間**させる。新しい global parameter は足していないので、protocol / `run_fep` / `analyze_fep` は無変更。`validate_endpoints` には書き換え後の変異体 System を渡すので、**イオン端もそのまま端点検証される**。分子の幾何・制約・質量は水のまま（電荷も LJ も無い H がイオンに剛体で乗っているだけ）。
+- **荷電かどうかの判定**: 残基名の表ではなく、merge する 2 つの端状態 System の `NonbondedForce` 部分電荷の総和の差（`coion.system_net_charge`）。プロトン化状態（ASP/ASH、HID/HIE/HIP、LYN）と力場がそのまま反映される。最初の実装はビルダーの報告値 `system_net_charge_e` を読んでいて、片方が `None` だと Δq = 0 扱いで黙って未補正になる穴があったので、System から直接測る形に直した（|Δq| ≤ 1e-3 e を中性とする）。
+- **選び方（ツール側で閉じる）**: Δq = mut − wt、イオンは −sign(Δq) の 1 価、|Δq| 個（最大 2、非整数は拒否）。候補は部位重心から最小像距離で遠い順に、部位 ≥ 1.5 nm・溶質重原子 ≥ 1.0 nm・既存イオン ≥ 0.6 nm・選択済みの水 ≥ 1.0 nm を満たす最初のもの。イオンのパラメータは**系内の同符号 1 価イオンからコピー**（力場・水モデルと必ず整合、KCl でも動く、Na⁺/Cl⁻ を優先）。水 → イオンの自由エネルギーは両 leg でバルク同士なので相殺。
+- **束縛**: 選んだ O を構築時座標に調和束縛（k = 1000 kJ/mol/nm²、`periodicdistance`、force group 4）。端点検証の後に System へ足す（構築座標でゼロ、比較対象の group 外）。全 λ で同一なので reduced potential の差には出ない。system.xml に入るので min / eq / fep が追加の配線なしで引き継ぐ。
+- **拒否して未補正に落とさない**: `fep_coion_parameters_unavailable`（同符号イオンが箱に無い → 塩ありで solv を作り直す）、`fep_coion_box_too_small`（十分遠い水が無い → `--dist` を増やす）、`fep_coion_unsupported`（|Δq| > 2、非整数）。`--charge-correction none` は明示時のみで、相殺しない旨の警告を返す。真空系と中性変異は対象外（`method: none`、警告なし）。`estimate_ddg` の leg 照合に `charge_correction` を追加（キーの無い旧 manifest は `none` 扱い → 補正あり/なしの leg を混ぜると `fep_legs_incompatible`）。
+- **既知の設計上の選択**: イオンは core 相（p1..p2）で現れ、新側鎖の電荷は第 3 相で入るので、**中間 λ の箱電荷は 0 ではない**（A2D で λ=0.25/0.5/0.75 が −0.06/+0.37/+0.80 e）。自由エネルギー差は端状態の Hamiltonian だけで決まるので結果には効かない。各 λ で中性に保つには専用 parameter と窓ごとの値が要り、protocol の 5 parameter 契約を崩すので見送り。
+- **実測（溶媒和 ACE-X-NME、amber14 + TIP3P、0.5 M、padding 1.7 nm、openmm ビルダー、CPU）**: A2D（Δq −1 → Na⁺、水は部位から 2.75 nm）端点差 A +6.5e-4 / B −5.1e-4 kJ/mol、K2A（→ Na⁺）+1.4e-4 / +2.8e-4、D2A（→ Cl⁻）pass。hybrid の正味電荷は λ=0, 1 とも 0.0000 e、`none` では B 端が +1。`run_fep`（CUDA、NPT、5 窓 × 4 ps）は全窓完走。**ddG への効果そのもの（補正あり/なしの差、箱サイズ依存の消失）はまだ測っていない** — A14D の再計算が最初の実測になる。
+- **ついでに直した不具合**: `build_openmm_system` が溶媒和 PDB で `openmm_serialization_failed: object of type 'int' has no len()`。Pablo が溶媒の chain id を int で返し、`PDBFile.writeFile(keepIds=True)` が `len(chain.id)` で落ちる（residue id は既に str 化していたが chain は未対応）。`--endstate-builder openmm` の溶媒和経路はこれまで一度も実走していなかった。
+- 引用 `Chen2018ChargeChangingFEP` を Crossref で確認して監査 .bib（116 keys / 115 DOIs）と packaged bib（21 件）に追加、topo の `metadata.fep.charge_correction == coalchemical_ion` で選択。guardrail 3 コード追加（409 codes）。`skills/md-fep`（SKILL / convergence）、tool-reference、`fep-references.md` §3・§8 を更新。
+- **テスト**: `tests/test_fep_coion.py` 14 本（合成した箱での符号・パラメータ・最遠選択・2 個選択・KCl・4 種の拒否・束縛エネルギー、leg 照合、slow: 溶媒和 D2A の端点検証と両端の正味電荷、`none` の警告、塩なしの拒否）。
+
 ## 2026-09-20 — FEP test-run feedback 17–19: ラッパーのネイティブ振り分け、`explain_node` の blocking_codes と next（branch `feat/fep-ddg-node`）
 
 3 件ともコードで確認でき、全部直した。

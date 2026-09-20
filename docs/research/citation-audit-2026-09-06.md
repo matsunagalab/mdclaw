@@ -416,7 +416,13 @@ equilibration detection, when `subsampled = true`). Bibliographic identity is,
 as above, not evidence that a run used the method: every selection is keyed on
 metadata the tool itself recorded on the node.
 
-Deliverable checks after the addendum: 115 unique BibTeX keys, 114 unique DOIs.
+Second addendum, same day: `Chen2018ChargeChangingFEP` (co-alchemical ion that
+keeps the box charge fixed across a charge-changing mutation,
+`mdclaw/fep/coion.py`), checked against Crossref
+(`10.1021/acs.jctc.8b00825`, JCTC 14(12), 6346-6358). Selected for a topo node
+whose `metadata.fep.charge_correction` is `coalchemical_ion`.
+
+Deliverable checks after the addenda: 116 unique BibTeX keys, 115 unique DOIs.
 
 ## Deliverable checks
 

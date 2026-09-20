@@ -61,10 +61,15 @@ unambiguous against the structure.
   `analyze_fep` nodes. Its lineage holds both legs, `next` leads to it, and
   `md-report` reads it like any other analysis.
 
-Charge-changing mutations (e.g. K→A, D→N) are accepted; `build_hybrid_system`
-returns a `Charge-changing mutation` warning (PME neutralising background, no
-finite-size correction). Report that warning verbatim with the ddG. Give the
-decharge phase more room for them: `--phase-bounds 0.35,0.75` (default
+Charge-changing mutations (e.g. K→A, D→N) are handled by
+`build_hybrid_system` itself: one bulk water far from the site turns into a
+counter-ion along the same λ path (co-alchemical ion), so the box charge is
+the same at both end states. Nothing to pass; the result's
+`charge_correction` block names the water and the ion, and both legs get it
+automatically. It needs salt ions in the box (keep `solvate_structure`'s
+default `--salt`). Do not pass `--charge-correction none` unless the user asks
+for the uncorrected number; if you do, report the warning verbatim with the
+ddG. Give the decharge phase more room for these mutations: `--phase-bounds 0.35,0.75` (default
 `0.25,0.75`: old charges off by the first bound, steric swap done by the
 second, new charges on after it), identically on both legs.
 
@@ -74,6 +79,7 @@ unless stated:
 | Option | Tool | When |
 |---|---|---|
 | `--phase-bounds p1,p2` | `build_hybrid_system` | charge-changing or bulky mutations whose decharge / swap phase shows low overlap |
+| `--charge-correction none` | `build_hybrid_system` | only on request: run a charge-changing mutation without the co-alchemical ion (the ddG then carries an uncancelled finite-size error) |
 | `--endstate-builder openmm --forcefield-xml ...` | `build_hybrid_system` | force fields outside the Amber catalog (no prepared ligands on this path) |
 | `--restraint-atoms backbone` (`--restraint-force-constant`, kJ/mol/nm²) | `run_fep` | the folded leg loosens during the transformation (destabilising core mutations); the tripeptide leg normally runs without it — a restraint is part of one leg's Hamiltonian at every λ, so the legs may differ here |
 | `--cycle binding` | `estimate_ddg` | complex / apo legs instead of folded / unfolded (name the legs with `analysis_subjects` in `--parent-node-ids` order; no `extract_tripeptide` marker applies) |
@@ -203,6 +209,9 @@ source ─ prep_001 ─ solv ─ topo(hybrid) ─ min ─ eq ─ fep ─ analyze
 | `fep_mutation_spec_invalid`, `fep_mutation_residue_not_found`, `fep_mutation_residue_ambiguous` | Fix the mutation string against the prep PDB residue numbering; add the chain id. |
 | `fep_mutant_model_failed` | Retry with `--mutant-backend pdbfixer`; report if that also fails. |
 | `fep_environment_mismatch` | WT/mutant end states differ outside the residue; rebuild from the same solv node with identical options. |
+| `fep_coion_parameters_unavailable` | Charge-changing mutation but the box has no ion of the needed sign; branch a new `solv` node with `--salt --saltcon 0.15` and rebuild below it. |
+| `fep_coion_box_too_small` | No bulk water ≥ 1.5 nm from the site; branch a new `solv` node with a larger `--dist` and rebuild below it. |
+| `fep_coion_unsupported` | Net charge changes by more than 2 e or by a non-integer amount; report it, do not work around it. |
 | `fep_endpoint_validation_failed` | Do not sample. Report the energy table from the failure manifest. |
 | `fep_hybrid_topology_required` | The topo ancestor is not a hybrid; create a topo node with `build_hybrid_system` and re-branch min/eq. |
 | `fep_windows_incomplete` | Create `fep` nodes for the listed indices (same eq parent), parent the analyze node to all of them. |
