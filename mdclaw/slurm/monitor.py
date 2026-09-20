@@ -25,6 +25,7 @@ from mdclaw._common import (
 
 from mdclaw._node import read_node
 from mdclaw.slurm import _base
+from mdclaw.slurm._base import logger
 from mdclaw.slurm.config import _validate_slurm_job_id
 from mdclaw.slurm.node_sync import _slurm_job_in_queue, _sync_slurm_state_to_node
 from mdclaw.slurm.tracker import _candidate_job_paths, _find_job_metadata, _find_record_by_job_id, _find_records_by_job_id, _get_jobs_path, _read_job_records, _update_job_record
@@ -116,6 +117,63 @@ def _report_vanished_job(result: dict, job_id: str, *, job_dir, output_dir) -> N
         f"--node-id {first['node_id']} --clear-slurm-metadata"
     )
     result["errors"] = [result["message"]]
+
+
+def _elapsed_seconds(value) -> Optional[float]:
+    """Slurm elapsed time: seconds (``squeue --json``) or ``[D-][HH:]MM:SS``."""
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    try:
+        if text.isdigit():
+            return float(text)
+        days, _, clock = text.rpartition("-")
+        parts = [float(p) for p in clock.split(":")]
+        while len(parts) < 3:
+            parts.insert(0, 0.0)
+        return float(days or 0) * 86400.0 + parts[0] * 3600.0 + parts[1] * 60.0 + parts[2]
+    except ValueError:
+        return None
+
+
+def _hours(seconds: float) -> str:
+    return f"{seconds / 3600.0:.1f} h"
+
+
+def _time_budget_warnings(result: dict, recs: list[dict]) -> None:
+    """A running job that will not finish inside its time limit, judged from
+    progress the node itself records. Only ``fep`` nodes record per-unit wall
+    times today (``fep_windows.json``); other nodes are skipped."""
+    elapsed = _elapsed_seconds(result.get("elapsed"))
+    if elapsed is None:
+        return
+    for rec in recs:
+        if not (rec.get("job_dir") and rec.get("node_id") and rec.get("time_limit")):
+            continue
+        if not str(rec["node_id"]).startswith("fep_"):
+            continue
+        try:
+            from mdclaw.fep.run import fep_time_budget
+            from mdclaw.slurm.config import _parse_time_limit_seconds
+
+            budget = fep_time_budget(rec["job_dir"], rec["node_id"], elapsed,
+                                     _parse_time_limit_seconds(str(rec["time_limit"])))
+        except Exception as exc:  # noqa: BLE001 - a progress estimate never fails the status check
+            logger.debug("time budget estimate skipped for %s: %s", rec.get("node_id"), exc)
+            continue
+        if not budget:
+            continue
+        result.setdefault("time_budget", []).append(budget)
+        if budget["will_exceed_time_limit"]:
+            remaining = budget["windows_total"] - budget["windows_done"]
+            result.setdefault("warnings", []).append(
+                f"time_limit_risk: fep node {budget['node_id']}: {budget['windows_done']}/{budget['windows_total']} "
+                f"windows in {_hours(elapsed)}; at this rate the remaining {remaining} need "
+                f"~{_hours(budget['estimated_remaining_s'])} but the job's time limit leaves "
+                f"{_hours(max(budget['time_limit_left_s'], 0.0))}. Finished windows stay in fep_windows.json if the job "
+                "is killed: let it run and recover the rest with a new fep node under the same parent "
+                f"(--restart-windows-file {budget['index_file']}, only the missing --lambda-indices), or cancel now "
+                "and do the same with a longer --time-limit.")
 
 
 def _read_tail(path: str | Path | None, *, lines: int = 50) -> Optional[str]:
@@ -398,6 +456,9 @@ def _check_job_finalize(
         job_dir=job_dir or (rec or {}).get("job_dir"),
         output_dir=output_dir or (rec or {}).get("output_dir"),
     )
+
+    if result.get("state") == "RUNNING":
+        _time_budget_warnings(result, recs)
 
     # Reflect SLURM state onto every linked DAG node. A node packed into an
     # MPS job has its own per-slot logs; those are the evidence it records,
@@ -740,6 +801,8 @@ def list_tracked_jobs(
                     result["warnings"].append(checked_job["message"])
                 elif checked_job.get("code") == "slurm_status_unavailable":
                     result["warnings"].append(checked_job.get("message") or f"no Slurm state for job {job_id}")
+                result["warnings"].extend(w for w in checked_job.get("warnings") or []
+                                          if str(w).startswith("time_limit_risk:"))
         # Re-read after sync
         records = _read_job_records(job_dir=job_dir)
 

@@ -19,6 +19,20 @@ State mapping:
 If a node failed before the MDClaw tool started, inspect the SLURM stderr, fix
 the cluster/runtime issue, and create a new node from the same completed parent.
 
+## Running out of time (`time_limit_risk:`)
+
+For a `RUNNING` job on a `fep` node, `check_job` (and `list_tracked_jobs
+--sync`, in `warnings`) compares the wall time the node has measured per
+finished window (`fep_windows.json`) with the time limit the job was submitted
+with. `time_budget` carries the numbers; a `time_limit_risk:` warning means the
+remaining windows will not fit. Nothing is lost when the job is killed: the
+finished windows stay in the index. Either let it run and then sample the
+missing windows on a new `fep` node under the same parent
+(`--restart-windows-file <index> --lambda-indices <missing>`,
+`skills/md-fep/windows.md`), or cancel now and do the same with a longer
+`--time-limit`. Split large protocols over several `fep` nodes
+(`--lambda-indices`) rather than raising the limit.
+
 ## Job gone, node still queued (`slurm_job_vanished`)
 
 On a site without Slurm accounting a job that leaves the queue leaves no
