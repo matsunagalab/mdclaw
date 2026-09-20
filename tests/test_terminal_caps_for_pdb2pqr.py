@@ -284,6 +284,9 @@ def test_a_cap_that_arrives_complete_gains_no_hydrogens(tmp_path):
 
     assert result["success"], result["errors"]
     assert result["cap_hydrogens_added"] == 0
+    # Nothing to add is the expected outcome for complete caps, not a warning
+    # (extract_tripeptide re-cleans an already-prepared fragment every time).
+    assert not [w for w in result["warnings"] if "cap" in w.lower() and "hydrogen" in w.lower()]
     keys = _residue_atom_keys(result["output_file"])
     assert len(keys) == len(set(keys)), "an arriving cap was duplicated"
 

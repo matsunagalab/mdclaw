@@ -281,6 +281,40 @@ def _get_container_config(config: Optional[dict] = None) -> Optional[dict]:
     return None
 
 
+_MDCLAW_INVOCATION = re.compile(r"(?:^|[\s;&|(])mdclaw\s")
+
+
+def uncontained_mdclaw_warning(
+    commands: list[Optional[str]], container: Optional[dict], environment: Optional[str],
+) -> Optional[str]:
+    """Warn when an ``mdclaw`` payload will run with no container and no
+    environment while this mdclaw itself runs from an image.
+
+    The cluster config is cwd-local, so a new study directory starts without
+    the ``container`` section; the sbatch script then calls bare ``mdclaw`` on
+    a compute node that only has it inside the SIF (18 jobs died with
+    ``mdclaw: command not found`` on 2026-09-19). Sites with a native install
+    on the workers exist, so this is a warning rather than a refusal.
+    """
+    if container or environment:
+        return None
+    inside_image = bool(
+        os.environ.get("SINGULARITY_CONTAINER") or os.environ.get("APPTAINER_CONTAINER")
+    )
+    if not inside_image:
+        return None
+    if not any(_MDCLAW_INVOCATION.search(command) for command in commands if command):
+        return None
+    return (
+        "container_not_configured: the payload calls 'mdclaw' but "
+        f"{Path.cwd() / '.mdclaw_cluster.json'} has no container section, and this mdclaw "
+        "runs from a container image; unless the compute nodes have their own mdclaw "
+        "install the job dies with 'mdclaw: command not found'. If so: mdclaw cancel_job, then "
+        "'mdclaw configure_container --image /abs/path/mdclaw.sif --extra-flags=--nv' "
+        "in this directory (the config is per working directory), then resubmit."
+    )
+
+
 def _extract_bind_paths(command: str) -> list[str]:
     """Extract directories from --*-file and --*-dir arguments in a command.
 

@@ -524,6 +524,17 @@ def tail_for_agent(
     return f"{marker}\n{text[-limit:]}"
 
 
+def _node_status_on_disk(job_dir: str, node_id: str) -> Optional[str]:
+    """``node.json`` status, or ``None`` when the node cannot be read."""
+    import json
+
+    try:
+        data = json.loads((Path(job_dir) / "nodes" / node_id / "node.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return data.get("status") if isinstance(data, dict) else None
+
+
 def finalize_error(
     result: Any,
     *,
@@ -576,7 +587,9 @@ def finalize_error(
     result.setdefault("recoverable", True)
 
     if not result.get("next_action"):
-        if job_dir and node_id:
+        # trace_failure reads a failed node's evidence; a refusal that left the
+        # node pending has none, so the guardrail's own fix is the next step.
+        if job_dir and node_id and _node_status_on_disk(job_dir, node_id) in (None, "failed"):
             result["next_action"] = (
                 f"Run: mdclaw trace_failure --job-dir {job_dir} "
                 f"--node-id {node_id}"

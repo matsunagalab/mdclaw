@@ -745,10 +745,15 @@ def _complete_terminal_cap_hydrogens_with_modeller(
     result["cap_hydrogen_count_after"] = cap_h_after
     result["hydrogens_added"] = max(0, total_h_after - total_h_before)
     result["cap_hydrogens_added"] = max(0, cap_added)
-    if result["cap_hydrogens_added"] == 0:
+    # Modeller adds whatever the template lacks, so "nothing added" on caps that
+    # already carry hydrogens means they arrived complete (e.g. a fragment
+    # re-cleaned by extract_tripeptide). Only a cap left with no hydrogens at
+    # all is worth a warning.
+    bare_caps = sorted(name for name in present_caps if not cap_h_after.get(name))
+    if result["cap_hydrogens_added"] == 0 and bare_caps:
         result["warnings"].append(
-            "OpenMM Modeller completed but did not add cap hydrogens; "
-            "the cap residues may already have been hydrogen-complete."
+            "OpenMM Modeller completed but cap residue(s) "
+            f"{', '.join(bare_caps)} still have no hydrogens."
         )
 
     result["operations"].append({

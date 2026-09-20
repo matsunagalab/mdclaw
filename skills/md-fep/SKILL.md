@@ -208,7 +208,7 @@ source ─ prep_001 ─ solv ─ topo(hybrid) ─ min ─ eq ─ fep ─ analyze
 | `fep_windows_incomplete` | Create `fep` nodes for the listed indices (same eq parent), parent the analyze node to all of them. |
 | `fep_sampling_failed` | Read `artifacts/failure/latest`; recover the finished windows with a new `fep` node under the eq parent and `--restart-windows-file` (`skills/md-fep/windows.md`). |
 | `fep_windows_incompatible`, `fep_parent_ambiguous`, `fep_lambda_index_invalid` on extension | One fep parent per child, same `--pressure-bar`, only the parent's windows. |
-| `fep_fragment_prep_required` | `extract_tripeptide` ran under a source node; create its prep node with `--parent-node-ids <prep_001>`. |
+| `fep_fragment_prep_required` | `extract_tripeptide` ran under a source node; create its prep node with `--parent-node-ids <prep_001>`. The mis-parented node cannot be re-parented: retire it with `update_workflow_state --node-id <it> --abandon --reason "wrong parent"` so it stops appearing as a parent candidate. |
 | `fep_tripeptide_cap_failed` | `clean_protein` could not cap the fragment; read the nested errors, fix the parent preparation, branch a new prep node. |
 | `fep_ddg_scope_invalid`, `fep_ddg_parents_invalid` | The ddG node is `comparison` over exactly two completed `analyze_fep` nodes; recreate it that way. |
 | `fep_leg_role_ambiguous` | Neither leg descends from `extract_tripeptide`; derive the unfolded leg with it, or declare `analysis_subjects` `[{"label": "folded"}, {"label": "unfolded"}]` in `--parent-node-ids` order. |

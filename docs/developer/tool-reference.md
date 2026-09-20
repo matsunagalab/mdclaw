@@ -799,11 +799,20 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   reflect failures into linked nodes. Returns `state_source` and `checked_at`.
   Missing/expired records return `slurm_status_unavailable`, never inferred
   completion; `last_observation`, when present, is historical, not current.
+  When squeue answers, no longer lists the job, and a non-terminal node still
+  carries that job id, the code is `slurm_job_vanished` with `stranded_nodes`, `stderr_tail`, and a `--clear-slurm-metadata` `next_action`;
+  the node is reported, never sealed on that inference.
 - `list_jobs(...)`, `cancel_job(...)`, `check_job_log(...)`: operational
   helpers.
 - `set_policy(...)`, `show_policy(...)`: resource policy management.
 - `list_tracked_jobs(...)`: read `.mdclaw_jobs.jsonl` history and optionally
-  sync state.
+  sync state. Records are replicated to the cwd, `output_dir`, and `job_dir`
+  trackers (or the single `MDCLAW_JOBS_FILE`); reads de-duplicate and updates
+  touch every copy. `--sync` returns `stranded_jobs` / `warnings` for
+  `slurm_job_vanished` jobs.
+- Submitters append a `container_not_configured:` warning when an `mdclaw`
+  payload has no container config and no `environment` while the submitting
+  mdclaw itself runs from an image (`uncontained_mdclaw_warning`).
 - `configure_container(...)`: configure Singularity wrapping for SLURM jobs.
   Use `--extra-flags=--nv` for GPU passthrough. The invalid `-nv` flag is
   rejected with `container_extra_flags_invalid` when configuring or submitting
@@ -850,7 +859,12 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   the former `update_node_status` and `update_job_params` tools; the underlying
   `update_node_status` / `update_job_params` functions remain importable. Direct
   terminal updates are rejected; producer/failure helpers seal nodes only after
-  recording their evidence.
+  recording their evidence. `--clear-slurm-metadata` frees a non-terminal node
+  from a dead submission (drops `slurm_*` metadata, status -> `pending`, writes
+  a `slurm_metadata_cleared` event; `slurm_job_still_active` while squeue lists
+  the job). `--abandon [--reason]` seals a never-run `pending` node without a
+  SLURM job or live children as `failed` / `node_abandoned`
+  (`node_abandon_refused` otherwise).
 - `manage_node_need(...)`: manage a node's open needs behind an `--action`
   selector (`add` / `clear` / `record_attempt`). Merges the former
   `add_node_need` / `clear_node_need` / `record_node_need_attempt` tools.

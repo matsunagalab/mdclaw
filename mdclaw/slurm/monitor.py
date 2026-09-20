@@ -23,9 +23,10 @@ from mdclaw._common import (
     get_timeout,
 )
 
+from mdclaw._node import read_node
 from mdclaw.slurm import _base
 from mdclaw.slurm.config import _validate_slurm_job_id
-from mdclaw.slurm.node_sync import _sync_slurm_state_to_node
+from mdclaw.slurm.node_sync import _slurm_job_in_queue, _sync_slurm_state_to_node
 from mdclaw.slurm.tracker import _candidate_job_paths, _find_job_metadata, _find_record_by_job_id, _find_records_by_job_id, _get_jobs_path, _read_job_records, _update_job_record
 
 
@@ -65,7 +66,56 @@ def _status_unavailable(result: dict, job_id: str, *, clients: dict, job_dir, ou
             "state": rec.get("status"), "exit_code": rec.get("exit_code"),
             "checked_at": rec["checked_at"], "state_source": rec.get("state_source"),
         }
+    if clients.get("squeue") and _slurm_job_in_queue(job_id) is False:
+        _report_vanished_job(result, job_id, job_dir=job_dir, output_dir=output_dir)
     return result
+
+
+def _report_vanished_job(result: dict, job_id: str, *, job_dir, output_dir) -> None:
+    """The job left the queue, no scheduler record says how it ended, and a
+    node it was meant to run is still open.
+
+    Normal on sites without accounting once ``MinJobAge`` expires the
+    controller record. A node whose tool finished is already terminal and the
+    result stays ``slurm_status_unavailable``; a node still queued/running
+    under this job id was stranded (the job died before or outside the tool)
+    and nothing else will ever move it. Reported, never sealed: the tracker
+    and the node are left as they are.
+    """
+    recs = _find_records_by_job_id(job_id, job_dir=job_dir, output_dir=output_dir)
+    stranded = []
+    for linked in recs:
+        if not (linked.get("job_dir") and linked.get("node_id")):
+            continue
+        try:
+            node = read_node(linked["job_dir"], linked["node_id"])
+        except Exception:  # noqa: BLE001
+            continue
+        node_status = node.get("status")
+        # A node since freed and resubmitted carries another job's id.
+        if (node_status in ("completed", "failed")
+                or str((node.get("metadata") or {}).get("slurm_job_id")) != str(job_id)):
+            continue
+        stranded.append({"job_dir": linked["job_dir"], "node_id": linked["node_id"],
+                         "node_status": node_status, "stderr_log": linked.get("stderr_log")})
+    if not stranded:
+        return
+    result["code"] = "slurm_job_vanished"
+    result["stranded_nodes"] = stranded
+    result["stderr_tail"] = _find_log_tail(job_id, log_type="stderr",
+                                           rec=_job_level_log_record(recs[0]), output_dir=output_dir)
+    names = ", ".join(f"{s['node_id']} ({s['node_status']})" for s in stranded)
+    result["message"] = (
+        f"Slurm job {job_id} left the queue with no scheduler record (accounting disabled or "
+        f"expired), but its node(s) never finished: {names}. The job died before or outside the tool."
+    )
+    first = stranded[0]
+    result["next_action"] = (
+        f"Read stderr_tail (or {first['stderr_log']}), fix the cause, then free the node and "
+        f"resubmit it: mdclaw update_workflow_state --job-dir {first['job_dir']} "
+        f"--node-id {first['node_id']} --clear-slurm-metadata"
+    )
+    result["errors"] = [result["message"]]
 
 
 def _read_tail(path: str | Path | None, *, lines: int = 50) -> Optional[str]:
@@ -654,6 +704,8 @@ def list_tracked_jobs(
         "tracker_files": [
             str(p) for p in _candidate_job_paths(job_dir=job_dir)
         ],
+        "stranded_jobs": [],
+        "warnings": [],
         "errors": [],
     }
 
@@ -673,13 +725,21 @@ def list_tracked_jobs(
             if rec.get("status") not in terminal and job_id and job_id not in checked:
                 checked.add(job_id)
                 try:
-                    check_job(
+                    checked_job = check_job(
                         job_id,
                         job_dir=rec.get("job_dir"),
                         output_dir=rec.get("output_dir"),
                     )
                 except Exception:
-                    pass
+                    continue
+                if checked_job.get("code") == "slurm_job_vanished":
+                    result["stranded_jobs"].append({
+                        "job_id": job_id, "stranded_nodes": checked_job["stranded_nodes"],
+                        "next_action": checked_job.get("next_action"),
+                    })
+                    result["warnings"].append(checked_job["message"])
+                elif checked_job.get("code") == "slurm_status_unavailable":
+                    result["warnings"].append(checked_job.get("message") or f"no Slurm state for job {job_id}")
         # Re-read after sync
         records = _read_job_records(job_dir=job_dir)
 

@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 from mdclaw._common import (
     create_validation_error,
+    get_timeout,
 )
 from mdclaw._event import write_event
 from mdclaw._lock import file_lock
@@ -31,6 +32,16 @@ from mdclaw.node.validation import _node_is_terminal, _terminal_node_sealed_resp
 
 from mdclaw.slurm import _base
 from mdclaw.slurm._base import _SLURM_SUBMISSION_INTENT_KEYS, _SLURM_SUBMISSION_METADATA_KEYS, logger
+
+
+_CLEAR_COMMAND = "mdclaw update_workflow_state --job-dir {job_dir} --node-id {node_id} --clear-slurm-metadata"
+_STALE_SUBMISSION_HINT = (
+    "If that job is dead and the node never ran, free the node and resubmit it: "
+    + _CLEAR_COMMAND + " (refused while squeue still lists the job)."
+)
+_STALE_INTENT_HINT = (
+    "Wait for the active submitter to finish; if it crashed, clear the reservation: " + _CLEAR_COMMAND
+)
 
 
 def _write_slurm_observation_event(
@@ -84,7 +95,7 @@ def _validate_node_ready_for_slurm_submit(job_dir: str, node_id: str) -> Optiona
             f"Node {node_id!r} already has slurm_job_id={existing!r}.",
             expected="node without existing SLURM submission metadata",
             actual=f"slurm_job_id={existing!r}",
-            hints=["Create a new node for a new submission or clear stale metadata explicitly."],
+            hints=[_STALE_SUBMISSION_HINT.format(job_dir=job_dir, node_id=node_id)],
             code="slurm_node_already_submitted",
         )
     intent = (node.get("metadata") or {}).get("slurm_submission_intent_id")
@@ -94,7 +105,7 @@ def _validate_node_ready_for_slurm_submit(job_dir: str, node_id: str) -> Optiona
             f"Node {node_id!r} already has an in-flight SLURM submission.",
             expected="node without existing SLURM submission metadata",
             actual=f"slurm_submission_intent_id={intent!r}",
-            hints=["Wait for the active submitter to finish, or clear stale metadata explicitly."],
+            hints=[_STALE_INTENT_HINT.format(job_dir=job_dir, node_id=node_id)],
             code="slurm_node_submission_in_progress",
         )
     return None
@@ -142,9 +153,7 @@ def _reserve_slurm_submission_on_node(
                     f"Node {node_id!r} already has slurm_job_id={existing!r}.",
                     expected="node without existing SLURM submission metadata",
                     actual=f"slurm_job_id={existing!r}",
-                    hints=[
-                        "Create a new node for a new submission or clear stale metadata explicitly."
-                    ],
+                    hints=[_STALE_SUBMISSION_HINT.format(job_dir=job_dir, node_id=node_id)],
                     code="slurm_node_already_submitted",
                 ), None
             intent = metadata.get("slurm_submission_intent_id")
@@ -154,9 +163,7 @@ def _reserve_slurm_submission_on_node(
                     f"Node {node_id!r} already has an in-flight SLURM submission.",
                     expected="node without existing SLURM submission metadata",
                     actual=f"slurm_submission_intent_id={intent!r}",
-                    hints=[
-                        "Wait for the active submitter to finish, or clear stale metadata explicitly."
-                    ],
+                    hints=[_STALE_INTENT_HINT.format(job_dir=job_dir, node_id=node_id)],
                     code="slurm_node_submission_in_progress",
                 ), None
             metadata.update({
@@ -367,6 +374,98 @@ def _rollback_slurm_stamp_on_node(
     except Exception as exc:  # noqa: BLE001
         return f"could not rollback node {node_id}: {exc}"
     return None
+
+
+def _slurm_job_in_queue(job_id: str) -> Optional[bool]:
+    """Whether squeue still lists *job_id*; ``None`` when squeue cannot be asked.
+
+    ``squeue -j <id>`` exits non-zero both for a finished job and for an
+    unreachable controller, so the whole queue is listed instead: a successful
+    listing without the id is a definite "gone". A pending array shows as
+    ``<parent>_[<range>]``; it counts as present for any child of that parent.
+    """
+    try:
+        if not _base.check_external_tool("squeue"):
+            return None
+        proc = _base.run_command(["squeue", "-h", "-o", "%i %F"], timeout=get_timeout("slurm"))
+    except Exception:  # noqa: BLE001
+        return None
+    wanted = str(job_id)
+    parent = wanted.split("_", 1)[0]
+    for line in (proc.stdout or "").splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        listed, array_parent = parts[0], (parts[1] if len(parts) > 1 else "")
+        if listed == wanted:
+            return True
+        if "_" not in wanted and listed.split("_", 1)[0] == wanted:
+            return True
+        if "[" in listed and parent in (listed.split("_", 1)[0], array_parent):
+            return True
+    return False
+
+
+def clear_slurm_submission_on_node(job_dir: str, node_id: str) -> dict:
+    """Free a non-terminal node from a dead SLURM submission so it can be
+    submitted again.
+
+    The ``slurm_node_already_submitted`` guard keys on ``metadata.slurm_job_id``;
+    a job that died before its tool ran (``mdclaw: command not found``, a bad
+    wrapper) leaves that id on a node that never started, and on sites without
+    accounting nothing ever reports the job's end. Refused while squeue still
+    lists the job, which keeps the double-submission guard intact.
+    """
+    jd = str(Path(job_dir).resolve())
+    node_dir = Path(jd) / "nodes" / node_id
+    node_json = node_dir / "node.json"
+    result: dict[str, Any] = {"success": False, "node_id": node_id, "errors": [], "warnings": []}
+    if not node_json.exists():
+        return {**result, **create_validation_error(
+            "job_dir/node_id", f"Node {node_id!r} not found under {job_dir}",
+            expected="existing node.json", actual=str(node_json), code="slurm_node_unavailable")}
+    node = read_node(jd, node_id)
+    if _node_is_terminal(node):
+        return _terminal_node_sealed_response(node_id, node.get("status"))
+    slurm_job_id = (node.get("metadata") or {}).get("slurm_job_id")
+    if slurm_job_id:
+        in_queue = _slurm_job_in_queue(str(slurm_job_id))
+        if in_queue:
+            return {**result, **create_validation_error(
+                "node_id",
+                f"SLURM job {slurm_job_id} of node {node_id!r} is still in the queue.",
+                expected="a job that has left the queue",
+                actual=f"slurm_job_id={slurm_job_id!r}",
+                hints=[f"Cancel it first: mdclaw cancel_job --job-id {slurm_job_id}; then clear again."],
+                code="slurm_job_still_active")}
+        if in_queue is None:
+            result["warnings"].append(
+                f"squeue unavailable; could not confirm that SLURM job {slurm_job_id} has ended.")
+
+    with file_lock(node_dir / "node.lock"):
+        data = json.loads(node_json.read_text())
+        if _node_is_terminal(data):
+            return _terminal_node_sealed_response(node_id, data.get("status"))
+        metadata = data.setdefault("metadata", {})
+        cleared = {
+            key: metadata.pop(key)
+            for key in (*_SLURM_SUBMISSION_METADATA_KEYS, *_SLURM_SUBMISSION_INTENT_KEYS)
+            if key in metadata
+        }
+        prior_status = data.get("status")
+        data["status"] = "pending"
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _atomic_write_json(node_json, data)
+    _sync_progress_node_entry(jd, node_id, data)
+    if cleared:
+        try:
+            write_event(jd, node_id, "slurm_metadata_cleared", success=True,
+                        details={"cleared": cleared, "prior_status": prior_status})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not write slurm_metadata_cleared event: %s", exc)
+    result.update(success=True, status="pending", prior_status=prior_status,
+                  cleared_slurm_job_id=slurm_job_id, cleared_keys=sorted(cleared))
+    return result
 
 
 def _sync_slurm_state_to_node(

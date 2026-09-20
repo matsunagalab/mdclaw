@@ -265,6 +265,17 @@ def extract_tripeptide(
         parent_prep_id = _find_ancestor_node_id(job_dir, node_id, "prep")
         resolved = find_ancestor_artifact(job_dir, node_id, "prep", "merged_pdb") if parent_prep_id else None
         if not resolved:
+            # The parent of a node cannot be changed, so this node can never
+            # run: name the node to create instead and how to retire this one.
+            result["next_action"] = (
+                f"mdclaw create_node --job-dir {job_dir} --node-type prep --parent-node-ids "
+                "<completed prepare_complex prep node>, then run extract_tripeptide on the returned node_id"
+            )
+            result["hints"] = [
+                f"'{node_id}' has no completed prep parent and cannot be re-parented; retire it with: "
+                f"mdclaw update_workflow_state --job-dir {job_dir} --node-id {node_id} --abandon "
+                "--reason 'wrong parent'"
+            ]
             return _fail(code="fep_fragment_prep_required",
                          message="extract_tripeptide needs a completed prep parent (prepare_complex) whose merged_pdb is "
                                  "the prepared protein; create this prep node with --parent-node-ids <that prep node>")

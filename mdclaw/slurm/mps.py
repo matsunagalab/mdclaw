@@ -51,6 +51,7 @@ from mdclaw.slurm.config import (
     _validate_sbatch_directive_values,
     mps_active_thread_percentage,
     resolve_container_source,
+    uncontained_mdclaw_warning,
     validate_container_flags,
 )
 from mdclaw.slurm.node_sync import (
@@ -390,6 +391,10 @@ def submit_mps_job(
         runtime_error = resolve_container_runtime(container, warnings=result.setdefault("warnings", []))
         if runtime_error:
             return {**result, **runtime_error}
+    uncontained = uncontained_mdclaw_warning(
+        [t["command"] for t in normalized_tasks], container, environment)
+    if uncontained:
+        result.setdefault("warnings", []).append(uncontained)
 
     sbatch_content = _generate_mps_sbatch_script(
         tasks=normalized_tasks,

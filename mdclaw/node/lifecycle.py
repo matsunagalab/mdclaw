@@ -867,6 +867,9 @@ def update_workflow_state(
     node_id: Optional[str] = None,
     status: Optional[str] = None,
     params: Optional[dict] = None,
+    clear_slurm_metadata: bool = False,
+    abandon: bool = False,
+    reason: Optional[str] = None,
 ) -> dict:
     """Update node status and/or job-level params in one tool.
 
@@ -875,19 +878,56 @@ def update_workflow_state(
 
     - Pass ``node_id`` + ``status`` to set an operational node status.
     - Pass ``params`` to merge job-level params.
-    - Both may be given together; at least one target is required.
+    - Pass ``node_id`` + ``clear_slurm_metadata`` to free a node whose SLURM
+      job died without running the tool: the stale ``slurm_job_id`` is removed
+      and the node returns to ``pending`` so ``submit_job`` accepts it again
+      (refused while squeue still lists the job).
+    - Pass ``node_id`` + ``abandon`` to retire a node that never ran and never
+      will (created under the wrong parent, superseded by a rebuilt chain). It
+      is sealed as ``failed`` with code ``node_abandoned`` and ``reason``, so
+      parent auto-resolution and ``parent_required`` candidates skip it.
 
     ``completed`` is reserved for producer tools calling :func:`complete_node`.
     """
-    if status is None and params is None:
+    if status is None and params is None and not clear_slurm_metadata and not abandon:
         return {
             "success": False,
             "code": "update_state_no_target",
-            "errors": ["Provide status (with node_id) and/or params."],
+            "errors": ["Provide status (with node_id), params, clear_slurm_metadata or abandon."],
             "warnings": [],
         }
 
     result: dict = {"success": True, "warnings": [], "errors": []}
+
+    if (clear_slurm_metadata or abandon) and not node_id:
+        return {
+            "success": False,
+            "code": "update_state_status_requires_node_id",
+            "errors": ["clear_slurm_metadata and abandon require node_id."],
+            "warnings": [],
+        }
+
+    if abandon:
+        if status is not None or clear_slurm_metadata:
+            return {
+                "success": False,
+                "code": "invalid_parameter_value",
+                "errors": ["abandon cannot be combined with status or clear_slurm_metadata."],
+                "warnings": [],
+            }
+        abandon_result = _abandon_node(job_dir, node_id, reason)
+        if not abandon_result.get("success"):
+            return abandon_result
+        result["abandon_result"] = abandon_result
+
+    if clear_slurm_metadata:
+        from mdclaw.slurm.node_sync import clear_slurm_submission_on_node
+
+        clear_result = clear_slurm_submission_on_node(job_dir, node_id)
+        if not clear_result.get("success"):
+            return clear_result
+        result["clear_result"] = clear_result
+        result["warnings"].extend(clear_result.get("warnings") or [])
 
     if status is not None:
         if not node_id:
@@ -910,6 +950,46 @@ def update_workflow_state(
             return params_result
 
     return result
+
+
+def _abandon_node(job_dir: str, node_id: str, reason: Optional[str]) -> dict:
+    """Seal a never-run node as ``failed`` / ``node_abandoned``.
+
+    Only ``pending`` nodes without children and without a SLURM submission
+    qualify: a queued or running node has a job to cancel first, and a node
+    with children is part of a chain that still resolves through it.
+    """
+    from mdclaw.node.failure import record_node_failure
+
+    current = read_node(job_dir, node_id)
+    if _node_is_terminal(current):
+        return _terminal_node_sealed_response(
+            node_id, current.get("status"), node=current, job_dir=job_dir)
+    blockers = []
+    if current.get("status") != "pending":
+        blockers.append(f"status is {current.get('status')!r}, not 'pending'")
+    if (current.get("metadata") or {}).get("slurm_job_id"):
+        blockers.append("it carries a slurm_job_id (cancel the job, then --clear-slurm-metadata)")
+    nodes_index = (_load_progress_v3(Path(job_dir) / "progress.json") or {}).get("nodes") or {}
+    children = sorted(nid for nid, info in nodes_index.items()
+                      if node_id in (info.get("parents") or [])
+                      and info.get("status") != "failed")
+    if children:
+        blockers.append(f"it has live children ({', '.join(children)}); abandon them first")
+    if blockers:
+        message = f"Node '{node_id}' cannot be abandoned: " + "; ".join(blockers) + "."
+        return {
+            "success": False, "error_type": "ValidationError", "code": "node_abandon_refused",
+            "message": message, "errors": [message], "warnings": [], "recoverable": True,
+        }
+    message = "Abandoned before running" + (f": {reason}" if reason else ".")
+    record_node_failure(
+        job_dir, node_id,
+        {"success": False, "error_type": "NodeAbandoned", "code": "node_abandoned",
+         "message": message, "errors": [message], "warnings": []},
+        tool="update_workflow_state",
+    )
+    return {"success": True, "node_id": node_id, "status": "failed", "code": "node_abandoned"}
 
 
 def begin_node(job_dir: str, node_id: str) -> None:
