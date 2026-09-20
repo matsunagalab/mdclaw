@@ -849,7 +849,10 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   for a node to reach `completed` or `failed` and reports timeout with a
   structured `node_wait_timeout` code instead of encouraging duplicate branches.
 - `explain_node(...)`: read-only node details plus execution-context validation
-  and auto-resolved inputs for a candidate node.
+  and auto-resolved inputs for a candidate node. Top-level `blocking_codes`
+  unions `validation.blocking_codes` with the input-resolution code
+  (`hybrid_topology_production_blocked`, ...); when the context is valid but
+  inputs cannot be assembled, `next.action` is `blocked` rather than `run`.
 - `trace_failure(...)`: read-only failed-node
   diagnosis. Reads `metadata.errors`, the latest failure artifact, recent
   events, and parent/dependency status, then returns `recovery_options` and

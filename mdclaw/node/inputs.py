@@ -124,6 +124,24 @@ def explain_node(
         else resolved_inputs.get("input_resolution_code") or "ok"
     )
     ready_to_run = validation.get("success") is True and not input_errors
+    # One list for everything that blocks the run: validation.blocking_codes
+    # covers the execution context only, so an input-resolution refusal
+    # (hybrid_topology_production_blocked) used to appear nowhere in it.
+    blocking_codes = list(validation.get("blocking_codes") or [])
+    if input_errors:
+        input_code = code if code != "ok" else "input_resolution_blocked"
+        if input_code not in blocking_codes:
+            blocking_codes.append(input_code)
+    # The envelope's generic ``next`` for a pending node is "run"; when the
+    # context is valid but the inputs cannot be assembled that contradicts
+    # ready_to_run, so say blocked. (An incomplete parent already gets the
+    # parent's step from the envelope.)
+    blocked_next = (
+        {"next": {"action": "blocked", "node_id": node_id, "node_type": node_type,
+                  "blocking_codes": blocking_codes, "reason": input_errors[0]}}
+        if validation.get("success") is True and input_errors
+        else {}
+    )
     required_action = (
         {
             "required_action": {
@@ -141,6 +159,8 @@ def explain_node(
         "code": code,
         "ready_to_run": ready_to_run,
         **required_action,
+        "blocking_codes": blocking_codes,
+        **blocked_next,
         "dag_guidance": DAG_GUIDANCE,
         "job_dir": str(jd),
         "node_id": node_id,

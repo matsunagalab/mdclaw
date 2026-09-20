@@ -32,7 +32,9 @@ order: `success`, `code`, `message`, `node_id`, `node_status`, `next_action`,
   `branch` or `done`, with `run_command` / `create_command` / `batch_command`
   and `stage_tools`). It names tools and ids, never scientific parameters;
   when a parent blocks the node it names the parent and sets
-  `blocked_node_id`.
+  `blocked_node_id`. `explain_node` answers `action` = `blocked` with
+  `blocking_codes` and `reason` when the node's inputs cannot be assembled
+  (`ready_to_run: false`); do not run it, branch on the code.
 - `result_file`: `<job_dir>/nodes/<node_id>/result.json`, the complete result.
   In the default `--output brief` mode, top-level values larger than a few KB
   are replaced by `{"_omitted": true, "chars": N, "see": "<result_file>#<key>"}`.

@@ -7,6 +7,15 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-20 — FEP test-run feedback 17–19: ラッパーのネイティブ振り分け、`explain_node` の blocking_codes と next（branch `feat/fep-ddg-node`）
+
+3 件ともコードで確認でき、全部直した。
+
+- **17. `bin/mdclaw` のツール名判定**: `TOOL="${1:-}"` なので、グローバルオプションが先行すると Slurm ツールがコンテナ内で走り `no Slurm client` になる。報告は `--output full list_tracked_jobs` だったが、**スキルが教えている `mdclaw --job-dir <jd> --node-id <id> submit_job …` の形も同じ経路**で、報告より範囲が広い。「`--` で始まらない最初の引数」では `--output full` の `full` を拾うので不十分。`_cli._detect_subcommand` と同じ規則（値を取るグローバルオプションの次のトークンを飛ばす、`--opt=value` は飛ばさない）を bash で実装し、`GLOBAL_VALUE_OPTIONS` が `_cli._GLOBAL_VALUE_OPTIONS` と一致することをテストで固定した。`--list` / `--version` / `--help` の分岐は従来どおり `$1` を見る。
+- **18. `explain_node` の `blocking_codes`**: `validation.blocking_codes` は実行コンテキスト（親の状態・型・conditions）専用で、入力解決の拒否（`hybrid_topology_production_blocked`）はどこにも入らなかった。`validation` の意味は変えず、**トップレベルに `blocking_codes`**（validation の codes ∪ 入力解決の code、code が無い入力エラーは `input_resolution_blocked`）を足した。先頭キー順はテスト済みの契約（`success, code, ready_to_run, required_action`）なのでその後ろに置く。
+- **19. `ready_to_run: false` なのに `next.action = run`**: `next` は CLI の envelope が `setdefault` で付ける汎用ステップで、pending ノードは常に `run`。`explain_node` 自身が「コンテキストは有効だが入力が組めない」とき `next = {action: blocked, blocking_codes, reason}` を返すようにした（親が未完了のケースは envelope が既に親のステップを返すので触らない）。`source_candidate_selection_required` も同じ経路で `blocked` になる（`required_action` が解決手段）。envelope の `next_step` 自体に入力解決を入れる案は、全ツールの出力ごとに resolver を回すことになるので見送り — `inspect_job` などの `next` は hybrid topo 下の pending prod に対して依然 `run` を出す（実行すれば pending のまま拒否される）。
+- **テスト**: `test_bin_wrapper.py` に振り分け 6 ケース + オプション表の同期、`test_fep.py` の hybrid prod 拒否テストに `blocking_codes` と `next.action == "blocked"`。SIF overlay で `-k "explain or node or fep or cli or envelope or wrapper or …"` 712 passed / 2 skipped、ruff clean。`skills/common/tool-output.md` と tool-reference に `blocked` を追記。
+
 ## 2026-09-20 — FEP test-run feedback 11–16: 死んだ Slurm ジョブからの復旧、pending ノードの破棄、誤誘導 next_action、キャップ水素の誤警告（branch `feat/fep-ddg-node`）
 
 テスト実行エージェントの指摘 6 件をコードで確認した。6 件とも事実で、うち 5 件を直し、16 は文書化のみ。

@@ -695,6 +695,9 @@ class TestDdgNode:
         explained = explain_node(str(jd), prod)
         assert explained["ready_to_run"] is False
         assert explained["code"] == "hybrid_topology_production_blocked"
+        assert explained["blocking_codes"] == ["hybrid_topology_production_blocked"]
+        # not the envelope's generic "run", which would contradict ready_to_run
+        assert explained["next"]["action"] == "blocked"
         assert any("build_hybrid_system" in m for m in explained["missing_inputs"])
         res = run_production(job_dir=str(jd), node_id=prod, simulation_time_ns=0.001)
         assert res["success"] is False and res["code"] == "hybrid_topology_production_blocked"

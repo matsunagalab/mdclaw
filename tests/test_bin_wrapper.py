@@ -98,3 +98,46 @@ def test_agent_guides_warn_against_user_namespaces():
     following = userid_section[1]
     assert "unshare" in following
     assert "--no-home" in following
+
+
+def _route(tmp_path: Path, args: list[str]) -> str:
+    """"native" or "container" for one wrapper invocation, with both stubbed."""
+    echo, bash = shutil.which("echo"), shutil.which("bash")
+    if echo is None or bash is None:
+        pytest.skip("echo/bash unavailable on this host")
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir(exist_ok=True)
+    for name in ("singularity", "python3"):
+        if not (stub_bin / name).exists():
+            (stub_bin / name).symlink_to(echo)
+    sif = tmp_path / "mdclaw.sif"
+    sif.write_text("stub sif")
+    env = os.environ.copy()
+    env.update(PATH=f"{stub_bin}{os.pathsep}{env['PATH']}", MDCLAW_RUNTIME="singularity",
+               MDCLAW_SIF=str(sif))
+    out = subprocess.run([bash, str(WRAPPER), *args], env=env, text=True,
+                         capture_output=True, timeout=10, check=False).stdout
+    return "native" if out.startswith("-m mdclaw._cli") else "container"
+
+
+@pytest.mark.parametrize("args,expected", [
+    (["list_tracked_jobs", "--sync"], "native"),
+    # Global options may precede the tool; their values are not the tool name.
+    (["--output", "full", "list_tracked_jobs", "--sync"], "native"),
+    (["--output=full", "check_job", "--job-id", "1"], "native"),
+    (["--job-dir", "jd", "--node-id", "min_001", "submit_job", "--script", "x"], "native"),
+    (["--job-dir", "jd", "--node-id", "min_001", "run_minimization"], "container"),
+    # A Slurm tool name appearing as another tool's value does not reroute it.
+    (["solvate_structure", "--label", "check_job"], "container"),
+])
+def test_slurm_tools_run_natively_wherever_global_options_sit(tmp_path, args, expected):
+    assert _route(tmp_path, args) == expected
+
+
+def test_wrapper_global_value_options_match_the_cli():
+    import re
+
+    from mdclaw._cli import _GLOBAL_VALUE_OPTIONS
+
+    declared = re.search(r'^GLOBAL_VALUE_OPTIONS="([^"]*)"', WRAPPER.read_text(), re.M).group(1)
+    assert set(declared.split()) == set(_GLOBAL_VALUE_OPTIONS)

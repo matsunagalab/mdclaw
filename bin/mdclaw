@@ -84,13 +84,39 @@ elif [ "$RUNTIME" = "apptainer" ]; then
     CONTAINER_CMD="apptainer"
 fi
 
-TOOL="${1:-}"
+# The tool name is the first argument that is neither an option nor the value
+# of a global option, as in mdclaw/_cli.py::_detect_subcommand (keep
+# GLOBAL_VALUE_OPTIONS in step with _GLOBAL_VALUE_OPTIONS there). Taking "$1"
+# sent `mdclaw --output full list_tracked_jobs --sync` and
+# `mdclaw --job-dir <jd> --node-id <id> submit_job ...` into the container,
+# where no Slurm client exists.
+GLOBAL_VALUE_OPTIONS="--job-dir --node-id --list-json --output --log-file --heartbeat-seconds"
+TOOL=""
+_skip_next=0
+for _arg in "$@"; do
+    if [ "$_skip_next" = 1 ]; then
+        _skip_next=0
+        continue
+    fi
+    case "$_arg" in
+        -*)
+            case "$_arg" in
+                *=*) ;;
+                *) if echo " $GLOBAL_VALUE_OPTIONS " | grep -q -- " $_arg "; then _skip_next=1; fi ;;
+            esac
+            ;;
+        *)
+            TOOL="$_arg"
+            break
+            ;;
+    esac
+done
 
 # --- Flags (--list, --version, --help) ---
 # These must reflect the runtime that actually executes tools. Host Python may
 # be missing science deps, which silently hides tools whose modules fail to
 # import, so only the no-runtime fallback handles these flags directly here.
-case "$TOOL" in
+case "${1:-}" in
     --list|--version|--help|-h)
         if [ -z "$RUNTIME" ]; then
             PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
@@ -100,7 +126,7 @@ case "$TOOL" in
 esac
 
 # --- SLURM tools run natively (host python3 + host sbatch/squeue) ---
-if echo " $NATIVE_TOOLS " | grep -q " $TOOL "; then
+if [ -n "$TOOL" ] && echo " $NATIVE_TOOLS " | grep -q -- " $TOOL "; then
     PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
         exec python3 -m mdclaw._cli "$@"
 fi
