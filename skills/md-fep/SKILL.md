@@ -65,7 +65,9 @@ Charge-changing mutations (e.g. K→A, D→N) are handled by
 `build_hybrid_system` itself: one bulk water far from the site turns into a
 counter-ion along the same λ path (co-alchemical ion), so the box charge is
 the same at both end states. Nothing to pass; the result's
-`charge_correction` block names the water and the ion, and both legs get it
+`charge_correction` block names the water, the ion and where along λ it
+appears (`lambda_range` = the steric-swap phase, `window_indices`; compare these
+with a dip in the overlap matrix), and both legs get it
 automatically. It needs salt ions in the box (keep `solvate_structure`'s
 default `--salt`). Do not pass `--charge-correction none` unless the user asks
 for the uncorrected number; if you do, report the warning verbatim with the

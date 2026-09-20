@@ -257,12 +257,18 @@ def run_mbar(
             return None
         return float((delta_f[idx[0], idx[-1]]) * kT)
 
-    p1, p2 = protocol.get("phase_bounds", PHASE_BOUNDS)
-    phases = {
-        "decharge_old_kj_mol": _phase_dg(0.0, p1),
-        "sterics_swap_kj_mol": _phase_dg(p1, p2),
-        "recharge_new_kj_mol": _phase_dg(p2, 1.0),
-    }
+    if protocol.get("phases"):
+        # A protocol that names its own phases (absolute binding: restrain /
+        # decharge / decouple sterics) is reported in those terms.
+        phases = {f"{ph['name']}_kj_mol": _phase_dg(float(ph["lambda_lo"]), float(ph["lambda_hi"]))
+                  for ph in protocol["phases"]}
+    else:
+        p1, p2 = protocol.get("phase_bounds", PHASE_BOUNDS)
+        phases = {
+            "decharge_old_kj_mol": _phase_dg(0.0, p1),
+            "sterics_swap_kj_mol": _phase_dg(p1, p2),
+            "recharge_new_kj_mol": _phase_dg(p2, 1.0),
+        }
     warnings = []
     low = [(k, o) for k, o in enumerate(neighbour) if o < MIN_NEIGHBOUR_OVERLAP]
     if low:

@@ -422,7 +422,15 @@ keeps the box charge fixed across a charge-changing mutation,
 (`10.1021/acs.jctc.8b00825`, JCTC 14(12), 6346-6358). Selected for a topo node
 whose `metadata.fep.charge_correction` is `coalchemical_ion`.
 
-Deliverable checks after the addenda: 116 unique BibTeX keys, 115 unique DOIs.
+Third addendum, same day (absolute binding free energy, `mdclaw/fep/abfe.py`), each
+checked against Crossref: `Boresch2003AbsoluteBinding` (the six-coordinate
+restraint and its analytic standard-state term; topo with
+`metadata.fep.restraint = boresch`, and the `abfe_binding` analyze node),
+`Gilson1997BindingAffinities` (double decoupling and the standard state; the
+`abfe_binding` analyze node), `Mobley2007ModelSite` (ligand symmetry
+correction; only when `ligand_symmetry_number > 1`).
+
+Deliverable checks after the addenda: 119 unique BibTeX keys, 118 unique DOIs.
 
 ## Deliverable checks
 

@@ -31,6 +31,7 @@ It does not widen the current request or authorize HPC/SLURM submission.
    | Equilibrated, not run | `skills/md-production/SKILL.md` |
    | Production complete, analysis required | `skills/md-analyze/SKILL.md` |
    | Question is a point-mutation ddG (folding stability) | `skills/md-fep/SKILL.md` for every stage after `solv` |
+   | Question is the binding free energy of one ligand to a protein | `skills/md-abfe/SKILL.md` for every stage after `solv` |
 
 3. After a stage returns, inspect the DAG again. Stop when the current request
    is satisfied; otherwise continue with the next incomplete stage or required

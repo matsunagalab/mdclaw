@@ -31,6 +31,11 @@ from mdclaw.fep.hybrid import DEFAULT_SOFTCORE_ALPHA, FEP_PARAMETERS, STATE_A, S
 PROTOCOL_SCHEMA_VERSION = 1
 DEFAULT_N_WINDOWS = 21
 PHASE_BOUNDS = (0.25, 0.75)
+# A protocol names its own global parameters (``global_parameters``); the five
+# hybrid parameters are the default. ``fep_restraint`` scales the Boresch
+# restraint of an absolute-binding complex leg (mdclaw.fep.boresch).
+RESTRAINT_PARAMETER = "fep_restraint"
+KNOWN_PARAMETERS: tuple[str, ...] = (*FEP_PARAMETERS, RESTRAINT_PARAMETER)
 
 
 class ProtocolError(ValueError):
@@ -97,14 +102,24 @@ def default_lambdas(n_windows: int = DEFAULT_N_WINDOWS) -> list[float]:
     return [round(i / (n - 1), 6) for i in range(n)]
 
 
-def _validate_parameter_dict(values: dict, index: int) -> dict[str, float]:
-    unknown = sorted(set(values) - set(FEP_PARAMETERS))
+def protocol_parameter_names(protocol: dict) -> tuple[str, ...]:
+    """The global parameters a protocol drives (default: the five hybrid ones)."""
+    names = tuple(protocol.get("global_parameters") or FEP_PARAMETERS)
+    unknown = sorted(set(names) - set(KNOWN_PARAMETERS))
+    if unknown:
+        raise ProtocolError(code="fep_protocol_invalid",
+                            message=f"unknown global parameter(s) {unknown}; allowed: {list(KNOWN_PARAMETERS)}")
+    return names
+
+
+def _validate_parameter_dict(values: dict, index: int, names: Sequence[str] = FEP_PARAMETERS) -> dict[str, float]:
+    unknown = sorted(set(values) - set(names))
     if unknown:
         raise ProtocolError(
-            code="fep_protocol_invalid", message=f"window {index}: unknown global parameter(s) {unknown}; allowed: {list(FEP_PARAMETERS)}",
+            code="fep_protocol_invalid", message=f"window {index}: unknown global parameter(s) {unknown}; allowed: {list(names)}",
         )
     out = {}
-    for name in FEP_PARAMETERS:
+    for name in names:
         if name not in values:
             raise ProtocolError(code="fep_protocol_invalid", message=f"window {index}: missing parameter {name!r}")
         v = float(values[name])
@@ -205,8 +220,9 @@ def load_protocol(path: str | Path) -> dict:
     windows = data.get("windows")
     if not isinstance(windows, list) or not windows:
         raise ProtocolError(code="fep_protocol_invalid", message=f"{p} has no windows")
+    names = protocol_parameter_names(data)
     for i, w in enumerate(windows):
-        w["parameters"] = _validate_parameter_dict(w.get("parameters", {}), i)
+        w["parameters"] = _validate_parameter_dict(w.get("parameters", {}), i, names)
         w.setdefault("index", i)
         if not isinstance(w.get("lambda"), (int, float)):
             raise ProtocolError(code="fep_protocol_invalid", message=f"{p}: window {i} has no scalar lambda")
@@ -224,7 +240,9 @@ def protocols_equivalent(a: dict, b: dict) -> bool:
     for x, y in zip(wa, wb):
         if abs(float(x["lambda"]) - float(y["lambda"])) > 1e-9:
             return False
-        if any(abs(x["parameters"][k] - y["parameters"][k]) > 1e-9 for k in FEP_PARAMETERS):
+        if set(x["parameters"]) != set(y["parameters"]):
+            return False
+        if any(abs(x["parameters"][k] - y["parameters"][k]) > 1e-9 for k in x["parameters"]):
             return False
     return (a.get("mutation") or {}).get("label") == (b.get("mutation") or {}).get("label")
 

@@ -153,6 +153,16 @@ one job: the unfolded-state model is a `prep` child of the protein's `prep`
 (`estimate_ddg`). See the `fep/` section of `tool-reference.md` and
 `skills/md-fep/`.
 
+An absolute binding free energy has the same two-leg shape with a decoupling
+`topo` (`build_decoupled_system`): the solvent leg is a `prep` child
+(`extract_ligand`), and `estimate_binding_dg` closes the cycle. Its complex leg
+is the one place a `topo` hangs under an `eq`: `add_boresch_restraint`
+re-issues that branch's topology with a restraint that can only be defined on
+the equilibrated pose, and the `fep` nodes hang under that `topo` (they start
+from the `eq` state above it; a `fep` node with no equilibrated ancestor is
+refused, `fep_equilibration_required`). See
+`skills/md-abfe/`.
+
 Preparation nodes select one candidate, choose MD-relevant molecular
 components, clean and standardize them, record chemistry and provenance for
 topology building, and produce a prepared system. They do not create explicit

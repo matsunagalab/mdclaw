@@ -61,6 +61,7 @@ _ALCHEMICAL_ANALYZE_CONDITIONS = '{"analysis_data_scope": "alchemical"}'
 # The ddG node: a comparison analyze over the two legs' analyze_fep nodes.
 _DDG_ANALYZE_CONDITIONS = '{"analysis_data_scope": "comparison"}'
 _FEP_LEG_ANALYSIS = "fep_mbar"
+_BINDING_ANALYSIS = "abfe_binding"
 _DDG_ANALYSIS = "fep_ddg"
 
 
@@ -120,6 +121,17 @@ def _analysis_kind(job_dir: str, node_id: str) -> Optional[str]:
     return ((_read_node(job_dir, node_id) or {}).get("metadata") or {}).get("analysis")
 
 
+def _role_name(role: str, base_role: str) -> str:
+    """``_leg_role`` calls the unmarked leg ``folded``; name it for the cycle at hand."""
+    return base_role if role == "folded" else role
+
+
+def _is_abfe_leg(job_dir: str, node_id: str) -> bool:
+    """An analyze_fep node of a ligand-decoupling leg (absolute binding)."""
+    mutation = ((_read_node(job_dir, node_id) or {}).get("metadata") or {}).get("mutation")
+    return str(mutation or "").startswith("decouple:")
+
+
 def _is_ddg_shape(job_dir: str, node: dict) -> bool:
     """A comparison analyze whose parents are the two legs' analyze_fep nodes."""
     if (node.get("conditions") or {}).get("analysis_data_scope") != "comparison":
@@ -137,8 +149,16 @@ def _alchemical_analyze_next(job_dir: str, node_id: str, node: dict, nodes: dict
     if analysis == _DDG_ANALYSIS:
         return {"action": "done", "node_id": node_id, "node_type": "analyze",
                 "note": "ddG is recorded on this node (artifacts/ddg.json and metadata)"}
+    if analysis == _BINDING_ANALYSIS:
+        return {"action": "done", "node_id": node_id, "node_type": "analyze",
+                "note": "dG_bind is recorded on this node (artifacts/binding_dg.json and metadata)"}
     if analysis != _FEP_LEG_ANALYSIS:
         return None
+    # Absolute binding legs close with estimate_binding_dg; the derived leg is
+    # the ligand alone (extract_ligand, leg_role = solvent).
+    abfe = _is_abfe_leg(job_dir, node_id)
+    final_tool, base_role, derived_role = (
+        ("estimate_binding_dg", "complex", "solvent") if abfe else ("estimate_ddg", "folded", "unfolded"))
     for child, info in sorted(nodes.items()):
         if node_id not in (info.get("parents") or []) or info.get("type") != "analyze":
             continue
@@ -151,28 +171,46 @@ def _alchemical_analyze_next(job_dir: str, node_id: str, node: dict, nodes: dict
                 return step
         if info.get("status") == "completed":
             return {"action": "done", "node_id": child, "node_type": "analyze",
-                    "note": f"ddG is recorded on {child} (artifacts/ddg.json)"}
-    my_role = _leg_role(job_dir, node_id, nodes)
+                    "note": f"the result is recorded on {child} ({final_tool})"}
+    my_role = _role_name(_leg_role(job_dir, node_id, nodes), base_role)
     partners = [
         other for other, info in nodes.items()
         if other != node_id and info.get("type") == "analyze" and info.get("status") == "completed"
-        and _analysis_kind(job_dir, other) == _FEP_LEG_ANALYSIS and _leg_role(job_dir, other, nodes) != my_role
+        and _analysis_kind(job_dir, other) == _FEP_LEG_ANALYSIS and _is_abfe_leg(job_dir, other) == abfe
+        and _role_name(_leg_role(job_dir, other, nodes), base_role) != my_role
     ]
     if partners:
         partner = sorted(partners)[-1]
-        folded, unfolded = (node_id, partner) if my_role == "folded" else (partner, node_id)
+        folded, unfolded = (node_id, partner) if my_role == base_role else (partner, node_id)
         create = (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} --node-type analyze "
                   f"--parent-node-ids {folded} {unfolded} --conditions {shlex.quote(_DDG_ANALYZE_CONDITIONS)}")
         return {"action": "create", "node_type": "analyze", "create_command": create,
-                "stage_tools": ["estimate_ddg"], "run_command": _run_command(job_dir, "<new>", "estimate_ddg"),
+                "stage_tools": [final_tool], "run_command": _run_command(job_dir, "<new>", final_tool),
                 "inputs": "auto_resolved",
-                "note": f"both legs are analysed (folded {folded}, unfolded {unfolded}): the ddG node subtracts them"
-                + (f"; other unfolded analyses: {sorted(set(partners) - {partner})}" if len(partners) > 1 else "")}
-    if my_role != "folded":
+                "note": f"both legs are analysed ({base_role} {folded}, {derived_role} {unfolded}): "
+                        f"{final_tool} combines them"
+                + (f"; other {derived_role} analyses: {sorted(set(partners) - {partner})}" if len(partners) > 1 else "")}
+    if my_role != base_role:
         return None
     prep = _nearest_ancestor(job_dir, node_id, nodes, "prep")
     if prep is None:
         return None
+    if abfe:
+        ligand = str((node.get("metadata") or {}).get("mutation") or "").split(":", 1)[-1] or "<RESNAME>"
+        stage_tools = stage_tools_for("prep", tools, params)
+        if "extract_ligand" in stage_tools:
+            stage_tools.remove("extract_ligand")
+            stage_tools.insert(0, "extract_ligand")
+        return {"action": "create", "node_type": "prep",
+                "create_command": (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} --node-type prep "
+                                   f"--parent-node-ids {prep}"),
+                "stage_tools": stage_tools,
+                "run_command": (f"mdclaw --job-dir {shlex.quote(job_dir)} --node-id <new> extract_ligand "
+                                f"--ligand {shlex.quote(ligand)}"),
+                "inputs": "auto_resolved",
+                "note": "the complex leg is analysed; the solvent leg (ligand alone) starts as a prep child of the "
+                        "complex's prep node, then solv -> topo (build_decoupled_system, same options) -> min -> eq "
+                        "-> fep -> analyze_fep, and estimate_binding_dg combines the legs"}
     mutation = (node.get("metadata") or {}).get("mutation") or "<mutation>"
     stage_tools = stage_tools_for("prep", tools, params)
     if "extract_tripeptide" in stage_tools:
@@ -387,9 +425,12 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
                                   f"({blocker_status}) is completed")
                 return step
         stage_tools = stage_tools_for(node_type, tools, params, alchemical=_is_alchemical(job_dir, node_id, nodes))
-        if node_type == "analyze" and _is_ddg_shape(job_dir, node) and "estimate_ddg" in stage_tools:
-            stage_tools.remove("estimate_ddg")
-            stage_tools.insert(0, "estimate_ddg")
+        if node_type == "analyze" and _is_ddg_shape(job_dir, node):
+            parents = node.get("parent_node_ids") or []
+            closing = "estimate_binding_dg" if all(_is_abfe_leg(job_dir, pid) for pid in parents) else "estimate_ddg"
+            if closing in stage_tools:
+                stage_tools.remove(closing)
+                stage_tools.insert(0, closing)
         run = _run_command(job_dir, node_id, stage_tools[0] if stage_tools else None)
         step = {"action": "run", "node_id": node_id, "node_type": node_type,
                 "stage_tools": stage_tools, "run_command": run, "inputs": "auto_resolved"}

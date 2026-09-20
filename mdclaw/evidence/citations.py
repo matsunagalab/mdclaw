@@ -92,12 +92,27 @@ def select_citations(subjects):
             # diagnostic) and the folding-stability cycle (capped tripeptide
             # as the unfolded state). All keyed on recorded metadata.
             if record["node_type"] == "topo" and isinstance(metadata.get("fep"), dict):
-                add("Gapsys2015pmx", subject, record, "/metadata/fep", "base_method", _FEP_DESIGN)
+                # A ligand-decoupling topology (absolute binding) is not a
+                # pmx-style hybrid; it shares only the soft core.
+                if metadata["fep"].get("kind") == "abfe_decouple":
+                    if metadata["fep"].get("restraint") == "boresch":
+                        add("Boresch2003AbsoluteBinding", subject, record, "/metadata/fep/restraint", "method",
+                            _FEP_DESIGN)
+                else:
+                    add("Gapsys2015pmx", subject, record, "/metadata/fep", "base_method", _FEP_DESIGN)
                 add("Beutler1994SoftCore", subject, record, "/metadata/fep", "method", _FEP_DESIGN)
                 if metadata["fep"].get("charge_correction") == "coalchemical_ion":
                     add("Chen2018ChargeChangingFEP", subject, record, "/metadata/fep/charge_correction",
                         "method", _FEP_DESIGN)
             analysis = metadata.get("analysis")
+            if record["node_type"] == "analyze" and analysis == "abfe_binding":
+                # double decoupling with a standard-state term; the symmetry
+                # correction follows the T4 lysozyme model-site work.
+                add("Gilson1997BindingAffinities", subject, record, "/metadata/analysis", "base_method", _FEP_DESIGN)
+                add("Boresch2003AbsoluteBinding", subject, record, "/metadata/terms_kj_mol", "method", _FEP_DESIGN)
+                if (metadata.get("ligand_symmetry_number") or 1) > 1:
+                    add("Mobley2007ModelSite", subject, record, "/metadata/ligand_symmetry_number", "method",
+                        _FEP_DESIGN)
             if record["node_type"] == "analyze" and analysis == "fep_mbar":
                 add("Shirts2008MBAR", subject, record, "/metadata/analysis", "official_method", _PYMBAR)
                 add("Klimovich2015Guidelines", subject, record, "/metadata/min_neighbour_overlap",

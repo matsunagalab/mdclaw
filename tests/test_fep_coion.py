@@ -204,6 +204,9 @@ class TestSolvatedChargeChangingBuild:
         correction = res["charge_correction"]
         assert correction["method"] == "coalchemical_ion" and correction["charge_change_e"] == pytest.approx(1.0)
         assert correction["ion"]["element"] == "Cl" and len(correction["waters"]) == 1
+        # where along lambda the ion appears: the fep_core (steric-swap) phase of this protocol
+        assert correction["lambda_parameter"] == "fep_core" and correction["lambda_range"] == [0.25, 0.75]
+        assert correction["window_indices"] == [1, 2, 3]          # lambda 0.25, 0.5, 0.75 of 0, .25, .5, .75, 1
         assert self._net_charge(res["system_xml"], STATE_A) == pytest.approx(0.0, abs=1e-6)
         assert self._net_charge(res["system_xml"], STATE_B) == pytest.approx(0.0, abs=1e-6)
         assert json.loads(Path(res["hybrid_manifest"]).read_text())["charge_correction"] == "coalchemical_ion"

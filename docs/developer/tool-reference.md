@@ -573,7 +573,9 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   counter-ion (parameters copied from an ion already in the System) before
   the merge, so the builder interpolates it through `fep_core`, the end-point
   check covers it, and both end states carry the same box charge; the
-  molecule is tethered in force group 4. Refuses with
+  molecule is tethered in force group 4. The result's `charge_correction`
+  block carries `lambda_range` (= `phase_bounds`, where `fep_core` moves) and
+  the `window_indices` inside it. Refuses with
   `fep_coion_parameters_unavailable` / `fep_coion_box_too_small` /
   `fep_coion_unsupported` rather than fall back; `"none"` runs uncorrected
   with a warning. `estimate_ddg` requires both legs to agree on it. Maps atoms (`fep/mapping.py`: backbone + CB core,
@@ -706,6 +708,55 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   `Chodera2016Equilibration` (MBAR leg) and `Seeliger2010Thermostability`
   (folding cycle) from node metadata.
 
+Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
+`fep/boresch.py`; procedure `skills/md-abfe/`, design notes
+`docs/research/abfe-references.md`) reuses `run_fep` / `analyze_fep` unchanged:
+
+- `build_decoupled_system(ligand, ...)` (`topo` node): one
+  `build_amber_system` build, then `decouple_ligand` rewrites the ligand's
+  nonbonded terms under two of the five hybrid parameters — charges and the
+  charge product of its 1-4 exceptions scale with `fep_elec_old`
+  (electrostatics annihilated), ligand x environment LJ moves to a Beutler soft
+  core under `fep_sterics_old`, ligand x ligand LJ stays at full strength in a
+  second `CustomNonbondedForce` (sterics decoupled). `validate_decoupling`
+  checks that the coupled state reproduces the built System and that the
+  decoupled energy does not change when the whole ligand is moved onto another
+  atom. The leg follows from the content: ligand alone -> `solvent`, with
+  `fep_protocol.json` (18 windows: `--elec-lambdas`, `--sterics-lambdas`);
+  anything else present -> `complex`, **without** a protocol
+  (`metadata.fep.restraint_required`), so a `fep` node under it resolves to
+  `abfe_restraint_required`. Refuses charged ligands before building
+  (`abfe_charged_ligand_unsupported`, from the prep record, again from the
+  assigned charges), covalent ones (`abfe_ligand_covalent`) and ambiguous
+  selections (`abfe_ligand_ambiguous` with `ligand_candidates`). The manifest
+  is registered under the `hybrid_manifest` artifact key (`kind:
+  abfe_decouple`).
+- `add_boresch_restraint(...)` (`topo` node whose parent is the complex
+  leg's `eq`; `_ALLOWED_PARENT_TYPES["topo"]` gained `eq` and `["fep"]` gained
+  `topo`, neither auto-resolved; the leg's `fep` nodes are children of this
+  node and start from that `eq` state, and a `fep` node with no equilibrated
+  ancestor resolves to `fep_equilibration_required`): runs 200 ps of the coupled complex from the eq state,
+  `select_boresch_restraint` scores (N, C, CA) receptor triples against bonded
+  heavy-atom ligand triples by the six coordinates' fluctuation in thermal
+  widths, excludes theta outside [40, 140] degrees, refuses a loose pose
+  (`abfe_restraint_unstable`). Ligand bonds come from the System
+  (`bonded_pairs`), since `topology.pdb` has no CONECT records. Re-issues the
+  XML triple with one `CustomCompoundBondForce` scaled by the global
+  `fep_restraint` (default 1) and writes the 23-window protocol (`restrain`,
+  `decharge`, `decouple_sterics`; `--restraint-lambdas`). Protocols now name
+  their parameters (`global_parameters`, `protocol_parameter_names`) and may
+  name their `phases`.
+- `extract_ligand(ligand)` (`prep` child of the complex's `prep`): the
+  ligand's atoms by residue name and number (merge relabels chains; `--ligand`
+  accepts the author chain), its `ligand_chemistry` record, `leg_role =
+  solvent`.
+- `estimate_binding_dg(...)` (`comparison` analyze over two `analyze_fep`
+  nodes; legs identified from each leg's manifest): `dG_bind = dG_solvent -
+  dG_complex + dG_restraint - kT ln(sigma)` with the analytic Boresch term
+  (`standard_state_restraint_free_energy`, 1 M) and
+  `--ligand-symmetry-number`. `abfe_legs_invalid` / `abfe_legs_incompatible`
+  otherwise. Writes `artifacts/binding_dg.json`, `analysis = "abfe_binding"`.
+
 ## `visualization/`
 
 - `render_structure_preview(...)`: PyMOL headless PNG rendering for PDB/mmCIF.
@@ -808,6 +859,12 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   reflect failures into linked nodes. Returns `state_source` and `checked_at`.
   Missing/expired records return `slurm_status_unavailable`, never inferred
   completion; `last_observation`, when present, is historical, not current.
+  For a `RUNNING` job linked to a `fep` node it adds `time_budget`
+  (`fep_time_budget`: windows done / total, mean measured wall time per window
+  from `fep_windows.json`, estimated remaining vs. time limit left, from the
+  tracker's `time_limit` and Slurm's elapsed time) and a `time_limit_risk:`
+  warning when the remaining windows will not fit; `list_tracked_jobs --sync`
+  repeats that warning.
   When squeue answers, no longer lists the job, and a non-terminal node still
   carries that job id, the code is `slurm_job_vanished` with `stranded_nodes`, `stderr_tail`, and a `--clear-slurm-metadata` `next_action`;
   the node is reported, never sealed on that inference.

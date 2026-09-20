@@ -195,7 +195,7 @@ def _resolve_inputs(
     *, job_dir, node_id, mutation, pdb_file, forcefield, water_model, hmr, is_membrane,
     ligand_chemistry, disulfide_bonds, box_dimensions, mutant_backend, n_windows, lambda_schedule,
     softcore_alpha, output_name, platform="auto", phase_bounds=None, endstate_builder="amber",
-    forcefield_xml=None, charge_correction="coalchemical_ion",
+    forcefield_xml=None, charge_correction="coalchemical_ion", conditions=None,
 ) -> _Inputs:
     """Force field / water model from the DAG (or the explicit arguments) and,
     in node mode, the solvated PDB plus solvation metadata."""
@@ -228,7 +228,9 @@ def _resolve_inputs(
     if node_mode:
         resolved = _resolve_build_amber_node_inputs(
             job_dir=job_dir, node_id=node_id,
-            actual_conditions={
+            # ``conditions`` lets another topo tool (build_decoupled_system)
+            # reuse this resolver with its own declared parameters.
+            actual_conditions={**conditions, "forcefield": forcefield, "water_model": water_model} if conditions else {
                 "mutation": mutation, "forcefield": forcefield, "water_model": water_model,
                 "hmr": hmr, "is_membrane": is_membrane, "mutant_backend": mutant_backend,
                 "n_windows": n_windows, "lambda_schedule": lambda_schedule,
@@ -695,6 +697,15 @@ def build_hybrid_system(
                                charge_correction=charge_correction, periodic=bool(inputs.box_dimensions))
         result["warnings"].extend(asm.build.report.get("warnings") or [])
         result["warnings"].extend(asm.charge_correction.get("warnings") or [])
+        if asm.charge_correction.get("method") == "coalchemical_ion":
+            # The ion rides on fep_core, i.e. it appears during the steric-swap
+            # phase. Say where that is in this protocol, so a dip in the overlap
+            # matrix can be matched against it without reading the phase table.
+            core = [w["parameters"]["fep_core"] for w in windows]
+            asm.charge_correction["lambda_range"] = [float(bounds[0]), float(bounds[1])]
+            asm.charge_correction["window_indices"] = [
+                w["index"] for k, w in enumerate(windows)
+                if 0.0 < core[k] < 1.0 or (k > 0 and core[k - 1] != core[k]) or (k + 1 < len(core) and core[k + 1] != core[k])]
         written = _write_artifacts(asm, endstates, spec, mutant, windows, inputs, out_dir, output_name=output_name,
                                    softcore_alpha=softcore_alpha, phase_bounds=bounds, hmr=hmr,
                                    endstate_builder=endstate_builder, forcefield_xml=forcefield_xml,

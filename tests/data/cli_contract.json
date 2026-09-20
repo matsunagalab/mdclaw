@@ -1,4 +1,14 @@
 {
+  "add_boresch_restraint": {
+    "job_dir_is_data": false,
+    "node_type": "topo",
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": true,
+    "server": "fep"
+  },
   "add_study_job": {
     "job_dir_is_data": true,
     "node_type": null,
@@ -108,6 +118,16 @@
     ],
     "requires_node": true,
     "server": "amber"
+  },
+  "build_decoupled_system": {
+    "job_dir_is_data": false,
+    "node_type": "topo",
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": true,
+    "server": "fep"
   },
   "build_hybrid_system": {
     "job_dir_is_data": false,
@@ -239,6 +259,16 @@
     "requires_node": true,
     "server": "solvation"
   },
+  "estimate_binding_dg": {
+    "job_dir_is_data": false,
+    "node_type": "analyze",
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": true,
+    "server": "fep"
+  },
   "estimate_ddg": {
     "job_dir_is_data": false,
     "node_type": "analyze",
@@ -288,6 +318,16 @@
     ],
     "requires_node": false,
     "server": "md_simulation"
+  },
+  "extract_ligand": {
+    "job_dir_is_data": false,
+    "node_type": "prep",
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": true,
+    "server": "fep"
   },
   "extract_tripeptide": {
     "job_dir_is_data": false,

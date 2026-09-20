@@ -7,6 +7,32 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-20 — FEP test-run feedback 21: 実行中の fep ノードが時間制限に収まるかを `check_job` が警告（branch `feat/abfe`）
+
+`--sampling-time-ns` × 窓数 × 時間制限の組み合わせは事前に見積もりにくく、共有 GPU では 5〜10 倍外れる、というテスターの指摘。材料は全部あった: 投入時の tracker 記録の `time_limit`、`check_job` が取る Slurm の経過時間、`run_fep` が窓の完了ごとに書き直す `fep_windows.json` の窓別 `wall_time_s`。
+
+- `fep.run.fep_time_budget`: そのノードが**実測した**完了窓の平均 wall time × 残り窓数（実行中の窓が既に使った分は差し引く）を、時間制限の残りと比べる。要求サンプリング時間からの推定はしない。親から引き継いだ窓（`carried_over`）は数えない。完了窓が 0 のうちは何も言わない。
+- `check_job` は `RUNNING` かつ fep ノードに紐づくジョブで `time_budget` ブロックを返し、収まらないとき `time_limit_risk:` 警告を出す。`list_tracked_jobs --sync` は同じ警告を `warnings` に転記（vanished と同じ経路）。見積もりの失敗は状態確認を失敗させない。
+- 指摘の前提を 1 点だけ訂正: 時間切れで「丸ごと失う」ことはない（インデックスは窓ごとに書き直され、完了窓は `--restart-windows-file` で回収できる）。警告文もそう書き、「走らせ切って不足窓を新ノードで回収」と「今キャンセルして長い制限で同じことをする」の両方を示す。大きい protocol は制限を延ばすより `--lambda-indices` で複数 fep ノードに分けるのが本筋、と `monitor-recover.md` に記載。
+- Slurm の経過時間は `squeue --json` の秒数と `[D-][HH:]MM:SS` の両方を読む（`_elapsed_seconds`）。既存の `_parse_time_limit_seconds` は 2 要素を HH:MM と読むが、Slurm の時間制限の 2 要素は MM:SS（既存の挙動なので今回は触っていない。MDClaw が出す制限は常に HH:MM:SS なので実害は出ていない）。
+- テスト: `tests/test_fep_time_budget.py` 9 本（テスターの例そのもの: 21 窓中 6 窓を 7.3 h、制限 12 h → 残り 15 窓に必要な時間 > 残り 4.7 h）。
+
+## 2026-09-20 — リガンドの絶対結合自由エネルギー（ABFE）: `build_decoupled_system` / `add_boresch_restraint` / `extract_ligand` / `estimate_binding_dg`（branch `feat/abfe`）
+
+FEP の次の対象として RBFE より ABFE を先にした（原子マッピングもネットワーク設計も要らず、エージェント側の判断点が少ない。設計指針「スキルは意図、ツールはガードレール」との相性）。設計と判断の全文は `docs/research/abfe-references.md`、手順は `skills/md-abfe/`。
+
+- **既存資産の再利用**: λ 窓サンプリング（`run_fep`）と MBAR（`analyze_fep`）は無変更で使う。変えたのは protocol の契約だけ — protocol が自分の `global_parameters`（既定は hybrid の 5 個、ABFE の complex leg は 6 番目 `fep_restraint`）と `phases` を名乗る（`protocol_parameter_names`、`run_fep` の system.xml チェックと `protocols_equivalent` も protocol 由来の名前で）。リガンドは hybrid の「消える原子」と同じ 2 parameter（`fep_elec_old` / `fep_sterics_old`）で消す。
+- **`decouple.py`**: build 済み System を 1 回書き換える（端状態が 1 つなので merge しない）。静電は annihilate、立体は decouple（リガンド内 LJ は別の `CustomNonbondedForce` で常時フル、1-4 の LJ は不変）= openmmtools / YANK の既定。端点検証は「結合状態 = 元の System」と「デカップル状態でリガンドを他原子の上に動かしてもエネルギー不変」。溶媒和 ACE-ALA-NME で両方 1e-4 kJ/mol。
+- **Boresch 拘束の置き場（ユーザーと決定）**: complex leg の **eq の下の topo ノード**。`_ALLOWED_PARENT_TYPES["topo"]` に `eq` を足した（auto-parent は solv/prep のままなので通常の topo 作成には影響なし）。拘束は leg の全窓で同一でなければならず、fep は複数ノードに分かれるので、定義を所有するノードが要る。PLUMED は使わない（λ スケールと全窓での再評価が OpenMM の global parameter なら既存ループで動く）。実行時に `run_fep` が足す案は「run 側が System を足し引きする箇所が増える」ので見送り。
+- **fep を拘束つき topo の直下に（ユーザー指摘で修正）**: 最初は「fep の親は eq / fep のみ」という型の都合で topo の下に短い再平衡化 eq を挟んでいたが、物理的に不要（窓の開始状態は祖先の最初の eq state で、各窓が自分の λ で最小化・平衡化する）。`_ALLOWED_PARENT_TYPES["fep"]` に `topo` を足し、その代わり eq の祖先を持たない fep は入力解決で `fep_equilibration_required` として拒否（hybrid topo の直下に fep を作って min / eq を飛ばす抜け道を塞ぐ）。auto-parent は `eq` のままなので、親を省略した fep は eq の下に付き `abfe_restraint_required` で topo を名指しして止まる。
+- **拘束なしの complex に fep を走らせない**: complex leg の最初の topo は `fep_protocol` を書かず、その下の fep は入力解決で `abfe_restraint_required`。スキルの注意書きではなくツールで止めた。
+- **原子選択はツール側で完結**（`select_boresch_restraint`）: eq state から 200 ps 走らせ、受容体主鎖 (N, C, CA) × リガンドの結合重原子 3 つ組を、6 座標の揺らぎ（熱的幅単位）で採点。θ が [40°, 140°] 外は除外、最良でも std(r) > 0.15 nm か角度 std > 25° なら `abfe_restraint_unstable` で拒否。
+- **テストが捕まえた実装ミス 2 件**: (1) 二面角の符号が OpenMM と逆（測った基準値でエネルギーが 347 kJ/mol、0 になるべき）。(2) 解析補正の符号と大きさは配置積分の数値積分と 0.15 kJ/mol 以内で一致（既定の K、r0 = 0.5 nm で +33 kJ/mol ≈ +7.9 kcal/mol、文献の典型値と整合）。
+- **実パイプラインで判明した不整合 3 件**（3PWB + GOL、既存の `fetch_structure → prepare_complex → solvate_structure` をそのまま使用）: (a) `ligand_chemistry` の `chain_id` は内部ラベル（`Ax4`）で merged.pdb の鎖 ID（merge が振り直した `C`）とも author chain（`A`）とも違う → 残基名 + 残基番号で照合、`--ligand` の鎖は author chain も受ける。(b) `topology.pdb` は CONECT を持たないので読み戻したリガンドは無結合 → 結合は System の結合項と拘束から取る（`bonded_pairs`）。(c) 記録内の SDF パスは DAG が読み出し時に絶対化・書き込み時に `../prep_001/…` へ相対化するので、子 prep へのコピーは不要（最初に書いたコピー処理は死にコードだったので削除）。荷電リガンド（BEN +1）の拒否は最初ビルド後にしか出ず node が failed になったので、prep 記録の電荷でビルド前（pending のまま）に拒否するよう前倒しし、割り当て電荷での判定を後段の保険に残した。
+- **e2e**: 両 leg を `estimate_binding_dg` まで完走（complex 23 窓: restrain / decharge / decouple_sterics、solvent 18 窓、eq の下の topo → 再平衡化 eq → fep の入力解決も実走）。1 窓 4 ps なので **出た −5.1 kcal/mol に物理的な意味はない**。物理の検証（T4L L99A / ベンゼン、実験 −5.19 kcal/mol）は別テスターが実施 — 手順書は `abfe-references.md` §7。ベンゼンは空洞内で面内回転するので `abfe_restraint_unstable` のしきい値（25°）が最初に試される。
+- v1 の範囲外は拒否コードで止める: 荷電（co-ion を流用すれば対応可能、まず中性で検証）、共有結合、重原子 3 未満、複数コピー、受容体が蛋白質主鎖を持たない系。リガンドの LJ 長距離補正は未実装（hybrid と同じ既知の近似だが、ABFE では 2 leg の周囲密度が違うので相殺は不完全）。
+- envelope の `next`: `analyze_fep`（ABFE leg）完了後に「solvent leg を `extract_ligand` で始める」「両 leg 完了なら `estimate_binding_dg`」を案内（ddG の folded/unfolded・complex/apo の役割判定は従来どおり）。引用 3 件（Boresch 2003 / Gilson 1997 / Mobley 2007）を Crossref で確認して登録、ABFE の topo に pmx の引用が付かないよう選択条件を修正。guardrail 14 コード追加（423 codes）、CLI 契約 89 tools。
+
 ## 2026-09-20 — 電荷変化変異の co-alchemical ion（`mdclaw/fep/coion.py`、branch `main`）
 
 電荷の変わる変異（K→A, A→D など）を、これまでは「PME の一様背景電荷、有限サイズ補正なし」の警告だけで通していた。両 leg で同じ Δq でも、誤差は箱の大きさと中身（水の数密度、溶質の低誘電体積）に依存するので folded と unfolded で相殺しない。Rocklin 型の事後補正は、APBS 依存・代表構造や誘電率の判断点が増える（間違えても数値が出る）ため**採らない**とユーザーと決めた（解析項だけの併記もやめる）。代わりに箱電荷を両端で同じに保つ。
@@ -16,6 +42,7 @@ add the correction and say what it overturns.
 - **選び方（ツール側で閉じる）**: Δq = mut − wt、イオンは −sign(Δq) の 1 価、|Δq| 個（最大 2、非整数は拒否）。候補は部位重心から最小像距離で遠い順に、部位 ≥ 1.5 nm・溶質重原子 ≥ 1.0 nm・既存イオン ≥ 0.6 nm・選択済みの水 ≥ 1.0 nm を満たす最初のもの。イオンのパラメータは**系内の同符号 1 価イオンからコピー**（力場・水モデルと必ず整合、KCl でも動く、Na⁺/Cl⁻ を優先）。水 → イオンの自由エネルギーは両 leg でバルク同士なので相殺。
 - **束縛**: 選んだ O を構築時座標に調和束縛（k = 1000 kJ/mol/nm²、`periodicdistance`、force group 4）。端点検証の後に System へ足す（構築座標でゼロ、比較対象の group 外）。全 λ で同一なので reduced potential の差には出ない。system.xml に入るので min / eq / fep が追加の配線なしで引き継ぐ。
 - **拒否して未補正に落とさない**: `fep_coion_parameters_unavailable`（同符号イオンが箱に無い → 塩ありで solv を作り直す）、`fep_coion_box_too_small`（十分遠い水が無い → `--dist` を増やす）、`fep_coion_unsupported`（|Δq| > 2、非整数）。`--charge-correction none` は明示時のみで、相殺しない旨の警告を返す。真空系と中性変異は対象外（`method: none`、警告なし）。`estimate_ddg` の leg 照合に `charge_correction` を追加（キーの無い旧 manifest は `none` 扱い → 補正あり/なしの leg を混ぜると `fep_legs_incompatible`）。
+- **test-run feedback 20（同日追記）**: `charge_correction` ブロックに co-ion が動く λ 区間 `lambda_range`（= `phase_bounds`、`fep_core` が動く相）と該当する `window_indices` を併記。`lambda_parameter: fep_core` だけでは区間を skill の説明から推論する必要があり、overlap 行列の落ち込みと突き合わせにくいという指摘。manifest の `charge_correction_detail` にも入る。
 - **既知の設計上の選択**: イオンは core 相（p1..p2）で現れ、新側鎖の電荷は第 3 相で入るので、**中間 λ の箱電荷は 0 ではない**（A2D で λ=0.25/0.5/0.75 が −0.06/+0.37/+0.80 e）。自由エネルギー差は端状態の Hamiltonian だけで決まるので結果には効かない。各 λ で中性に保つには専用 parameter と窓ごとの値が要り、protocol の 5 parameter 契約を崩すので見送り。
 - **実測（溶媒和 ACE-X-NME、amber14 + TIP3P、0.5 M、padding 1.7 nm、openmm ビルダー、CPU）**: A2D（Δq −1 → Na⁺、水は部位から 2.75 nm）端点差 A +6.5e-4 / B −5.1e-4 kJ/mol、K2A（→ Na⁺）+1.4e-4 / +2.8e-4、D2A（→ Cl⁻）pass。hybrid の正味電荷は λ=0, 1 とも 0.0000 e、`none` では B 端が +1。`run_fep`（CUDA、NPT、5 窓 × 4 ps）は全窓完走。**ddG への効果そのもの（補正あり/なしの差、箱サイズ依存の消失）はまだ測っていない** — A14D の再計算が最初の実測になる。
 - **ついでに直した不具合**: `build_openmm_system` が溶媒和 PDB で `openmm_serialization_failed: object of type 'int' has no len()`。Pablo が溶媒の chain id を int で返し、`PDBFile.writeFile(keepIds=True)` が `len(chain.id)` で落ちる（residue id は既に str 化していたが chain は未対応）。`--endstate-builder openmm` の溶媒和経路はこれまで一度も実走していなかった。

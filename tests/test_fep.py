@@ -42,7 +42,9 @@ from mdclaw.fep.hybrid import FEP_PARAMETERS, STATE_A, STATE_B
 # --------------------------------------------------------------------------- #
 
 def test_fep_tools_registered():
-    assert set(TOOLS) == {"build_hybrid_system", "run_fep", "analyze_fep", "extract_tripeptide", "estimate_ddg"}
+    assert set(TOOLS) == {"build_hybrid_system", "run_fep", "analyze_fep", "extract_tripeptide", "estimate_ddg",
+                          # absolute binding free energy (tests/test_abfe.py)
+                          "extract_ligand", "build_decoupled_system", "add_boresch_restraint", "estimate_binding_dg"}
 
 
 # --------------------------------------------------------------------------- #

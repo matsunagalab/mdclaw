@@ -350,7 +350,7 @@ def test_packaged_bibliography_matches_verified_audit():
     source = audit.read_text()
     packaged = Path(citations.__file__).with_name("references.bib").read_text()
     entries = list(re.finditer(r"@\w+\{([^,]+),\n.*?^\}", packaged, re.M | re.S))
-    assert len(entries) == len({m[1] for m in entries}) == 21
+    assert len(entries) == len({m[1] for m in entries}) == 24
     assert all(m[0] in source for m in entries)
 
 
@@ -420,6 +420,13 @@ def test_alchemical_lineage_is_reported_and_cited(tmp_path):
     node(charged, "topo", "topo", metadata={"fep": {"mutation": "A:A14D", "charge_correction": "coalchemical_ion"}})
     charged_keys = {e["key"] for e in generate_md_report(job_dir=str(charged))["report"]["citations"]["selected"]}
     assert "Chen2018ChargeChangingFEP" in charged_keys
+    # an absolute-binding job cites the restraint and the cycle, not the pmx hybrid
+    abfe = tmp_path / "abfe"
+    node(abfe, "topo", "topo", metadata={"fep": {"kind": "abfe_decouple", "leg": "complex", "restraint": "boresch"}})
+    node(abfe, "dg", "analyze", ["topo"], metadata={"analysis": "abfe_binding", "ligand_symmetry_number": 12})
+    abfe_keys = {e["key"] for e in generate_md_report(job_dir=str(abfe))["report"]["citations"]["selected"]}
+    assert {"Boresch2003AbsoluteBinding", "Gilson1997BindingAffinities", "Mobley2007ModelSite",
+            "Beutler1994SoftCore"} <= abfe_keys and "Gapsys2015pmx" not in abfe_keys
     # a plain MD subject cites none of the alchemical methods
     plain = tmp_path / "plain"
     node(plain, "prod", "prod", metadata={"hmr": True})

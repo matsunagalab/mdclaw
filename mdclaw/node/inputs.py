@@ -578,7 +578,22 @@ def _resolve_fep_inputs(job_dir: str, node_id: str) -> dict:
     result.update(_resolve_topology_files(job_dir, node_id))
     topo_id = result.get("topology_resolved_from_node_id")
     extras = _resolve_hybrid_topology_extras(job_dir, topo_id)
-    if topo_id is not None and not (
+    topo_fep = _read_metadata_field(job_dir, topo_id, "fep") if topo_id is not None else None
+    if (topo_id is not None and not extras.get("fep_protocol_file")
+            and isinstance(topo_fep, dict) and topo_fep.get("restraint_required")):
+        # The complex leg of an absolute binding free energy: decoupling an
+        # unrestrained ligand lets it leave the site, so that topology carries
+        # no lambda protocol until add_boresch_restraint has re-issued it.
+        _record_input_resolution_error(
+            result,
+            f"topo ancestor '{topo_id}' is the unrestrained complex leg of build_decoupled_system; it has no "
+            "lambda protocol. Create a topo node under this branch's completed eq node "
+            "(create_node --node-type topo --parent-node-ids <eq node>), run add_boresch_restraint on it, "
+            "and parent the fep node to that topo node.",
+        )
+        code = "abfe_restraint_required"
+        result["input_resolution_code"] = code
+    elif topo_id is not None and not (
         extras.get("hybrid_manifest_file") and extras.get("fep_protocol_file")
     ):
         _record_input_resolution_error(
@@ -601,6 +616,18 @@ def _resolve_fep_inputs(job_dir: str, node_id: str) -> dict:
         result["chain_identity_map_file"] = chain_identity_map
     # eq state = equilibrated lambda=0 end state (same atom count as the hybrid).
     result.update(_resolve_md_restart(job_dir, node_id))
+    if (not result.get("restart_from") and not result.get("restart_from_error")
+            and "input_resolution_code" not in result):
+        # Only reachable through a topo parent: windows must start from an
+        # equilibrated state, never from a freshly built topology.
+        _record_input_resolution_error(
+            result,
+            f"fep node '{node_id}' has no equilibrated ancestor. Windows start from the eq state: run min -> eq "
+            "under the topology and parent the fep node to that eq (for an absolute-binding complex leg: to the "
+            "add_boresch_restraint topo under that eq).",
+        )
+        code = "fep_equilibration_required"
+        result["input_resolution_code"] = code
     result.update(_resolve_eq_ensemble_metadata(job_dir, node_id))
     # fep → fep: the parent's window index carries per-window states. One
     # parent only: pooling several parents is the analyze node's job.

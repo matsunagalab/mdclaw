@@ -38,8 +38,7 @@ import numpy as np
 
 from mdclaw._common import create_validation_error
 from mdclaw._tool_meta import node_tool
-from mdclaw.fep.hybrid import FEP_PARAMETERS
-from mdclaw.fep.protocol import ProtocolError, load_protocol, parse_lambda_indices
+from mdclaw.fep.protocol import ProtocolError, load_protocol, parse_lambda_indices, protocol_parameter_names
 from mdclaw.simulation._base import (
     WORKING_DIR,
     _resolve_topology_run_settings,
@@ -114,6 +113,43 @@ def load_windows_index(path: str | Path) -> dict:
     data["windows"] = windows
     data["index_file"] = str(Path(path).resolve())
     return data
+
+
+def fep_time_budget(job_dir: str | Path, node_id: str, elapsed_s: float, time_limit_s: float) -> Optional[dict]:
+    """Will this running ``fep`` node finish its windows inside the job's time limit?
+
+    Read from the node's own ``fep_windows.json``, which is rewritten after
+    every window with that window's measured ``wall_time_s``; nothing is
+    estimated from the requested sampling time (on a shared GPU that guess is
+    off by 5-10x). Returns ``None`` when there is nothing to judge yet (no
+    finished window, not a fep node) or the node is already done.
+    """
+    index_file = Path(job_dir) / "nodes" / node_id / "artifacts" / "fep_windows.json"
+    try:
+        data = json.loads(index_file.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if data.get("complete"):
+        return None
+    requested = [int(i) for i in data.get("lambda_indices") or []]
+    windows = data.get("windows") or {}
+    walls = [float(windows[str(i)]["wall_time_s"]) for i in requested
+             if isinstance(windows.get(str(i)), dict) and windows[str(i)].get("wall_time_s")]
+    if not requested or not walls:
+        return None
+    mean = sum(walls) / len(walls)
+    remaining = len(requested) - len(walls)
+    # The window in progress has already spent part of its time.
+    in_progress = max(0.0, min(mean, float(elapsed_s) - sum(walls)))
+    needed = max(0.0, remaining * mean - in_progress)
+    left = float(time_limit_s) - float(elapsed_s)
+    return {
+        "node_id": node_id, "windows_done": len(walls), "windows_total": len(requested),
+        "mean_window_wall_time_s": round(mean, 1), "elapsed_s": round(float(elapsed_s), 1),
+        "estimated_remaining_s": round(needed, 1), "time_limit_left_s": round(left, 1),
+        "will_exceed_time_limit": needed > left,
+        "index_file": str(index_file),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -476,8 +512,11 @@ def run_fep(
     result: dict = {"success": False, "tool": "run_fep", "errors": [], "warnings": [], "windows": []}
     node_mode = bool(job_dir and node_id)
 
-    def _fail(code: str, message: str, **extra) -> dict:
-        extra = {k: v for k, v in extra.items() if k not in ("success", "code", "message", "errors", "warnings")}
+    def _fail(code: str, message: str, details: Optional[dict] = None, **extra) -> dict:
+        # ``details`` is a whole error dict (create_validation_error): it has
+        # its own code / message, which cannot be splatted next to ours.
+        extra = {k: v for k, v in {**(details or {}), **extra}.items()
+                 if k not in ("success", "code", "message", "errors", "warnings")}
         return fail_tool(result, code, message, job_dir=job_dir, node_id=node_id, extra=extra or None)
 
     # --- argument checks that must not spend the node ---------------------
@@ -506,9 +545,10 @@ def run_fep(
             code = inputs.get("input_resolution_code") or "input_resolution_blocked"
             return _fail(
                 code=code, message=err,
-                **create_validation_error(
+                details=create_validation_error(
                     "job_dir/node_id", err,
-                    expected="fep node under an eq (or one fep) node whose topo was built by build_hybrid_system",
+                    expected="fep node under an eq (or one fep) node of an alchemical topology "
+                    "(build_hybrid_system, or build_decoupled_system / add_boresch_restraint)",
                     actual=f"job_dir={job_dir}, node_id={node_id}",
                     context_extra={"input_resolution_errors": inputs.get("input_resolution_errors", [])},
                     code=code,
@@ -573,7 +613,7 @@ def run_fep(
 
     try:
         xml_text = Path(system_xml_file).read_text()
-        missing = [p for p in FEP_PARAMETERS if f'name="{p}"' not in xml_text]
+        missing = [p for p in protocol_parameter_names(protocol) if f'name="{p}"' not in xml_text]
         if missing:
             raise FepRunError(code="fep_hybrid_topology_required",
                               message=f"system.xml is not a hybrid topology (missing global parameters {missing})")

@@ -172,8 +172,11 @@ _ALLOWED_PARENT_TYPES = {
     "prep": frozenset({"source", "prep"}),
     "solv": frozenset({"prep"}),
     # explicit-water topo descends from solv; implicit topo skips solv and
-    # descends directly from prep.
-    "topo": frozenset({"solv", "prep"}),
+    # descends directly from prep. A topo under an eq node re-issues that
+    # branch's topology with a term that could only be defined after
+    # equilibration (add_boresch_restraint: the restraint of an absolute
+    # binding complex leg); it is never auto-resolved as a parent choice.
+    "topo": frozenset({"solv", "prep", "eq"}),
     # min owns force-field-level coordinate relaxation after topology
     # generation. It writes a portable state artifact that eq can resume
     # from without embedding minimization work in the eq node.
@@ -185,8 +188,12 @@ _ALLOWED_PARENT_TYPES = {
     "eq": frozenset({"min", "topo", "eq"}),
     "prod": frozenset({"eq", "prod"}),
     # fep samples lambda windows on a hybrid topology from the equilibrated
-    # lambda=0 end state; fep → fep extends the same windows.
-    "fep": frozenset({"eq", "fep"}),
+    # lambda=0 end state; fep → fep extends the same windows. A topo parent is
+    # the restrained complex leg of an absolute binding free energy
+    # (add_boresch_restraint, itself a child of that leg's eq); the resolver
+    # refuses a fep node with no equilibrated ancestor
+    # (fep_equilibration_required), so this edge cannot skip min / eq.
+    "fep": frozenset({"eq", "fep", "topo"}),
     "analyze": frozenset({"prod", "fep", "analyze"}),
 }
 

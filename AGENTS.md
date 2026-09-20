@@ -204,6 +204,15 @@ Core schema v3 rules:
   counter-ion, so both end states carry the same box charge); both legs must
   agree on `charge_correction`. Skill: `skills/md-fep/`; design
   notes: `docs/research/fep-references.md`.
+- Absolute binding free energy of a ligand (`skills/md-abfe/`) has the same
+  two-leg, one-job shape on a decoupling `topo` (`build_decoupled_system`):
+  the solvent leg is a `prep` child (`extract_ligand`), and
+  `estimate_binding_dg` is the `comparison` analyze node. The complex leg is
+  the one place a `topo` hangs under an `eq` (`add_boresch_restraint`) and
+  `fep` nodes hang under a `topo`; a `fep` node under the unrestrained complex
+  topo is refused (`abfe_restraint_required`), as is one with no equilibrated
+  ancestor (`fep_equilibration_required`). Design notes:
+  `docs/research/abfe-references.md`.
 - Each node owns `node.json`, `node.lock`, and `artifacts/`.
 - `progress.json` is a thin index plus cached summaries.
 - Events are append-only JSON files in `events/`.
