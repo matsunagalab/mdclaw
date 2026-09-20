@@ -164,7 +164,9 @@ Core schema v3 rules:
 - Use `list_source_candidates` to expose candidate IDs, ranks, generator
   metadata, and confidence metrics to the agent/user.
 - `prep` selects one concrete candidate from the source bundle before creating
-  an MD-ready physical system.
+  an MD-ready physical system. A `prep` may also derive from a completed
+  `prep` (`create_mutated_structure`, `extract_tripeptide`): the child's
+  `merged_pdb` is what its own `solv` / `topo` descendants read.
 - Branch variants from `prep`, `solv`, `topo`, `min`, `eq`, or `prod` after that
   concrete structure has been prepared.
 - `min` owns post-topology coordinate minimization and writes the portable
@@ -174,7 +176,11 @@ Core schema v3 rules:
   (e.g. NPT compress -> NVT thermalize -> NPT relax).
 - `fep` (hybrid-topology FEP for one point mutation) sits where `prod` would:
   its `topo` ancestor is built by `build_hybrid_system`, parents are `eq` or a
-  prior `fep` (extension), and `analyze_fep` consumes all-`fep` parents. Skill:
+  prior `fep` (extension), and `analyze_fep` consumes all-`fep` parents
+  (`analysis_data_scope: alchemical`). Both legs of a folding-stability ddG
+  live in one job: the unfolded leg is a `prep` child of the protein's `prep`
+  (`extract_tripeptide`, `leg_role = unfolded`), and `estimate_ddg` is the
+  `comparison` analyze node over the two legs' `analyze_fep` nodes. Skill:
   `skills/md-fep/`; design notes: `docs/research/fep-references.md`.
 - Each node owns `node.json`, `node.lock`, and `artifacts/`.
 - `progress.json` is a thin index plus cached summaries.

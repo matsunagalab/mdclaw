@@ -241,12 +241,12 @@
   },
   "estimate_ddg": {
     "job_dir_is_data": false,
-    "node_type": null,
+    "node_type": "analyze",
     "required_params": [
-      "folded",
-      "unfolded"
+      "job_dir",
+      "node_id"
     ],
-    "requires_node": false,
+    "requires_node": true,
     "server": "fep"
   },
   "estimate_md_throughput": {
@@ -291,12 +291,13 @@
   },
   "extract_tripeptide": {
     "job_dir_is_data": false,
-    "node_type": null,
+    "node_type": "prep",
     "required_params": [
+      "job_dir",
       "mutation",
-      "pdb_file"
+      "node_id"
     ],
-    "requires_node": false,
+    "requires_node": true,
     "server": "fep"
   },
   "fetch_structure": {

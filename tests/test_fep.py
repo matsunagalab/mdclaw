@@ -1,9 +1,11 @@
-"""Unit tests for the ``fep`` server: protocol, mapping, tripeptide, MBAR.
+"""Unit tests for the ``fep`` server: protocol, mapping, tripeptide, MBAR, ddG node.
 
 The pure-Python parts (protocol schedule, atom mapping on synthetic records,
-tripeptide extraction, MBAR on a harmonic-oscillator toy) run everywhere.
-``TestHybridVacuum`` builds a real ACE-X-NME hybrid System with amber14 on the
-Reference platform and is marked ``slow``.
+the fragment cut, MBAR on a harmonic-oscillator toy, the ddG comparison node
+over two analyze_fep nodes) run everywhere. ``TestHybridVacuum`` /
+``TestVacuumPipeline`` build a real ACE-X-NME hybrid System with amber14 on the
+Reference platform and ``TestUnfoldedLegPrep`` caps a real fragment with
+clean_protein; those are marked ``slow``.
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ from mdclaw.fep.protocol import (
     protocols_equivalent,
     windows_from_schedule,
 )
-from mdclaw.fep.tripeptide import extract_tripeptide
+from mdclaw.fep.tripeptide import cut_fragment, extract_tripeptide
 from mdclaw.fep.hybrid import FEP_PARAMETERS, STATE_A, STATE_B
 
 
@@ -205,40 +207,61 @@ def _write_pentapeptide(path: Path, gap_after: int | None = None) -> Path:
 
 
 class TestTripeptide:
-    def test_extracts_flanked_fragment(self, tmp_path):
+    """The cut itself (pure text, fast). Capping and the prep node run under
+    ``TestUnfoldedLegPrep`` (slow: clean_protein needs PDBFixer / pdb2pqr)."""
+
+    @staticmethod
+    def _spec(pdb: Path, mutation: str):
+        from mdclaw.fep.mutant import parse_single_mutation
+
+        return parse_single_mutation(mutation, pdb)
+
+    def test_cut_flanked_fragment(self, tmp_path):
         pdb = _write_pentapeptide(tmp_path / "pent.pdb")
-        res = extract_tripeptide(str(pdb), "A:L12A")
-        assert res["success"], res
-        assert res["n_residues"] == 3
-        assert res["residues"] == ["A:ALA11", "A:LEU12", "A:ALA13"]
-        out = Path(res["tripeptide_pdb"]).read_text().splitlines()
-        atoms = [ln for ln in out if ln.startswith("ATOM")]
+        atoms, keep, warnings = cut_fragment(pdb.read_text().splitlines(), self._spec(pdb, "A:L12A"), 1)
+        assert [k[1] for k in keep] == [11, 12, 13]
         assert {ln[22:26].strip() for ln in atoms} == {"11", "12", "13"}
         assert [int(ln[6:11]) for ln in atoms] == list(range(1, len(atoms) + 1))
-        assert not res["warnings"]
+        assert all(ln[21] == "A" for ln in atoms)  # chain id kept for the shared --mutation
+        assert not warnings
 
     def test_truncated_at_chain_end(self, tmp_path):
         pdb = _write_pentapeptide(tmp_path / "pent.pdb")
-        res = extract_tripeptide(str(pdb), "A:G10A", flank=2)
-        assert res["success"]
-        assert res["n_residues"] == 3  # 10, 11, 12
-        assert any("could be kept" in w for w in res["warnings"])
+        _atoms, keep, warnings = cut_fragment(pdb.read_text().splitlines(), self._spec(pdb, "A:G10A"), 2)
+        assert [k[1] for k in keep] == [10, 11, 12]
+        assert any("could be kept" in w for w in warnings)
 
     def test_chain_break_is_flagged(self, tmp_path):
         pdb = _write_pentapeptide(tmp_path / "pent.pdb", gap_after=1)
-        res = extract_tripeptide(str(pdb), "A:L12A")
-        assert res["success"]
-        assert any("chain break" in w for w in res["warnings"])
+        _atoms, _keep, warnings = cut_fragment(pdb.read_text().splitlines(), self._spec(pdb, "A:L12A"), 1)
+        assert any("chain break" in w for w in warnings)
 
     def test_bad_mutation(self, tmp_path):
         pdb = _write_pentapeptide(tmp_path / "pent.pdb")
-        res = extract_tripeptide(str(pdb), "A:L99A")
+        res = extract_tripeptide(mutation="A:L99A", pdb_file=str(pdb), output_dir=str(tmp_path / "out"))
         assert res["success"] is False
         assert res["code"] == "fep_mutation_residue_not_found"
 
-    def test_missing_file(self, tmp_path):
-        res = extract_tripeptide(str(tmp_path / "nope.pdb"), "A:L12A")
-        assert res["code"] == "file_not_found"
+    def test_missing_file_and_bad_flank(self, tmp_path):
+        assert extract_tripeptide(mutation="A:L12A", pdb_file=str(tmp_path / "nope.pdb"))["code"] == "file_not_found"
+        pdb = _write_pentapeptide(tmp_path / "pent.pdb")
+        assert extract_tripeptide(mutation="A:L12A", pdb_file=str(pdb), flank=-1)["code"] == "invalid_parameter_value"
+
+    def test_prep_parent_required_in_node_mode(self, tmp_path):
+        """Under a source node there is no prepared structure to cut from; the
+        node stays pending with a code that names the fix."""
+        from mdclaw._node import create_node, init_progress_v3, read_node
+        from tests.pipeline_helpers import complete_node_with_placeholders as complete
+
+        jd = tmp_path / "job"
+        jd.mkdir()
+        init_progress_v3(str(jd))
+        src = create_node(str(jd), "source")["node_id"]
+        complete(str(jd), src, {"source_bundle": "artifacts/sb.json"})
+        prep = create_node(str(jd), "prep", parent_node_ids=[src])["node_id"]
+        res = extract_tripeptide(mutation="A:L12A", job_dir=str(jd), node_id=prep)
+        assert res["success"] is False and res["code"] == "fep_fragment_prep_required"
+        assert read_node(str(jd), prep)["status"] == "pending"
 
 
 # --------------------------------------------------------------------------- #
@@ -361,18 +384,19 @@ class TestAnalysis:
             collect_windows([str(files_a[0]), str(files_b[0])])
         assert exc.value.code == "fep_windows_incompatible"
 
-    def test_estimate_ddg(self, tmp_path):
+    def test_estimate_ddg_direct(self, tmp_path):
         folded = tmp_path / "folded.json"
         unfolded = tmp_path / "unfolded.json"
         folded.write_text(json.dumps({"mutation": {"label": "A:L99A"}, "dG_kj_mol": 10.0, "dG_error_kj_mol": 0.3,
                                       "warnings": ["low overlap 3-4"]}))
-        unfolded.write_text(json.dumps({"mutation": {"label": "A:L2A"}, "dG_kj_mol": 4.0, "dG_error_kj_mol": 0.4}))
+        unfolded.write_text(json.dumps({"mutation": {"label": "A:L99A"}, "dG_kj_mol": 4.0, "dG_error_kj_mol": 0.4}))
         res = estimate_ddg(str(folded), str(unfolded), output_file=str(tmp_path / "out" / "ddg.json"))
         assert res["success"], res
         assert math.isclose(res["ddG_kj_mol"], 6.0)
         assert math.isclose(res["ddG_error_kj_mol"], 0.5)
         assert math.isclose(res["ddG_kcal_mol"], 6.0 / 4.184)
         assert any("[folded] low overlap" in w for w in res["warnings"])
+        assert any("could not verify" in w for w in res["warnings"])  # no protocol / manifest to compare
         assert Path(res["ddg_file"]) == tmp_path / "out" / "ddg.json"
         # never inside the (immutable) analyze node's artifacts: default goes to the study's evidence/
         study = tmp_path / "study"
@@ -381,11 +405,27 @@ class TestAnalysis:
         assert Path(res2["ddg_file"]).parent == study / "evidence"
         assert not (tmp_path / "ddg.json").exists()
 
+    def test_estimate_ddg_refuses_different_legs(self, tmp_path):
+        """Two legs of different mutations (or protocols, ensembles) are not one
+        thermodynamic cycle."""
+        folded = tmp_path / "folded.json"
+        unfolded = tmp_path / "unfolded.json"
+        folded.write_text(json.dumps({"mutation": {"label": "A:L99A"}, "dG_kj_mol": 10.0, "temperature_kelvin": 300.0}))
+        unfolded.write_text(json.dumps({"mutation": {"label": "A:L2A"}, "dG_kj_mol": 4.0, "temperature_kelvin": 300.0}))
+        res = estimate_ddg(str(folded), str(unfolded), output_file=str(tmp_path / "ddg.json"))
+        assert res["success"] is False and res["code"] == "fep_legs_incompatible"
+        assert "mutation" in res["errors"][0]
+        unfolded.write_text(json.dumps({"mutation": {"label": "A:L99A"}, "dG_kj_mol": 4.0, "temperature_kelvin": 310.0}))
+        res = estimate_ddg(str(folded), str(unfolded), output_file=str(tmp_path / "ddg.json"))
+        assert res["code"] == "fep_legs_incompatible" and "temperature_kelvin" in res["errors"][0]
+        assert not (tmp_path / "ddg.json").exists()
+
     def test_estimate_ddg_rejects_non_result(self, tmp_path):
         bad = tmp_path / "x.json"
         bad.write_text("{}")
         res = estimate_ddg(str(bad), str(bad))
         assert res["success"] is False and res["code"] == "fep_result_invalid"
+        assert estimate_ddg()["code"] == "fep_result_invalid"
 
 
 # --------------------------------------------------------------------------- #
@@ -438,6 +478,252 @@ class TestDag:
         assert "parent_type_invalid" in ctx["blocking_codes"]
         ok = validate_node_execution_context(str(jd), fep2["node_id"], "fep")
         assert ok["success"], ok
+
+
+# --------------------------------------------------------------------------- #
+# ddG node: comparison analyze over the two legs' analyze_fep nodes            #
+# --------------------------------------------------------------------------- #
+
+def _fep_leg_result(tmp_path: Path, name: str, n_states: int = 5) -> Path:
+    """A real analyze_fep result (harmonic toy) to hang on a leg's analyze node."""
+    (tmp_path / name).mkdir()
+    files, _protocol, _ = _harmonic_windows(tmp_path / name, n_states=n_states)
+    res = analyze_fep(fep_windows_files=[str(f) for f in files], output_dir=str(tmp_path / f"{name}_an"),
+                      discard_fraction=0.0, subsample=False)
+    assert res["success"], res
+    return Path(res["fep_result"])
+
+
+def _two_leg_job(tmp_path: Path, *, mark_unfolded: bool = True, with_unfolded: bool = True,
+                 unfolded_n_states: int = 5) -> tuple[Path, str, dict[str, str]]:
+    """source -> prep_001 (protein) -> folded chain; prep_002 (fragment, child of
+    prep_001) -> unfolded chain; both chains end in a completed analyze_fep node."""
+    from mdclaw._node import create_node, init_progress_v3
+    from tests.pipeline_helpers import complete_node_with_placeholders as complete
+
+    jd = tmp_path / "job"
+    jd.mkdir()
+    init_progress_v3(str(jd))
+    src = create_node(str(jd), "source")["node_id"]
+    complete(str(jd), src, {"source_bundle": "artifacts/sb.json"})
+    prep = create_node(str(jd), "prep", parent_node_ids=[src])["node_id"]
+    complete(str(jd), prep, {"merged_pdb": "artifacts/merge/merged.pdb"})
+    starts = [("folded", prep, 5)]
+    if with_unfolded:
+        frag = create_node(str(jd), "prep", parent_node_ids=[prep])["node_id"]
+        complete(str(jd), frag, {"merged_pdb": "artifacts/merge/merged.pdb"},
+                 metadata={"tool": "extract_tripeptide", "leg_role": "unfolded"} if mark_unfolded
+                 else {"tool": "prepare_complex"})
+        starts.append(("unfolded", frag, unfolded_n_states))
+    triple = {"system_xml": "artifacts/system.system.xml", "topology_pdb": "artifacts/system.topology.pdb",
+              "state_xml": "artifacts/system.state.xml"}
+    legs: dict[str, str] = {}
+    for role, top_prep, n_states in starts:
+        solv = create_node(str(jd), "solv", parent_node_ids=[top_prep])["node_id"]
+        complete(str(jd), solv, {"solvated_pdb": "artifacts/s.pdb"})
+        topo = create_node(str(jd), "topo", parent_node_ids=[solv])["node_id"]
+        complete(str(jd), topo, {**triple, "hybrid_manifest": "artifacts/hybrid_manifest.json",
+                                 "fep_protocol": "artifacts/fep_protocol.json"})
+        mn = create_node(str(jd), "min", parent_node_ids=[topo])["node_id"]
+        complete(str(jd), mn, {"state": "artifacts/min.xml"})
+        eq = create_node(str(jd), "eq", parent_node_ids=[mn])["node_id"]
+        complete(str(jd), eq, {"state": "artifacts/eq.xml"})
+        fep = create_node(str(jd), "fep", parent_node_ids=[eq])["node_id"]
+        complete(str(jd), fep, {"fep_windows": "artifacts/fep_windows.json"})
+        an = create_node(str(jd), "analyze", parent_node_ids=[fep],
+                         conditions={"analysis_data_scope": "alchemical"})["node_id"]
+        dst = jd / "nodes" / an / "artifacts" / "fep_result.json"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(_fep_leg_result(tmp_path, role, n_states), dst)
+        complete(str(jd), an, {"fep_result": "artifacts/fep_result.json"},
+                 metadata={"analysis": "fep_mbar", "mutation": "A:L99A"})
+        legs[role] = an
+    return jd, prep, legs
+
+
+class TestDdgNode:
+    def test_ddg_node_over_two_legs(self, tmp_path):
+        pytest.importorskip("pymbar")
+        from mdclaw._cli import _discover_tools
+        from mdclaw._envelope import next_step
+        from mdclaw._node import create_node, read_node
+
+        jd, prep, legs = _two_leg_job(tmp_path)
+        tools = _discover_tools()
+        # envelope: both legs analysed -> create the comparison node over them
+        step = next_step(str(jd), legs["folded"], tools)
+        assert step["action"] == "create" and step["node_type"] == "analyze", step
+        assert f"--parent-node-ids {legs['folded']} {legs['unfolded']}" in step["create_command"]
+        assert '"analysis_data_scope": "comparison"' in step["create_command"]
+        assert step["stage_tools"] == ["estimate_ddg"]
+        # the unfolded leg gets the same suggestion (same parent order)
+        assert next_step(str(jd), legs["unfolded"], tools)["create_command"] == step["create_command"]
+
+        # parents in the "wrong" order: roles come from the DAG, not the order
+        ddg = create_node(str(jd), "analyze", parent_node_ids=[legs["unfolded"], legs["folded"]],
+                          conditions={"analysis_data_scope": "comparison"})
+        assert ddg["success"], ddg
+        ddg_id = ddg["node_id"]
+        pending = next_step(str(jd), legs["folded"], tools)
+        assert pending["action"] == "run" and pending["node_id"] == ddg_id
+        assert pending["stage_tools"][0] == "estimate_ddg"
+
+        res = estimate_ddg(job_dir=str(jd), node_id=ddg_id)
+        assert res["success"], res
+        assert res["legs"]["folded"]["node_id"] == legs["folded"]
+        assert res["legs"]["unfolded"]["node_id"] == legs["unfolded"]
+        assert math.isclose(res["ddG_kj_mol"], res["legs"]["folded"]["dG_kj_mol"] - res["legs"]["unfolded"]["dG_kj_mol"])
+        node = read_node(str(jd), ddg_id)
+        assert node["status"] == "completed"
+        assert node["metadata"]["analysis"] == "fep_ddg"
+        assert node["metadata"]["legs"]["unfolded"]["node_id"] == legs["unfolded"]
+        report = json.loads((jd / "nodes" / ddg_id / node["artifacts"]["ddg"]).read_text())
+        assert report["analysis"] == "fep_ddg" and report["node_id"] == ddg_id
+        assert Path(res["ddg_file"]).resolve() == (jd / "nodes" / ddg_id / "artifacts" / "ddg.json").resolve()
+        done = next_step(str(jd), legs["folded"], tools)
+        assert done["action"] == "done" and done["node_id"] == ddg_id
+        assert next_step(str(jd), ddg_id, tools)["action"] == "done"
+
+    def test_only_folded_leg_points_at_the_fragment_prep(self, tmp_path):
+        pytest.importorskip("pymbar")
+        from mdclaw._cli import _discover_tools
+        from mdclaw._envelope import next_step
+
+        jd, prep, legs = _two_leg_job(tmp_path, with_unfolded=False)
+        step = next_step(str(jd), legs["folded"], _discover_tools())
+        assert step["action"] == "create" and step["node_type"] == "prep", step
+        assert f"--parent-node-ids {prep}" in step["create_command"]
+        assert step["stage_tools"][0] == "extract_tripeptide"
+        assert "extract_tripeptide --mutation A:L99A" in step["run_command"]
+
+    def test_ddg_node_refuses_incompatible_legs(self, tmp_path):
+        pytest.importorskip("pymbar")
+        from mdclaw._node import create_node, read_node
+
+        jd, _prep, legs = _two_leg_job(tmp_path, unfolded_n_states=7)
+        ddg = create_node(str(jd), "analyze", parent_node_ids=[legs["folded"], legs["unfolded"]],
+                          conditions={"analysis_data_scope": "comparison"})["node_id"]
+        res = estimate_ddg(job_dir=str(jd), node_id=ddg)
+        assert res["success"] is False and res["code"] == "fep_legs_incompatible"
+        assert "n_states" in res["errors"][0]
+        assert read_node(str(jd), ddg)["status"] == "pending"  # nothing ran; fix the leg and rerun
+
+    def test_ddg_node_leg_roles(self, tmp_path):
+        pytest.importorskip("pymbar")
+        from mdclaw._node import create_node, read_node
+
+        jd, _prep, legs = _two_leg_job(tmp_path, mark_unfolded=False)
+        ddg = create_node(str(jd), "analyze", parent_node_ids=[legs["folded"], legs["unfolded"]],
+                          conditions={"analysis_data_scope": "comparison"})["node_id"]
+        res = estimate_ddg(job_dir=str(jd), node_id=ddg)
+        assert res["success"] is False and res["code"] == "fep_leg_role_ambiguous"
+        assert read_node(str(jd), ddg)["status"] == "pending"
+        # declared subjects in parent order resolve it
+        ddg2 = create_node(str(jd), "analyze", parent_node_ids=[legs["unfolded"], legs["folded"]],
+                           conditions={"analysis_data_scope": "comparison",
+                                       "analysis_subjects": [{"label": "unfolded"}, {"label": "folded"}]})["node_id"]
+        res = estimate_ddg(job_dir=str(jd), node_id=ddg2)
+        assert res["success"], res
+        assert res["legs"]["folded"]["node_id"] == legs["folded"]
+
+    def test_ddg_node_scope_and_parent_checks(self, tmp_path):
+        pytest.importorskip("pymbar")
+        from mdclaw._node import create_node, read_node
+        from tests.pipeline_helpers import complete_node_with_placeholders as complete
+
+        jd, _prep, legs = _two_leg_job(tmp_path)
+        wrong_scope = create_node(str(jd), "analyze", parent_node_ids=[legs["folded"], legs["unfolded"]],
+                                  conditions={"analysis_data_scope": "production_chain"})["node_id"]
+        res = estimate_ddg(job_dir=str(jd), node_id=wrong_scope)
+        assert res["code"] == "fep_ddg_scope_invalid" and read_node(str(jd), wrong_scope)["status"] == "pending"
+        # a parent that is not an analyze_fep result
+        other = create_node(str(jd), "analyze", parent_node_ids=[legs["folded"]],
+                            conditions={"analysis_data_scope": "production_chain"})["node_id"]
+        complete(str(jd), other, {"summary": "artifacts/summary.json"}, metadata={"analysis": "something_else"})
+        bad = create_node(str(jd), "analyze", parent_node_ids=[other, legs["unfolded"]],
+                          conditions={"analysis_data_scope": "comparison"})["node_id"]
+        res = estimate_ddg(job_dir=str(jd), node_id=bad)
+        assert res["code"] == "fep_ddg_parents_invalid" and other in res["errors"][0]
+
+
+# --------------------------------------------------------------------------- #
+# unfolded-leg prep node with a real cap build (slow)                           #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.slow
+class TestUnfoldedLegPrep:
+    @staticmethod
+    def _prepared_peptide(tmp_path: Path) -> Path:
+        """Residues 97-107 of the 6KUY fixture (real crystal geometry), completed
+        and protonated by PDBFixer: stands in for prepare_complex's merged.pdb."""
+        pdbfixer = pytest.importorskip("pdbfixer")
+        from openmm import app
+
+        fixture = Path(__file__).parent / "data" / "6kuy_trp99_piece1.pdb"
+        keep = [ln for ln in fixture.read_text().splitlines()
+                if ln.startswith("ATOM") and 97 <= int(ln[22:26]) <= 107]
+        segment = tmp_path / "segment.pdb"
+        segment.write_text("\n".join([*keep, "TER", "END", ""]))
+        fixer = pdbfixer.PDBFixer(filename=str(segment))
+        fixer.findMissingResidues()
+        fixer.findMissingAtoms()
+        fixer.addMissingAtoms()
+        fixer.addMissingHydrogens(7.0)
+        out = tmp_path / "prepared.pdb"
+        with out.open("w") as fh:
+            app.PDBFile.writeFile(fixer.topology, fixer.positions, fh, keepIds=True)
+        return out
+
+    def test_direct_mode_caps_and_keeps_numbering(self, tmp_path):
+        prepared = self._prepared_peptide(tmp_path)
+        res = extract_tripeptide(mutation="A:W99A", pdb_file=str(prepared), output_dir=str(tmp_path / "out"))
+        assert res["success"], res
+        lines = [ln for ln in Path(res["merged_pdb"]).read_text().splitlines() if ln.startswith(("ATOM", "HETATM"))]
+        residues = {(ln[17:20].strip(), int(ln[22:26])) for ln in lines}
+        assert {"ACE", "NME"} <= {r for r, _ in residues}
+        assert {n for r, n in residues if r in ("TYR", "TRP")} == {98, 99, 100}  # numbering shared with the folded leg
+        assert all(ln[21] == "A" for ln in lines)                                 # chain id too
+        assert res["caps"] == {"n_terminal": "ACE", "c_terminal": "NME"}
+        assert res["leg_role"] == "unfolded" and res["residues"] == ["A:TYR98", "A:TRP99", "A:TYR100"]
+        cmap = json.loads(Path(res["chain_identity_map"]).read_text())
+        assert cmap["components"][0]["pdb_chain_id"] == "A" and cmap["components"][0]["atom_count"] == len(lines)
+
+    def test_prep_node_under_the_protein_prep(self, tmp_path):
+        from mdclaw._node import create_node, init_progress_v3, read_node, resolve_node_inputs
+        from mdclaw.fep.analysis import leg_role_of
+        from tests.pipeline_helpers import complete_node_with_placeholders as complete
+
+        prepared = self._prepared_peptide(tmp_path)
+        jd = tmp_path / "job"
+        jd.mkdir()
+        init_progress_v3(str(jd))
+        src = create_node(str(jd), "source")["node_id"]
+        complete(str(jd), src, {"source_bundle": "artifacts/sb.json"})
+        prep = create_node(str(jd), "prep", parent_node_ids=[src])["node_id"]
+        merged = jd / "nodes" / prep / "artifacts" / "merge" / "merged.pdb"
+        merged.parent.mkdir(parents=True)
+        shutil.copy(prepared, merged)
+        complete(str(jd), prep, {"merged_pdb": "artifacts/merge/merged.pdb"})
+
+        frag = create_node(str(jd), "prep", parent_node_ids=[prep])["node_id"]
+        res = extract_tripeptide(mutation="A:W99A", job_dir=str(jd), node_id=frag)
+        assert res["success"], res
+        node = read_node(str(jd), frag)
+        assert node["status"] == "completed"
+        assert node["metadata"]["leg_role"] == "unfolded"
+        assert node["metadata"]["derived_from_prep_node_id"] == prep
+        assert node["metadata"]["unfolded_model"]["residues"] == ["A:TYR98", "A:TRP99", "A:TYR100"]
+        assert set(node["artifacts"]) >= {"merged_pdb", "fragment_pdb", "chain_identity_map", "disulfide_bonds"}
+        # the solv stage under the fragment resolves the fragment, not the protein
+        solv = create_node(str(jd), "solv", parent_node_ids=[frag])["node_id"]
+        inputs = resolve_node_inputs(str(jd), solv, "solv")
+        assert inputs["pdb_file"] == str((jd / "nodes" / frag / "artifacts" / "merge" / "merged.pdb").resolve())
+        assert inputs["disulfide_bonds"] == []
+        assert leg_role_of(str(jd), solv) == "unfolded"
+        assert leg_role_of(str(jd), prep) is None
+        # a completed prep node runs once
+        again = extract_tripeptide(mutation="A:W99A", job_dir=str(jd), node_id=frag)
+        assert again["success"] is False
 
 
 # --------------------------------------------------------------------------- #

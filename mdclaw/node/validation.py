@@ -120,7 +120,7 @@ def _validate_analyze_conditions(conditions: Optional[dict]) -> Optional[str]:
 
     subjects_ok, subject_labels, subject_error = _validate_analysis_subjects(
         conditions.get("analysis_subjects"),
-        required=scope == "comparison",
+        required=False,
     )
     if not subjects_ok:
         return subject_error
@@ -134,10 +134,22 @@ def _validate_analyze_conditions(conditions: Optional[dict]) -> Optional[str]:
             )
         return None
 
-    if len(subject_labels) != 2:
+    # A comparison consumes exactly two analyze parents. Subjects and the
+    # atom/residue mapping are optional at creation: a tool that needs them
+    # (trajectory comparisons) asks for them itself, while a tool that can
+    # tell its two inputs apart from the DAG (estimate_ddg reads the legs'
+    # prep leg_role) needs neither.
+    if subject_labels and len(subject_labels) != 2:
         return (
             "comparison analyses are binary/pairwise and require exactly "
             "two analysis_subjects"
+        )
+    if mapping is None:
+        return None
+    if not subject_labels:
+        return (
+            "comparison_mapping references analysis_subjects labels; declare "
+            "the two analysis_subjects together with the mapping"
         )
     return _validate_comparison_mapping(mapping, subject_labels)
 

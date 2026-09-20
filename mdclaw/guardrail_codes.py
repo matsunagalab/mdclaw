@@ -70,8 +70,14 @@ GUARDRAIL_CODES: dict[str, str] = {
     "fep_windows_incomplete": "Not every protocol window was sampled; add fep nodes for the listed indices (same eq parent, --lambda-indices) and parent the analyze node to all of them.",
     "fep_windows_incompatible": "The parents were sampled with different lambda protocols, temperatures or ensembles (NPT vs NVT); analyze one hybrid topology per analyze node and match --pressure-bar when extending.",
     "fep_analysis_failed": "MBAR failed on these samples; check the per-window sample counts and overlap, sample longer, then rerun analyze_fep.",
-    "fep_result_invalid": "Pass the fep_result.json files written by analyze_fep (folded and unfolded legs) to estimate_ddg.",
+    "fep_result_invalid": "Pass the fep_result.json files written by analyze_fep (folded and unfolded legs) to estimate_ddg, or run it on a comparison analyze node over the two analyze_fep nodes.",
     "fep_tripeptide_extraction_failed": "Extract from a cleaned protein PDB (one entry per residue); the message names the residue that appears twice.",
+    "fep_fragment_prep_required": "extract_tripeptide is a prep -> prep step: create its prep node with --parent-node-ids <the protein's completed prepare_complex node> so the fragment is cut from that node's merged_pdb.",
+    "fep_tripeptide_cap_failed": "clean_protein could not cap the peptide fragment; read the nested errors (usually a residue the cap builder cannot complete), fix the parent preparation, then branch a new prep node.",
+    "fep_ddg_scope_invalid": "The ddG node is a comparison: create the analyze node with --conditions '{\"analysis_data_scope\": \"comparison\"}' and the two analyze_fep nodes as parents, then run estimate_ddg on it.",
+    "fep_ddg_parents_invalid": "estimate_ddg needs exactly two completed analyze_fep parents (the folded and the unfolded leg); parent the comparison node to those analyze nodes, not to fep or prod nodes.",
+    "fep_leg_role_ambiguous": "Neither parent descends from an extract_tripeptide prep node, so the legs cannot be told apart; derive the unfolded leg with extract_tripeptide, or declare analysis_subjects [{\"label\": \"folded\"}, {\"label\": \"unfolded\"}] in the same order as --parent-node-ids.",
+    "fep_legs_incompatible": "The two legs differ in mutation, lambda protocol, force field, water model, HMR, temperature or pressure; rebuild the unfolded leg's build_hybrid_system / run_fep with the folded leg's options so the thermodynamic cycle closes.",
 
     "container_runtime_not_found": "Export MDCLAW_SLURM_PATH=\"$PATH\" from a host shell before submitting from inside the image, or run `mdclaw configure_container --runtime /abs/path/to/singularity`, then resubmit the same (still pending) node.",
 

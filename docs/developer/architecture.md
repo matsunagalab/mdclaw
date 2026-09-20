@@ -117,8 +117,12 @@ Boltz/BioEm-like tools. Generator-specific rank and confidence data live on
 the relevant candidate records and are surfaced through `list_source_candidates`.
 Variants then branch from `prep`, `solv`, `topo`, `min`, `eq`, or `prod`.
 A point-mutation FEP is the same chain with a hybrid `topo`
-(`build_hybrid_system`) and `fep` nodes in place of `prod`; see the `fep/`
-section of `tool-reference.md` and `skills/md-fep/`.
+(`build_hybrid_system`) and `fep` nodes in place of `prod`. Its two legs share
+one job: the unfolded-state model is a `prep` child of the protein's `prep`
+(`extract_tripeptide`), each leg ends in an `alchemical` analyze node
+(`analyze_fep`), and the ddG is a `comparison` analyze node over those two
+(`estimate_ddg`). See the `fep/` section of `tool-reference.md` and
+`skills/md-fep/`.
 
 Preparation nodes select one candidate, choose MD-relevant molecular
 components, clean and standardize them, record chemistry and provenance for
@@ -161,9 +165,21 @@ flowchart LR
   eq1 --> prod1[prod_001<br/>production]
   eq1 --> eq2[eq_002<br/>staged or branched eq]
   eq2 --> prod2[prod_002<br/>production branch]
-  prep --> prep2[prep_002<br/>mutation / PTM]
+  prep --> prep2[prep_002<br/>mutation / PTM / unfolded-state fragment]
   prep2 --> solv2[solv_002<br/>variant solvation]
   solv2 --> topo2[topo_002<br/>variant topology]
+```
+
+An alchemical ddG uses the same shapes: `prep_002` is the capped tripeptide,
+both `topo` nodes are hybrid topologies, `fep` replaces `prod`, and the
+`comparison` analyze node over the two legs' analyze nodes holds the ddG.
+
+```mermaid
+flowchart LR
+  eqF[eq (folded)] --> fepF[fep] --> anF[analyze_001<br/>analyze_fep, alchemical]
+  eqU[eq (unfolded)] --> fepU[fep] --> anU[analyze_002<br/>analyze_fep, alchemical]
+  anF --> ddg[analyze_003<br/>estimate_ddg, comparison]
+  anU --> ddg
 ```
 
 Node artifacts are intentionally local to each node:

@@ -26,7 +26,8 @@ OpenMM の標準 API だけで hybrid System を組む。本ページは参考�
 (`build_hybrid_system`) として扱う。
 
 ```
-source → prep → solv → topo(build_hybrid_system) → min → eq → fep(×1..K) → analyze(analyze_fep)
+source → prep_001 → solv → topo(build_hybrid_system) → min → eq → fep(×1..K) → analyze_001(analyze_fep) ─┐
+           └→ prep_002(extract_tripeptide) → solv → topo(hybrid) → min → eq → fep → analyze_002 ───────────┴→ analyze_003(estimate_ddg)
                                                                    ↑ fep → fep で延長
 ```
 
@@ -34,8 +35,14 @@ source → prep → solv → topo(build_hybrid_system) → min → eq → fep(×
   parameter の既定値が状態 A（wild type）なので、λ=0 で平衡化している。
 - `fep` ノードは窓ごとに eq 状態から短い局所平衡化 → サンプリングを行い、各
   サンプルで **全窓** の reduced potential を評価して `u_kn` を残す（MBAR 直行）。
-- 折り畳み安定性 ddG は 2 つの job（`folded`, `unfolded` = capped tripeptide）を
-  同じ mutation spec で流し、`estimate_ddg` で差を取る。
+- 折り畳み安定性 ddG の 2 leg は **1 つの job** に同居する。unfolded leg は
+  folded leg の `prep` から派生した `prep` 子ノード（`extract_tripeptide`、
+  `leg_role = unfolded`）で、source・前処理・プロトン化・`--mutation` を構造的に
+  共有する。ddG は 2 つの `analyze_fep` ノードを親に持つ `comparison` analyze
+  ノード（`estimate_ddg`）で、leg 間の設定一致（変異・λ プロトコル・力場・水・
+  HMR・T・P）を照合してから差を取る。job をまたぐ親参照は導入しない（2026-09-20
+  の設計判断: `read_node` の同 job 前提を崩さずに、既存の prep → prep 分岐と
+  comparison scope だけで表現できる）。
 
 比較した「pmx / Perses / GENESIS の典型フロー」はいずれも
 prep → hybrid 構築 → 溶媒和・力場 → 平衡化 → λ サンプリング → 推定 の一本道で、
@@ -89,9 +96,12 @@ splice し、他の原子は byte-identical に保つ（serial 再採番、CONEC
 ## 6. 未折り畳み状態モデル（`mdclaw/fep/tripeptide.py`）
 
 pmx の折り畳み安定性プロトコルに倣い、capped tripeptide (ACE-X(i−1)-X(i)-X(i+1)-NME)
-を folded leg の prep PDB から切り出す。chain ID と残基番号を保つので同じ
-`--mutation` 文字列がそのまま使える。キャップ付与は既存の
-`prepare_complex --cap-termini` に任せる。
+を folded leg の prep ノードの `merged_pdb` から切り出す `prep` ステージツール。
+chain ID と残基番号を保つので同じ `--mutation` 文字列がそのまま使える（`merge_structures`
+は chain を A から振り直すので使わず、1 成分の `chain_identity_map` を自前で書く）。
+キャップ付与とキャップ水素の補完は `clean_protein`（`cap_termini`、
+`preserve_input_protonation=True`、既定 `protonation_method="no-prediction"`）に
+任せ、親 prep のプロトン化変異名（ASH / GLH / HID …）を両 leg で共有する。
 
 ## 7. 解析（`mdclaw/fep/analysis.py`）
 

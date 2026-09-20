@@ -75,9 +75,9 @@ Confirm these fields before running analysis:
 |-----------|-------|
 | Target | job directory |
 | Analysis data scope | segment, production_chain, or comparison (`alchemical` exists for fep parents; that is `md-fep`'s `analyze_fep`, not this skill) |
-| Analysis subjects | optional for segment/production_chain; required for comparison |
+| Analysis subjects | optional for segment/production_chain; for trajectory comparisons declare two (with `comparison_mapping`) — `create_node` accepts a bare comparison scope, the metric tool then refuses without them |
 | Comparison mapping | required for different chains/topologies; initial types: `residue_number`, `atom_selection` |
-| Validation | require `analysis_data_scope`; comparison is binary/pairwise with two unique subject `label`s |
+| Validation | require `analysis_data_scope`; comparison is binary/pairwise (two analyze parents; when declared, two unique subject `label`s) |
 | Leaf prod node | requested node or deepest continuation leaf |
 | Atom selection | mdtraj selection, default `"protein"` |
 | Region annotation | source and residue mapping, when comparing named biological regions |

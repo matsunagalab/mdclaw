@@ -306,7 +306,10 @@ class TestCreateNode:
         assert node["conditions"]["analysis_data_scope"] == "segment"
         assert "analysis_subjects" not in node["conditions"]
 
-    def test_analyze_comparison_requires_subjects_and_mapping(self, job_dir):
+    def test_analyze_comparison_accepts_bare_scope(self, job_dir):
+        """Subjects and the atom mapping are optional at creation: a tool that
+        tells its two inputs apart from the DAG (estimate_ddg) needs neither,
+        and trajectory comparisons ask for the mapping themselves."""
         analyze_parents = _create_two_analyze_parents(job_dir)
 
         result = create_node(
@@ -314,6 +317,23 @@ class TestCreateNode:
             "analyze",
             parent_node_ids=analyze_parents,
             conditions={"analysis_data_scope": "comparison"},
+        )
+
+        assert result["success"] is True, result
+        node = read_node(str(job_dir), result["node_id"])
+        assert node["conditions"] == {"analysis_data_scope": "comparison"}
+
+    def test_analyze_comparison_mapping_requires_subjects(self, job_dir):
+        analyze_parents = _create_two_analyze_parents(job_dir)
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=analyze_parents,
+            conditions={
+                "analysis_data_scope": "comparison",
+                "comparison_mapping": {"type": "residue_number", "pairs": [["a:10", "b:12"]]},
+            },
         )
 
         assert result["success"] is False

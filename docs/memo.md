@@ -7,6 +7,20 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-20 — ddG をノードにする: 2 leg を 1 job に、`estimate_ddg` を comparison analyze に（branch `feat/fep-ddg-node`）
+
+設計レビュー（同日）で最大の弱点とした「ddG が DAG のどこにも無い」件の対応。案は 2 つあり、job をまたぐ親参照（cross-job comparison）は `read_node` の同 job 前提が `node/*.py`・`progress.json`・lock・events・snapshot・`reporting.py` の lineage に貫かれていて触る範囲が広い。代わりに **unfolded leg を folded leg の `prep` から派生した `prep` 子ノードにする**と、ddG は「2 つの analyze 親を持つ `comparison` analyze」という既存の形にそのまま載る（`_ALLOWED_PARENT_TYPES["prep"]` は prep → prep を許可済みで `create_mutated_structure` が前例、`n_parents >= 2 and all analyze` の resolver 分岐も既にあった）。これを実装した。
+
+- `extract_tripeptide` を `@node_tool(node_type="prep")` に。親 prep の `merged_pdb` から断片を切り（`cut_fragment`、chain・残基番号・プロトン化変異名を保持）、`clean_protein(cap_termini=True, preserve_input_protonation=True, protonation_method="no-prediction")` でキャップとキャップ水素を付け、`merged_pdb` / `chain_identity_map` / `disulfide_bonds` / `fragment_pdb` を artifact に、metadata に `leg_role = "unfolded"`・`unfolded_model`・`derived_from_prep_node_id` を書く。`merge_structures` は chain を A から振り直すので使わず、1 成分の `chain_identity_map` を自前で書く（`--mutation B:…` の leg で chain が変わる事故を防ぐ）。Trp-cage の実データで dev run の unfolded prep（ACE4–GLN5–TRP6–LEU7–NME8、72 原子）を byte 単位でなく残基列・原子数で再現。以前の dev run は `prepare_complex --cap-termini --ph 7.4`（propka）で tripeptide のプロトン化を再予測していたが、新ツールは親のプロトン化をそのまま使う（両 leg で同じ化学種にするため。`--protonation-method propka` で旧挙動）。
+- `estimate_ddg` を `@node_tool(node_type="analyze")` に。node mode は `analysis_data_scope: comparison` の analyze ノードで、親は 2 つの `analyze_fep`（metadata `analysis == "fep_mbar"` と `fep_result` artifact を要求、順不同）。leg の役割は各親の祖先 prep の `leg_role` から決め（無ければ `analysis_subjects` の親順、それも無ければ `fep_leg_role_ambiguous`）、差を取る前に変異・λ プロトコル（`protocols_equivalent`）・力場・水・HMR・T・P を照合して不一致は `fep_legs_incompatible`（ノードは pending のまま）。`artifacts/ddg.json` と metadata `analysis = "fep_ddg"` に記録、job params に `study_dir` があれば study log にも decision を残す。direct（Python）mode は `--folded/--unfolded` で維持（CLI は他の stage tool と同じく DAG-only）。
+- `comparison` scope の `comparison_mapping` と `analysis_subjects` を create 時任意に（mapping を出す場合は subjects 必須）。今 comparison を消費するツールはゼロなので影響なし。resolver の `branches_input` に `analyze_node_id` / `analysis` / `fep_result_file` を追加。
+- envelope `next`: 完了した `analyze_fep` に対して、相手 leg が完了していれば「comparison ノードを作って `estimate_ddg`」（親順は folded, unfolded に正規化）、pending の ddG 子があればそれを run、folded しか無ければ「`prep_001` の下に prep を作って `extract_tripeptide --mutation <label>`」、ddG 完了で done。pending の comparison ノードは `estimate_ddg` を先頭に。
+- guardrail 6 コード追加（`fep_fragment_prep_required`, `fep_tripeptide_cap_failed`, `fep_ddg_scope_invalid`, `fep_ddg_parents_invalid`, `fep_leg_role_ambiguous`, `fep_legs_incompatible`）、golden 再生成（401 codes / 85 tools）。
+- skill `md-fep` を 1 job 構成に書き換え（bootstrap 1 回、`fetch_structure --source local` と `--plan` の 2 job 宣言が消え、step 6 は `create_node --node-type prep --parent-node-ids <prep_001>` → `extract_tripeptide`、step 7 は comparison ノード）。`tool-reference` / `architecture`（mermaid 追加）/ `analysis-node-contract` / CLAUDE・AGENTS / `fep-references` §2・§6 を更新。
+- テスト: `tests/test_fep.py` 57 本（`TestDdgNode` 5 本: 逆順親でも役割が DAG から決まる、非互換 leg は pending、役割不明と subjects fallback、scope/親検査、envelope の 3 状態; `TestUnfoldedLegPrep`（slow）2 本: 6KUY 97–107 断片を PDBFixer で整えた「prepared.pdb」から A:W99A を切って `clean_protein` でキャップ、番号 98–100 と chain A を保持、prep ノード下で solv resolver が断片を拾う）。`test_node.py` の comparison テストを「bare scope 可 / mapping には subjects 必須」に置き換え。
+
+設計レビューの優先順位 2（study 型 + study レベル next + leg 間条件照合）は、この形で大半が不要になった: 1 job なので study レベル `next` の穴が無く、条件照合は ddG ノードが行う。残るのは 3（hybrid topo 上の plain prod への警告）、5（report 層の FEP 対応: `production_node_ids` が fep を拾わない、Methods 文）、6。
+
 ## 2026-09-20 — hybrid-topology FEP の実測検証: 1MEL VHH 5 変異を NAMD/CHARMM36 参照と比較
 
 `skills/md-fep` を最初から最後まで通して、既存の NAMD+CHARMM36 の ddG ラベル

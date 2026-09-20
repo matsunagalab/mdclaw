@@ -228,3 +228,24 @@ class TestCliReceipt:
         assert {line["name"] for line in applied["options"]} == {"file_path", "copy"}
         assert payload["message"].startswith(f"{source} completed: source")
         assert applied["summary"] == payload["message"].split(": ", 1)[1]
+
+
+class TestFepDdgReceipts:
+    def test_fragment_prep_receipt_names_the_fragment(self):
+        result = {"success": True, "mutation": "A:W6A", "residues": ["A:GLN5", "A:TRP6", "A:LEU7"], "n_residues": 3,
+                  "n_atoms": 72, "caps": {"n_terminal": "ACE", "c_terminal": "NME"}, "leg_role": "unfolded",
+                  "unfolded_model": {"protonation_method": "no-prediction"}, "merged_pdb": "/x/merged.pdb"}
+        receipt = build_receipt(tool_name="extract_tripeptide", node_type="prep", result=result,
+                                explicit={"mutation": "A:W6A"}, node_mode=True)
+        assert receipt["summary"] == ("unfolded-state fragment: 3 residue(s) A:GLN5 A:TRP6 A:LEU7, capped ACE/NME, "
+                                      "72 atoms, protonation no-prediction (parent states kept)")
+        assert receipt["facts"]["leg_role"] == "unfolded"
+
+    def test_ddg_receipt_reports_the_number(self):
+        result = {"success": True, "mutation": "A:W6A", "ddG_kj_mol": 19.55, "ddG_error_kj_mol": 2.05,
+                  "ddG_kcal_mol": 4.673, "ddG_error_kcal_mol": 0.49, "analysis": "fep_ddg",
+                  "legs": {"folded": {"node_id": "analyze_001"}, "unfolded": {"node_id": "analyze_002"}}}
+        receipt = build_receipt(tool_name="estimate_ddg", node_type="analyze", result=result, explicit={}, node_mode=True)
+        assert receipt["summary"] == ("ddG(A:W6A) = +4.67 ± 0.49 kcal/mol (destabilising), "
+                                      "folded analyze_001 − unfolded analyze_002")
+        assert receipt["facts"]["unfolded_node_id"] == "analyze_002"

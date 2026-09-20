@@ -291,6 +291,58 @@ def _facts_prep(result: dict) -> dict:
     return facts
 
 
+def _facts_fragment_prep(result: dict) -> dict:
+    """extract_tripeptide: the unfolded-state fragment, not a cleaned complex."""
+    caps = result.get("caps") if isinstance(result.get("caps"), dict) else {}
+    return _compact({
+        "leg_role": result.get("leg_role"),
+        "mutation": result.get("mutation"),
+        "residues": result.get("residues"),
+        "n_atoms": result.get("n_atoms"),
+        "caps": _compact({"n_terminal": caps.get("n_terminal"), "c_terminal": caps.get("c_terminal")}) or None,
+        "protonation": (result.get("unfolded_model") or {}).get("protonation_method"),
+    })
+
+
+def _summary_fragment_prep(facts: dict, result: dict) -> str:
+    residues = facts.get("residues") or []
+    parts = [f"unfolded-state fragment: {len(residues)} residue(s) {' '.join(residues)}".rstrip()]
+    caps = facts.get("caps") or {}
+    if caps:
+        parts.append("capped " + "/".join(v for v in (caps.get("n_terminal"), caps.get("c_terminal")) if v))
+    if facts.get("n_atoms") is not None:
+        parts.append(f"{facts['n_atoms']} atoms")
+    if facts.get("protonation"):
+        parts.append(f"protonation {facts['protonation']} (parent states kept)")
+    return ", ".join(parts)
+
+
+def _facts_ddg(result: dict) -> dict:
+    legs = result.get("legs") if isinstance(result.get("legs"), dict) else {}
+    return _compact({
+        "mutation": result.get("mutation"),
+        "ddG_kcal_mol": result.get("ddG_kcal_mol"),
+        "ddG_error_kcal_mol": result.get("ddG_error_kcal_mol"),
+        "ddG_kj_mol": result.get("ddG_kj_mol"),
+        "ddG_error_kj_mol": result.get("ddG_error_kj_mol"),
+        "folded_node_id": (legs.get("folded") or {}).get("node_id"),
+        "unfolded_node_id": (legs.get("unfolded") or {}).get("node_id"),
+    })
+
+
+def _summary_ddg(facts: dict, result: dict) -> str:
+    if facts.get("ddG_kcal_mol") is None:
+        return "completed"
+    sign = "destabilising" if facts["ddG_kcal_mol"] > 0 else "stabilising"
+    text = f"ddG({facts.get('mutation', '?')}) = {facts['ddG_kcal_mol']:+.2f}"
+    if facts.get("ddG_error_kcal_mol") is not None:
+        text += f" ± {facts['ddG_error_kcal_mol']:.2f}"
+    text += f" kcal/mol ({sign})"
+    if facts.get("folded_node_id") and facts.get("unfolded_node_id"):
+        text += f", folded {facts['folded_node_id']} − unfolded {facts['unfolded_node_id']}"
+    return text
+
+
 def _summary_prep(facts: dict, result: dict) -> str:
     parts = []
     chains = facts.get("chains") or []
@@ -646,11 +698,23 @@ _SUMMARY: dict[str, Callable[[dict, dict], str]] = {
 }
 
 
+# Tools whose result shape differs from their stage's normal-path tool.
+_TOOL_FACTS: dict[str, tuple[Callable[[dict], dict], Callable[[dict, dict], str]]] = {
+    "extract_tripeptide": (_facts_fragment_prep, _summary_fragment_prep),
+    "estimate_ddg": (_facts_ddg, _summary_ddg),
+}
+
+
 def build_receipt(*, tool_name: str, node_type: Optional[str], result: dict,
                   explicit: Optional[dict] = None, node_mode: bool = False) -> dict:
     """The ``applied`` block for a stage tool result."""
     options, ignored = option_lines(result, explicit or {}, node_type=node_type, node_mode=node_mode)
-    facts = _FACTS.get(node_type or "", _facts_generic)(result)
-    summary = _SUMMARY.get(node_type or "", _summary_generic)(facts, result)
+    if tool_name in _TOOL_FACTS:
+        facts_fn, summary_fn = _TOOL_FACTS[tool_name]
+    else:
+        facts_fn = _FACTS.get(node_type or "", _facts_generic)
+        summary_fn = _SUMMARY.get(node_type or "", _summary_generic)
+    facts = facts_fn(result)
+    summary = summary_fn(facts, result)
     return {"tool": tool_name, "summary": summary, "options": options,
             "ignored_options": ignored, "facts": facts}

@@ -1015,9 +1015,8 @@ def resolve_node_inputs(
                 ) or find_ancestor_artifact(
                     job_dir, pid, "analyze", "frame_times_ns"
                 )
-                conditions = _read_node_metadata(job_dir, pid).get(
-                    "conditions", {}
-                )
+                parent_metadata = _read_node_metadata(job_dir, pid)
+                conditions = parent_metadata.get("conditions", {})
                 if ref_pdb is None:
                     ref_pdb = _read_artifact_from_node(
                         job_dir, pid, "reference_pdb"
@@ -1025,10 +1024,18 @@ def resolve_node_inputs(
                 branches_input.append(
                     {
                         "label": _sanitize_label(pid),
+                        "analyze_node_id": pid,
+                        # What kind of analysis the parent recorded (e.g.
+                        # ``fep_mbar``) so a comparison tool can check it
+                        # is consuming the right inputs.
+                        "analysis": parent_metadata.get("analysis"),
                         "leaf_prod_id": None,
                         "trajectory_file": traj,
                         "energy_file": energy,
                         "frame_times_ns_file": frame_times,
+                        # Alchemical legs carry their MBAR result instead
+                        # of a trajectory.
+                        "fep_result_file": _read_artifact_from_node(job_dir, pid, "fep_result"),
                         "conditions": conditions,
                     }
                 )

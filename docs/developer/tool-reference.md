@@ -634,16 +634,34 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   Direct mode: `fep_windows_files`. Codes: `fep_windows_missing`,
   `fep_windows_incomplete` (lists the unsampled indices),
   `fep_windows_incompatible`, `fep_analysis_failed`, `pymbar_not_installed`.
-- `extract_tripeptide(pdb_file, mutation, flank=1, ...)` (helper, no node):
-  writes residues `i-flank..i+flank` of the mutated chain with the original
-  chain id and numbering (uncapped; the unfolded job's prep adds ACE/NME via
-  `--cap-termini`). Warns on chain ends and peptide-bond breaks. Codes:
-  `fep_mutation_residue_not_found`, `fep_tripeptide_extraction_failed`.
-- `estimate_ddg(folded, unfolded, ...)` (helper, no node):
-  `ddG = dG_folded − dG_unfolded` from two `fep_result.json`, errors in
-  quadrature, writes `ddg_<mutation>.json` to `output_file`, else
-  `<study_dir>/evidence/` (plus a study-log decision), else `outputs/` —
-  never into a completed node's `artifacts/`. Code: `fep_result_invalid`.
+- `extract_tripeptide(mutation, ...)` (`prep` node whose parent is the
+  protein's `prep` node, `mdclaw/fep/tripeptide.py`): the unfolded-state
+  model. Cuts residues `i-flank..i+flank` of the mutated chain from the parent
+  prep's `merged_pdb` (chain id, numbering and protonation variants kept),
+  caps it with ACE/NME through `clean_protein` (`preserve_input_protonation`,
+  `protonation_method` default `no-prediction`) and completes the node with the
+  artifacts the `solv` / `topo` resolvers read from a prep (`merged_pdb`,
+  `chain_identity_map`, `disulfide_bonds`, plus `fragment_pdb`). Metadata
+  `leg_role = "unfolded"` (and `unfolded_model`, `derived_from_prep_node_id`)
+  is how `estimate_ddg` and the envelope tell the legs apart. Warns on chain
+  ends, peptide-bond breaks and CYX/CYM without their partner. Codes:
+  `fep_fragment_prep_required` (no prep parent), `fep_mutation_*`,
+  `fep_tripeptide_extraction_failed`, `fep_tripeptide_cap_failed`.
+- `estimate_ddg(...)` (`analyze` node with
+  `analysis_data_scope: comparison` over the two legs' `analyze_fep` nodes,
+  `mdclaw/fep/analysis.py`): `ddG = dG_folded − dG_unfolded`, errors in
+  quadrature. The unfolded leg is the parent whose prep ancestry carries
+  `leg_role = "unfolded"`; otherwise `analysis_subjects`
+  `[folded, unfolded]` in parent order decide (`fep_leg_role_ambiguous`
+  when neither). Before subtracting it checks mutation, lambda protocol
+  (`protocols_equivalent`), force field, water model, HMR, temperature and
+  pressure of both legs (`fep_legs_incompatible`; the node stays pending).
+  Writes `artifacts/ddg.json` and records `analysis = "fep_ddg"` with ddG on
+  the node; appends a study-log decision when the job's params carry
+  `study_dir`. Direct (Python) mode with `folded` / `unfolded` result files
+  writes to `output_file`, else `<study_dir>/evidence/`, else `outputs/`.
+  Codes: `fep_ddg_scope_invalid`, `fep_ddg_parents_invalid`,
+  `fep_leg_role_ambiguous`, `fep_legs_incompatible`, `fep_result_invalid`.
 
 ## `visualization/`
 

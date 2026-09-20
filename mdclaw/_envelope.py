@@ -58,6 +58,10 @@ _STAGE_PREFERENCE = {"source": "fetch_structure", "prep": "prepare_complex",
 _ALCHEMICAL_FORWARD = {"eq": "fep"}
 _ALCHEMICAL_PREFERENCE = {"fep": "run_fep", "analyze": "analyze_fep"}
 _ALCHEMICAL_ANALYZE_CONDITIONS = '{"analysis_data_scope": "alchemical"}'
+# The ddG node: a comparison analyze over the two legs' analyze_fep nodes.
+_DDG_ANALYZE_CONDITIONS = '{"analysis_data_scope": "comparison"}'
+_FEP_LEG_ANALYSIS = "fep_mbar"
+_DDG_ANALYSIS = "fep_ddg"
 
 
 def _is_alchemical(job_dir: str, node_id: Optional[str], nodes: dict) -> bool:
@@ -77,6 +81,112 @@ def _is_alchemical(job_dir: str, node_id: Optional[str], nodes: dict) -> bool:
             return "fep_protocol" in (node.get("artifacts") or {})
         queue.extend(info.get("parents") or [])
     return False
+
+
+def _nearest_ancestor(job_dir: str, node_id: str, nodes: dict, node_type: str) -> Optional[str]:
+    seen: set[str] = set()
+    queue = list((nodes.get(node_id) or {}).get("parents") or [])
+    while queue:
+        nid = queue.pop(0)
+        if nid in seen:
+            continue
+        seen.add(nid)
+        if (nodes.get(nid) or {}).get("type") == node_type:
+            return nid
+        queue.extend((nodes.get(nid) or {}).get("parents") or [])
+    return None
+
+
+def _leg_role(job_dir: str, node_id: str, nodes: dict) -> str:
+    """``unfolded`` when a prep ancestor was written by extract_tripeptide
+    (``metadata.leg_role``), otherwise ``folded``."""
+    seen: set[str] = set()
+    queue = [node_id]
+    while queue:
+        nid = queue.pop(0)
+        if nid in seen:
+            continue
+        seen.add(nid)
+        info = nodes.get(nid) or {}
+        if info.get("type") == "prep":
+            role = ((_read_node(job_dir, nid) or {}).get("metadata") or {}).get("leg_role")
+            if role:
+                return str(role)
+        queue.extend(info.get("parents") or [])
+    return "folded"
+
+
+def _analysis_kind(job_dir: str, node_id: str) -> Optional[str]:
+    return ((_read_node(job_dir, node_id) or {}).get("metadata") or {}).get("analysis")
+
+
+def _is_ddg_shape(job_dir: str, node: dict) -> bool:
+    """A comparison analyze whose parents are the two legs' analyze_fep nodes."""
+    if (node.get("conditions") or {}).get("analysis_data_scope") != "comparison":
+        return False
+    parents = node.get("parent_node_ids") or []
+    return bool(parents) and all(_analysis_kind(job_dir, pid) == _FEP_LEG_ANALYSIS for pid in parents)
+
+
+def _alchemical_analyze_next(job_dir: str, node_id: str, node: dict, nodes: dict, tools: dict,
+                             params: dict, depth: int) -> Optional[dict]:
+    """After a completed analyze_fep leg: run / create the ddG node when the
+    other leg is analysed, otherwise start the unfolded leg from the protein's
+    prep node. ``None`` for analyze nodes that are not alchemical legs."""
+    analysis = (node.get("metadata") or {}).get("analysis")
+    if analysis == _DDG_ANALYSIS:
+        return {"action": "done", "node_id": node_id, "node_type": "analyze",
+                "note": "ddG is recorded on this node (artifacts/ddg.json and metadata)"}
+    if analysis != _FEP_LEG_ANALYSIS:
+        return None
+    for child, info in sorted(nodes.items()):
+        if node_id not in (info.get("parents") or []) or info.get("type") != "analyze":
+            continue
+        cnode = _read_node(job_dir, child) or {}
+        if not _is_ddg_shape(job_dir, cnode):
+            continue
+        if info.get("status") in _OPEN and depth < 32:
+            step = next_step(job_dir, child, tools, nodes, params, _depth=depth + 1)
+            if step:
+                return step
+        if info.get("status") == "completed":
+            return {"action": "done", "node_id": child, "node_type": "analyze",
+                    "note": f"ddG is recorded on {child} (artifacts/ddg.json)"}
+    my_role = _leg_role(job_dir, node_id, nodes)
+    partners = [
+        other for other, info in nodes.items()
+        if other != node_id and info.get("type") == "analyze" and info.get("status") == "completed"
+        and _analysis_kind(job_dir, other) == _FEP_LEG_ANALYSIS and _leg_role(job_dir, other, nodes) != my_role
+    ]
+    if partners:
+        partner = sorted(partners)[-1]
+        folded, unfolded = (node_id, partner) if my_role == "folded" else (partner, node_id)
+        create = (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} --node-type analyze "
+                  f"--parent-node-ids {folded} {unfolded} --conditions {shlex.quote(_DDG_ANALYZE_CONDITIONS)}")
+        return {"action": "create", "node_type": "analyze", "create_command": create,
+                "stage_tools": ["estimate_ddg"], "run_command": _run_command(job_dir, "<new>", "estimate_ddg"),
+                "inputs": "auto_resolved",
+                "note": f"both legs are analysed (folded {folded}, unfolded {unfolded}): the ddG node subtracts them"
+                + (f"; other unfolded analyses: {sorted(set(partners) - {partner})}" if len(partners) > 1 else "")}
+    if my_role != "folded":
+        return None
+    prep = _nearest_ancestor(job_dir, node_id, nodes, "prep")
+    if prep is None:
+        return None
+    mutation = (node.get("metadata") or {}).get("mutation") or "<mutation>"
+    stage_tools = stage_tools_for("prep", tools, params)
+    if "extract_tripeptide" in stage_tools:
+        stage_tools.remove("extract_tripeptide")
+        stage_tools.insert(0, "extract_tripeptide")
+    run = (f"mdclaw --job-dir {shlex.quote(job_dir)} --node-id <new> extract_tripeptide "
+           f"--mutation {shlex.quote(str(mutation))}")
+    return {"action": "create", "node_type": "prep",
+            "create_command": (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} --node-type prep "
+                               f"--parent-node-ids {prep}"),
+            "stage_tools": stage_tools, "run_command": run, "inputs": "auto_resolved",
+            "note": "the folded leg is analysed; the unfolded leg (capped peptide) starts as a prep child of the "
+                    "protein's prep node, then solv -> topo (build_hybrid_system, same --mutation) -> min -> eq -> "
+                    "fep -> analyze_fep, and a comparison analyze node over both legs estimates ddG"}
 _OPEN = frozenset({"pending", "queued", "running"})
 
 # Standalone helpers agents reach for when they mean a stage. The helper does
@@ -277,6 +387,9 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
                                   f"({blocker_status}) is completed")
                 return step
         stage_tools = stage_tools_for(node_type, tools, params, alchemical=_is_alchemical(job_dir, node_id, nodes))
+        if node_type == "analyze" and _is_ddg_shape(job_dir, node) and "estimate_ddg" in stage_tools:
+            stage_tools.remove("estimate_ddg")
+            stage_tools.insert(0, "estimate_ddg")
         run = _run_command(job_dir, node_id, stage_tools[0] if stage_tools else None)
         step = {"action": "run", "node_id": node_id, "node_type": node_type,
                 "stage_tools": stage_tools, "run_command": run, "inputs": "auto_resolved"}
@@ -284,6 +397,10 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
             step["batch_command"] = _batch_command(job_dir, node_id, run)
         return step
     if status == "completed":
+        if node_type == "analyze":
+            step = _alchemical_analyze_next(job_dir, node_id, node, nodes, tools, params, _depth)
+            if step:
+                return step
         forward = CANONICAL_FORWARD_NODE_TYPE.get(node_type)
         alchemical = _is_alchemical(job_dir, node_id, nodes)
         if alchemical:
