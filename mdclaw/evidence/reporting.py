@@ -139,6 +139,9 @@ def _history(jd, nodes, ids):
 
 
 # Compare settings, never metrics/scheduler IDs. Other raw fields remain in history.
+# ``fep`` (topo: mutation, windows, phase bounds, end-state builder), the
+# fep-node sampling settings and the analyze kind/cycle are settings of an
+# alchemical leg in the same sense.
 _SETTINGS = (
     "temperature_kelvin", "pressure_bar", "timestep_fs", "simulation_time_ns",
     "output_frequency_ps", "random_seed", "hmr", "platform", "solvent_type",
@@ -151,7 +154,51 @@ _SETTINGS = (
     "lipid_headgroup_restraint_count", "distance_restraints", "distance_restraint_signature",
     "custom_force", "custom_force_signature", "custom_force_parameters",
     "steering_time_ns", "steering_update_interval_ps", "steering", "sampling_role", "plumed",
+    "fep", "lambda_indices", "n_protocol_windows", "sampling_time_ns", "equilibration_time_ns",
+    "sample_interval_ps", "ensemble", "analysis", "cycle", "discard_fraction", "subsampled", "leg_role",
 )
+
+# Stages that produce the samples an analysis consumes: production MD and
+# alchemical lambda windows. Replica / continuation relationships are decided
+# on these.
+_SAMPLING_STAGES = ("prod", "fep")
+
+
+def _alchemical_summary(history, ancestors):
+    """What an alchemical subject did, read from recorded node metadata only:
+    the hybrid topology, the fep nodes, the MBAR legs and the ddG node. ``None``
+    when the lineage carries no fep / alchemical node."""
+    topo, windows, legs, ddg = [], [], [], None
+    for record in history:
+        if record["node_id"] not in ancestors or record["status"] != "completed":
+            continue
+        metadata = record["recorded_metadata"]
+        kind = record["node_type"]
+        if kind == "topo" and isinstance(metadata.get("fep"), dict):
+            topo.append({"node_id": record["node_id"], **metadata["fep"],
+                         "forcefield": metadata.get("effective_forcefield") or metadata.get("forcefield")
+                         or metadata.get("forcefield_xml"), "water_model": metadata.get("water_model"),
+                         "hmr": metadata.get("hmr")})
+        elif kind == "fep":
+            windows.append({key: metadata.get(key) for key in (
+                "lambda_indices", "n_protocol_windows", "sampling_time_ns", "equilibration_time_ns",
+                "sample_interval_ps", "temperature_kelvin", "pressure_bar", "ensemble", "timestep_fs", "hmr",
+                "extended_from_fep", "carried_over_windows", "restraint_atoms", "restraint_force_constant",
+                "restraint_count", "platform") if key in metadata} | {"node_id": record["node_id"]})
+        elif kind == "analyze" and metadata.get("analysis") == "fep_mbar":
+            legs.append({key: metadata.get(key) for key in (
+                "mutation", "dG_kj_mol", "dG_error_kj_mol", "dG_kcal_mol", "dG_error_kcal_mol", "n_states",
+                "n_samples_total", "min_neighbour_overlap", "discard_fraction", "subsampled",
+                "fep_parent_node_ids") if key in metadata} | {"node_id": record["node_id"]})
+        elif kind == "analyze" and metadata.get("analysis") == "fep_ddg":
+            ddg = {key: metadata.get(key) for key in (
+                "cycle", "mutation", "ddG_kj_mol", "ddG_error_kj_mol", "ddG_kcal_mol", "ddG_error_kcal_mol",
+                "legs") if key in metadata} | {"node_id": record["node_id"]}
+    if not (topo or windows or legs or ddg):
+        return None
+    return {"hybrid_topologies": topo, "fep_nodes": windows, "legs": legs, "ddg": ddg,
+            "note": "Values are the nodes' recorded metadata; the artifacts (hybrid_manifest.json, fep_windows.json, "
+                    "fep_result.json, ddg.json) hold the complete records."}
 
 
 def _recorded_settings(metadata):
@@ -283,12 +330,16 @@ def generate_md_report(
             ids = _lineage(nodes, nid)
             ancestors = _ancestors(nodes, nid)
             history = _history(jd, nodes, ids)
-            production = [i for i in ids if i in ancestors and nodes[i].get("node_type") == "prod"]
-            frontier = [i for i in production if not any(
-                i != other and i in _ancestors(nodes, other) for other in production)]
+            sampling = [i for i in ids if i in ancestors and nodes[i].get("node_type") in _SAMPLING_STAGES]
+            production = [i for i in sampling if nodes[i].get("node_type") == "prod"]
+            frontier = [i for i in sampling if not any(
+                i != other and i in _ancestors(nodes, other) for other in sampling)]
             subjects.append({**target, "status": nodes[nid].get("status"),
                              "ancestor_node_ids": sorted(ancestors), "history": history,
-                             "production_node_ids": production, "production_frontier": frontier,
+                             "production_node_ids": production,
+                             "fep_node_ids": [i for i in sampling if nodes[i].get("node_type") == "fep"],
+                             "sampling_node_ids": sampling, "production_frontier": frontier,
+                             "alchemical": _alchemical_summary(history, ancestors),
                              "analysis_results": [r for r in history if r["node_type"] == "analyze"
                                                   and r["status"] == "completed"]})
         relationships = []
@@ -296,7 +347,7 @@ def generate_md_report(
             for b in subjects[i + 1:]:
                 same_job = a["job_dir"] == b["job_dir"]
                 shared = sorted(set(a["ancestor_node_ids"]) & set(b["ancestor_node_ids"])) if same_job else []
-                shared_prod = sorted(set(a["production_node_ids"]) & set(b["production_node_ids"])) if same_job else []
+                shared_prod = sorted(set(a["sampling_node_ids"]) & set(b["sampling_node_ids"])) if same_job else []
                 nested = a["node_id"] in shared or b["node_id"] in shared
                 relationships.append({"labels": [a["label"], b["label"]],
                                       "shared_ancestors": shared, "shared_production": shared_prod,

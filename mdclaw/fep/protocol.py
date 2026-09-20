@@ -47,12 +47,39 @@ def _ramp(x: float, lo: float, hi: float) -> float:
     return (x - lo) / (hi - lo)
 
 
-def lambda_to_parameters(lam: float) -> dict[str, float]:
+def parse_phase_bounds(value: Any) -> tuple[float, float]:
+    """``"0.25,0.75"`` / ``[0.25, 0.75]`` / ``None`` (default) -> ``(p1, p2)``
+    with ``0 < p1 < p2 < 1``: the lambda at which the old side chain is fully
+    decharged and the lambda at which the steric swap is complete."""
+    if value is None:
+        return PHASE_BOUNDS
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("["):
+            try:
+                value = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ProtocolError(code="fep_protocol_invalid", message=f"phase_bounds is not valid JSON: {exc}") from exc
+        else:
+            value = [tok for tok in text.replace(";", ",").split(",") if tok.strip()]
+    try:
+        bounds = tuple(float(x) for x in value)
+    except (TypeError, ValueError) as exc:
+        raise ProtocolError(code="fep_protocol_invalid",
+                            message="phase_bounds must be two numbers, e.g. '0.25,0.75'") from exc
+    if len(bounds) != 2 or not (0.0 < bounds[0] < bounds[1] < 1.0):
+        raise ProtocolError(
+            code="fep_protocol_invalid",
+            message=f"phase_bounds must satisfy 0 < p1 < p2 < 1 (decharge end, steric swap end), got {value!r}")
+    return bounds  # type: ignore[return-value]
+
+
+def lambda_to_parameters(lam: float, phase_bounds: tuple[float, float] = PHASE_BOUNDS) -> dict[str, float]:
     """Map the scalar window coordinate to the five hybrid global parameters."""
     lam = float(lam)
     if not 0.0 <= lam <= 1.0:
         raise ProtocolError(code="fep_protocol_invalid", message=f"lambda must be within [0, 1], got {lam}")
-    p1, p2 = PHASE_BOUNDS
+    p1, p2 = phase_bounds
     swap = _ramp(lam, p1, p2)
     return {
         "fep_elec_old": 1.0 - _ramp(lam, 0.0, p1),
@@ -110,15 +137,19 @@ def _parse_lambda_list(schedule: Any) -> list[float]:
     return lambdas
 
 
-def windows_from_schedule(schedule: Optional[Sequence[Any]] = None, n_windows: Optional[int] = None) -> list[dict]:
+def windows_from_schedule(schedule: Optional[Sequence[Any]] = None, n_windows: Optional[int] = None,
+                          phase_bounds: Any = None) -> list[dict]:
     """Resolve the window list from ``--lambda-schedule`` / ``--n-windows``.
 
     ``schedule`` is a strictly increasing list of scalar lambdas from 0 to 1
     (CSV string, JSON string, or a Python sequence); ``None`` gives the evenly
-    spaced default of ``n_windows`` windows. Every window carries the five
-    resolved global parameters so the file, not this function, is the
-    contract downstream.
+    spaced default of ``n_windows`` windows. ``phase_bounds`` moves the
+    decharge / steric-swap / recharge boundaries (default 0.25 / 0.75; a
+    charge-changing mutation may want a longer decharge phase). Every window
+    carries the five resolved global parameters so the file, not this
+    function, is the contract downstream.
     """
+    bounds = parse_phase_bounds(phase_bounds)
     if schedule is None:
         lambdas = default_lambdas(n_windows or DEFAULT_N_WINDOWS)
     else:
@@ -136,7 +167,7 @@ def windows_from_schedule(schedule: Optional[Sequence[Any]] = None, n_windows: O
                 message=f"lambda_schedule must be strictly increasing (found {prev} followed by {cur}); "
                 "neighbour overlap and phase sums assume index order = lambda order")
     return [
-        {"index": i, "lambda": lam, "parameters": lambda_to_parameters(lam)}
+        {"index": i, "lambda": lam, "parameters": lambda_to_parameters(lam, bounds)}
         for i, lam in enumerate(lambdas)
     ]
 
@@ -146,6 +177,7 @@ def build_protocol(
     mutation: dict,
     windows: list[dict],
     softcore_alpha: float = DEFAULT_SOFTCORE_ALPHA,
+    phase_bounds: Any = None,
     extra: Optional[dict] = None,
 ) -> dict:
     protocol = {
@@ -155,7 +187,7 @@ def build_protocol(
         "global_parameters": list(FEP_PARAMETERS),
         "state_a": dict(STATE_A),
         "state_b": dict(STATE_B),
-        "phase_bounds": list(PHASE_BOUNDS),
+        "phase_bounds": list(parse_phase_bounds(phase_bounds)),
         "n_windows": len(windows),
         "windows": windows,
     }
@@ -179,6 +211,7 @@ def load_protocol(path: str | Path) -> dict:
         if not isinstance(w.get("lambda"), (int, float)):
             raise ProtocolError(code="fep_protocol_invalid", message=f"{p}: window {i} has no scalar lambda")
         w["lambda"] = float(w["lambda"])
+    data["phase_bounds"] = list(parse_phase_bounds(data.get("phase_bounds")))
     return data
 
 
@@ -242,5 +275,5 @@ def parse_lambda_indices(spec: Any, n_windows: int) -> list[int]:
 __all__ = [
     "DEFAULT_N_WINDOWS", "PHASE_BOUNDS", "PROTOCOL_SCHEMA_VERSION", "ProtocolError",
     "build_protocol", "default_lambdas", "lambda_to_parameters", "load_protocol",
-    "parse_lambda_indices", "protocols_equivalent", "windows_from_schedule",
+    "parse_lambda_indices", "parse_phase_bounds", "protocols_equivalent", "windows_from_schedule",
 ]

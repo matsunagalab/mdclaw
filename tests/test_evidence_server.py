@@ -350,7 +350,7 @@ def test_packaged_bibliography_matches_verified_audit():
     source = audit.read_text()
     packaged = Path(citations.__file__).with_name("references.bib").read_text()
     entries = list(re.finditer(r"@\w+\{([^,]+),\n.*?^\}", packaged, re.M | re.S))
-    assert len(entries) == len({m[1] for m in entries}) == 13
+    assert len(entries) == len({m[1] for m in entries}) == 20
     assert all(m[0] in source for m in entries)
 
 
@@ -364,3 +364,70 @@ def test_cli_execution_with_json_targets(tmp_path, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result["success"]
     assert result["report"]["subjects"][0]["label"] == "r1"
+
+
+def _alchemical_job(job):
+    """source -> prep -> solv -> topo(hybrid) -> min -> eq -> fep -> analyze(fep_mbar) for the
+    folded leg; prep2(unfolded) -> ... -> analyze(fep_mbar); a ddG comparison over both."""
+    node(job, "source", "source")
+    node(job, "prep", "prep", ["source"])
+    node(job, "prep2", "prep", ["prep"], metadata={"leg_role": "unfolded", "tool": "extract_tripeptide"})
+    for leg, top in (("f", "prep"), ("u", "prep2")):
+        node(job, f"solv_{leg}", "solv", [top])
+        node(job, f"topo_{leg}", "topo", [f"solv_{leg}"],
+             metadata={"fep": {"mutation": "A:W6A", "n_windows": 21, "phase_bounds": [0.25, 0.75],
+                               "endstate_builder": "amber", "endpoint_validation_passed": True},
+                       "effective_forcefield": "ff19SB", "water_model": "opc", "hmr": True})
+        node(job, f"min_{leg}", "min", [f"topo_{leg}"])
+        node(job, f"eq_{leg}", "eq", [f"min_{leg}"])
+        node(job, f"fep_{leg}", "fep", [f"eq_{leg}"],
+             metadata={"lambda_indices": list(range(21)), "n_protocol_windows": 21, "sampling_time_ns": 1.0,
+                       "ensemble": "NPT", "restraint_atoms": "backbone" if leg == "f" else None})
+        node(job, f"an_{leg}", "analyze", [f"fep_{leg}"],
+             metadata={"analysis": "fep_mbar", "mutation": "A:W6A", "dG_kj_mol": 12.0 if leg == "f" else -7.0,
+                       "dG_error_kj_mol": 1.4, "n_states": 21, "min_neighbour_overlap": 0.07, "subsampled": True})
+    node(job, "ddg", "analyze", ["an_f", "an_u"],
+         metadata={"analysis": "fep_ddg", "cycle": "folding", "mutation": "A:W6A", "ddG_kj_mol": 19.0,
+                   "ddG_error_kj_mol": 2.0, "legs": {"folded": {"node_id": "an_f"}, "unfolded": {"node_id": "an_u"}}})
+
+
+def test_alchemical_lineage_is_reported_and_cited(tmp_path):
+    _alchemical_job(tmp_path)
+    result = generate_md_report(targets=[target(tmp_path, "ddg", "ddg")], output_dir=str(tmp_path / "report"))
+    assert result["success"], result
+    subject = result["report"]["subjects"][0]
+    # fep nodes are the sampling stage of an alchemical leg
+    assert subject["production_node_ids"] == []
+    assert sorted(subject["fep_node_ids"]) == ["fep_f", "fep_u"]
+    assert sorted(subject["production_frontier"]) == ["fep_f", "fep_u"]
+    alchemical = subject["alchemical"]
+    assert [t["node_id"] for t in alchemical["hybrid_topologies"]] == ["topo_f", "topo_u"]
+    assert alchemical["hybrid_topologies"][0]["mutation"] == "A:W6A"
+    assert {w["node_id"]: w["restraint_atoms"] for w in alchemical["fep_nodes"]} == {"fep_f": "backbone", "fep_u": None}
+    assert [leg["dG_kj_mol"] for leg in alchemical["legs"]] == [12.0, -7.0]
+    assert alchemical["ddg"]["ddG_kj_mol"] == 19.0 and alchemical["ddg"]["cycle"] == "folding"
+    # settings comparison sees the alchemical settings
+    assert "topo/1/recorded/fep/mutation" in result["report"]["comparison"]["common_recorded_settings"]
+    selected = {entry["key"] for entry in result["report"]["citations"]["selected"]}
+    assert {"Shirts2008MBAR", "Chodera2007Timeseries", "Chodera2016Equilibration", "Klimovich2015Guidelines",
+            "Gapsys2015pmx", "Beutler1994SoftCore", "Seeliger2010Thermostability", "Tian2020ff19SB", "Izadi2014OPC",
+            "Hopkins2015HMR"} <= selected
+    bib = (tmp_path / "report" / "references.bib").read_text()
+    assert "@article{Shirts2008MBAR" in bib and "10.1016/0009-2614(94)00397-1" in bib
+    # a plain MD subject cites none of the alchemical methods
+    plain = tmp_path / "plain"
+    node(plain, "prod", "prod", metadata={"hmr": True})
+    plain_keys = {e["key"] for e in generate_md_report(job_dir=str(plain))["report"]["citations"]["selected"]}
+    assert not plain_keys & {"Shirts2008MBAR", "Gapsys2015pmx", "Beutler1994SoftCore", "Seeliger2010Thermostability"}
+
+
+def test_alchemical_legs_are_separate_not_replicas(tmp_path):
+    _alchemical_job(tmp_path)
+    legs = [target(tmp_path, "an_f", "folded"), target(tmp_path, "an_u", "unfolded")]
+    assert generate_md_report(targets=legs, grouping="separate")["success"]
+    # different fep frontiers: the legs may be listed as replicas by shape, and
+    # the ddG node nests both of them, so it cannot be one
+    assert generate_md_report(targets=legs, grouping="replicas")["success"]
+    nested = [target(tmp_path, "ddg", "ddg"), target(tmp_path, "an_f", "folded")]
+    assert not generate_md_report(targets=nested, grouping="replicas")["success"]
+    assert generate_md_report(targets=nested, grouping="separate")["success"]

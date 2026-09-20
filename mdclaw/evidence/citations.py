@@ -13,6 +13,10 @@ _PARAMETERS = {
     "tip4pew": "Horn2004TIP4PEw",
 }
 _PARAMETER_SOURCE = "https://docs.openmm.org/latest/userguide/application/02_running_sims.html#force-fields"
+_FEP_DESIGN = "docs/research/fep-references.md"
+# pymbar's README lists the papers to cite for MBAR and its timeseries module.
+_PYMBAR = "https://github.com/choderalab/pymbar"
+_PYMBAR_TIMESERIES = "https://github.com/choderalab/pymbar"
 
 
 def select_citations(subjects):
@@ -82,6 +86,26 @@ def select_citations(subjects):
             if metadata.get("hmr") is True:
                 add("Hopkins2015HMR", subject, record, "/metadata/hmr", "method",
                     "https://doi.org/10.1021/ct5010406")
+            # Alchemical stages: the hybrid topology (single-residue hybrid
+            # after pmx, Beutler soft-core LJ on the dummies), the MBAR leg
+            # (estimator, equilibration detection / subsampling, overlap
+            # diagnostic) and the folding-stability cycle (capped tripeptide
+            # as the unfolded state). All keyed on recorded metadata.
+            if record["node_type"] == "topo" and isinstance(metadata.get("fep"), dict):
+                add("Gapsys2015pmx", subject, record, "/metadata/fep", "base_method", _FEP_DESIGN)
+                add("Beutler1994SoftCore", subject, record, "/metadata/fep", "method", _FEP_DESIGN)
+            analysis = metadata.get("analysis")
+            if record["node_type"] == "analyze" and analysis == "fep_mbar":
+                add("Shirts2008MBAR", subject, record, "/metadata/analysis", "official_method", _PYMBAR)
+                add("Klimovich2015Guidelines", subject, record, "/metadata/min_neighbour_overlap",
+                    "related_method_not_separate_execution", _FEP_DESIGN)
+                if metadata.get("subsampled") is True:
+                    add("Chodera2016Equilibration", subject, record, "/metadata/subsampled", "method", _PYMBAR_TIMESERIES)
+                    add("Chodera2007Timeseries", subject, record, "/metadata/subsampled", "method", _PYMBAR_TIMESERIES)
+            if record["node_type"] == "analyze" and analysis == "fep_ddg" and metadata.get("cycle", "folding") == "folding":
+                add("Seeliger2010Thermostability", subject, record, "/metadata/cycle", "base_method", _FEP_DESIGN)
+            if record["node_type"] == "prep" and metadata.get("leg_role") == "unfolded":
+                add("Seeliger2010Thermostability", subject, record, "/metadata/leg_role", "base_method", _FEP_DESIGN)
             # Every other stage stays visible; no claim of exhaustive automatic mapping.
             unresolved.append({**ident, "method": "remaining_stage_methods",
                                "reason": "Force-field, preparation and analysis provenance requires review; "

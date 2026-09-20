@@ -105,6 +105,7 @@
   "hpacker_no_protein_residues",
   "hpacker_not_available",
   "hpacker_terminal_cap_merge_failed",
+  "hybrid_topology_production_blocked",
   "implicit_solvent_explicit_box_conflict",
   "implicit_solvent_force_missing",
   "implicit_solvent_model_unsupported",

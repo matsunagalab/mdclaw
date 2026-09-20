@@ -180,8 +180,10 @@ Core schema v3 rules:
   (`analysis_data_scope: alchemical`). Both legs of a folding-stability ddG
   live in one job: the unfolded leg is a `prep` child of the protein's `prep`
   (`extract_tripeptide`, `leg_role = unfolded`), and `estimate_ddg` is the
-  `comparison` analyze node over the two legs' `analyze_fep` nodes. Skill:
-  `skills/md-fep/`; design notes: `docs/research/fep-references.md`.
+  `comparison` analyze node over the two legs' `analyze_fep` nodes. A `prod`
+  node under a hybrid topology is refused at input resolution
+  (`hybrid_topology_production_blocked`). Skill: `skills/md-fep/`; design
+  notes: `docs/research/fep-references.md`.
 - Each node owns `node.json`, `node.lock`, and `artifacts/`.
 - `progress.json` is a thin index plus cached summaries.
 - Events are append-only JSON files in `events/`.

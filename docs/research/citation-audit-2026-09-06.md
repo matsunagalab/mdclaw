@@ -395,6 +395,29 @@ explicitly documented subset; unresolved mappings remain visible in its output.
    are distinct from the YAML dataset/publication citation field. No further
   deposit-page URL is required from the user for the agreed initial scope.
 
+## Addendum 2026-09-20: alchemical free energy (hybrid-topology FEP)
+
+`build_hybrid_system` / `run_fep` / `analyze_fep` / `estimate_ddg`
+(`mdclaw/fep/`, design notes in `fep-references.md`) added four records to the
+library and the packaged subset, each checked against Crossref metadata on
+2026-09-20 (`% Metadata:` lines in the `.bib`):
+
+| Key | Component | Selection evidence (`citations.py`) |
+|---|---|---|
+| `Gapsys2015pmx` | single-residue hybrid topology (dummy side chains, bonded terms kept at every λ) after pmx | topo node with recorded `metadata.fep` |
+| `Beutler1994SoftCore` | Beutler soft-core Lennard-Jones on the disappearing / appearing atoms | topo node with recorded `metadata.fep` |
+| `Seeliger2010Thermostability` | folding-stability cycle: capped tripeptide as the unfolded state | prep node with `leg_role = unfolded`; ddG node with `cycle = folding` |
+| `Klimovich2015Guidelines` | overlap-matrix diagnostic (`min_neighbour_overlap`) | analyze node with `analysis = fep_mbar` |
+
+Already-audited records now also selected: `Shirts2008MBAR` (the estimator,
+analyze node with `analysis = fep_mbar`), `Chodera2007Timeseries` and
+`Chodera2016Equilibration` (statistical-inefficiency subsampling and
+equilibration detection, when `subsampled = true`). Bibliographic identity is,
+as above, not evidence that a run used the method: every selection is keyed on
+metadata the tool itself recorded on the node.
+
+Deliverable checks after the addendum: 115 unique BibTeX keys, 114 unique DOIs.
+
 ## Deliverable checks
 
 111 unique BibTeX keys, 110 unique DOIs, balanced field/entry braces, and

@@ -248,4 +248,9 @@ class TestFepDdgReceipts:
         receipt = build_receipt(tool_name="estimate_ddg", node_type="analyze", result=result, explicit={}, node_mode=True)
         assert receipt["summary"] == ("ddG(A:W6A) = +4.67 ± 0.49 kcal/mol (destabilising), "
                                       "folded analyze_001 − unfolded analyze_002")
-        assert receipt["facts"]["unfolded_node_id"] == "analyze_002"
+        assert receipt["facts"]["legs"] == {"folded": "analyze_001", "unfolded": "analyze_002"}
+        binding = build_receipt(tool_name="estimate_ddg", node_type="analyze", explicit={}, node_mode=True,
+                                result={**result, "cycle": "binding", "ddG_kcal_mol": -1.2, "ddG_error_kcal_mol": 0.3,
+                                        "legs": {"complex": {"node_id": "analyze_003"}, "apo": {"node_id": "analyze_004"}}})
+        assert binding["summary"] == ("ddG(A:W6A) = -1.20 ± 0.30 kcal/mol (strengthens binding), "
+                                      "complex analyze_003 − apo analyze_004")

@@ -117,6 +117,84 @@ def load_windows_index(path: str | Path) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Positional restraints (one per leg, identical in every window)                #
+# --------------------------------------------------------------------------- #
+
+def _positional_restraint_force(restraint: dict, is_periodic: bool):
+    """``k*distance(r, r0)^2`` on the selected atoms, as ``run_equilibration`` does."""
+    import openmm
+    from openmm import unit
+
+    distance = "periodicdistance(x, y, z, x0, y0, z0)" if is_periodic else "sqrt((x-x0)^2+(y-y0)^2+(z-z0)^2)"
+    force = openmm.CustomExternalForce(f"k*{distance}^2")
+    for name in ("k", "x0", "y0", "z0"):
+        force.addPerParticleParameter(name)
+    k = float(restraint["force_constant"]) * unit.kilojoules_per_mole / unit.nanometer ** 2
+    ref = restraint["reference_positions_nm"]
+    for index in restraint["atom_indices"]:
+        x, y, z = (float(v) for v in ref[int(index)])
+        force.addParticle(int(index), [k, x * unit.nanometer, y * unit.nanometer, z * unit.nanometer])
+    return force
+
+
+def resolve_restraint(*, selection: Optional[str], force_constant: float, xml_inputs, reference_state: Optional[Path],
+                      chain_identity_map_file: Optional[str]) -> Optional[dict]:
+    """Atom indices and reference coordinates of the leg's positional restraint.
+
+    The reference is the equilibrated (``eq``) state every fresh window starts
+    from, so the restraint is the same object in every window and in every
+    ``fep -> fep`` extension of the leg. Returns ``None`` when no selection is
+    requested. Raises ``FepRunError`` (``invalid_parameter_value`` /
+    ``restraint_selection_empty``).
+    """
+    from mdclaw.simulation.restraints import RESTRAINT_SELECTIONS, select_restraint_atoms
+
+    if not selection:
+        return None
+    if selection not in RESTRAINT_SELECTIONS:
+        raise FepRunError(code="invalid_parameter_value",
+                          message=f"restraint_atoms must be one of {list(RESTRAINT_SELECTIONS)}, got {selection!r}")
+    if not isinstance(force_constant, (int, float)) or force_constant <= 0:
+        raise FepRunError(code="invalid_parameter_value",
+                          message=f"restraint_force_constant must be > 0 kJ/mol/nm^2, got {force_constant!r}")
+    picked = select_restraint_atoms(xml_inputs.topology, selection, chain_identity_map_file=chain_identity_map_file)
+    if not picked["atom_indices"]:
+        raise FepRunError(code="restraint_selection_empty",
+                          message=f"restraint_atoms={selection!r} matched zero atoms of the hybrid topology")
+    if reference_state is not None:
+        import openmm
+        from openmm import unit
+
+        state = openmm.XmlSerializer.deserialize(Path(reference_state).read_text())
+        reference = np.asarray(state.getPositions(asNumpy=True).value_in_unit(unit.nanometer))
+        source = "eq_state"
+    else:
+        from openmm import unit
+
+        reference = np.asarray(xml_inputs.positions.value_in_unit(unit.nanometer))
+        source = "topology_state"
+    return {
+        "selection": selection,
+        "force_constant": float(force_constant),
+        "atom_indices": [int(i) for i in picked["atom_indices"]],
+        "reference_positions_nm": reference,
+        "count": len(picked["atom_indices"]),
+        "counts_by_component": picked.get("counts_by_component") or {},
+        "selection_source": picked.get("selection_source"),
+        "reference": source,
+        "warnings": list(picked.get("warnings") or []),
+    }
+
+
+def _restraint_summary(restraint: Optional[dict]) -> Optional[dict]:
+    """The index / metadata record: everything except the coordinates."""
+    if not restraint:
+        return None
+    return {k: restraint[k] for k in ("selection", "force_constant", "count", "counts_by_component",
+                                       "selection_source", "reference")}
+
+
+# --------------------------------------------------------------------------- #
 # One window                                                                    #
 # --------------------------------------------------------------------------- #
 
@@ -154,9 +232,17 @@ def sample_window(
     platform_name: Optional[str],
     platform_properties: dict,
     random_seed: Optional[int],
+    restraint: Optional[dict] = None,
 ) -> dict:
     """Run one window and write its artifacts; returns the window record
     (paths absolute — the caller relativises them for the index).
+
+    ``restraint`` (``atom_indices``, ``force_constant`` in kJ/mol/nm², and
+    ``reference_positions_nm``) adds one harmonic positional restraint that
+    is identical in every window of the leg: it is part of the Hamiltonian at
+    every lambda, so it cancels in the reduced-potential differences MBAR
+    uses, but it changes the ensemble (e.g. it holds a fold that the mutation
+    would otherwise loosen during the transformation).
 
     A NaN during dynamics is retried once per halving of the timestep down
     to 1 fs (:func:`mdclaw.simulation.nan_retry.run_with_halved_timestep`).
@@ -185,6 +271,8 @@ def sample_window(
         system = system_factory()
         if ensemble == "NPT":
             system.addForce(openmm.MonteCarloBarostat(pressure_bar * unit.bar, temperature_kelvin * unit.kelvin, 25))
+        if restraint and restraint.get("atom_indices"):
+            system.addForce(_positional_restraint_force(restraint, is_periodic))
         integrator = openmm.LangevinMiddleIntegrator(
             temperature_kelvin * unit.kelvin, 1.0 / unit.picosecond, ts_fs * unit.femtoseconds)
         if random_seed is not None:
@@ -315,6 +403,8 @@ def run_fep(
     timestep_fs: Optional[float] = None,
     hmr: Optional[bool] = None,
     trajectory_interval_ps: float = 0.0,
+    restraint_atoms: Optional[str] = None,
+    restraint_force_constant: float = 100.0,
     platform: str = "auto",
     device_index: Optional[str] = None,
     random_seed: Optional[int] = None,
@@ -357,6 +447,12 @@ def run_fep(
         timestep_fs / hmr: Inherited from the topology (4 fs with HMR).
         trajectory_interval_ps: ``> 0`` writes ``trajectory.dcd`` per window
             (off by default; ddG needs only energies).
+        restraint_atoms / restraint_force_constant: Optional harmonic
+            positional restraint (``solute_heavy``, ``CA``, ``backbone``,
+            ``heavy``; kJ/mol/nm²) on the equilibrated coordinates, the same
+            in every window of the leg. Use it to hold a fold whose mutation
+            would otherwise relax during the transformation; an extension
+            inherits (and may not change) the parent's restraint.
         platform / device_index / random_seed: as ``run_production``.
         system_xml_file / topology_pdb_file / state_xml_file /
             fep_protocol_file / restart_from: explicit inputs outside node
@@ -398,7 +494,7 @@ def run_fep(
         return _fail(code="invalid_parameter_value", message=str(exc))
 
     # --- DAG resolution ---------------------------------------------------
-    eq_final_ensemble = eq_pressure_bar = topology_hmr = None
+    eq_final_ensemble = eq_pressure_bar = topology_hmr = chain_identity_map_file = None
     if node_mode:
         from mdclaw._node import begin_node, resolve_node_inputs, validate_node_execution_context
 
@@ -427,6 +523,7 @@ def run_fep(
         eq_final_ensemble = inputs.get("eq_final_ensemble")
         eq_pressure_bar = inputs.get("eq_pressure_bar")
         topology_hmr = inputs.get("topology_hmr")
+        chain_identity_map_file = inputs.get("chain_identity_map_file")
     hmr, _implicit, timestep_fs = _resolve_topology_run_settings(
         hmr=hmr, implicit_solvent=None, topology_hmr=topology_hmr, timestep_fs=timestep_fs)
     if not (system_xml_file and topology_pdb_file and fep_protocol_file):
@@ -515,6 +612,35 @@ def run_fep(
                      "one index chains one temperature — match --temperature-kelvin")
     ensemble = "NPT" if pressure_bar else "NVT"
 
+    # --- positional restraint (one per leg) ---------------------------------
+    parent_restraint = (parent_index_meta or {}).get("restraint") or None
+    if restraint_atoms is None and parent_restraint:
+        # An extension keeps the parent's Hamiltonian; the flags need not be repeated.
+        restraint_atoms = parent_restraint.get("selection")
+        restraint_force_constant = float(parent_restraint.get("force_constant") or restraint_force_constant)
+    if parent_index_meta:
+        wanted = ({"selection": restraint_atoms, "force_constant": float(restraint_force_constant)}
+                  if restraint_atoms else None)
+        have = ({"selection": parent_restraint.get("selection"),
+                 "force_constant": float(parent_restraint.get("force_constant") or 0.0)}
+                if parent_restraint else None)
+        if wanted != have:
+            return _fail(code="fep_windows_incompatible",
+                         message=f"the parent windows were sampled with restraint {have}, this node would use {wanted}; "
+                         "one leg has one Hamiltonian — drop --restraint-atoms to inherit the parent's, or start a new "
+                         "leg under the eq node")
+    eq_restart = Path(restart_from) if restart_from else None
+    if eq_restart is not None and not eq_restart.is_file():
+        return _fail(code="file_not_found", message=f"restart state not found: {eq_restart}")
+    try:
+        restraint = resolve_restraint(selection=restraint_atoms, force_constant=restraint_force_constant,
+                                      xml_inputs=xml_inputs, reference_state=eq_restart,
+                                      chain_identity_map_file=chain_identity_map_file)
+    except FepRunError as exc:
+        return _fail(exc.code, str(exc))
+    if restraint:
+        result["warnings"].extend(restraint["warnings"])
+
     # --- node context -----------------------------------------------------
     if node_mode:
         from mdclaw._node import fail_node_from_result
@@ -534,6 +660,8 @@ def run_fep(
                 "pressure_bar": pressure_bar,
                 "timestep_fs": timestep_fs,
                 "hmr": hmr,
+                "restraint_atoms": restraint_atoms,
+                "restraint_force_constant": restraint_force_constant if restraint_atoms else None,
                 "platform": platform,
                 "random_seed": random_seed,
             },
@@ -551,9 +679,6 @@ def run_fep(
         out_dir = create_unique_subdir(Path(output_dir) if output_dir else WORKING_DIR, "fep").resolve()
     result["output_dir"] = str(out_dir)
 
-    eq_restart = Path(restart_from) if restart_from else None
-    if eq_restart is not None and not eq_restart.is_file():
-        return _fail(code="file_not_found", message=f"restart state not found: {eq_restart}")
     if eq_restart is None and not parent_windows:
         result["warnings"].append(
             "No equilibrated restart state: windows start from the topology state.xml with fresh velocities.")
@@ -580,6 +705,7 @@ def run_fep(
         "timestep_fs": float(timestep_fs),
         "hmr": bool(hmr),
         "extended_from": rel_to(parent_index_meta["index_file"], out_dir) if parent_index_meta else None,
+        "restraint": _restraint_summary(restraint),
         # Parent windows this node does not re-sample are copied into its index
         # unchanged, so the leaf of a chain always lists every window sampled
         # so far (a partial recovery or a narrowed extension stays analysable
@@ -607,6 +733,7 @@ def run_fep(
                 equilibration_time_ns=equilibration_time_ns, sampling_time_ns=sampling_time_ns,
                 sample_interval_ps=sample_interval_ps, trajectory_interval_ps=trajectory_interval_ps,
                 platform_name=platform_name, platform_properties=platform_properties, random_seed=random_seed,
+                restraint=restraint,
             )
         except Exception as exc:  # noqa: BLE001
             code = exc.code if isinstance(exc, FepRunError) else "fep_sampling_failed"
@@ -647,6 +774,7 @@ def run_fep(
         "hmr": bool(hmr),
         "extended_from_fep": bool(parent_windows),
         "carried_over_windows": index_payload["carried_over_windows"],
+        "restraint": _restraint_summary(restraint),
         "wall_time_s": round(time.time() - t_start, 1),
     })
     if node_mode:
@@ -670,6 +798,9 @@ def run_fep(
                 "platform": result.get("platform"),
                 "extended_from_fep": bool(parent_windows),
                 "carried_over_windows": index_payload["carried_over_windows"],
+                "restraint_atoms": restraint_atoms,
+                "restraint_force_constant": float(restraint_force_constant) if restraint_atoms else None,
+                "restraint_count": restraint["count"] if restraint else 0,
                 "ns_per_day": [w.get("ns_per_day") for w in result["windows"]],
             },
             warnings=result["warnings"],
@@ -677,4 +808,5 @@ def run_fep(
     return result
 
 
-__all__ = ["FepRunError", "load_windows_index", "rel_to", "resolve_index_path", "run_fep", "sample_window"]
+__all__ = ["FepRunError", "load_windows_index", "rel_to", "resolve_index_path", "resolve_restraint", "run_fep",
+           "sample_window"]

@@ -37,6 +37,12 @@ If no completed eq node exists, suggest running `skills/md-equilibration/SKILL.m
 on the same `job_dir` first (`/md-equilibration <job_dir>` when slash commands
 are available).
 
+If the eq node descends from a hybrid topology (`build_hybrid_system`; the
+result's `next` then names a `fep` node, and `explain_node` on a prod node
+reports `hybrid_topology_production_blocked`), this skill does not apply:
+lambda windows are sampled by `run_fep` (`skills/md-fep/SKILL.md`), and
+wild-type production wants a plain `topo` node from the same `solv` node.
+
 ## Default Decision Rule
 
 - If the current request asks for a scientific answer, use its explicit

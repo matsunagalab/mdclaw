@@ -320,26 +320,31 @@ def _summary_fragment_prep(facts: dict, result: dict) -> str:
 def _facts_ddg(result: dict) -> dict:
     legs = result.get("legs") if isinstance(result.get("legs"), dict) else {}
     return _compact({
+        "cycle": result.get("cycle") or "folding",
         "mutation": result.get("mutation"),
         "ddG_kcal_mol": result.get("ddG_kcal_mol"),
         "ddG_error_kcal_mol": result.get("ddG_error_kcal_mol"),
         "ddG_kj_mol": result.get("ddG_kj_mol"),
         "ddG_error_kj_mol": result.get("ddG_error_kj_mol"),
-        "folded_node_id": (legs.get("folded") or {}).get("node_id"),
-        "unfolded_node_id": (legs.get("unfolded") or {}).get("node_id"),
+        # role -> analyze node id, reference leg first (folded / complex)
+        "legs": {role: (block or {}).get("node_id") for role, block in legs.items() if isinstance(block, dict)} or None,
     })
+
+
+_DDG_SIGN_WORDS = {"folding": ("destabilising", "stabilising"), "binding": ("weakens binding", "strengthens binding")}
 
 
 def _summary_ddg(facts: dict, result: dict) -> str:
     if facts.get("ddG_kcal_mol") is None:
         return "completed"
-    sign = "destabilising" if facts["ddG_kcal_mol"] > 0 else "stabilising"
+    positive, negative = _DDG_SIGN_WORDS.get(facts.get("cycle"), ("ddG > 0", "ddG < 0"))
     text = f"ddG({facts.get('mutation', '?')}) = {facts['ddG_kcal_mol']:+.2f}"
     if facts.get("ddG_error_kcal_mol") is not None:
         text += f" ± {facts['ddG_error_kcal_mol']:.2f}"
-    text += f" kcal/mol ({sign})"
-    if facts.get("folded_node_id") and facts.get("unfolded_node_id"):
-        text += f", folded {facts['folded_node_id']} − unfolded {facts['unfolded_node_id']}"
+    text += f" kcal/mol ({positive if facts['ddG_kcal_mol'] > 0 else negative})"
+    legs = facts.get("legs") or {}
+    if len(legs) == 2 and all(legs.values()):
+        text += ", " + " − ".join(f"{role} {node}" for role, node in legs.items())
     return text
 
 

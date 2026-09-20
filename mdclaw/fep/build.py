@@ -44,13 +44,18 @@ from mdclaw.fep.mapping import (
     map_mutation,
 )
 from mdclaw.fep.mutant import MutantBuildError, MutationSpec, parse_single_mutation, write_mutant_pdb
-from mdclaw.fep.protocol import ProtocolError, build_protocol, windows_from_schedule
+from mdclaw.fep.protocol import PHASE_BOUNDS, ProtocolError, build_protocol, parse_phase_bounds, windows_from_schedule
 from mdclaw.sidechain_packer import PROTEIN_RESNAME_TO_ONE
 from mdclaw.simulation._base import resolve_platform_name
 
 logger = logging.getLogger(__name__)
 
 WORKING_DIR = Path("outputs").resolve()
+ENDSTATE_BUILDERS = ("amber", "openmm")
+# build_amber_system pads the solvation box by this margin before setting the
+# periodic cell; the OpenMM-XML end states get the same cell so both builders
+# describe one physical system.
+_PBC_MARGIN_ANGSTROM = 2.0
 
 
 class BuildStepError(RuntimeError):
@@ -179,7 +184,8 @@ class _Inputs:
 def _resolve_inputs(
     *, job_dir, node_id, mutation, pdb_file, forcefield, water_model, hmr, is_membrane,
     ligand_chemistry, disulfide_bonds, box_dimensions, mutant_backend, n_windows, lambda_schedule,
-    softcore_alpha, output_name, platform="auto",
+    softcore_alpha, output_name, platform="auto", phase_bounds=None, endstate_builder="amber",
+    forcefield_xml=None,
 ) -> _Inputs:
     """Force field / water model from the DAG (or the explicit arguments) and,
     in node mode, the solvated PDB plus solvation metadata."""
@@ -217,7 +223,8 @@ def _resolve_inputs(
                 "hmr": hmr, "is_membrane": is_membrane, "mutant_backend": mutant_backend,
                 "n_windows": n_windows, "lambda_schedule": lambda_schedule,
                 "softcore_alpha": softcore_alpha, "output_name": output_name,
-                "platform": platform,
+                "platform": platform, "phase_bounds": phase_bounds, "endstate_builder": endstate_builder,
+                "forcefield_xml": forcefield_xml,
             },
             pdb_file=pdb_file, ligand_chemistry=ligand_chemistry, modxna_params=None,
             disulfide_bonds=disulfide_bonds, glycan_metadata=None, glycan_linkages=None,
@@ -248,22 +255,60 @@ def _resolve_inputs(
     )
 
 
-def _build_endstates(inputs: _Inputs, spec: MutationSpec, mutant_pdb: Path, out_dir: Path, *, hmr: bool) -> dict:
-    """``build_amber_system`` for the wild type and the mutant; returns
-    ``{"wt": result, "mut": result, "warnings": [...]}``."""
-    from mdclaw.amber.build_system import build_amber_system
+def _pdb_with_cryst1(pdb: Path, box_dimensions: dict, out: Path) -> Path:
+    """Copy *pdb* with a CRYST1 record for the padded solvation box.
 
+    ``build_amber_system`` receives the box as an argument; ``build_openmm_system``
+    reads it from the structure file, and ``solvate_structure`` writes none.
+    """
+    a, b, c = (float(box_dimensions.get(k, 0.0)) + _PBC_MARGIN_ANGSTROM for k in ("box_a", "box_b", "box_c"))
+    lines = [ln for ln in pdb.read_text().splitlines() if not ln.startswith("CRYST1")]
+    out.write_text(f"CRYST1{a:9.3f}{b:9.3f}{c:9.3f}  90.00  90.00  90.00 P 1           1\n" + "\n".join(lines) + "\n")
+    return out
+
+
+def _build_endstates(inputs: _Inputs, spec: MutationSpec, mutant_pdb: Path, out_dir: Path, *, hmr: bool,
+                     endstate_builder: str = "amber", forcefield_xml: Optional[list] = None) -> dict:
+    """``build_amber_system`` (or ``build_openmm_system``) for the wild type
+    and the mutant; returns ``{"wt": result, "mut": result, "warnings": [...]}``."""
     endstate_dir = out_dir / "endstates"
     endstate_dir.mkdir(exist_ok=True)
-    common = dict(
-        box_dimensions=inputs.box_dimensions, forcefield=inputs.forcefield, water_model=inputs.water_model,
-        is_membrane=inputs.is_membrane, hmr=hmr, ligand_chemistry=inputs.ligand_chemistry,
-        disulfide_bonds=inputs.disulfide_bonds, minimize_max_iterations=10,
-    )
     out: dict[str, Any] = {"warnings": []}
+    if endstate_builder == "amber":
+        from mdclaw.amber.build_system import build_amber_system
+
+        common = dict(
+            box_dimensions=inputs.box_dimensions, forcefield=inputs.forcefield, water_model=inputs.water_model,
+            is_membrane=inputs.is_membrane, hmr=hmr, ligand_chemistry=inputs.ligand_chemistry,
+            disulfide_bonds=inputs.disulfide_bonds, minimize_max_iterations=10,
+        )
+
+        def _build(label: str, pdb: Path) -> dict:
+            return build_amber_system(pdb_file=str(pdb), output_dir=str(endstate_dir), output_name=label, **common)
+    else:
+        from mdclaw.openmm_system.build import build_openmm_system
+
+        if not forcefield_xml:
+            raise BuildStepError(code="fep_endstate_build_failed",
+                                 message="endstate_builder='openmm' needs --forcefield-xml (OpenMM ForceField XML names or paths)")
+        if inputs.ligand_chemistry:
+            raise BuildStepError(code="fep_endstate_build_failed",
+                                 message="endstate_builder='openmm' does not take prepared ligands in build_hybrid_system; "
+                                 "use the amber builder for ligand-containing systems")
+        periodic = bool(inputs.box_dimensions)
+
+        def _build(label: str, pdb: Path) -> dict:
+            if periodic:
+                pdb = _pdb_with_cryst1(pdb, inputs.box_dimensions, endstate_dir / f"{label}.boxed.pdb")
+            return build_openmm_system(
+                pdb_file=str(pdb), forcefield_xml=list(forcefield_xml), hmr=hmr,
+                nonbonded_method="PME" if periodic else "NoCutoff", minimize_max_iterations=10,
+                output_dir=str(endstate_dir), output_name=label,
+            )
+
     for label, pdb in (("wt", inputs.pdb_file), ("mut", mutant_pdb)):
-        logger.info("build_hybrid_system: building %s end state from %s", label, pdb)
-        built = build_amber_system(pdb_file=str(pdb), output_dir=str(endstate_dir), output_name=label, **common)
+        logger.info("build_hybrid_system: building %s end state (%s) from %s", label, endstate_builder, pdb)
+        built = _build(label, pdb)
         if not built.get("success"):
             raise BuildStepError(
                 code="fep_endstate_build_failed",
@@ -353,6 +398,7 @@ def _assemble_hybrid(endstates: dict, spec: MutationSpec, *, softcore_alpha: flo
 def _write_artifacts(
     asm: _Assembled, endstates: dict, spec: MutationSpec, mutant: dict, windows: list[dict], inputs: _Inputs,
     out_dir: Path, *, output_name: str, softcore_alpha: float, hmr: bool, warnings: list[str],
+    phase_bounds: tuple = PHASE_BOUNDS, endstate_builder: str = "amber", forcefield_xml: Optional[list] = None,
 ) -> dict:
     """XML triple + hybrid manifest + protocol + amber_metadata; returns the
     artifact paths and the manifest."""
@@ -395,16 +441,19 @@ def _write_artifacts(
             label: {k: endstates[label].get(k) for k in ("system_xml", "topology_pdb", "state_xml", "system_net_charge_e")}
             for label in ("wt", "mut")
         },
-        "forcefield": inputs.forcefield,
+        "endstate_builder": endstate_builder,
+        "forcefield": inputs.forcefield if endstate_builder == "amber" else list(forcefield_xml or []),
         "water_model": inputs.water_model if inputs.box_dimensions else None,
         "hmr": bool(hmr),
         "softcore_alpha": float(softcore_alpha),
+        "phase_bounds": list(phase_bounds),
         "n_windows": len(windows),
         "statistics": {"num_atoms": mapping.n_hybrid, "num_residues": n_residues},
     }
     files["hybrid_manifest"].write_text(json.dumps(manifest, indent=2, default=str))
     files["fep_protocol"].write_text(json.dumps(
-        build_protocol(mutation=spec.to_json(), windows=windows, softcore_alpha=softcore_alpha), indent=2))
+        build_protocol(mutation=spec.to_json(), windows=windows, softcore_alpha=softcore_alpha,
+                       phase_bounds=phase_bounds), indent=2))
     # Topo nodes must carry the parameter / provenance envelope; the wild-type
     # build's metadata is the physical system, annotated with the FEP layer.
     wt_meta = endstates["wt"]
@@ -414,7 +463,8 @@ def _write_artifacts(
         "solvent_type": wt_meta.get("solvent_type"),
         "parameters": {**(wt_meta.get("parameters") or {}), "mutation": spec.to_json(),
                        "mutant_backend": mutant["backend"], "softcore_alpha": float(softcore_alpha),
-                       "n_windows": len(windows)},
+                       "phase_bounds": list(phase_bounds), "n_windows": len(windows),
+                       "endstate_builder": endstate_builder},
         "forcefield_provenance": wt_meta.get("forcefield_provenance"),
         "statistics": manifest["statistics"],
         "hybrid_manifest": "artifacts/hybrid_manifest.json",
@@ -441,8 +491,11 @@ def build_hybrid_system(
     mutant_backend: str = "auto",
     n_windows: int = 21,
     lambda_schedule: Optional[str] = None,
+    phase_bounds: Optional[str] = None,
     softcore_alpha: float = DEFAULT_SOFTCORE_ALPHA,
     endpoint_tolerance_kj_mol: float = 1.0,
+    endstate_builder: str = "amber",
+    forcefield_xml: Optional[List[str]] = None,
     platform: str = "auto",
     device_index: Optional[str] = None,
     output_name: str = "system",
@@ -474,9 +527,20 @@ def build_hybrid_system(
             (default 21: 6 decharge + 11 steric swap + 6 recharge points).
         lambda_schedule: Strictly increasing lambdas from 0 to 1, as
             ``"0,0.1,...,1"`` or a JSON list of numbers.
+        phase_bounds: ``"p1,p2"`` (default ``0.25,0.75``): lambda at which
+            the old side chain is fully decharged and lambda at which the
+            steric swap is complete; the new charges switch on after ``p2``.
+            A charge-changing mutation may want a longer decharge phase.
         softcore_alpha: Beutler soft-core alpha for the dummy LJ terms.
         endpoint_tolerance_kj_mol: Allowed |E_hybrid - E_reference| at each
             end state (scaled up automatically for large systems).
+        endstate_builder: ``"amber"`` (default; ``build_amber_system`` with
+            the curated Amber catalog) or ``"openmm"`` (``build_openmm_system``
+            with ``forcefield_xml``, for force fields outside the catalog).
+            Both end states always use the same builder.
+        forcefield_xml: OpenMM ForceField XML names / paths for
+            ``endstate_builder="openmm"`` (e.g. ``amber14-all.xml
+            amber14/tip3p.xml``). Ignored by the amber builder.
         platform / device_index: OpenMM platform for the dummy relaxation and
             the end-point energies (``auto`` = fastest available, which takes
             a GPU when there is one; pass ``CPU`` on a shared login node).
@@ -506,8 +570,13 @@ def build_hybrid_system(
         return fail_tool(result, exc.code, str(exc), job_dir=job_dir, node_id=node_id, extra=exc.extra)
 
     # --- cheap, purely syntactic checks; the node stays pending on failure --
+    if endstate_builder not in ENDSTATE_BUILDERS:
+        return fail_tool(result, code="invalid_parameter_value",
+                         message=f"endstate_builder must be one of {ENDSTATE_BUILDERS}, got {endstate_builder!r}",
+                         job_dir=job_dir, node_id=node_id)
     try:
-        windows = windows_from_schedule(lambda_schedule, n_windows)
+        bounds = parse_phase_bounds(phase_bounds)
+        windows = windows_from_schedule(lambda_schedule, n_windows, phase_bounds=bounds)
     except ProtocolError as exc:
         return fail_tool(result, exc.code, str(exc), job_dir=job_dir, node_id=node_id)
     try:
@@ -519,7 +588,8 @@ def build_hybrid_system(
             job_dir=job_dir, node_id=node_id, mutation=mutation, pdb_file=pdb_file, forcefield=forcefield,
             water_model=water_model, hmr=hmr, is_membrane=is_membrane, ligand_chemistry=ligand_chemistry,
             disulfide_bonds=disulfide_bonds, box_dimensions=box_dimensions, mutant_backend=mutant_backend,
-            n_windows=n_windows, lambda_schedule=lambda_schedule, softcore_alpha=softcore_alpha,
+            n_windows=n_windows, lambda_schedule=lambda_schedule, phase_bounds=phase_bounds,
+            softcore_alpha=softcore_alpha, endstate_builder=endstate_builder, forcefield_xml=forcefield_xml,
             output_name=output_name, platform=platform)
         spec = parse_single_mutation(mutation, inputs.pdb_file)
     except BuildStepError as exc:
@@ -551,14 +621,17 @@ def build_hybrid_system(
         result["warnings"].extend(mutant.pop("warnings", []))
         result["mutant_backend"] = mutant["backend"]
 
-        endstates = _build_endstates(inputs, spec, Path(mutant["mutant_pdb"]), out_dir, hmr=hmr)
+        endstates = _build_endstates(inputs, spec, Path(mutant["mutant_pdb"]), out_dir, hmr=hmr,
+                                     endstate_builder=endstate_builder, forcefield_xml=forcefield_xml)
         result["warnings"].extend(endstates.pop("warnings"))
         asm = _assemble_hybrid(endstates, spec, softcore_alpha=softcore_alpha,
                                endpoint_tolerance_kj_mol=endpoint_tolerance_kj_mol,
                                platform_name=platform_name, platform_properties=platform_properties)
         result["warnings"].extend(asm.build.report.get("warnings") or [])
         written = _write_artifacts(asm, endstates, spec, mutant, windows, inputs, out_dir, output_name=output_name,
-                                   softcore_alpha=softcore_alpha, hmr=hmr, warnings=result["warnings"])
+                                   softcore_alpha=softcore_alpha, phase_bounds=bounds, hmr=hmr,
+                                   endstate_builder=endstate_builder, forcefield_xml=forcefield_xml,
+                                   warnings=result["warnings"])
     except BuildStepError as exc:
         return _fail(exc)
 
@@ -569,6 +642,8 @@ def build_hybrid_system(
         "mapping": manifest["mapping_summary"],
         "endpoint_validation": validation,
         "n_windows": len(windows),
+        "phase_bounds": list(bounds),
+        "endstate_builder": endstate_builder,
         "statistics": manifest["statistics"],
     })
     if not validation.get("passed") or not validation.get("all_finite"):
@@ -598,8 +673,10 @@ def build_hybrid_system(
             },
             metadata={
                 "tool": "build_hybrid_system",
-                "forcefield": inputs.forcefield,
-                "effective_forcefield": (wt_meta.get("parameters") or {}).get("effective_forcefield", inputs.forcefield),
+                "forcefield": inputs.forcefield if endstate_builder == "amber" else None,
+                "forcefield_xml": list(forcefield_xml or []) if endstate_builder == "openmm" else None,
+                "effective_forcefield": (wt_meta.get("parameters") or {}).get("effective_forcefield", inputs.forcefield)
+                if endstate_builder == "amber" else None,
                 "water_model": inputs.water_model if solvent_type == "explicit" else None,
                 "solvent_type": solvent_type,
                 "implicit_solvent": None,
@@ -607,8 +684,8 @@ def build_hybrid_system(
                 "is_membrane": bool(inputs.is_membrane),
                 "system_artifact_kind": "openmm_system_xml",
                 "forcefield_provenance": wt_meta.get("forcefield_provenance"),
-                "fep": {"mutation": spec.label, "n_windows": len(windows),
-                        "endpoint_validation_passed": True},
+                "fep": {"mutation": spec.label, "n_windows": len(windows), "phase_bounds": list(bounds),
+                        "endstate_builder": endstate_builder, "endpoint_validation_passed": True},
             },
             warnings=result["warnings"],
         )
@@ -620,4 +697,5 @@ def build_hybrid_system(
     return result
 
 
-__all__ = ["BuildStepError", "build_hybrid_system", "fastest_platform_name", "hybrid_topology", "locate_residue_index"]
+__all__ = ["ENDSTATE_BUILDERS", "BuildStepError", "build_hybrid_system", "fastest_platform_name", "hybrid_topology",
+           "locate_residue_index"]

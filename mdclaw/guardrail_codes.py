@@ -78,6 +78,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "fep_ddg_parents_invalid": "estimate_ddg needs exactly two completed analyze_fep parents (the folded and the unfolded leg); parent the comparison node to those analyze nodes, not to fep or prod nodes.",
     "fep_leg_role_ambiguous": "Neither parent descends from an extract_tripeptide prep node, so the legs cannot be told apart; derive the unfolded leg with extract_tripeptide, or declare analysis_subjects [{\"label\": \"folded\"}, {\"label\": \"unfolded\"}] in the same order as --parent-node-ids.",
     "fep_legs_incompatible": "The two legs differ in mutation, lambda protocol, force field, water model, HMR, temperature or pressure; rebuild the unfolded leg's build_hybrid_system / run_fep with the folded leg's options so the thermodynamic cycle closes.",
+    "hybrid_topology_production_blocked": "The topo ancestor is a hybrid (alchemical) topology; production nodes never run on it. Create a fep node under the eq node (run_fep) to sample lambda windows, or a plain topo node (build_amber_system) from the same solv node for wild-type MD. The prod node is still pending.",
 
     "container_runtime_not_found": "Export MDCLAW_SLURM_PATH=\"$PATH\" from a host shell before submitting from inside the image, or run `mdclaw configure_container --runtime /abs/path/to/singularity`, then resubmit the same (still pending) node.",
 

@@ -118,7 +118,10 @@ def explain_node(
     code = (
         "source_candidate_selection_required"
         if source_selection_required
-        else "ok"
+        # A resolver that names why the inputs cannot be assembled (a hybrid
+        # topo under a prod node, a plain topo under a fep node) puts that
+        # code here so the agent can branch on it before running anything.
+        else resolved_inputs.get("input_resolution_code") or "ok"
     )
     ready_to_run = validation.get("success") is True and not input_errors
     required_action = (
@@ -571,6 +574,11 @@ def _resolve_fep_inputs(job_dir: str, node_id: str) -> dict:
         is_membrane = _read_metadata_field(job_dir, topo_id, "is_membrane")
         if isinstance(is_membrane, bool):
             result["is_membrane"] = is_membrane
+    # The prep's component map addresses the solute for --restraint-atoms
+    # solute_heavy, as for min / eq.
+    chain_identity_map = find_ancestor_artifact(job_dir, node_id, "prep", "chain_identity_map")
+    if chain_identity_map:
+        result["chain_identity_map_file"] = chain_identity_map
     # eq state = equilibrated lambda=0 end state (same atom count as the hybrid).
     result.update(_resolve_md_restart(job_dir, node_id))
     result.update(_resolve_eq_ensemble_metadata(job_dir, node_id))
@@ -803,6 +811,24 @@ def resolve_node_inputs(
             is_membrane = _read_metadata_field(job_dir, topo_anc, "is_membrane")
             if isinstance(is_membrane, bool):
                 result["is_membrane"] = is_membrane
+            if _read_artifact_from_node(job_dir, topo_anc, "fep_protocol"):
+                # A hybrid topology is the wild type only at lambda=0 and
+                # carries the mutant's atoms as non-interacting ghosts under
+                # the wild-type residue name. Plain production on it gives
+                # wild-type physics but a trajectory / topology.pdb whose
+                # residue is neither state, so every residue-based analysis
+                # downstream reads it wrong. Sampling on a hybrid is the fep
+                # stage; wild-type MD wants a plain topo.
+                result["topology_is_hybrid"] = True
+                _record_input_resolution_error(
+                    result,
+                    f"topo ancestor '{topo_anc}' is a hybrid (alchemical) topology built by "
+                    "build_hybrid_system; production nodes do not run on it. Sample lambda windows with a "
+                    "fep node (run_fep), or build a plain topo node (build_amber_system) from the same solv "
+                    "node for wild-type production.",
+                )
+                code = "hybrid_topology_production_blocked"
+                result["input_resolution_code"] = code
         result.update(_resolve_md_restart(job_dir, node_id))
         result.update(_resolve_prod_custom_force(job_dir, node_id))
         result.update(_resolve_prod_distance_restraints(job_dir, node_id))

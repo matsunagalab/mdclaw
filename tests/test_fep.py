@@ -29,6 +29,7 @@ from mdclaw.fep.protocol import (
     lambda_to_parameters,
     load_protocol,
     parse_lambda_indices,
+    parse_phase_bounds,
     protocols_equivalent,
     windows_from_schedule,
 )
@@ -106,6 +107,25 @@ class TestProtocol:
         path.write_text(json.dumps(protocol))
         loaded = load_protocol(path)
         assert loaded["n_windows"] == 5 and loaded["mutation"]["label"] == "A:L99A"
+
+    def test_phase_bounds_move_the_phases(self):
+        assert parse_phase_bounds(None) == PHASE_BOUNDS
+        assert parse_phase_bounds("0.2, 0.8") == (0.2, 0.8) == parse_phase_bounds([0.2, 0.8])
+        for bad in ("0.8,0.2", "0.25", "0,0.75", "0.5,1.0", "a,b"):
+            with pytest.raises(ProtocolError) as exc:
+                parse_phase_bounds(bad)
+            assert exc.value.code == "fep_protocol_invalid"
+        windows = windows_from_schedule("0,0.2,0.5,0.8,1", phase_bounds="0.2,0.8")
+        assert windows[1]["parameters"]["fep_elec_old"] == 0.0          # decharged by lambda 0.2
+        assert windows[1]["parameters"]["fep_sterics_old"] == 1.0      # sterics untouched until then
+        assert windows[3]["parameters"] == {**STATE_B, "fep_elec_new": 0.0}  # swap done at 0.8, charges still off
+        default = windows_from_schedule("0,0.2,0.5,0.8,1")
+        assert default[1]["parameters"]["fep_elec_old"] > 0.0
+        proto = build_protocol(mutation={"label": "A:L99A"}, windows=windows, phase_bounds="0.2,0.8")
+        assert proto["phase_bounds"] == [0.2, 0.8]
+        other = build_protocol(mutation={"label": "A:L99A"}, windows=default)
+        assert other["phase_bounds"] == list(PHASE_BOUNDS)
+        assert not protocols_equivalent(proto, other)  # different parameters per window
 
     def test_parse_lambda_indices(self):
         assert parse_lambda_indices(None, 5) == [0, 1, 2, 3, 4]
@@ -420,6 +440,18 @@ class TestAnalysis:
         assert res["code"] == "fep_legs_incompatible" and "temperature_kelvin" in res["errors"][0]
         assert not (tmp_path / "ddg.json").exists()
 
+    def test_estimate_ddg_binding_cycle(self, tmp_path):
+        complex_leg = tmp_path / "complex.json"
+        apo_leg = tmp_path / "apo.json"
+        complex_leg.write_text(json.dumps({"mutation": {"label": "A:L99A"}, "dG_kj_mol": 2.0, "dG_error_kj_mol": 0.3}))
+        apo_leg.write_text(json.dumps({"mutation": {"label": "A:L99A"}, "dG_kj_mol": 5.0, "dG_error_kj_mol": 0.4}))
+        res = estimate_ddg(str(complex_leg), str(apo_leg), cycle="binding", output_file=str(tmp_path / "ddg.json"))
+        assert res["success"], res
+        assert res["cycle"] == "binding" and set(res["legs"]) == {"complex", "apo"}
+        assert math.isclose(res["ddG_kj_mol"], -3.0)
+        assert "weakens binding" in res["sign_convention"]
+        assert estimate_ddg(str(complex_leg), str(apo_leg), cycle="solvation")["code"] == "invalid_parameter_value"
+
     def test_estimate_ddg_rejects_non_result(self, tmp_path):
         bad = tmp_path / "x.json"
         bad.write_text("{}")
@@ -626,6 +658,51 @@ class TestDdgNode:
         assert res["success"], res
         assert res["legs"]["folded"]["node_id"] == legs["folded"]
 
+    def test_ddg_node_binding_cycle_uses_subjects(self, tmp_path):
+        """Without a leg_role marker the cycle's leg names come from analysis_subjects."""
+        pytest.importorskip("pymbar")
+        from mdclaw._node import create_node, read_node
+
+        jd, _prep, legs = _two_leg_job(tmp_path, mark_unfolded=False)
+        ddg = create_node(str(jd), "analyze", parent_node_ids=[legs["folded"], legs["unfolded"]],
+                          conditions={"analysis_data_scope": "comparison",
+                                      "analysis_subjects": [{"label": "complex"}, {"label": "apo"}]})["node_id"]
+        res = estimate_ddg(job_dir=str(jd), node_id=ddg, cycle="binding")
+        assert res["success"], res
+        assert res["legs"]["complex"]["node_id"] == legs["folded"]
+        assert res["legs"]["apo"]["node_id"] == legs["unfolded"]
+        assert read_node(str(jd), ddg)["metadata"]["cycle"] == "binding"
+        # the folding cycle cannot use complex/apo subjects
+        other = create_node(str(jd), "analyze", parent_node_ids=[legs["folded"], legs["unfolded"]],
+                            conditions={"analysis_data_scope": "comparison",
+                                        "analysis_subjects": [{"label": "complex"}, {"label": "apo"}]})["node_id"]
+        res = estimate_ddg(job_dir=str(jd), node_id=other)
+        assert res["code"] == "fep_leg_role_ambiguous" and "unfolded" in res["errors"][0]
+
+    def test_production_is_blocked_on_a_hybrid_topology(self, tmp_path):
+        """prod under a hybrid eq: the resolver names the refusal, explain_node
+        is not ready, run_production leaves the node pending."""
+        from mdclaw._node import create_node, explain_node, read_node, resolve_node_inputs
+        from mdclaw.simulation.production import run_production
+
+        jd, _prep, _legs = _two_leg_job(tmp_path, with_unfolded=False)
+        nodes = json.loads((jd / "progress.json").read_text())["nodes"]
+        eq = next(nid for nid, info in nodes.items() if info["type"] == "eq")
+        prod = create_node(str(jd), "prod", parent_node_ids=[eq])["node_id"]
+        inputs = resolve_node_inputs(str(jd), prod, "prod")
+        assert inputs["topology_is_hybrid"] is True
+        assert inputs["input_resolution_code"] == "hybrid_topology_production_blocked"
+        explained = explain_node(str(jd), prod)
+        assert explained["ready_to_run"] is False
+        assert explained["code"] == "hybrid_topology_production_blocked"
+        assert any("build_hybrid_system" in m for m in explained["missing_inputs"])
+        res = run_production(job_dir=str(jd), node_id=prod, simulation_time_ns=0.001)
+        assert res["success"] is False and res["code"] == "hybrid_topology_production_blocked"
+        assert read_node(str(jd), prod)["status"] == "pending"
+        # a fep node under the same eq is the sampling stage for this branch
+        fep = create_node(str(jd), "fep", parent_node_ids=[eq])["node_id"]
+        assert "input_resolution_error" not in resolve_node_inputs(str(jd), fep, "fep")
+
     def test_ddg_node_scope_and_parent_checks(self, tmp_path):
         pytest.importorskip("pymbar")
         from mdclaw._node import create_node, read_node
@@ -644,6 +721,78 @@ class TestDdgNode:
                           conditions={"analysis_data_scope": "comparison"})["node_id"]
         res = estimate_ddg(job_dir=str(jd), node_id=bad)
         assert res["code"] == "fep_ddg_parents_invalid" and other in res["errors"][0]
+
+
+# --------------------------------------------------------------------------- #
+# build_hybrid_system tool (slow): both end-state builders, phase bounds        #
+# --------------------------------------------------------------------------- #
+
+def test_pdb_with_cryst1_pads_the_solvation_box(tmp_path):
+    from mdclaw.fep.build import _pdb_with_cryst1
+
+    src = tmp_path / "in.pdb"
+    src.write_text("CRYST1    1.000    1.000    1.000  90.00  90.00  90.00 P 1           1\n"
+                   + _pdb_line(1, "N", "ALA", 1, 0.0, 0.0, 0.0, "N") + "\nEND\n")
+    out = _pdb_with_cryst1(src, {"box_a": 30.0, "box_b": 31.5, "box_c": 32.0}, tmp_path / "out.pdb")
+    lines = out.read_text().splitlines()
+    assert lines[0] == "CRYST1   32.000   33.500   34.000  90.00  90.00  90.00 P 1           1"
+    assert lines[1].startswith("ATOM") and lines.count("END") == 1
+    assert sum(1 for ln in lines if ln.startswith("CRYST1")) == 1
+
+
+@pytest.mark.slow
+class TestBuildHybridSystemDirect:
+    """The topo tool end to end on ACE-LEU-NME -> ACE-ALA-NME in vacuum: mutant
+    modelling, two end-state builds, hybrid assembly, end-point validation and
+    the protocol / manifest artifacts — with either end-state builder."""
+
+    @pytest.mark.parametrize("builder", ["amber", "openmm"])
+    def test_vacuum_peptide(self, tmp_path, builder):
+        pytest.importorskip("openmmforcefields")
+        from openmm import app
+
+        from mdclaw.fep.build import build_hybrid_system
+
+        top, pos = TestHybridVacuum._peptide("LEU", tmp_path)
+        pdb = tmp_path / "ace_leu_nme.pdb"
+        with pdb.open("w") as fh:
+            app.PDBFile.writeFile(top, pos, fh, keepIds=True)
+        kwargs = dict(mutation="A:L2A", pdb_file=str(pdb), output_dir=str(tmp_path / builder), platform="Reference",
+                      n_windows=5, phase_bounds="0.2,0.8", endstate_builder=builder)
+        if builder == "openmm":
+            kwargs["forcefield_xml"] = ["amber14-all.xml"]
+        else:
+            kwargs["forcefield"] = "ff14SB"
+        res = build_hybrid_system(**kwargs)
+        assert res["success"], res
+        assert res["endpoint_validation"]["passed"], res["endpoint_validation"]
+        assert res["endstate_builder"] == builder and res["phase_bounds"] == [0.2, 0.8]
+        assert res["mapping"]["n_unique_new"] >= 1 and res["mapping"]["n_unique_old"] >= 4
+        for key in ("system_xml", "topology_pdb", "state_xml", "hybrid_manifest", "fep_protocol"):
+            assert Path(res[key]).is_file(), key
+        protocol = json.loads(Path(res["fep_protocol"]).read_text())
+        assert protocol["phase_bounds"] == [0.2, 0.8] and protocol["n_windows"] == 5
+        assert protocol["windows"][1]["lambda"] == 0.25
+        assert protocol["windows"][1]["parameters"]["fep_elec_old"] == 0.0  # decharged by 0.2, swap under way
+        manifest = json.loads(Path(res["hybrid_manifest"]).read_text())
+        assert manifest["endstate_builder"] == builder and manifest["phase_bounds"] == [0.2, 0.8]
+        assert manifest["forcefield"] == (["amber14-all.xml"] if builder == "openmm" else "ff14SB")
+        assert all(name in Path(res["system_xml"]).read_text() for name in FEP_PARAMETERS)
+
+    def test_openmm_builder_needs_forcefield_xml(self, tmp_path):
+        from mdclaw.fep.build import build_hybrid_system
+
+        pdb = _write_pentapeptide(tmp_path / "pent.pdb")
+        res = build_hybrid_system(mutation="A:L12A", pdb_file=str(pdb), endstate_builder="openmm",
+                                  output_dir=str(tmp_path / "out"), platform="Reference")
+        assert res["success"] is False and res["code"] == "fep_endstate_build_failed"
+        assert "forcefield-xml" in res["errors"][0]
+        res = build_hybrid_system(mutation="A:L12A", pdb_file=str(pdb), endstate_builder="gromacs",
+                                  output_dir=str(tmp_path / "out"))
+        assert res["code"] == "invalid_parameter_value"
+        res = build_hybrid_system(mutation="A:L12A", pdb_file=str(pdb), phase_bounds="0.9,0.1",
+                                  output_dir=str(tmp_path / "out"))
+        assert res["code"] == "fep_protocol_invalid"
 
 
 # --------------------------------------------------------------------------- #
@@ -973,6 +1122,52 @@ class TestVacuumPipeline:
                             discard_fraction=0.0, subsample=False)
         assert again["success"], again
         assert math.isclose(again["dG_kj_mol"], res["dG_kj_mol"])
+
+    def test_restraint_is_one_hamiltonian_per_leg(self, tmp_path):
+        """A positional restraint is part of every window of a leg: an extension
+        inherits it, a different one is refused, analysis records it and never
+        pools restrained with unrestrained windows."""
+        from mdclaw.fep.run import load_windows_index, run_fep
+
+        topo = self._hybrid_triple(tmp_path)
+        common = dict(system_xml_file=str(topo / "system.xml"), topology_pdb_file=str(topo / "topology.pdb"),
+                      fep_protocol_file=str(topo / "fep_protocol.json"), platform="Reference",
+                      sampling_time_ns=0.001, equilibration_time_ns=0.0, sample_interval_ps=0.1,
+                      timestep_fs=1.0, hmr=False, random_seed=3)
+        bad = run_fep(**common, lambda_indices="0", restraint_atoms="sidechains", output_dir=str(tmp_path / "bad"))
+        assert bad["success"] is False and bad["code"] == "invalid_parameter_value"
+        bad = run_fep(**common, lambda_indices="0", restraint_atoms="CA", restraint_force_constant=0.0,
+                      output_dir=str(tmp_path / "bad"))
+        assert bad["code"] == "invalid_parameter_value"
+
+        first = run_fep(**common, lambda_indices="0-1", restraint_atoms="CA", restraint_force_constant=50.0,
+                        output_dir=str(tmp_path / "run"))
+        assert first["success"], first
+        assert {k: first["restraint"][k] for k in ("selection", "force_constant", "count", "reference")} == {
+            "selection": "CA", "force_constant": 50.0, "count": 1, "reference": "topology_state"}
+        idx = load_windows_index(first["fep_windows"])
+        assert idx["restraint"]["selection"] == "CA"
+        # extension without the flags inherits the parent's restraint ...
+        second = run_fep(**common, lambda_indices="2", restart_windows_file=first["fep_windows"],
+                         output_dir=str(tmp_path / "run"))
+        assert second["success"], second
+        assert second["restraint"]["selection"] == "CA" and second["restraint"]["force_constant"] == 50.0
+        # ... and refuses a different one (or none)
+        other = run_fep(**common, lambda_indices="2", restart_windows_file=first["fep_windows"],
+                        restraint_atoms="backbone", restraint_force_constant=50.0, output_dir=str(tmp_path / "run"))
+        assert other["success"] is False and other["code"] == "fep_windows_incompatible"
+        assert "restraint" in other["errors"][0]
+        res = analyze_fep(fep_windows_files=[second["fep_windows"]], output_dir=str(tmp_path / "an"),
+                          discard_fraction=0.0, subsample=False)
+        assert res["success"], res
+        report = json.loads(Path(res["fep_result"]).read_text())
+        assert report["restraint"]["selection"] == "CA"
+        # a leg sampled without the restraint cannot be pooled with this one
+        free = run_fep(**common, lambda_indices="0", output_dir=str(tmp_path / "free"))
+        assert free["success"] and free["restraint"] is None
+        with pytest.raises(FepAnalysisError) as exc:
+            collect_windows([second["fep_windows"], free["fep_windows"]])
+        assert exc.value.code == "fep_windows_incompatible"
 
     def test_extension_pressure_mismatch_is_refused(self, tmp_path):
         from mdclaw.fep.run import run_fep

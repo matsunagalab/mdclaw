@@ -311,10 +311,8 @@ def run_production(
             )
         if "input_resolution_error" in _inputs:
             err = _inputs["input_resolution_error"]
-            from mdclaw._node import begin_node, fail_node
-            begin_node(job_dir, node_id)
-            fail_node(job_dir, node_id, errors=[err])
-            return create_validation_error(
+            code = _inputs.get("input_resolution_code") or "input_resolution_blocked"
+            error = create_validation_error(
                 "job_dir/node_id",
                 err,
                 expected="Completed topo and restart ancestors with required artifacts",
@@ -322,8 +320,18 @@ def run_production(
                 context_extra={
                     "input_resolution_errors": _inputs.get("input_resolution_errors", []),
                 },
-                code="input_resolution_blocked",
+                code=code,
             )
+            if code == "hybrid_topology_production_blocked":
+                # A structural refusal, not a run failure: nothing ran, so the
+                # node stays pending and the agent branches (fep node, or a
+                # plain topo) without burning this node.
+                from mdclaw._node import fail_node_from_result
+                return fail_node_from_result(job_dir, node_id, error, default_error=err)
+            from mdclaw._node import begin_node, fail_node
+            begin_node(job_dir, node_id)
+            fail_node(job_dir, node_id, errors=[err], code=code)
+            return error
         _ctx = validate_node_execution_context(
             job_dir,
             node_id,

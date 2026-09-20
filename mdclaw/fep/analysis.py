@@ -92,6 +92,11 @@ def collect_windows(window_index_files: list[str]) -> dict:
                     message=f"{path} was sampled at pressure_bar={data.get('pressure_bar')} ({data.get('ensemble')}) but "
                     f"{reference['index_file']} at {reference.get('pressure_bar')}; the reduced potential includes pV/kT, "
                     "so NPT and NVT windows cannot be pooled")
+            if _restraint_key(data) != _restraint_key(reference):
+                raise FepAnalysisError(
+                    code="fep_windows_incompatible",
+                    message=f"{path} was sampled with restraint {data.get('restraint')} but {reference['index_file']} with "
+                    f"{reference.get('restraint')}; one leg has one Hamiltonian")
         for key, record in data["windows"].items():
             merged.setdefault(int(key), []).extend(record.get("segments") or [])
     if not merged or reference is None:
@@ -125,10 +130,18 @@ def collect_windows(window_index_files: list[str]) -> dict:
         "temperature_kelvin": float(temperature) if temperature is not None else None,
         "pressure_bar": reference.get("pressure_bar"),
         "ensemble": reference.get("ensemble"),
+        "restraint": reference.get("restraint"),
         "n_protocol_windows": len(protocol["windows"]),
         "windows": merged,
         "sources": sources,
     }
+
+
+def _restraint_key(index: dict) -> Optional[tuple]:
+    restraint = index.get("restraint") or None
+    if not restraint:
+        return None
+    return (restraint.get("selection"), round(float(restraint.get("force_constant") or 0.0), 9))
 
 
 def _load_segment(seg: dict, n_states: int, discard_fraction: float) -> np.ndarray:
@@ -387,6 +400,7 @@ def analyze_fep(
         "hybrid_manifest_file": hybrid_manifest_file,
         "pressure_bar": collected["pressure_bar"],
         "ensemble": collected["ensemble"],
+        "restraint": collected.get("restraint"),
         "fep_parent_node_ids": parent_ids,
         "fep_windows_files": fep_windows_files,
         "sources": collected["sources"],
@@ -443,6 +457,22 @@ def analyze_fep(
 LEG_ROLES = ("folded", "unfolded")
 FEP_LEG_ANALYSIS = "fep_mbar"
 DDG_ANALYSIS = "fep_ddg"
+# ddG = dG_mut(reference leg) - dG_mut(comparison leg). The reference leg is the
+# one whose prep carries no leg_role marker (the protein as prepared); the
+# comparison leg is derived from it (extract_tripeptide -> "unfolded"; an apo
+# derivation would write "apo").
+DDG_CYCLES: dict[str, dict] = {
+    "folding": {
+        "legs": ("folded", "unfolded"),
+        "quantity": "ddG_folding = dG_fold(mutant) - dG_fold(wild type)",
+        "sign_convention": "ddG > 0: mutation destabilises the folded state",
+    },
+    "binding": {
+        "legs": ("complex", "apo"),
+        "quantity": "ddG_binding = dG_bind(mutant) - dG_bind(wild type)",
+        "sign_convention": "ddG > 0: mutation weakens binding",
+    },
+}
 
 
 def _load_leg(path: str, label: str) -> dict:
@@ -476,24 +506,26 @@ def leg_role_of(job_dir: str, node_id: str) -> Optional[str]:
     return None
 
 
-def _assign_leg_roles(job_dir: str, node: dict, parents: list[str]) -> dict[str, str]:
-    """``{"folded": node_id, "unfolded": node_id}`` from the parents' prep
-    ancestry, falling back to ``analysis_subjects`` order."""
+def _assign_leg_roles(job_dir: str, node: dict, parents: list[str], legs: tuple[str, str]) -> dict[str, str]:
+    """``{reference_leg: node_id, comparison_leg: node_id}`` from the parents'
+    prep ancestry, falling back to ``analysis_subjects`` order."""
+    reference, comparison = legs
     roles = {pid: leg_role_of(job_dir, pid) for pid in parents}
-    unfolded = [pid for pid, role in roles.items() if role == "unfolded"]
-    folded = [pid for pid, role in roles.items() if role in (None, "folded")]
-    if len(unfolded) == 1 and len(folded) == 1:
-        return {"folded": folded[0], "unfolded": unfolded[0]}
+    derived = [pid for pid, role in roles.items() if role == comparison]
+    base = [pid for pid, role in roles.items() if role in (None, reference)]
+    if len(derived) == 1 and len(base) == 1:
+        return {reference: base[0], comparison: derived[0]}
     subjects = [s.get("label") for s in ((node.get("conditions") or {}).get("analysis_subjects") or [])
                 if isinstance(s, dict)]
-    if len(subjects) == len(parents) == 2 and set(subjects) == set(LEG_ROLES):
+    if len(subjects) == len(parents) == 2 and set(subjects) == set(legs):
         return {label: pid for label, pid in zip(subjects, parents)}
     raise FepAnalysisError(
         code="fep_leg_role_ambiguous",
-        message=f"cannot tell which parent is the folded and which the unfolded leg (prep leg_role markers: {roles}); "
-        "derive the unfolded leg with extract_tripeptide (its prep node carries leg_role), or create the node with "
-        "--conditions '{\"analysis_data_scope\": \"comparison\", \"analysis_subjects\": [{\"label\": \"folded\"}, "
-        "{\"label\": \"unfolded\"}]}' listing --parent-node-ids in that order")
+        message=f"cannot tell which parent is the {reference} and which the {comparison} leg (prep leg_role markers: "
+        f"{roles}); derive the {comparison} leg from the {reference} leg's prep node (its prep then carries "
+        f"leg_role={comparison!r}), or create the node with --conditions '{{\"analysis_data_scope\": \"comparison\", "
+        f"\"analysis_subjects\": [{{\"label\": \"{reference}\"}}, {{\"label\": \"{comparison}\"}}]}}' listing "
+        "--parent-node-ids in that order")
 
 
 def _leg_settings(leg: dict) -> dict:
@@ -526,11 +558,14 @@ def _leg_settings(leg: dict) -> dict:
     return out
 
 
-def check_legs_compatible(leg_f: dict, leg_u: dict) -> tuple[list[str], list[str]]:
+def check_legs_compatible(leg_f: dict, leg_u: dict, legs: tuple[str, str] = LEG_ROLES) -> tuple[list[str], list[str]]:
     """``(mismatches, warnings)``: the two legs must transform the same
     mutation with the same lambda protocol, force field, water model, HMR and
-    ensemble, otherwise ddG mixes two different thermodynamic cycles."""
+    ensemble, otherwise ddG mixes two different thermodynamic cycles. (A
+    positional restraint may differ: it is part of one leg's Hamiltonian at
+    every lambda and cancels within that leg.)"""
     sf, su = _leg_settings(leg_f), _leg_settings(leg_u)
+    ref_leg, cmp_leg = legs
     mismatches: list[str] = []
     warnings: list[str] = []
     for key in ("mutation", "temperature_kelvin", "pressure_bar", "n_states", "forcefield", "water_model", "hmr",
@@ -541,7 +576,7 @@ def check_legs_compatible(leg_f: dict, leg_u: dict) -> tuple[list[str], list[str
         same = math.isclose(float(a), float(b), rel_tol=1e-9, abs_tol=1e-9) if isinstance(a, (int, float)) and isinstance(b, (int, float)) \
             and not isinstance(a, bool) and not isinstance(b, bool) else a == b
         if not same:
-            mismatches.append(f"{key}: folded={a!r}, unfolded={b!r}")
+            mismatches.append(f"{key}: {ref_leg}={a!r}, {cmp_leg}={b!r}")
     if sf["protocol"] is not None and su["protocol"] is not None and not protocols_equivalent(sf["protocol"], su["protocol"]):
         mismatches.append("lambda protocol differs (window lambdas / global parameters)")
     unverified = sorted(set(sf["unverified"]) | set(su["unverified"]))
@@ -565,30 +600,39 @@ def _study_dir_from_job(job_dir: str) -> Optional[str]:
 def estimate_ddg(
     folded: Optional[str] = None,
     unfolded: Optional[str] = None,
+    cycle: str = "folding",
     output_file: Optional[str] = None,
     output_name: str = "ddg",
     study_dir: Optional[str] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
-    """ddG of folding stability from the two legs' ``analyze_fep`` results.
+    """ddG of a point mutation from the two legs' ``analyze_fep`` results.
 
-    ``ddG = dG_mut(folded) - dG_mut(unfolded)`` with the sign convention of
+    ``ddG = dG_mut(reference leg) - dG_mut(comparison leg)``. With
+    ``cycle="folding"`` (default) the legs are ``folded`` / ``unfolded`` and
     ``ddG_folding = dG_fold(mutant) - dG_fold(wild type)``: positive means the
-    mutation destabilises the fold. Errors add in quadrature.
+    mutation destabilises the fold. With ``cycle="binding"`` the legs are
+    ``complex`` / ``apo`` and positive means the mutation weakens binding.
+    Errors add in quadrature.
 
     Node mode: an ``analyze`` node with
     ``--conditions '{"analysis_data_scope": "comparison"}'`` whose two parents
-    are the legs' ``analyze_fep`` nodes (any order). The unfolded leg is the
-    one whose prep ancestor was written by ``extract_tripeptide``
-    (``leg_role = "unfolded"``); the other is the folded protein. Before
-    subtracting, the legs are checked for the same mutation, lambda protocol,
-    force field, water model, HMR, temperature and pressure
+    are the legs' ``analyze_fep`` nodes (any order). The comparison leg is the
+    one whose prep ancestor carries ``leg_role`` (``extract_tripeptide`` writes
+    ``"unfolded"``); the other is the reference leg. Otherwise declare
+    ``analysis_subjects`` with the two leg names in ``--parent-node-ids``
+    order. Before subtracting, the legs are checked for the same mutation,
+    lambda protocol, force field, water model, HMR, temperature and pressure
     (``fep_legs_incompatible`` otherwise). Direct mode: pass ``--folded`` /
-    ``--unfolded`` result files.
+    ``--unfolded`` result files (for ``cycle="binding"`` these are the
+    complex and apo results, in that order).
 
     Args:
-        folded / unfolded: ``fep_result.json`` of each leg (direct mode).
+        folded / unfolded: ``fep_result.json`` of the reference and
+            comparison leg (direct mode).
+        cycle: ``"folding"`` (folded / unfolded) or ``"binding"`` (complex /
+            apo); names the legs and the sign convention.
         output_file: Where to write the report in direct mode (default:
             ``<study_dir>/evidence/ddg_<mutation>.json`` when ``study_dir`` is
             given, else ``outputs/ddg_<mutation>.json``; node mode always
@@ -609,10 +653,15 @@ def estimate_ddg(
 
     result: dict = {"success": False, "tool": "estimate_ddg", "errors": [], "warnings": []}
     node_mode = bool(job_dir and node_id)
-    leg_nodes: dict[str, Optional[str]] = {"folded": None, "unfolded": None}
 
     def _fail(code: str, message: str) -> dict:
         return fail_tool(result, code, message, job_dir=job_dir, node_id=node_id)
+
+    if cycle not in DDG_CYCLES:
+        return _fail(code="invalid_parameter_value", message=f"cycle must be one of {sorted(DDG_CYCLES)}, got {cycle!r}")
+    spec = DDG_CYCLES[cycle]
+    ref_leg, cmp_leg = spec["legs"]
+    leg_nodes: dict[str, Optional[str]] = {ref_leg: None, cmp_leg: None}
 
     try:
         if node_mode:
@@ -644,23 +693,23 @@ def estimate_ddg(
                 raise FepAnalysisError(
                     code="fep_ddg_parents_invalid",
                     message=f"estimate_ddg takes exactly two analyze_fep parents (folded and unfolded), got {len(parents)}")
-            roles = _assign_leg_roles(job_dir, node, parents)
+            roles = _assign_leg_roles(job_dir, node, parents, spec["legs"])
             leg_nodes = dict(roles)
-            folded, unfolded = legs[roles["folded"]], legs[roles["unfolded"]]
+            folded, unfolded = legs[roles[ref_leg]], legs[roles[cmp_leg]]
             if study_dir is None:
                 study_dir = _study_dir_from_job(job_dir)
         elif not (folded and unfolded):
             raise FepAnalysisError(code="fep_result_invalid",
-                                   message="pass --folded and --unfolded fep_result.json files, or --job-dir/--node-id on a "
-                                   "comparison analyze node over the two analyze_fep nodes")
-        leg_f = _load_leg(folded, "folded")
-        leg_u = _load_leg(unfolded, "unfolded")
-        mismatches, compat_warnings = check_legs_compatible(leg_f, leg_u)
+                                   message=f"pass the {ref_leg} and {cmp_leg} fep_result.json files (--folded / --unfolded), "
+                                   "or --job-dir/--node-id on a comparison analyze node over the two analyze_fep nodes")
+        leg_f = _load_leg(folded, ref_leg)
+        leg_u = _load_leg(unfolded, cmp_leg)
+        mismatches, compat_warnings = check_legs_compatible(leg_f, leg_u, legs=spec["legs"])
         if mismatches:
             raise FepAnalysisError(
                 code="fep_legs_incompatible",
-                message="the folded and unfolded legs were not sampled with the same settings: " + "; ".join(mismatches)
-                + ". Rebuild the unfolded leg's hybrid topology with the folded leg's --mutation / --forcefield / "
+                message=f"the {ref_leg} and {cmp_leg} legs were not sampled with the same settings: " + "; ".join(mismatches)
+                + f". Rebuild the {cmp_leg} leg's hybrid topology with the {ref_leg} leg's --mutation / --forcefield / "
                 "--water-model / --n-windows and the same run_fep ensemble.")
     except FepAnalysisError as exc:
         # Nothing ran: the node stays pending so the parents / arguments can be fixed.
@@ -679,26 +728,29 @@ def estimate_ddg(
         result["warnings"].append(f"the two legs carry different mutation labels ({mut_f} vs {mut_u}); same residue, different chain id")
     ddg = leg_f["dG_kj_mol"] - leg_u["dG_kj_mol"]
     err = math.sqrt(leg_f.get("dG_error_kj_mol", 0.0) ** 2 + leg_u.get("dG_error_kj_mol", 0.0) ** 2)
-    for label, leg in (("folded", leg_f), ("unfolded", leg_u)):
+    for label, leg in ((ref_leg, leg_f), (cmp_leg, leg_u)):
         for w in leg.get("warnings") or []:
             result["warnings"].append(f"[{label}] {w}")
 
     def _leg_block(path: str, leg: dict, node: Optional[str]) -> dict:
         return {"file": str(Path(path).resolve()), "node_id": node, "dG_kj_mol": leg["dG_kj_mol"],
                 "dG_error_kj_mol": leg.get("dG_error_kj_mol"), "n_samples_total": leg.get("n_samples_total"),
-                "min_neighbour_overlap": leg.get("min_neighbour_overlap"), "n_states": leg.get("n_states")}
+                "min_neighbour_overlap": leg.get("min_neighbour_overlap"), "n_states": leg.get("n_states"),
+                "restraint": leg.get("restraint")}
 
     report = {
         "schema_version": 2,
         "analysis": DDG_ANALYSIS,
+        "cycle": cycle,
+        "quantity": spec["quantity"],
         "mutation": mut_f or mut_u,
         "ddG_kj_mol": ddg,
         "ddG_error_kj_mol": err,
         "ddG_kcal_mol": ddg / _KJ_PER_KCAL,
         "ddG_error_kcal_mol": err / _KJ_PER_KCAL,
-        "sign_convention": "ddG > 0: mutation destabilises the folded state",
-        "legs": {"folded": _leg_block(folded, leg_f, leg_nodes["folded"]),
-                 "unfolded": _leg_block(unfolded, leg_u, leg_nodes["unfolded"])},
+        "sign_convention": spec["sign_convention"],
+        "legs": {ref_leg: _leg_block(folded, leg_f, leg_nodes[ref_leg]),
+                 cmp_leg: _leg_block(unfolded, leg_u, leg_nodes[cmp_leg])},
         "job_dir": str(Path(job_dir).resolve()) if job_dir else None,
         "node_id": node_id,
         "warnings": list(result["warnings"]),
@@ -725,7 +777,7 @@ def estimate_ddg(
                 phase="analysis",
                 decision=(f"estimate_ddg {report['mutation']}: ddG = {ddg / _KJ_PER_KCAL:+.2f} +/- "
                           f"{err / _KJ_PER_KCAL:.2f} kcal/mol ({ddg:+.2f} +/- {err:.2f} kJ/mol)"),
-                reason="difference of the folded and capped-peptide MBAR legs",
+                reason=f"difference of the {ref_leg} and {cmp_leg} MBAR legs ({cycle} cycle)",
                 inputs=[str(Path(folded).resolve()), str(Path(unfolded).resolve())],
                 outputs=[str(out)],
                 metadata={"ddG_kj_mol": ddg, "ddG_error_kj_mol": err, "job_dir": report["job_dir"], "node_id": node_id},
@@ -740,6 +792,7 @@ def estimate_ddg(
             artifacts={"ddg": f"artifacts/{output_name}.json"},
             metadata={
                 "analysis": DDG_ANALYSIS,
+                "cycle": cycle,
                 "mutation": report["mutation"],
                 "ddG_kj_mol": ddg,
                 "ddG_error_kj_mol": err,
@@ -747,7 +800,7 @@ def estimate_ddg(
                 "ddG_error_kcal_mol": err / _KJ_PER_KCAL,
                 "legs": {role: {"node_id": leg_nodes[role], "dG_kj_mol": leg["dG_kj_mol"],
                                 "dG_error_kj_mol": leg.get("dG_error_kj_mol")}
-                         for role, leg in (("folded", leg_f), ("unfolded", leg_u))},
+                         for role, leg in ((ref_leg, leg_f), (cmp_leg, leg_u))},
             },
             warnings=result["warnings"] or None,
         )
@@ -755,6 +808,6 @@ def estimate_ddg(
 
 
 __all__ = [
-    "DDG_ANALYSIS", "FEP_LEG_ANALYSIS", "FepAnalysisError", "LEG_ROLES", "analyze_fep", "check_legs_compatible",
-    "collect_windows", "estimate_ddg", "leg_role_of", "run_mbar",
+    "DDG_ANALYSIS", "DDG_CYCLES", "FEP_LEG_ANALYSIS", "FepAnalysisError", "LEG_ROLES", "analyze_fep",
+    "check_legs_compatible", "collect_windows", "estimate_ddg", "leg_role_of", "run_mbar",
 ]

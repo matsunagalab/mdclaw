@@ -71,7 +71,10 @@ MDClaw の既存スパインに `fep` を挿すだけで表現できると判断
 
 ## 4. λ プロトコル（`mdclaw/fep/protocol.py`）
 
-スカラー λ∈[0,1] を 5 成分に区分線形で写す。境界は λ=0.25 / 0.75。
+スカラー λ∈[0,1] を 5 成分に区分線形で写す。境界は既定で λ=0.25 / 0.75
+（`build_hybrid_system --phase-bounds p1,p2` で変更可。`fep_protocol.json` の
+`phase_bounds` に記録され、`analyze_fep` の位相分解と `protocols_equivalent` は
+その値を読む。電荷変化変異では decharge 相を長く取る用途）。
 
 | 区間 | 動く成分 |
 |---|---|
@@ -117,8 +120,15 @@ chain ID と残基番号を保つので同じ `--mutation` 文字列がそのま
 - Replica exchange / REST 併用（Perses）。
 - 多重変異、挿入・欠失、非標準残基、リガンドの変換。
 - 電荷変化変異の有限サイズ補正（Rocklin 型）。
-- 結合親和性 ddG（complex / apo の 2 leg）。DAG 上は同じ形で載るが、v1 は
-  折り畳み安定性のみを skill 化。
+- 結合親和性 ddG の skill 化。`estimate_ddg --cycle binding`（complex / apo、
+  `analysis_subjects` で leg を指名）は 2026-09-20 に入ったが、apo leg を派生させる
+  prep ツール（リガンド除去 + `leg_role = apo`）と手順書はまだ無い。
+- 位置拘束付きサンプリングは `run_fep --restraint-atoms`（2026-09-20）で可能に
+  なった: leg 内の全窓で同一の調和拘束（eq 座標基準）で、λ 差の reduced potential
+  からは相殺するがアンサンブルは変える。折り畳み側だけに掛ける運用を skill に記載。
+- 端状態ビルダーは `--endstate-builder openmm --forcefield-xml …` で
+  `build_openmm_system` も選べる（2026-09-20）。真空 ACE-X-NME で端点検証を確認、
+  溶媒和系は CRYST1 を書いて渡す経路が未実走。
 
 ## 9. 検証状況
 

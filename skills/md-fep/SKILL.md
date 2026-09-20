@@ -63,7 +63,20 @@ unambiguous against the structure.
 
 Charge-changing mutations (e.g. K→A, D→N) are accepted; `build_hybrid_system`
 returns a `Charge-changing mutation` warning (PME neutralising background, no
-finite-size correction). Report that warning verbatim with the ddG.
+finite-size correction). Report that warning verbatim with the ddG. Give the
+decharge phase more room for them: `--phase-bounds 0.35,0.75` (default
+`0.25,0.75`: old charges off by the first bound, steric swap done by the
+second, new charges on after it), identically on both legs.
+
+Options that change the physics, all to be used identically on both legs
+unless stated:
+
+| Option | Tool | When |
+|---|---|---|
+| `--phase-bounds p1,p2` | `build_hybrid_system` | charge-changing or bulky mutations whose decharge / swap phase shows low overlap |
+| `--endstate-builder openmm --forcefield-xml ...` | `build_hybrid_system` | force fields outside the Amber catalog (no prepared ligands on this path) |
+| `--restraint-atoms backbone` (`--restraint-force-constant`, kJ/mol/nm²) | `run_fep` | the folded leg loosens during the transformation (destabilising core mutations); the tripeptide leg normally runs without it — a restraint is part of one leg's Hamiltonian at every λ, so the legs may differ here |
+| `--cycle binding` | `estimate_ddg` | complex / apo legs instead of folded / unfolded (name the legs with `analysis_subjects` in `--parent-node-ids` order; no `extract_tripeptide` marker applies) |
 
 ## Workflow
 
@@ -178,7 +191,10 @@ source ─ prep_001 ─ solv ─ topo(hybrid) ─ min ─ eq ─ fep ─ analyze
    (`fep_legs_incompatible` otherwise, node stays pending), then writes
    `artifacts/ddg.json` and records ddG on the node. Report
    `ddG_kcal_mol ± ddG_error_kcal_mol`, the two leg dG values, sampling per
-   window, and every warning carried from the legs.
+   window, any `run_fep` restraint per leg, and every warning carried from
+   the legs. `md-report` on the ddG node then finds both legs in its lineage
+   (an `alchemical` block per subject, MBAR / hybrid-topology / soft-core /
+   folding-cycle citations from the recorded metadata).
 
 ## Failure codes
 
@@ -197,6 +213,8 @@ source ─ prep_001 ─ solv ─ topo(hybrid) ─ min ─ eq ─ fep ─ analyze
 | `fep_ddg_scope_invalid`, `fep_ddg_parents_invalid` | The ddG node is `comparison` over exactly two completed `analyze_fep` nodes; recreate it that way. |
 | `fep_leg_role_ambiguous` | Neither leg descends from `extract_tripeptide`; derive the unfolded leg with it, or declare `analysis_subjects` `[{"label": "folded"}, {"label": "unfolded"}]` in `--parent-node-ids` order. |
 | `fep_legs_incompatible` | The message names the differing setting; rebuild that leg's `build_hybrid_system` / `run_fep` with the other leg's options. |
+| `hybrid_topology_production_blocked` | A `prod` node was created under the hybrid `eq`; it is still pending — create a `fep` node there instead (or a plain `topo` for wild-type MD). |
+| `restraint_selection_empty` | `--restraint-atoms` matched nothing in the hybrid topology; use `backbone` / `CA` / `heavy`. |
 | `invalid_parameter_value` | The node is still pending: fix the argument and run the same node again. |
 | low `neighbour_overlap` warning | Densify lambdas there (`skills/md-fep/convergence.md`). |
 

@@ -356,7 +356,9 @@ def run_sst2(
                 restart_state_file = str(Path(job_dir) / "nodes" / restart_from_node_id / side)
         if _inputs.get("input_resolution_error") or _inputs.get("input_resolution_errors"):
             result["errors"].append(_inputs.get("input_resolution_error") or "; ".join(_inputs.get("input_resolution_errors")))
-            result["code"] = "input_resolution_blocked"
+            # e.g. hybrid_topology_production_blocked: a hybrid topology is
+            # sampled by fep nodes, never by production.
+            result["code"] = _inputs.get("input_resolution_code") or "input_resolution_blocked"
             from mdclaw._node import fail_node_from_result
             return fail_node_from_result(job_dir, node_id, result)
         _ctx = validate_node_execution_context(

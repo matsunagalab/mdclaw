@@ -457,7 +457,9 @@ signature, update the relevant section here and the matching skill examples.
   `sst2_restart_missing`, `sst2_requires_pme`, `sst2_driver_failed`.
 - `run_production(...)`: production MD with topology-inherited HMR/implicit
   solvent, state/checkpoint persistence,
-  DAG restart resolution, and timeline metadata. Accepts an optional custom
+  DAG restart resolution, and timeline metadata. Refuses a hybrid (alchemical)
+  topology ancestor (`hybrid_topology_production_blocked`, node left pending;
+  `run_sst2` too) — lambda windows are the `fep` stage. Accepts an optional custom
   force / CV bias via `custom_force_script` (an autograd-backed
   `energy(positions, ctx)` wrapped in `PythonTorchForce`; upstream deprecated
   the TorchScript `TorchForce`, so this is the only route), plus
@@ -561,7 +563,11 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   (`fep/mutant.py`), models the mutant side chain (HPacker, PDBFixer
   fallback) and splices only that residue into a copy of the WT PDB, builds
   both end states with `build_amber_system` (under
-  `artifacts/endstates/`), maps atoms (`fep/mapping.py`: backbone + CB core,
+  `artifacts/endstates/`; `endstate_builder="openmm"` uses
+  `build_openmm_system` with `forcefield_xml` instead, for force fields
+  outside the Amber catalog — the solvation box is written as a CRYST1
+  record with the same 2 Å padding `build_amber_system` applies; prepared
+  ligands are not supported on that path), maps atoms (`fep/mapping.py`: backbone + CB core,
   everything else in the residue is a dummy in one state), fuses the two
   Systems (`fep/hybrid.py`), relaxes the appearing atoms at state B with the
   rest frozen, and checks that the hybrid reproduces both end-state energies
@@ -576,10 +582,14 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   energies; the tool result and node metadata carry only a summary) — and
   `fep_protocol.json` (`n_windows` / explicit `lambda_schedule`, a strictly
   increasing list of lambdas from 0 to 1; five global parameters `fep_elec_old`,
-  `fep_sterics_old`, `fep_core`, `fep_sterics_new`, `fep_elec_new`, phase
-  bounds λ=0.25/0.75). Downstream `min`/`eq` treat the hybrid as a normal
-  topology (λ=0 is the wild type). Charge-changing mutations pass with a
-  warning. Codes: `fep_mutation_spec_invalid`,
+  `fep_sterics_old`, `fep_core`, `fep_sterics_new`, `fep_elec_new`; phase
+  bounds default λ=0.25/0.75, `phase_bounds="p1,p2"` moves the end of the
+  decharge phase and the end of the steric swap, e.g. a longer decharge for a
+  charge-changing mutation). Downstream `min`/`eq` treat the hybrid as a normal
+  topology (λ=0 is the wild type); a `prod` node under it is refused at input
+  resolution (`hybrid_topology_production_blocked`, the node stays pending —
+  sampling on a hybrid is the `fep` stage). Charge-changing mutations pass
+  with a warning. Codes: `fep_mutation_spec_invalid`,
   `fep_mutation_residue_not_found`, `fep_mutation_residue_ambiguous`,
   `fep_mutant_model_failed`, `fep_endstate_build_failed`,
   `fep_environment_mismatch`, `fep_mapping_failed`, `fep_unsupported_force`,
@@ -609,7 +619,15 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   is required only for windows that are continued), so a chain's leaf always
   lists every window.
   Ensemble follows the eq node (NPT pressure inherited, NVT stays NVT;
-  `pressure_bar` 0 forces NVT); timestep/HMR follow the topology. Argument
+  `pressure_bar` 0 forces NVT); timestep/HMR follow the topology.
+  `restraint_atoms` (`solute_heavy`, `CA`, `backbone`, `heavy`) with
+  `restraint_force_constant` (kJ/mol/nm², default 100) adds one harmonic
+  positional restraint to the equilibrated coordinates that is identical in
+  every window of the leg (it cancels in the reduced-potential differences
+  but changes the ensemble, e.g. to hold a fold the mutation would loosen);
+  an extension inherits the parent's restraint and refuses a different one,
+  the index records it, and `analyze_fep` never pools restrained with
+  unrestrained windows. Argument
   and input-resolution errors are reported before the node starts (it stays
   pending). A fresh window with `equilibration_time_ns` below 0.05 gets a
   warning (the start minimisation cools the box). Trajectories are off by default
@@ -617,11 +635,13 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   matched against the flag's own spelling. Codes:
   `fep_hybrid_topology_required`, `fep_lambda_index_invalid`,
   `fep_protocol_invalid`, `fep_windows_missing`, `fep_windows_incompatible`,
-  `fep_parent_ambiguous`, `invalid_parameter_value`, `fep_sampling_failed`.
+  `fep_parent_ambiguous`, `invalid_parameter_value`, `restraint_selection_empty`,
+  `fep_sampling_failed`.
 - `analyze_fep(...)` (`analyze` node whose parents are all `fep`, created
   with `analysis_data_scope: alchemical`; `mdclaw/fep/analysis.py`): merges
-  the parents' `fep_windows.json` (protocols compared by content; temperature
-  and pressure/ensemble must match because `u_kn` carries pV/kT; same index
+  the parents' `fep_windows.json` (protocols compared by content; temperature,
+  pressure/ensemble and the positional restraint must match because `u_kn`
+  carries pV/kT and the restraint is part of the Hamiltonian; same index
   across parents = pooled replicas; a segment listed by both a fep node and
   its extension child is counted once, with a warning), drops
   `discard_fraction` (0.1) of every
@@ -649,19 +669,33 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   `fep_tripeptide_extraction_failed`, `fep_tripeptide_cap_failed`.
 - `estimate_ddg(...)` (`analyze` node with
   `analysis_data_scope: comparison` over the two legs' `analyze_fep` nodes,
-  `mdclaw/fep/analysis.py`): `ddG = dG_folded − dG_unfolded`, errors in
-  quadrature. The unfolded leg is the parent whose prep ancestry carries
-  `leg_role = "unfolded"`; otherwise `analysis_subjects`
-  `[folded, unfolded]` in parent order decide (`fep_leg_role_ambiguous`
-  when neither). Before subtracting it checks mutation, lambda protocol
-  (`protocols_equivalent`), force field, water model, HMR, temperature and
-  pressure of both legs (`fep_legs_incompatible`; the node stays pending).
+  `mdclaw/fep/analysis.py`): `ddG = dG(reference leg) − dG(comparison leg)`,
+  errors in quadrature. `cycle="folding"` (default) names the legs `folded` /
+  `unfolded` (positive = destabilising); `cycle="binding"` names them
+  `complex` / `apo` (positive = weaker binding). The comparison leg is the
+  parent whose prep ancestry carries `leg_role` (`extract_tripeptide` writes
+  `"unfolded"`); otherwise `analysis_subjects` with the cycle's two leg names
+  in parent order decide (`fep_leg_role_ambiguous` when neither). Before
+  subtracting it checks mutation, lambda protocol (`protocols_equivalent`),
+  force field, water model, HMR, temperature and pressure of both legs
+  (`fep_legs_incompatible`; the node stays pending) — a positional restraint
+  may differ between legs and is reported per leg.
   Writes `artifacts/ddg.json` and records `analysis = "fep_ddg"` with ddG on
   the node; appends a study-log decision when the job's params carry
   `study_dir`. Direct (Python) mode with `folded` / `unfolded` result files
   writes to `output_file`, else `<study_dir>/evidence/`, else `outputs/`.
   Codes: `fep_ddg_scope_invalid`, `fep_ddg_parents_invalid`,
-  `fep_leg_role_ambiguous`, `fep_legs_incompatible`, `fep_result_invalid`.
+  `fep_leg_role_ambiguous`, `fep_legs_incompatible`, `fep_result_invalid`,
+  `invalid_parameter_value`.
+- Reporting (`mdclaw/evidence/reporting.py`): `fep` nodes are sampling
+  stages like `prod` (`sampling_node_ids`, `fep_node_ids`, and the
+  `production_frontier` used for replica checks include them), each subject
+  carries an `alchemical` block (hybrid topologies, fep nodes, MBAR legs,
+  ddG — recorded metadata only), and `citations.py` selects
+  `Gapsys2015pmx` / `Beutler1994SoftCore` (hybrid topo), `Shirts2008MBAR` /
+  `Klimovich2015Guidelines` / `Chodera2007Timeseries` /
+  `Chodera2016Equilibration` (MBAR leg) and `Seeliger2010Thermostability`
+  (folding cycle) from node metadata.
 
 ## `visualization/`
 
