@@ -28,8 +28,16 @@ from the DAG.
   work.
 - Cluster resources/policy if unknown: inspect with `mdclaw inspect_cluster`
   and `mdclaw show_policy`. A partition whose `gpu_type` is `null` mixes GPU
-  models: read its `gpu_inventory` / `node_gres` and pin the model with
-  `--extra-sbatch "--gres=gpu:<model>:1"` instead of trusting `gpus_per_node`.
+  models: read the top-level `gpu_inventory` (per model: `node_list`,
+  `gpus_total`, `gpus_free`) and `node_gres` (per node; a node may carry
+  several models) and pin a model that has `gpus_free > 0` with
+  `--gres gpu:<model>:1` instead of trusting `gpus_per_node`. On a large
+  machine `node_list` / `free_node_list` are folded host ranges
+  (`rk[0007,2500-2502]`, usable as `--nodelist`) and `node_gres` is grouped per
+  GRES (`node_gres_grouped: true`). `gpus_free` is
+  `null` when the site does not report GresUsed. When every model shows 0 free,
+  a submission will queue: say so, with `sbatch --test-only`'s start estimate,
+  before submitting a long chain.
   When policy is missing or the user gives limits,
   set it explicitly with `mdclaw set_policy` (partitions, GPU/time/memory
   caps, default partition). For containerized compute nodes, run

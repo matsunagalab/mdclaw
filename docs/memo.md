@@ -7,6 +7,16 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-20 — test-run feedback 23–24: `inspect_cluster` の GPU 在庫（複数型ノード、空き枚数、トップレベル）と、T4L 検証の中止（branch `fix/inspect-cluster-gres`）
+
+- **24（バグ、確認）**: GRES のパースが `re.search` で最初の 1 件しか読まず、`m2  gpu:3090:1(S:0),gpu:a5000:1(S:0)` の a5000 が落ちていた（`gpu_types` に無い、`total_gpus` 49）。`_parse_gpu_models` が全エントリを `{型: 枚数}` で返す（`Gres` と `GresUsed` の両方に使う）。実クラスタで 7 型・50 枚になり、テスターが `scontrol` から数えた正解と一致。
+- **23（半分正しい）**: `gpu_inventory` / `node_gres` は `partitions[i]` の下にはあり、トップレベルに無かった（テスターが見た「空」はトップレベル）。警告文が場所を言わずに「see gpu_inventory / node_gres」と案内していたのが実際の問題。トップレベルにも出し（**物理ノード単位**で集計するので、複数 partition に属するノードの GPU は 1 回だけ数える。`total_gpus` も同じ）、警告文に型ごとの要約（`a6000: 0/7 free on floyd; …`）を入れた。
+- **空き枚数を足した**: 型ごと・ノードごとに `gpus_total` / `gpus_used` / `gpus_free`（`GresUsed` を同じパーサで読む。サイトが `GresUsed` を返さないときは `null` — 「0 枚空き」とは言わない）。
+- **出力がノード数に比例して膨らまないようにした（ユーザー指摘: 「Rikyu でやったらとんでもないことにならない？」）**: 最初の版は型ごとの全ノード名を警告文 1 本に連結し、トップレベル `node_gres` をノードごと 1 行で返していた（以前からの `partitions[].node_list` / `node_gres` も同じ作りで、今回それを複製してしまった）。数千ノードのスパコンでは警告文と `result.json` / `.mdclaw_cluster.json` が MB 級になる。32 ノードを超えたら、ホスト名は Slurm の範囲表記に畳んで 8 件まで（`rk[0001-3000]`、`+N more`。`--nodelist` にそのまま使える）、`node_gres` は GRES 文字列ごとのグループ行（ノード数・使用量の合計、`node_gres_grouped: true`）、`gpu_inventory` に `nodes_with_free_gpus` / `free_node_list` を足して「どこが空いているか」はノード表なしで答えられるようにした。集計は畳む前の生データから行う。3000 ノード × 2 partition のテストで出力・設定ファイルとも 6 kB 未満。32 ノード以下のクラスタでは従来どおりノード名とノード別の行を返す。
+- **これが要ると分かった経緯（自分の誤判断の記録）**: T4L L99A / ベンゼンの ABFE 検証を自分で回そうとして、`squeue` の表示（1080 を明示要求しているジョブが n2・n4 で各 4 本）から「1080 が 12 枚空いている」と判断し、両 leg のチェーン 7 ジョブを投入した。実際は `GresUsed` で全 50 枚が使用中で（他ユーザーのジョブは gres 表示が `N/A` でも GPU を使っている）、`sbatch --test-only` の開始見積もりは 9/22〜9/27。ユーザーの判断で検証は中止し、投入した 7 ジョブはキャンセルした（ユーザー自身のジョブには触れていない）。`inspect_cluster` が空き枚数を返していれば投入前に分かった。`hpc-run/SKILL.md` に「全型 0 枚空きなら、長いチェーンを投入する前にそう伝える」を追記。
+- **T4L 検証の到達点**: `outputs/abfe_t4l/`（git 管理外）に 181L から調製した複合体と両 leg のデカップリング用トポロジーまで（complex 46,457 粒子・端点差 2.8e-5 kJ/mol、solvent 5,404 粒子、ともに端点検証 pass）。実パイプラインでの ABFE トポロジー構築は 3PWB/GOL に続く 2 例目。Boresch 選択がベンゼンで通るか、overlap、dG_bind の値は**未確認のまま**。再開は `outputs/abfe_t4l/submit_pass1.py`。
+- テスト: `test_slurm_server.py` に「2 型を持つノード + 2 partition に属するノード」「`GresUsed` が取れないサイト」、既存の混在 partition テストに空き枚数・トップレベル・警告文の要約。slurm / CLI 系 303 passed。
+
 ## 2026-09-20 — FEP test-run feedback 21: 実行中の fep ノードが時間制限に収まるかを `check_job` が警告（branch `feat/abfe`）
 
 `--sampling-time-ns` × 窓数 × 時間制限の組み合わせは事前に見積もりにくく、共有 GPU では 5〜10 倍外れる、というテスターの指摘。材料は全部あった: 投入時の tracker 記録の `time_limit`、`check_job` が取る Slurm の経過時間、`run_fep` が窓の完了ごとに書き直す `fep_windows.json` の窓別 `wall_time_s`。

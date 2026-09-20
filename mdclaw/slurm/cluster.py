@@ -30,15 +30,87 @@ from mdclaw.slurm.config import CONTAINER_SOURCE_MODES, _is_partition_allowed, _
 _GRES_GPU_RE = re.compile(r"gpu:(?:([^:,(]+):)?(\d+)")
 
 
-def _parse_gpu_gres(gres: Any) -> tuple[Optional[str], int]:
-    """``gpu:a6000:7(S:0-1)`` -> ``("a6000", 7)``; ``gpu:2`` -> ``(None, 2)``;
-    no GPU entry -> ``(None, 0)``."""
-    if not isinstance(gres, str) or "gpu" not in gres:
-        return None, 0
-    m = _GRES_GPU_RE.search(gres)
-    if not m:
-        return None, 0
-    return (m.group(1) or None), int(m.group(2))
+# Output must not grow with the machine: a site with thousands of nodes gets
+# folded host ranges and per-GRES groups instead of one row per node.
+MAX_NODE_ROWS = 32
+MAX_HOST_ITEMS = 8
+_HOST_NUMBER_RE = re.compile(r"^(.*?)(\d+)$")
+
+
+def _fold_hostnames(names: list[str], max_items: int = MAX_HOST_ITEMS) -> list[str]:
+    """``["n1","n2","n3","gpu07"]`` -> ``["gpu07", "n[1-3]"]``: consecutive
+    numbered hosts become one range (Slurm hostlist style), and the result is
+    capped at ``max_items`` entries plus a ``"+N more"`` marker."""
+    numbered: dict[tuple[str, int], list[int]] = {}
+    plain: list[str] = []
+    for name in sorted(set(str(n) for n in names if n)):
+        m = _HOST_NUMBER_RE.match(name)
+        if m:
+            numbered.setdefault((m.group(1), len(m.group(2))), []).append(int(m.group(2)))
+        else:
+            plain.append(name)
+    folded = list(plain)
+    for (prefix, width), numbers in sorted(numbered.items()):
+        numbers.sort()
+        ranges, start, prev = [], numbers[0], numbers[0]
+        for n in numbers[1:]:
+            if n != prev + 1:
+                ranges.append((start, prev))
+                start = n
+            prev = n
+        ranges.append((start, prev))
+        if len(numbers) == 1:
+            folded.append(f"{prefix}{numbers[0]:0{width}d}")
+        else:
+            body = ",".join(f"{a:0{width}d}" if a == b else f"{a:0{width}d}-{b:0{width}d}" for a, b in ranges)
+            folded.append(f"{prefix}[{body}]")
+    folded.sort()
+    if len(folded) > max_items:
+        folded = [*folded[:max_items], f"+{len(folded) - max_items} more"]
+    return folded
+
+
+def _bounded_node_rows(rows: list[dict]) -> tuple[list[dict], bool]:
+    """Per-node GRES rows as they are on a small cluster; on a large one, one
+    row per distinct GRES string with the node count, folded host ranges and
+    summed usage. Returns ``(rows, grouped)``."""
+    if len(rows) <= MAX_NODE_ROWS:
+        return rows, False
+    groups: dict[str, dict] = {}
+    for row in rows:
+        g = groups.setdefault(str(row.get("gres")), {
+            "nodes": 0, "_names": [], "gres": row.get("gres"), "gpu_type": row.get("gpu_type"),
+            "gpu_models": row.get("gpu_models"), "gpus_per_node": row.get("gpus"), "gpus": 0, "gpus_used": 0,
+            "gpus_free": 0, "nodes_with_free_gpus": 0})
+        g["nodes"] += 1
+        if row.get("node"):
+            g["_names"].append(row["node"])
+        g["gpus"] += row.get("gpus") or 0
+        if g["gpus_used"] is None or row.get("gpus_used") is None:
+            g["gpus_used"] = g["gpus_free"] = g["nodes_with_free_gpus"] = None
+        else:
+            g["gpus_used"] += row["gpus_used"]
+            g["gpus_free"] += row["gpus_free"]
+            g["nodes_with_free_gpus"] += 1 if row["gpus_free"] else 0
+    out = []
+    for g in groups.values():
+        g["node_list"] = _fold_hostnames(g.pop("_names"))
+        out.append(g)
+    out.sort(key=lambda g: -g["nodes"])
+    return out[:MAX_NODE_ROWS], True
+
+
+def _parse_gpu_models(gres: Any) -> dict[str, int]:
+    """Every GPU entry of a GRES string: ``gpu:3090:1(S:0),gpu:a5000:1(S:0)`` ->
+    ``{"3090": 1, "a5000": 1}``. An untyped entry (``gpu:2``) is keyed ``"gpu"``.
+    Works for ``Gres`` and ``GresUsed`` (``gpu:a6000:7(IDX:0-6)``) alike."""
+    models: dict[str, int] = {}
+    if not isinstance(gres, str):
+        return models
+    for m in _GRES_GPU_RE.finditer(gres):
+        key = m.group(1) or "gpu"
+        models[key] = models.get(key, 0) + int(m.group(2))
+    return models
 
 
 def _parse_sinfo_text(stdout: str) -> list[dict]:
@@ -145,20 +217,47 @@ def _aggregate_partitions(rows: list[dict]) -> list[dict]:
             p["max_time"] = row["max_time"]
         if p["memory_mb"] is None and row.get("memory_mb"):
             p["memory_mb"] = row["memory_mb"]
-        gpu_type, gpus = _parse_gpu_gres(row.get("gres"))
-        if gpus:
-            p["gpus_per_node"] = max(p["gpus_per_node"], gpus)
-            key = gpu_type or "gpu"
-            inv = p["gpu_inventory"].setdefault(key, {"nodes": 0, "gpus_per_node": gpus, "node_list": []})
-            inv["nodes"] += count
-            inv["gpus_per_node"] = max(inv["gpus_per_node"], gpus)
-            if node and node not in inv["node_list"]:
-                inv["node_list"].append(node)
+        # A node may carry several GPU models (gpu:3090:1,gpu:a5000:1): every
+        # entry counts, not just the first.
+        models = _parse_gpu_models(row.get("gres"))
+        used = _parse_gpu_models(row.get("gres_used")) if row.get("gres_used") is not None else None
+        if models:
+            p["gpus_per_node"] = max(p["gpus_per_node"], max(models.values()))
+            for key, gpus in models.items():
+                inv = p["gpu_inventory"].setdefault(
+                    key, {"nodes": 0, "gpus_per_node": gpus, "node_list": [], "gpus_total": 0, "gpus_used": 0,
+                          "gpus_free": 0, "usage_known": True})
+                inv["nodes"] += count
+                inv["gpus_per_node"] = max(inv["gpus_per_node"], gpus)
+                inv["gpus_total"] += gpus * count
+                if used is None:
+                    inv["usage_known"] = False
+                else:
+                    inv["gpus_used"] += min(used.get(key, 0), gpus)
+                if node and node not in inv["node_list"]:
+                    inv["node_list"].append(node)
+            total = sum(models.values())
+            n_used = None if used is None else sum(min(used.get(k, 0), v) for k, v in models.items())
             p["node_gres"].append({
                 "node": node, "gres": row.get("gres"), "gres_used": row.get("gres_used"),
-                "gpu_type": gpu_type, "gpus": gpus, "state": state or None,
+                "gpu_type": next(iter(models)) if len(models) == 1 and "gpu" not in models else None,
+                "gpu_models": models, "gpus": total, "gpus_used": n_used,
+                "gpus_free": None if n_used is None else total - n_used, "state": state or None,
             })
     for p in parts.values():
+        for inv in p["gpu_inventory"].values():
+            if inv.pop("usage_known"):
+                inv["gpus_free"] = inv["gpus_total"] - inv["gpus_used"]
+            else:
+                inv["gpus_used"] = inv["gpus_free"] = None
+            if len(inv["node_list"]) > MAX_NODE_ROWS:
+                inv["node_list"] = _fold_hostnames(inv["node_list"])
+        # The cluster-wide totals are computed from the raw rows (inspect_cluster
+        # pops them); what is reported is bounded.
+        p["_node_rows"] = p["node_gres"]
+        p["node_gres"], p["node_gres_grouped"] = _bounded_node_rows(p["node_gres"])
+        if len(p["node_list"]) > MAX_NODE_ROWS:
+            p["node_list"] = _fold_hostnames(p["node_list"])
         types = sorted(k for k in p["gpu_inventory"] if k != "gpu")
         p["gpu_types"] = types
         p["gpu_type"] = types[0] if len(types) == 1 else None
@@ -188,6 +287,12 @@ def inspect_cluster(output_file: Optional[str] = None) -> dict:
             partition has one GPU model, ``gpu_types`` / ``gpu_inventory`` /
             ``node_gres`` when it mixes models)
           - gpu_types: list[str] - Available GPU types (all partitions)
+          - gpu_inventory: dict - per GPU model, cluster-wide: nodes, node_list,
+            gpus_total / gpus_used / gpus_free (used / free are None when the
+            site does not report GresUsed). A node with several models
+            (``gpu:3090:1,gpu:a5000:1``) counts under each.
+          - node_gres: list[dict] - one entry per physical node: gres,
+            gres_used, gpu_models, gpus / gpus_used / gpus_free
           - total_nodes: int
           - total_gpus: int
           - errors: list[str]
@@ -198,6 +303,8 @@ def inspect_cluster(output_file: Optional[str] = None) -> dict:
         "config_file": None,
         "partitions": [],
         "gpu_types": [],
+        "gpu_inventory": {},
+        "node_gres": [],
         "total_nodes": 0,
         "total_gpus": 0,
         "errors": [],
@@ -251,11 +358,59 @@ def inspect_cluster(output_file: Optional[str] = None) -> dict:
         return result
 
     partitions = _aggregate_partitions(rows)
+    # Cluster-wide view, one entry per physical node: a node listed in several
+    # partitions is counted once here (the per-partition blocks keep their own).
+    node_gres: dict[str, dict] = {}
+    anonymous: list[dict] = []
+    for p in partitions:
+        for row in p.pop("_node_rows", None) or []:
+            if row.get("node"):
+                node_gres.setdefault(row["node"], row)
+            else:
+                anonymous.append(row)
+    gpu_inventory: dict[str, dict] = {}
+    for row in [*node_gres.values(), *anonymous]:
+        for model, gpus in (row.get("gpu_models") or {}).items():
+            inv = gpu_inventory.setdefault(model, {"nodes": 0, "node_list": [], "gpus_total": 0, "gpus_used": 0,
+                                                   "gpus_free": 0, "usage_known": True, "_free_nodes": []})
+            inv["nodes"] += 1
+            inv["gpus_total"] += gpus
+            if row.get("node"):
+                inv["node_list"].append(row["node"])
+            used = _parse_gpu_models(row.get("gres_used")) if row.get("gres_used") is not None else None
+            if used is None:
+                inv["usage_known"] = False
+            else:
+                inv["gpus_used"] += min(used.get(model, 0), gpus)
+                if row.get("node") and used.get(model, 0) < gpus:
+                    inv["_free_nodes"].append(row["node"])
+    for inv in gpu_inventory.values():
+        free_nodes = inv.pop("_free_nodes", [])
+        if inv.pop("usage_known"):
+            inv["gpus_free"] = inv["gpus_total"] - inv["gpus_used"]
+            # where to aim --nodelist / what "free" means on a big machine
+            inv["nodes_with_free_gpus"] = len(free_nodes)
+            inv["free_node_list"] = _fold_hostnames(free_nodes)
+        else:
+            inv["gpus_used"] = inv["gpus_free"] = None
+        if len(inv["node_list"]) > MAX_NODE_ROWS:
+            inv["node_list"] = _fold_hostnames(inv["node_list"])
+
     mixed = [p["name"] for p in partitions if len(p["gpu_types"]) > 1]
     if mixed:
+        summary = "; ".join(
+            f"{model}: " + (f"{inv['gpus_free']}/{inv['gpus_total']} free" if inv["gpus_free"] is not None
+                            else f"{inv['gpus_total']}")
+            # a handful of hosts reads best as plain names; more than that folds into ranges
+            + (f" on {','.join(inv['node_list'] if len(inv['node_list']) <= 4 else _fold_hostnames(inv['node_list'], 4))}"
+               if inv["node_list"] else "")
+            for model, inv in sorted(gpu_inventory.items())[:MAX_HOST_ITEMS])
+        if len(gpu_inventory) > MAX_HOST_ITEMS:
+            summary += f"; +{len(gpu_inventory) - MAX_HOST_ITEMS} more models"
         result["warnings"].append(
-            f"partition(s) {mixed} mix GPU models; see gpu_inventory / node_gres and pin the model with "
-            "--gres gpu:<type>:N (gpu_type is null for them)")
+            f"partition(s) {mixed} mix GPU models (gpu_type is null for them): {summary}. Pin the model with "
+            "--gres gpu:<type>:N; per-model counts are in gpu_inventory and per-node Gres / GresUsed in node_gres "
+            "(top level, and per partition under partitions[].)")
 
     # Collect GPU types and totals
     gpu_types = set()
@@ -265,13 +420,19 @@ def inspect_cluster(output_file: Optional[str] = None) -> dict:
         total_nodes += p.get("nodes", 0)
         inventory = p.get("gpu_inventory") or {}
         if inventory:
-            total_gpus += sum(inv["gpus_per_node"] * inv["nodes"] for inv in inventory.values())
+            total_gpus += sum(inv["gpus_total"] for inv in inventory.values())
         else:
             total_gpus += p.get("gpus_per_node", 0) * p.get("nodes", 0)
         gpu_types.update(p.get("gpu_types") or ([p["gpu_type"]] if p.get("gpu_type") else []))
+    if gpu_inventory and not anonymous:
+        # Named nodes: count each physical GPU once even if its node sits in several partitions.
+        total_gpus = sum(inv["gpus_total"] for inv in gpu_inventory.values())
 
     result["partitions"] = partitions
     result["gpu_types"] = sorted(gpu_types)
+    result["gpu_inventory"] = gpu_inventory
+    result["node_gres"], result["node_gres_grouped"] = _bounded_node_rows(
+        sorted(node_gres.values(), key=lambda r: str(r.get("node"))) + anonymous)
     result["total_nodes"] = total_nodes
     result["total_gpus"] = total_gpus
 

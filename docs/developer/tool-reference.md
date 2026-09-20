@@ -802,7 +802,19 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
   `gpu_types` / `gpu_inventory` (nodes and GPUs per model) / `node_gres`
   (raw GRES and, when sinfo knows it, GresUsed per node) so a caller can pin
   `--gres gpu:<model>:N`; the text fallback (sinfo without the JSON
-  serializer plugin) is announced in `warnings`.
+  serializer plugin) is announced in `warnings`. Every GPU entry of a node's
+  GRES counts (`gpu:3090:1,gpu:a5000:1` is two models on one node,
+  `node_gres[].gpu_models`). `gpu_inventory` and `node_gres` also sit at the
+  top level, aggregated per physical node (a node in several partitions is
+  counted once, as is `total_gpus`), with `gpus_total` / `gpus_used` /
+  `gpus_free` per model and per node (`null` when the site reports no
+  GresUsed); the mixed-partition warning carries the per-model summary.
+  The output does not grow with the machine: above 32 nodes, host lists fold
+  into Slurm ranges capped at 8 entries (`rk[0001-3000]`, `+N more`),
+  `node_gres` becomes one row per distinct GRES string with node count and
+  summed usage (`node_gres_grouped: true`), and `gpu_inventory` adds
+  `nodes_with_free_gpus` / `free_node_list` so "where is something free" stays
+  answerable without a per-node table. A 3000-node site returns < 6 kB.
 - `submit_job(...)`: submit one SLURM job and link it to an optional DAG node.
   For a linked node and a literal `mdclaw ... run_production` (or
   `python -m mdclaw._cli ...`) command, `condition_preflight` reports the

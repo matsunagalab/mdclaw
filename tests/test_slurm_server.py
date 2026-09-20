@@ -157,15 +157,113 @@ class TestInspectCluster:
         assert gpu["gpu_type"] is None                      # more than one model: no single answer
         assert gpu["gpu_types"] == ["1080", "2080", "a6000", "rtx8000"]
         assert gpu["gpus_per_node"] == 10 and gpu["nodes"] == 5
-        assert gpu["gpu_inventory"]["a6000"] == {"nodes": 1, "gpus_per_node": 7, "node_list": ["floyd"]}
-        assert gpu["gpu_inventory"]["1080"] == {"nodes": 2, "gpus_per_node": 10, "node_list": ["n2", "n4"]}
+        assert gpu["gpu_inventory"]["a6000"] == {"nodes": 1, "gpus_per_node": 7, "node_list": ["floyd"],
+                                                 "gpus_total": 7, "gpus_used": 3, "gpus_free": 4}
+        assert gpu["gpu_inventory"]["1080"] == {"nodes": 2, "gpus_per_node": 10, "node_list": ["n2", "n4"],
+                                                "gpus_total": 20, "gpus_used": 10, "gpus_free": 10}
         floyd = next(n for n in gpu["node_gres"] if n["node"] == "floyd")
-        assert floyd["gres_used"] == "gpu:a6000:3(IDX:0-2)" and floyd["gpus"] == 7
+        assert floyd["gres_used"] == "gpu:a6000:3(IDX:0-2)" and floyd["gpus"] == 7 and floyd["gpus_free"] == 4
+        # the same inventory at the top level, where the warning points
+        assert result["gpu_inventory"]["1080"]["gpus_free"] == 10 and result["gpu_inventory"]["a6000"]["node_list"] == ["floyd"]
+        assert [n["node"] for n in result["node_gres"]] == ["floyd", "m1", "n2", "n4", "n5"]
+        warning = next(w for w in result["warnings"] if "mix GPU models" in w)
+        assert "a6000: 4/7 free on floyd" in warning and "1080: 10/20 free on n2,n4" in warning
         assert result["gpu_types"] == ["1080", "2080", "a6000", "rtx8000"]
         assert result["total_gpus"] == 7 + 2 + 10 + 10 + 9
         assert any("mix GPU models" in w for w in result["warnings"])
         cpu = next(p for p in result["partitions"] if p["name"] == "cpu")
         assert cpu["gpu_types"] == [] and cpu["gpus_per_node"] == 0
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_node_with_two_gpu_models_and_shared_nodes(self, mock_run, mock_check, tmp_path, monkeypatch):
+        """m2 carries ``gpu:3090:1(S:0),gpu:a5000:1(S:0)``: the second model used
+        to vanish (gpu_types without a5000, total one short). A node listed in
+        two partitions is one set of physical GPUs in the cluster-wide totals."""
+        monkeypatch.chdir(tmp_path)
+        text_output = (
+            "PARTITION NODELIST STATE GRES TIMELIMIT MEMORY CPUS\n"
+            "all* floyd mixed gpu:a6000:7 infinite 1031718 32\n"
+            "all* m2 mixed gpu:3090:1(S:0),gpu:a5000:1(S:0) infinite 63912 12\n"
+            "debug m2 mixed gpu:3090:1(S:0),gpu:a5000:1(S:0) infinite 63912 12\n"
+        )
+        gres_used = "floyd gpu:a6000:7(IDX:0-6)\nm2 gpu:3090:1(IDX:0),gpu:a5000:0(IDX:N/A)\n"
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, "sinfo --json"),
+            _mock_run_command(stdout=text_output),
+            _mock_run_command(stdout=gres_used),
+        ]
+        result = inspect_cluster()
+        assert result["gpu_types"] == ["3090", "a5000", "a6000"]
+        assert result["total_gpus"] == 9                                     # 7 + 1 + 1, m2 counted once
+        assert result["gpu_inventory"]["a5000"] == {"nodes": 1, "node_list": ["m2"], "gpus_total": 1, "gpus_used": 0,
+                                                    "gpus_free": 1, "nodes_with_free_gpus": 1, "free_node_list": ["m2"]}
+        assert result["gpu_inventory"]["3090"]["gpus_free"] == 0
+        m2 = next(n for n in result["node_gres"] if n["node"] == "m2")
+        assert m2["gpu_models"] == {"3090": 1, "a5000": 1} and m2["gpu_type"] is None
+        assert (m2["gpus"], m2["gpus_used"], m2["gpus_free"]) == (2, 1, 1)
+        everything = next(p for p in result["partitions"] if p["name"] == "all")
+        assert everything["gpu_types"] == ["3090", "a5000", "a6000"] and everything["gpus_per_node"] == 7
+        assert "a5000: 1/1 free on m2" in next(w for w in result["warnings"] if "mix GPU models" in w)
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_output_does_not_grow_with_the_machine(self, mock_run, mock_check, tmp_path, monkeypatch):
+        """A supercomputer-sized site (3000 GPU nodes in two overlapping
+        partitions) must not return one row or one host name per node."""
+        monkeypatch.chdir(tmp_path)
+        n = 3000
+        lines = ["PARTITION NODELIST STATE GRES TIMELIMIT MEMORY CPUS"]
+        for i in range(1, n + 1):
+            lines.append(f"gpu* rk{i:04d} mixed gpu:gb200:4 2-00:00:00 900000 144")
+            if i <= 100:
+                lines.append(f"debug rk{i:04d} mixed gpu:gb200:4 01:00:00 900000 144")
+        # every node fully used except rk0007 and rk2500-rk2502
+        free = {7, 2500, 2501, 2502}
+        used = "\n".join(f"rk{i:04d} gpu:gb200:{0 if i in free else 4}(IDX:0-3)" for i in range(1, n + 1))
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, "sinfo --json"),
+            _mock_run_command(stdout="\n".join(lines) + "\n"),
+            _mock_run_command(stdout=used + "\n"),
+        ]
+        result = inspect_cluster()
+        assert result["success"] is True and result["total_gpus"] == 4 * n        # overlapping partition counted once
+        inv = result["gpu_inventory"]["gb200"]
+        assert (inv["nodes"], inv["gpus_total"], inv["gpus_free"], inv["nodes_with_free_gpus"]) == (n, 4 * n, 16, 4)
+        assert inv["node_list"] == ["rk[0001-3000]"]
+        assert inv["free_node_list"] == ["rk[0007,2500-2502]"]                     # where the free GPUs are
+        assert result["node_gres_grouped"] is True and len(result["node_gres"]) == 1
+        group = result["node_gres"][0]
+        assert (group["nodes"], group["gpus"], group["gpus_free"], group["node_list"]) == (n, 4 * n, 16, ["rk[0001-3000]"])
+        gpu = next(p for p in result["partitions"] if p["name"] == "gpu")
+        assert gpu["nodes"] == n and gpu["node_list"] == ["rk[0001-3000]"] and len(gpu["node_gres"]) == 1
+        assert "_node_rows" not in gpu
+        assert len(json.dumps(result)) < 6000                                      # was megabytes per node list
+        assert len(json.loads((tmp_path / ".mdclaw_cluster.json").read_text())["partitions"]) == 2
+        assert len((tmp_path / ".mdclaw_cluster.json").read_text()) < 6000
+
+    def test_hostnames_fold_into_ranges(self):
+        from mdclaw.slurm.cluster import _fold_hostnames
+
+        assert _fold_hostnames(["n2", "n4", "n1", "floyd", "n5"]) == ["floyd", "n[1-2,4-5]"]
+        assert _fold_hostnames(["gpu07"]) == ["gpu07"]
+        assert _fold_hostnames([f"x{i}y" for i in range(20)], 3)[-1] == "+17 more"
+
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
+    def test_usage_is_unknown_without_gres_used(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        text_output = ("PARTITION NODELIST STATE GRES TIMELIMIT MEMORY CPUS\n"
+                       "gpu* g1 idle gpu:a100:4 infinite 128000 40\n")
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, "sinfo --json"),
+            _mock_run_command(stdout=text_output),
+            subprocess.CalledProcessError(1, "sinfo -O GresUsed"),
+        ]
+        result = inspect_cluster()
+        assert result["success"] is True and result["total_gpus"] == 4
+        assert result["gpu_inventory"]["a100"]["gpus_free"] is None          # not reported, not "0 free"
+        assert result["node_gres"][0]["gpus_free"] is None
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
     @patch("mdclaw.slurm._base.run_command")
@@ -184,6 +282,7 @@ class TestInspectCluster:
         assert gpu["gpu_types"] == ["a100", "h100"] and gpu["nodes"] == 2 and gpu["gpu_type"] is None
         assert {n["node"]: n["gres_used"] for n in gpu["node_gres"]} == {"g1": "gpu:a100:1(IDX:0)", "g2": "gpu:0"}
         assert result["total_gpus"] == 12
+        assert result["gpu_inventory"]["a100"]["gpus_free"] == 3 and result["gpu_inventory"]["h100"]["gpus_free"] == 8
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
     @patch("mdclaw.slurm._base.run_command")
