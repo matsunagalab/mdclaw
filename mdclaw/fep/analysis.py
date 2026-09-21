@@ -144,6 +144,26 @@ def _restraint_key(index: dict) -> Optional[tuple]:
     return (restraint.get("selection"), round(float(restraint.get("force_constant") or 0.0), 9))
 
 
+def _charge_correction_of(hybrid_manifest_file: Optional[str], protocol_file: Optional[str]) -> Optional[dict]:
+    """The net-charge treatment of this leg, from its ``hybrid_manifest.json``
+    (direct mode: the one written next to the protocol). ``None`` when no
+    manifest is readable; a manifest without the field ran uncorrected."""
+    candidates = [hybrid_manifest_file, str(Path(protocol_file).parent / "hybrid_manifest.json") if protocol_file else None]
+    for path in candidates:
+        if not path or not Path(path).is_file():
+            continue
+        try:
+            manifest = json.loads(Path(path).read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(manifest, dict):
+            continue
+        detail = dict(manifest.get("charge_correction_detail") or {})
+        detail["method"] = manifest.get("charge_correction") or detail.get("method") or "none"
+        return detail
+    return None
+
+
 def _load_segment(seg: dict, n_states: int, discard_fraction: float) -> np.ndarray:
     """One segment's ``u_kn`` with the first ``discard_fraction`` dropped
     (each restart re-equilibrates a little)."""
@@ -399,6 +419,7 @@ def analyze_fep(
         return fail_tool(result, code="fep_analysis_failed", message=f"{type(exc).__name__}: {exc}", job_dir=job_dir, node_id=node_id)
 
     result["warnings"].extend(mbar.pop("warnings"))
+    charge_correction = _charge_correction_of(hybrid_manifest_file, collected["protocol_file"])
     report = {
         "schema_version": 1,
         "mutation": protocol.get("mutation"),
@@ -407,6 +428,7 @@ def analyze_fep(
         "pressure_bar": collected["pressure_bar"],
         "ensemble": collected["ensemble"],
         "restraint": collected.get("restraint"),
+        "charge_correction": charge_correction,
         "fep_parent_node_ids": parent_ids,
         "fep_windows_files": fep_windows_files,
         "sources": collected["sources"],
@@ -429,6 +451,8 @@ def analyze_fep(
         "n_states": mbar["n_states"],
         "n_samples_per_state": mbar["n_samples_per_state"],
         "min_neighbour_overlap": mbar["min_neighbour_overlap"],
+        "restraint": collected.get("restraint"),
+        "charge_correction": charge_correction,
         "output_dir": str(out_dir),
     })
     if node_mode:
@@ -449,6 +473,7 @@ def analyze_fep(
                 "min_neighbour_overlap": mbar["min_neighbour_overlap"],
                 "discard_fraction": discard_fraction,
                 "subsampled": bool(subsample),
+                "charge_correction": (charge_correction or {}).get("method"),
                 "fep_parent_node_ids": parent_ids,
             },
             warnings=result["warnings"] or None,
@@ -563,6 +588,9 @@ def _leg_settings(leg: dict) -> dict:
             out["unverified"].append("hybrid_manifest")
     else:
         out["unverified"].append("hybrid_manifest")
+    # The manifest moved or was lost: the leg result carries its own copy.
+    if "charge_correction" not in out and isinstance(leg.get("charge_correction"), dict):
+        out["charge_correction"] = leg["charge_correction"].get("method") or "none"
     return out
 
 

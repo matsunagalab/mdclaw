@@ -662,6 +662,12 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   `fep_result.json` with `dG_kj_mol` / `dG_error_kj_mol` (and kcal/mol),
   cumulative dG per window, per-phase contributions, neighbour overlaps
   (warning below 0.03), the overlap matrix and per-window sample statistics.
+  The result and `fep_result.json` also repeat the leg's Hamiltonian record:
+  `restraint` and `charge_correction` (`method`, `charge_change_e`, and for a
+  co-alchemical ion its `lambda_range` / `window_indices`, copied from
+  `hybrid_manifest.json`; `null` when no manifest is readable), so a leg can
+  be judged on its own and an overlap dip can be placed inside or outside the
+  co-ion windows.
   Direct mode: `fep_windows_files`. Codes: `fep_windows_missing`,
   `fep_windows_incomplete` (lists the unsampled indices),
   `fep_windows_incompatible`, `fep_analysis_failed`, `pymbar_not_installed`.
@@ -1002,8 +1008,9 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
   Missing versus null are distinct. The output never
   certifies equal physical conditions, independence or convergence.
   JSON is returned on stdout; `--output-dir <new-directory>` also writes
-  `report.json` and `references.bib`. Existing directories and paths inside
-  node directories are rejected. No DAG changes, trajectory conversion,
+  `report.json` and `references.bib`. Re-running into the same directory
+  refreshes those two files and lists them under `files.replaced`; paths
+  inside node directories are rejected. No DAG changes, trajectory conversion,
   pooling, Methods prose or MDDB upload are performed.
   Citation selection currently covers explicit OpenMM 8, LF-middle/BAOAB,
   MC barostats, HMR, ff14SB/ff19SB and selected water-model records. It distinguishes

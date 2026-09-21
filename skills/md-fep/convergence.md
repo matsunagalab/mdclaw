@@ -9,6 +9,7 @@ All fields are in `fep_result.json` (and echoed in the tool result).
 |---|---|---|
 | `success` and no `fep_windows_incomplete` | all protocol windows present | create `fep` nodes for the listed indices, re-parent the analyze node |
 | `min_neighbour_overlap` | ≥ 0.03 | densify λ between the named windows (`skills/md-fep/windows.md`, custom schedule) |
+| `charge_correction.method` | the same on both legs; `coalchemical_ion` for a charge-changing mutation | a low overlap inside `charge_correction.window_indices` is the co-ion: densify λ there; outside them it is the mutation itself |
 | `n_samples_per_state` | ≥ 50 independent samples per window | extend those windows (`fep` child node) |
 | `dG_error_kj_mol` | ≤ 1 kJ/mol (≈ 0.25 kcal/mol) per leg for a publishable ddG | extend sampling; error falls ~1/√time |
 | `phases` | each finite; `sterics_swap_kj_mol` is usually the largest term | a `null` phase means too few windows inside it |

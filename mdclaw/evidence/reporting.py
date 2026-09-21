@@ -369,10 +369,15 @@ def generate_md_report(
             out = Path(output_dir).expanduser().resolve()
             if any(out.is_relative_to(Path(j) / "nodes") for j in jobs):
                 raise ValueError("output_dir must be outside node directories")
-            out.mkdir(parents=True, exist_ok=False)
+            # Re-running into the same directory (a mutation was added, a
+            # citation is being checked) refreshes the two files this tool owns.
+            out.mkdir(parents=True, exist_ok=True)
+            replaced = [str(out / name) for name in ("report.json", "references.bib") if (out / name).exists()]
             _atomic_write_json(out / "report.json", report)
             (out / "references.bib").write_text(citations["bibtex"])
             files = {"report": str(out / "report.json"), "bibtex": str(out / "references.bib")}
+            if replaced:
+                files["replaced"] = replaced
         return {"success": True, "code": "ok", "report": report, "files": files}
     except (ValueError, OSError, KeyError, TypeError) as exc:
         return {"success": False, "code": "report_invalid_input", "errors": [str(exc)]}

@@ -355,6 +355,26 @@ class TestAnalysis:
         assert report["mutation"]["label"] == "A:L99A"
         assert len(report["sources"]) == 2
 
+    def test_charge_correction_is_reported_with_the_leg(self, tmp_path):
+        """The net-charge treatment lives in hybrid_manifest.json; a leg's
+        result repeats it so the leg can be read on its own."""
+        pytest.importorskip("pymbar")
+        files, protocol_file, _ = _harmonic_windows(tmp_path)
+        run = dict(fep_windows_files=[str(f) for f in files], discard_fraction=0.0, subsample=False)
+        # no manifest next to the protocol: unknown, not "none"
+        res = analyze_fep(output_dir=str(tmp_path / "out0"), **run)
+        assert res["success"] and res["charge_correction"] is None
+        manifest = protocol_file.parent / "hybrid_manifest.json"
+        # a manifest written before the co-alchemical ion existed ran uncorrected
+        manifest.write_text(json.dumps({"forcefield": "ff19SB"}))
+        assert analyze_fep(output_dir=str(tmp_path / "out1"), **run)["charge_correction"] == {"method": "none"}
+        manifest.write_text(json.dumps({
+            "charge_correction": "coalchemical_ion",
+            "charge_correction_detail": {"method": "coalchemical_ion", "charge_change_e": -1.0, "window_indices": [0, 1]}}))
+        res = analyze_fep(output_dir=str(tmp_path / "out2"), **run)
+        assert res["charge_correction"] == {"method": "coalchemical_ion", "charge_change_e": -1.0, "window_indices": [0, 1]}
+        assert json.loads(Path(res["fep_result"]).read_text())["charge_correction"] == res["charge_correction"]
+
     def test_parent_and_child_indexes_are_not_double_counted(self, tmp_path):
         """A fep -> fep child's index already chains the parent's segments;
         parenting the analyze node to both must not count them twice."""

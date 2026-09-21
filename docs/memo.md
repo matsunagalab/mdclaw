@@ -7,6 +7,62 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-21 — test-run feedback 25–26: `analyze_fep` が `charge_correction` を返す、`generate_md_report` が既存 `--output-dir` に再実行できる
+
+- **25（確認、修正）**: `estimate_ddg` は `hybrid_manifest.json` を読み直して両 leg の `charge_correction` を比較していたが、`analyze_fep` の結果にも `fep_result.json` にも出ていなかった（`restraint` は出ていた）。`_charge_correction_of` が manifest の `charge_correction` + `charge_correction_detail`（`charge_change_e`、co-ion の `lambda_range` / `window_indices`）をツール結果・`fep_result.json`・node metadata（`method` のみ）に載せる。direct mode は protocol と同じディレクトリの manifest を読む。manifest が読めなければ `null`（「補正なし」と区別）、co-ion 以前の manifest は `method: none`。`_leg_settings` は manifest が失われたとき leg 結果の値にフォールバックする。overlap の落ち込みが co-ion 窓の内か外かを leg 単体で切り分けられる（`skills/md-fep/convergence.md` に 1 行）。
+- **26（確認、修正）**: `reporting.py` の `mkdir(exist_ok=False)` は意図的な上書き防止でテストもあったが、書くのは再生成可能な `report.json` / `references.bib` の 2 つだけで、再実行不能 + `report_invalid_input` という誤解を招くコードの害の方が大きい。`exist_ok=True` にし、置き換えたファイルを `files.replaced` で返す。ディレクトリ内の他ファイルには触れない。node ディレクトリ配下の拒否は維持。これは「既存ディレクトリは拒否」という従来仕様（tool-reference の記述と `test_runtime_citations_not_from_declarations` の該当 assert）を覆す。
+- 検証: SIF で `ruff check mdclaw/ tests/` 通過、`tests/test_fep.py tests/test_evidence_server.py tests/test_envelope.py`（not slow）119 passed。
+
+## 2026-09-21 — 1 ジョブ 2 leg DAG と co-alchemical ion の実測検証 (I70A / T127I / A14D)
+
+`65a5918` 以降の「両 leg が 1 ジョブ」DAG と `92a4d8a` の荷電変異補正を、前回とは別の
+3 変異で検証した。スタディは `/home/yasu/tmp/fep_bench_v2`、詳細は同ディレクトリの
+`RESULTS.md`。21 窓 x 2 ns/leg、ff19SB + OPC、合計 672 ns、fep ノード 16 個。
+
+**ddG (kcal/mol, 正 = 不安定化)**
+
+| 変異 | MDClaw | 参照 | 差 |
+|---|---:|---:|---:|
+| I70A | +4.665 +/- 0.115 | +4.353 | +0.312 |
+| T127I | -1.929 +/- 0.155 | -2.325 | +0.396 |
+| A14D (co-ion) | +3.282 +/- 0.469 | +1.793 | +1.489 |
+| A14D (補正なし) | +3.248 +/- 0.326 | +1.793 | +1.455 |
+
+3 変異で r = 0.9821, MAE = 0.732, RMSE = 0.907, 符号一致 3/3。中性 2 変異は 0.31 / 0.40 で
+v1 の 4 変異 (MAE 0.237) と同水準。**側鎖が伸びる T127I (消失 6 / 出現 11) でも精度は
+落ちない**。v1 と同じ offset 相殺も成立し、folded / unfolded のオフセット差がそのまま
+ddG 誤差になっている (I70A 7.729/7.417、T127I 6.185/5.790)。
+
+**co-alchemical ion の初回実測**: ddG への影響は **+0.034 kcal/mol** で、合成誤差 0.571 に
+対して区別できない。leg 単体は -83 -> -162 kcal/mol と Na+ 生成自由エネルギーぶん動くが
+ddG では相殺する。この箱サイズ (folded 7.674 nm / tripeptide 3.262 nm) では PME 中和背景の
+誤差が両 leg でほぼ等しかった、ということ。コストは誤差 1.4 倍 (0.326 -> 0.469) と
+min overlap 約 3 割悪化 (0.053/0.073 -> 0.038/0.036)。
+
+**overlap の劣化は相境界に限局**: 隣接 overlap が落ちるのは index 7 と 14 の 2 点のみ。
+`--phase-bounds 0.35,0.75` の 21 窓では index 7 = lambda 0.35 = p1、index 15 = 0.75 = p2 で、
+co-ion が `fep_core` に乗って現れ始める / 終わる境界そのもの。unfolded 側も同位置で再現
+(0.036, 0.041)。閾値 0.03 は上回るが余裕は小さく、lambda を 0.35 / 0.75 近傍で密にするのが対策。
+
+**選ばれた水**: folded `site_distance_nm` 6.632 (箱の最小像上限 6.646)、tripeptide 2.789
+(上限 2.825)。どちらも最遠点を選べており最小像規約も効いている。`fep_coion_box_too_small` は
+出なかったが、tripeptide は 1.5 nm 要件に対し 2.789 nm なので `solvate_structure --dist 10` が
+実質の下限。
+
+**運用面**: `configure_container` の実行忘れで 18 ジョブが `mdclaw: command not found` で
+全滅した事故から、`stranded_jobs` -> `--clear-slurm-metadata` -> `--abandon` で復旧。GPU 競合
+(kawai の非 SLURM ジョブと同居) で I70A の unfolded leg が 12 時間制限に届かず、`cancel_job`
+-> `--clear-slurm-metadata` -> `--restart-windows-file` で完了済み 6 窓 (7.3 h 相当) を保存した
+まま救出し、全 21 窓を回収した。クリーンな A6000 では 435 s/窓 (62,335 原子, 2.1 ns) =
+207 s/ns で v1 の 210 s/ns と一致。共有時は 4.7-10 倍遅い。実行期間中、クラスタの GPU 50 枚は
+すべて割当済みだった。
+
+**md-report**: ddG ノードを対象にすると両 leg が lineage に入り、topo ごとに
+`charge_correction` が記録され、`Chen2018ChargeChangingFEP` は co-ion 実行のレポートにだけ
+現れる (中性 2 変異と A14D 補正なしには入らない)。
+
+---
+
 ## 2026-09-20 — test-run feedback 23–24: `inspect_cluster` の GPU 在庫（複数型ノード、空き枚数、トップレベル）と、T4L 検証の中止（branch `fix/inspect-cluster-gres`）
 
 - **24（バグ、確認）**: GRES のパースが `re.search` で最初の 1 件しか読まず、`m2  gpu:3090:1(S:0),gpu:a5000:1(S:0)` の a5000 が落ちていた（`gpu_types` に無い、`total_gpus` 49）。`_parse_gpu_models` が全エントリを `{型: 枚数}` で返す（`Gres` と `GresUsed` の両方に使う）。実クラスタで 7 型・50 枚になり、テスターが `scontrol` から数えた正解と一致。

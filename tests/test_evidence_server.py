@@ -280,7 +280,13 @@ def test_runtime_citations_not_from_declarations(tmp_path):
     assert any(x["method"] == "constraint_solver" for x in citations["unresolved"])
     assert "SHAKE" not in citations["bibtex"]
     assert Path(result["files"]["bibtex"]).read_text() == citations["bibtex"]
-    assert not generate_md_report(job_dir=str(tmp_path), output_dir=str(tmp_path / "report"))["success"]
+    # Re-running into the same directory refreshes the report and says so.
+    assert "replaced" not in result["files"]
+    (tmp_path / "report" / "notes.txt").write_text("mine")
+    again = generate_md_report(job_dir=str(tmp_path), output_dir=str(tmp_path / "report"))
+    assert again["success"], again
+    assert sorted(Path(p).name for p in again["files"]["replaced"]) == ["references.bib", "report.json"]
+    assert (tmp_path / "report" / "notes.txt").read_text() == "mine"
     assert not generate_md_report(job_dir=str(tmp_path), output_dir=str(path.parent / "report"))["success"]
 
 
