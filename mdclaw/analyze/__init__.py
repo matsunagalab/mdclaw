@@ -25,6 +25,9 @@ from mdclaw.analyze.registry import (
 from mdclaw.analyze.tempering import (
     analyze_tempering,
 )
+from mdclaw.analyze.metadynamics import (
+    analyze_metadynamics,
+)
 
 TOOLS = {
     fn.__name__: fn
@@ -39,6 +42,7 @@ TOOLS = {
         detect_equilibration,
         register_analysis_result,
         analyze_tempering,
+        analyze_metadynamics,
     )
 }
 

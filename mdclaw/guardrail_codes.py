@@ -100,6 +100,22 @@ GUARDRAIL_CODES: dict[str, str] = {
 
     "distance_restraint_exceeds_half_box": "A distance between two molecules is a minimum-image distance, defined only up to half the box; solvate with a larger box or keep every target / window centre below half the shortest box vector.",
 
+    # --- well-tempered metadynamics (run_metadynamics) ---
+    "metadynamics_cv_invalid": "Pass --distance-cv as a JSON object with name, selection_group1 and selection_group2 (two disjoint mdtraj selections without water or bare ions).",
+    "metadynamics_parameters_invalid": "Use positive bias_height_kj_mol, deposition_interval_ps, save_interval_ps and wall_force_constant_kj_mol_nm2, a bias_factor above 1, and a simulation long enough for one deposition and one output frame.",
+    "metadynamics_grid_invalid": "cv_max_nm must exceed cv_min_nm, bias_width_nm must be well below the grid range, and grid_points at least 10.",
+    "metadynamics_shared_bias_mismatch": "Every walker sharing a bias_dir must use the same CV, grid, width, height, bias factor, temperature and deposition interval; use another directory for different settings.",
+    "metadynamics_restart_missing": "The parent's total bias (.npy) is missing; continue from a completed run_metadynamics node or drop --restart-bias-file.",
+    "metadynamics_restart_mismatch": "A continued walker keeps the parent's CV, grid, width, height, bias factor, temperature and deposition interval; to change them branch a new walker from the eq node.",
+
+    # --- metadynamics convergence (analyze_metadynamics) ---
+    "metadynamics_inputs_missing": "Parent the analyze node to completed run_metadynamics prod nodes (one per walker), or pass --metadynamics-report-files; every segment needs its metadynamics.csv and metadynamics.json.",
+    "metadynamics_report_missing": "The metadynamics.csv of a walker segment is gone; rerun that segment or drop it from the parents.",
+    "metadynamics_report_invalid": "The file is not a run_metadynamics metadynamics.csv (columns step, time_ps, <cv>_nm, bias_at_cv_kj_mol, gaussian_height_kj_mol); point at the node's metadynamics_report artifact.",
+    "metadynamics_walkers_incompatible": "Pool only walkers of one condition (same CV, grid, width, height, bias factor, temperature); analyze each condition on its own node.",
+    "metadynamics_scope_unsupported": "Create the analyze node with analysis_data_scope 'production_chain' (or 'segment') and the run_metadynamics prod nodes as parents.",
+    "metadynamics_states_invalid": "Pass --state-a LO HI and --state-b LO HI in nm: two disjoint ranges of the coordinate inside the biased range, each with the upper edge above the lower.",
+
     "container_runtime_not_found": "Export MDCLAW_SLURM_PATH=\"$PATH\" from a host shell before submitting from inside the image, or run `mdclaw configure_container --runtime /abs/path/to/singularity`, then resubmit the same (still pending) node.",
 
     # --- node / DAG context ---

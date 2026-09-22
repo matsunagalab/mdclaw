@@ -19,6 +19,9 @@ from mdclaw.simulation.production import (
 from mdclaw.simulation.tempering import (
     run_sst2,
 )
+from mdclaw.simulation.metadynamics import (
+    run_metadynamics,
+)
 from mdclaw.simulation.custom_forces import (  # noqa: F401
     CustomForceError,
     CustomForceReporter,
@@ -36,6 +39,7 @@ TOOLS = {
         run_equilibration,
         run_production,
         run_sst2,
+        run_metadynamics,
     )
 }
 

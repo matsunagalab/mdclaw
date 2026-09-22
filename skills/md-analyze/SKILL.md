@@ -63,6 +63,9 @@ Read by task:
 - Solute tempering (`run_sst2`) walkers: MBAR reweighting of all rungs,
   weight convergence verdict, per-frame weights and the fixed-weight handoff:
   `skills/md-analyze/tempering.md` (run it before any metric on SST2 data)
+- Metadynamics (`run_metadynamics`) walkers: dF between two states versus
+  time, one number and one figure, with the verdict:
+  `skills/md-analyze/metadynamics.md`
 - On errors (missing artifacts, bad selections, empty DCDs), act on the
   returned `code`/`hints`. Do not silently switch atom selections; ask the
   user if the requested selection does not match the topology.

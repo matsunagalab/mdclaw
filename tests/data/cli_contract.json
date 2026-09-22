@@ -50,6 +50,16 @@
     "requires_node": true,
     "server": "fep"
   },
+  "analyze_metadynamics": {
+    "job_dir_is_data": false,
+    "node_type": "analyze",
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": true,
+    "server": "analyze"
+  },
   "analyze_q_value": {
     "job_dir_is_data": false,
     "node_type": "analyze",
@@ -669,6 +679,16 @@
     ],
     "requires_node": true,
     "server": "fep"
+  },
+  "run_metadynamics": {
+    "job_dir_is_data": false,
+    "node_type": "prod",
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": true,
+    "server": "md_simulation"
   },
   "run_minimization": {
     "job_dir_is_data": false,

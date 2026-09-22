@@ -112,6 +112,9 @@ For **enhanced sampling of a loop, peptide or binding site without a CV**
 (solute tempering, SST2), **read and follow `skills/md-production/sst2.md`**;
 the runtime image bundles the SST2 fork, and SST2 data is analyzed with
 `analyze_tempering` before any metric.
+For **a free-energy profile along one distance across a barrier** (one or
+several walkers, well-tempered metadynamics), **read and follow
+`skills/md-production/metadynamics.md`**.
 
 ## Handoff
 

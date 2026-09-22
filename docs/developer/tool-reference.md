@@ -455,6 +455,34 @@ signature, update the relevant section here and the matching skill examples.
   `sst2_solute_required`, `sst2_solute_selection_invalid`,
   `sst2_solute_selection_empty`, `sst2_ladder_invalid`,
   `sst2_restart_missing`, `sst2_requires_pme`, `sst2_driver_failed`.
+- `run_metadynamics(...)`: one walker of well-tempered metadynamics on a
+  centre-of-mass distance as a `prod` node
+  (`mdclaw/simulation/metadynamics.py`, OpenMM's built-in
+  `openmm.app.metadynamics`). The coordinate (`distance_cv`: `name`,
+  `selection_group1`, `selection_group2`, resolved by
+  `restraints.resolve_centroid_groups` with the same raw-coordinate /
+  minimum-image rule as `distance_restraints`) is biased on a grid
+  `[cv_min_nm, cv_max_nm]` with Gaussians of `bias_width_nm` and
+  `bias_height_kj_mol` every `deposition_interval_ps`, well-tempered by
+  `bias_factor`; harmonic walls (`wall_force_constant_kj_mol_nm2`) hold the
+  coordinate on the grid. Several walkers share their bias through
+  `bias_dir` (a directory outside the nodes; the first walker writes
+  `metadynamics_manifest.json`, others must match it), exchanging files
+  every `save_interval_ps` without synchronisation. Artifacts:
+  `trajectory.dcd`, `energy.dat`, `state.xml`, `final_structure.pdb`,
+  `collective_variables.csv` (+ `.meta.json`; bias energy and the distance
+  per frame), `metadynamics.csv` (distance, bias, Gaussian height per
+  deposition), `metadynamics.json` (grid, walker id, loaded walkers,
+  visited range), `metadynamics_total_bias.npy`,
+  `metadynamics_self_bias.npy`, `free_energy.csv`
+  (`F = -(T+dT)/dT V(s)`), `runtime_system.xml`, `integrator.xml`. Metadata
+  carries `sampling_method: metadynamics` and a `metadynamics` summary.
+  `--continue-from` a completed node rejoins a shared `bias_dir` or, without
+  one, starts from the parent's total bias (`restart_bias_file`). Stable
+  codes: `metadynamics_cv_invalid`, `metadynamics_grid_invalid`,
+  `metadynamics_parameters_invalid`, `metadynamics_shared_bias_mismatch`,
+  `metadynamics_restart_missing`, `metadynamics_restart_mismatch`,
+  `distance_restraint_exceeds_half_box`.
 - `run_production(...)`: production MD with topology-inherited HMR/implicit
   solvent, state/checkpoint persistence,
   DAG restart resolution, and timeline metadata. Refuses a hybrid (alchemical)
@@ -516,6 +544,24 @@ signature, update the relevant section here and the matching skill examples.
   cannot shift their correspondence.
 - `fit_trajectory(...)`: aligns trajectories without changing frame count;
   downstream analyze nodes retain the ancestor `frame_times_ns` artifact.
+- `analyze_metadynamics(...)`: convergence of well-tempered metadynamics
+  as one number and one figure (`mdclaw/analyze/metadynamics.py`). Parents
+  are `run_metadynamics` prod nodes (one walker each, `production_chain`
+  pools a parent's `continue_from` chain, `segment` takes the leaf).
+  `state_a` / `state_b` are two disjoint ranges of the coordinate in nm; the
+  Gaussians of every walker are merged in time, the profile
+  `F(s, t) = -(gamma/(gamma-1)) V(s, t)` is rebuilt at `n_time_points` times
+  and `dF(t) = -kT ln(int_A e^{-F/kT} / int_B e^{-F/kT})` is written as
+  `metadynamics_delta_f.csv` / `.png` and `metadynamics.json`. `verdict` is
+  `converged` when both states were visited and the drift of dF over the
+  second half is below `drift_tolerance_kj_mol` (default 2.5); the number to
+  report is `delta_f_kj_mol` with `drift_second_half_kj_mol`. Warnings:
+  `walkers_unequal_residence` (walkers sharing one bias spend very different
+  fractions of their time in A: a slow orthogonal motion) and
+  `gaussian_height_not_decayed`. Stable codes: `metadynamics_inputs_missing`,
+  `metadynamics_report_missing`, `metadynamics_report_invalid`,
+  `metadynamics_walkers_incompatible`, `metadynamics_scope_unsupported`,
+  `metadynamics_states_invalid`.
 - `analyze_tempering(...)`: MBAR over the rungs of one or more `run_sst2`
   walkers (`mdclaw/analyze/tempering.py`). Parents are the walkers' prod
   leaves (one walker per parent; `production_chain` pools each
