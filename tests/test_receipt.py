@@ -85,6 +85,20 @@ class TestStageFacts:
         assert receipt["options"][0]["status"] == "not_reported"  # ranges are reported in facts, not parameters
         assert json.dumps(receipt).count("x" * 10) == 0  # large blocks never enter the receipt
 
+    def test_prep_receipt_reports_caps_kept_from_the_input(self):
+        """A capped deposit (ACE/NME residues) is kept capped; the receipt must not
+        call its termini charged."""
+        result = json.loads(json.dumps(PREP))
+        result["proteins"][0]["input_terminal_caps"] = [
+            {"chain": "A", "resnum": "1", "resname": "ACE", "terminus": "n"},
+            {"chain": "A", "resnum": "5", "resname": "NME", "terminus": "c"}]
+        receipt = build_receipt(tool_name="prepare_complex", node_type="prep", result=result, node_mode=True)
+        assert receipt["facts"]["chains"][0]["termini"] == "N ACE / C NME (caps kept from the input)"
+        result["proteins"][0]["input_terminal_caps_removed"] = [{"chain": "A", "resnum": "1"},
+                                                                  {"chain": "A", "resnum": "5"}]
+        receipt = build_receipt(tool_name="prepare_complex", node_type="prep", result=result, node_mode=True)
+        assert receipt["facts"]["chains"][0]["termini"] == "charged termini (no caps)"
+
     def test_solvate_receipt(self):
         result = {"parameters": {"water_model": "tip3p", "dist": 15.0, "salt": True, "salt_c": "Na+",
                                  "salt_a": "Cl-", "saltcon": 0.15},

@@ -473,7 +473,9 @@ signature, update the relevant section here and the matching skill examples.
   `selection_group1`, `selection_group2`,
   `force_constant_kj_mol_nm2`, and `target_distance_nm`. This route uses an
   OpenMM `CustomCentroidBondForce` with per-bond parameters, physical elemental
-  mass weights (independent of HMR), automatic periodic displacement handling,
+  mass weights (independent of HMR), raw-coordinate evaluation for a distance
+  inside one molecule and minimum-image evaluation between molecules (targets
+  above half the box are refused with `distance_restraint_exceeds_half_box`),
   and the same collective-variable artifacts. It is
   mutually exclusive with `custom_force_script`; biased restarts require an
   XML state rather than a binary checkpoint.

@@ -98,6 +98,8 @@ GUARDRAIL_CODES: dict[str, str] = {
     "fep_legs_incompatible": "The two legs differ in mutation, lambda protocol, force field, water model, HMR, temperature or pressure; rebuild the unfolded leg's build_hybrid_system / run_fep with the folded leg's options so the thermodynamic cycle closes.",
     "hybrid_topology_production_blocked": "The topo ancestor is a hybrid (alchemical) topology; production nodes never run on it. Create a fep node under the eq node (run_fep) to sample lambda windows, or a plain topo node (build_amber_system) from the same solv node for wild-type MD. The prod node is still pending.",
 
+    "distance_restraint_exceeds_half_box": "A distance between two molecules is a minimum-image distance, defined only up to half the box; solvate with a larger box or keep every target / window centre below half the shortest box vector.",
+
     "container_runtime_not_found": "Export MDCLAW_SLURM_PATH=\"$PATH\" from a host shell before submitting from inside the image, or run `mdclaw configure_container --runtime /abs/path/to/singularity`, then resubmit the same (still pending) node.",
 
     # --- node / DAG context ---

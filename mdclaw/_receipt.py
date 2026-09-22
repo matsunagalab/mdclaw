@@ -148,6 +148,16 @@ def _caps(protein: dict) -> Optional[str]:
     caps = protein.get("terminal_caps") if isinstance(protein.get("terminal_caps"), dict) else {}
     n_cap, c_cap = caps.get("n_terminal"), caps.get("c_terminal")
     if not n_cap and not c_cap:
+        # Caps that arrived with the structure (ACE / NME residues) are kept
+        # and are not "applied" caps; a capped input is still capped.
+        kept = [c for c in protein.get("input_terminal_caps") or [] if isinstance(c, dict)]
+        removed = {(c.get("chain"), c.get("resnum")) for c in protein.get("input_terminal_caps_removed") or []
+                   if isinstance(c, dict)}
+        kept = [c for c in kept if (c.get("chain"), c.get("resnum")) not in removed]
+        if kept:
+            n_in = next((c.get("resname") for c in kept if c.get("terminus") == "n"), None)
+            c_in = next((c.get("resname") for c in kept if c.get("terminus") == "c"), None)
+            return f"N {n_in or '-'} / C {c_in or '-'} (caps kept from the input)"
         return "charged termini (no caps)"
     return f"N {n_cap or '-'} / C {c_cap or '-'}"
 

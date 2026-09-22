@@ -50,6 +50,7 @@
   "create_node_id_not_allowed",
   "declared_disulfide_unbonded_in_source",
   "detected_disulfides_suppressed",
+  "distance_restraint_exceeds_half_box",
   "distance_restraint_groups_overlap",
   "distance_restraint_selection_invalid",
   "distance_restraint_topology_mismatch",

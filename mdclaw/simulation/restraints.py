@@ -148,27 +148,27 @@ def distance_restraint_signature(
     }
 
 
-def load_distance_restraints(
-    *,
-    system,
+def resolve_centroid_groups(
     topology,
-    distance_restraints: list[dict],
-    is_periodic: bool,
-) -> dict:
-    """Build one native OpenMM harmonic COM-distance bias force."""
+    normalized: list[dict],
+    *,
+    n_particles: Optional[int] = None,
+) -> list[tuple[list[int], list[float], list[int], list[float]]]:
+    """Resolve the two mdtraj selections of every normalized restraint into
+    ``(group1, weights1, group2, weights2)`` with physical elemental masses.
+
+    Shared by the per-window umbrella route (``load_distance_restraints``)
+    and any other tool that biases the same centre-of-mass distance."""
     import mdtraj as md
-    import numpy as np
-    from openmm import CustomCentroidBondForce
     from openmm.unit import dalton
 
-    normalized = normalize_distance_restraints(distance_restraints)
     mdtraj_topology = md.Topology.from_openmm(topology)
-    if mdtraj_topology.n_atoms != system.getNumParticles():
+    if n_particles is not None and mdtraj_topology.n_atoms != n_particles:
         raise DistanceRestraintError(
             code="distance_restraint_topology_mismatch",
             message=(
                 f"topology.pdb has {mdtraj_topology.n_atoms} atoms but system.xml "
-                f"has {system.getNumParticles()} particles."
+                f"has {n_particles} particles."
             ),
         )
 
@@ -252,12 +252,83 @@ def load_distance_restraints(
             selected[0], selected_weights[0], selected[1], selected_weights[1]
         ))
 
+    return groups
+
+
+def groups_share_molecule(topology, group1, group2) -> bool:
+    """True when every atom of both groups belongs to one bonded molecule."""
+    import mdtraj as md
+
+    mdtop = md.Topology.from_openmm(topology)
+    wanted = set(int(i) for i in group1) | set(int(i) for i in group2)
+    for molecule in mdtop.find_molecules():
+        members = {atom.index for atom in molecule}
+        if wanted & members:
+            return wanted <= members
+    return False
+
+
+def distance_cv_periodicity(*, system, topology, groups, is_periodic, max_target_nm, label):
+    """Decide whether a centre-of-mass distance is evaluated with the minimum
+    image, and refuse targets the minimum image cannot represent.
+
+    An intramolecular distance is evaluated on the raw (unwrapped) positions:
+    OpenMM never wraps the Context positions of a bonded molecule, so the
+    direct distance is exact at any length, whereas the minimum image folds
+    back at half the box (a 6.6 nm box turned a 4.0 nm extended peptide into a
+    2.6 nm "distance" and an umbrella pulled it further apart).  A distance
+    between molecules needs the minimum image and is therefore only defined
+    up to half the shortest box vector; a larger target is refused.
+    """
+    periodic = bool(is_periodic)
+    if periodic and all(groups_share_molecule(topology, g1, g2) for g1, _, g2, _ in groups):
+        periodic = False
+    if periodic:
+        try:
+            box = system.getDefaultPeriodicBoxVectors()
+            from openmm.unit import nanometer
+            half = 0.5 * min(v[i].value_in_unit(nanometer) for i, v in enumerate(box))
+        except Exception:  # noqa: BLE001
+            half = None
+        if half is not None and max_target_nm is not None and max_target_nm > half:
+            raise DistanceRestraintError(
+                code="distance_restraint_exceeds_half_box",
+                message=(
+                    f"{label}: a distance between molecules is a minimum-image distance and is only "
+                    f"defined up to half the box ({half:.2f} nm), but a target of {max_target_nm:.2f} nm "
+                    "was requested. Solvate with a larger box or restrict the targets."
+                ),
+            )
+    return periodic
+
+
+def load_distance_restraints(
+    *,
+    system,
+    topology,
+    distance_restraints: list[dict],
+    is_periodic: bool,
+) -> dict:
+    """Build one native OpenMM harmonic COM-distance bias force."""
+    import numpy as np
+    from openmm import CustomCentroidBondForce
+
+    normalized = normalize_distance_restraints(distance_restraints)
+    groups = resolve_centroid_groups(
+        topology, normalized, n_particles=system.getNumParticles()
+    )
+
     force = CustomCentroidBondForce(
         2, "0.5*k*(distance(g1,g2)-r0)^2"
     )
     force.addPerBondParameter("k")
     force.addPerBondParameter("r0")
-    force.setUsesPeriodicBoundaryConditions(bool(is_periodic))
+    periodic = distance_cv_periodicity(
+        system=system, topology=topology, groups=groups, is_periodic=is_periodic,
+        max_target_nm=max(item["target_distance_nm"] for item in normalized),
+        label="distance_restraints",
+    )
+    force.setUsesPeriodicBoundaryConditions(periodic)
     for item, group in zip(normalized, groups):
         group1, weights1, group2, weights2 = group
         # Use physical elemental masses rather than the System particle masses:
@@ -277,15 +348,17 @@ def load_distance_restraints(
             center1 = np.average(positions_np[group1], axis=0, weights=weights1)
             center2 = np.average(positions_np[group2], axis=0, weights=weights2)
             displacement = center2 - center1
-            if is_periodic and box_np is not None:
+            if periodic and box_np is not None:
                 fractional = displacement @ np.linalg.inv(box_np)
                 displacement -= np.rint(fractional) @ box_np
             values[item["name"]] = float(np.linalg.norm(displacement))
         return values
 
     signature = distance_restraint_signature(normalized)
+    signature["minimum_image"] = periodic
     return {
         "forces": [force],
+        "minimum_image": periodic,
         "evaluator": _evaluator,
         "cv_names": [item["name"] for item in normalized],
         "kind": signature["kind"],

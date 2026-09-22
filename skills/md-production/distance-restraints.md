@@ -16,8 +16,12 @@ Each restraint object requires exactly these fields:
 
 The two selections must be non-empty and disjoint. A one-atom selection on
 each side gives an atom-atom distance. Multi-atom groups use physical elemental
-masses, so the CV is unchanged by HMR. Periodic boundary handling follows the
-topology automatically.
+masses, so the CV is unchanged by HMR. A distance inside one molecule is
+measured on the raw coordinates, so it is exact at any length (an extended
+peptide longer than half the box is not folded back by the minimum image). A
+distance between two molecules is a minimum-image distance and is only defined
+up to half the shortest box vector; a larger `target_distance_nm` is refused
+with `distance_restraint_exceeds_half_box` (solvate with a larger box).
 
 **Do not use `resSeq` selections on a solvated topology.** PDB residue numbers
 wrap at 9999 and solvated chains reuse them, so a `resSeq` range can silently
