@@ -496,17 +496,12 @@ def _sampling_convergence(*, u_kn, k_n, row_elapsed, row_run, frame_rows_idx, fr
 _RUN_COLORS = ["#2a78d6", "#eb6834", "#1baf7a"]   # categorical slots 1-3 (validated all-pairs); more runs fold to gray
 
 
-def _sampling_block(walkers, walker_summaries, frame_rows, *, u_kn, k_n, row_elapsed, row_run, K, kT, states,
-                    rmsd_selection, align_selection, reference_pdb, drift_tolerance_kj_mol, n_time_points,
-                    out_dir: Path, output_name: str, pymbar, warnings: list[str]) -> tuple[dict, np.ndarray]:
-    """Observable per frame, dF(A - B)(t) pooled and per run, verdict, CSV, figure."""
-    state_a, state_b = states
+def _frame_observable(walkers, frame_rows, *, rmsd_selection, align_selection, reference_pdb,
+                      warnings: list[str]) -> tuple[np.ndarray, dict]:
+    """RMSD (nm) of every frame in the frames table, and how it was defined."""
     if not frame_rows:
         raise TemperingAnalysisError(code="tempering_observable_invalid",
                                      message="no frames table (output interval unknown), so no observable per frame")
-    if row_elapsed is None:
-        raise TemperingAnalysisError(code="tempering_observable_invalid",
-                                     message="timestep_fs is not recorded, so dF cannot be followed in time")
     topology = walkers[0].get("topology_file")
     if not topology or not Path(topology).is_file():
         raise TemperingAnalysisError(
@@ -519,10 +514,14 @@ def _sampling_block(walkers, walker_summaries, frame_rows, *, u_kn, k_n, row_ela
             with open(fr["solute_indices_file"]) as fh:
                 solute = [int(i) for i in json.load(fh)]
             break
-    rmsd_idx, align_idx = _observable_atoms(topology, solute, rmsd_selection, align_selection)
+    try:
+        rmsd_idx, align_idx = _observable_atoms(topology, solute, rmsd_selection, align_selection)
+    except TemperingAnalysisError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - an unreadable topology
+        raise TemperingAnalysisError(code="tempering_observable_invalid",
+                                     message=f"cannot read the topology {topology}: {exc}") from None
     reference = reference_pdb or topology
-
-    # observable of every DCD frame, one pass per segment
     series: dict[str, np.ndarray] = {}   # keyed by trajectory path: direct-mode node ids need not be unique
     for fr in frame_rows:
         traj = fr.get("trajectory_file")
@@ -541,16 +540,143 @@ def _sampling_block(walkers, walker_summaries, frame_rows, *, u_kn, k_n, row_ela
             short.add(fr["node_id"])
     if short:
         warnings.append(f"{sorted(short)}: fewer DCD frames than report rows at the output interval; those frames are left out")
+    return values, {
+        "observable": "rmsd_nm",
+        "rmsd_atoms": int(rmsd_idx.size),
+        "align_atoms": int(align_idx.size),
+        "rmsd_selection": rmsd_selection or "solute backbone (N, CA, C, O)",
+        "align_selection": align_selection or "CA of protein residues outside the solute",
+        "reference": str(reference),
+    }
 
-    frame_idx = np.array([fr["pooled_row"] for fr in frame_rows], dtype=np.int64)
+
+def _histogram(values: np.ndarray, log_w: np.ndarray, edges: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Probability per bin and the expected number of effective frames per bin (bin probability times
+    the overall Kish ESS of the weights, so a bin reached only by a few negligible-weight hot frames
+    counts as unvisited)."""
+    w = np.exp(log_w - log_w.max())
+    idx = np.clip(np.digitize(values, edges) - 1, 0, len(edges) - 2)
+    inside = (values >= edges[0]) & (values <= edges[-1])
+    p = np.bincount(idx[inside], weights=w[inside], minlength=len(edges) - 1)
+    total = p.sum()
+    if total <= 0:
+        return p, np.zeros_like(p)
+    wn = w[inside] / total
+    ess = 1.0 / float(np.sum(wn ** 2))
+    p = p / total
+    return p, p * ess
+
+
+def _profile_gap(a: tuple, b: tuple, compared: np.ndarray, kT: float) -> tuple[float, int, list[int]]:
+    """Largest |F_a - F_b| over the compared bins both sides actually visit (>= 1 effective frame), where
+    it is, and the compared bins one side (almost) never visits."""
+    (pa, na), (pb, nb) = a, b
+    worst, where, unvisited = 0.0, -1, []
+    for k in np.nonzero(compared)[0]:
+        if na[k] < 1.0 or nb[k] < 1.0:
+            unvisited.append(int(k))
+            continue
+        g = abs(kT * np.log(pa[k] / pb[k]))
+        if g > worst:
+            worst, where = g, int(k)
+    return worst, where, unvisited
+
+
+def _profile_block(values, *, frame_idx, row_run, row_elapsed, u_kn, k_n, K, kT, final_log_w_frames, labels,
+                   tolerance, n_bins, pymbar, warnings: list[str]) -> dict:
+    """Does the reference-temperature distribution of the observable agree between independent runs and
+    between the first and second half of the simulation time?  Compared on the bins within 3 kT of the
+    pooled minimum that hold at least 5 effective frames."""
+    ok = np.isfinite(values)
+    v = values[ok]
+    edges = np.linspace(float(v.min()), float(np.percentile(v, 99.5)) + 1e-9, n_bins + 1)
+    fidx = frame_idx[ok]
+    p_pool, neff_pool = _histogram(v, final_log_w_frames[ok], edges)
+    compared = (p_pool >= np.exp(-3.0) * p_pool.max()) & (neff_pool >= 5.0)
+
+    def _subset_profile(row_mask: np.ndarray) -> Optional[tuple]:
+        sub = np.nonzero(row_mask)[0]
+        fmask = row_mask[fidx]
+        if fmask.sum() < 2:
+            return None
+        pos = -np.ones(len(row_mask), dtype=np.int64)
+        pos[sub] = np.arange(len(sub))
+        try:
+            lw, _ = _reference_log_weights(u_kn[:, sub], k_n[sub], K, pymbar)
+        except Exception:  # noqa: BLE001
+            return None
+        return _histogram(v[fmask], lw[pos[fidx[fmask]]], edges)
+
+    centres = 0.5 * (edges[1:] + edges[:-1])
+    reasons: list[str] = []
+    n_runs = len(labels)
+
+    def _compare(profiles: list, reason: str, what: str):
+        gap, where, unvisited = 0.0, -1, set()
+        for a in range(len(profiles)):
+            for b in range(a + 1, len(profiles)):
+                if profiles[a] is None or profiles[b] is None:
+                    unvisited.update(np.nonzero(compared)[0].tolist())
+                    continue
+                g, w, u = _profile_gap(profiles[a], profiles[b], compared, kT)
+                unvisited.update(u)
+                if g > gap:
+                    gap, where = g, w
+        if gap > tolerance:
+            reasons.append(f"{reason}: {what} differ by {gap:.1f} kJ/mol at {centres[where]:.3f} nm (> {tolerance})")
+        if unvisited:
+            rng = ", ".join(f"{centres[k]:.3f}" for k in sorted(unvisited))
+            reasons.append(f"{reason}: {what} do not all visit RMSD {rng} nm, where the pooled ensemble has weight")
+        return gap, sorted(unvisited)
+
+    per_run = [_subset_profile(row_run == r) for r in range(n_runs)] if n_runs >= 2 else []
+    run_gap, run_unvisited = (None, [])
+    if n_runs >= 2:
+        run_gap, run_unvisited = _compare(per_run, "runs_disagree",
+                                          f"the runs' {kT / GAS_CONSTANT_KJ_MOL_K:.0f} K distributions")
+    halves = [None, None]
+    halves_gap, halves_unvisited = (None, [])
+    if row_elapsed is not None:
+        t_half = float(np.nanmax(row_elapsed)) / 2.0
+        halves = [_subset_profile(row_elapsed <= t_half), _subset_profile(row_elapsed > t_half)]
+        halves_gap, halves_unvisited = _compare(halves, "distribution_drifting",
+                                                "the first and second half")
+    else:
+        warnings.append("timestep_fs unknown: the first-half / second-half comparison was skipped")
+    if not compared.any():
+        reasons.append("distribution_undefined: no bin holds 5 effective frames at the reference temperature")
+    return {
+        "edges_nm": edges.tolist(),
+        "compared_bins": int(compared.sum()),
+        "pooled": p_pool.tolist(),
+        "per_run": [None if p is None else p[0].tolist() for p in per_run],
+        "first_half": None if halves[0] is None else halves[0][0].tolist(),
+        "second_half": None if halves[1] is None else halves[1][0].tolist(),
+        "run_gap_kj_mol": run_gap,
+        "run_unvisited_bins_nm": [float(centres[k]) for k in run_unvisited],
+        "halves_gap_kj_mol": halves_gap,
+        "halves_unvisited_bins_nm": [float(centres[k]) for k in halves_unvisited],
+        "tolerance_kj_mol": tolerance,
+        "reasons": reasons,
+        "_compared": compared,
+    }
+
+
+def _delta_f_block(values, walker_summaries, *, frame_idx, u_kn, k_n, row_elapsed, row_run, K, kT, states,
+                   drift_tolerance_kj_mol, n_time_points, out_dir: Path, output_name: str, pymbar,
+                   warnings: list[str]) -> dict:
+    """Question-specific number: dF(A - B) at T_ref vs time, pooled and per run, CSV and figure."""
+    state_a, state_b = states
+    if row_elapsed is None:
+        raise TemperingAnalysisError(code="tempering_observable_invalid",
+                                     message="timestep_fs is not recorded, so dF cannot be followed in time")
     n_runs = len(walker_summaries)
     conv = _sampling_convergence(u_kn=u_kn, k_n=k_n, row_elapsed=row_elapsed, row_run=row_run,
                                  frame_rows_idx=frame_idx, frame_values=values, K=K, kT=kT, n_runs=n_runs,
                                  state_a=state_a, state_b=state_b, n_time_points=n_time_points, pymbar=pymbar)
     times, pooled, per_run = conv["times_ns"], conv["pooled"], conv["per_run"]
     dF = float(pooled[-1])
-    second = times >= times[-1] / 2.0
-    tail = pooled[second]
+    tail = pooled[times >= times[-1] / 2.0]
     reasons: list[str] = []
     drift = float(np.nanmax(tail) - np.nanmin(tail)) if np.isfinite(tail).any() else float("nan")
     if not np.isfinite(tail).all():
@@ -569,23 +695,13 @@ def _sampling_block(walkers, walker_summaries, frame_rows, *, u_kn, k_n, row_ela
     run_spread = None
     if n_runs >= 2:
         if not np.isfinite(run_final).all():
-            reasons.append("runs_disagree: at least one run never populated both states")
+            reasons.append("delta_f_runs_disagree: at least one run never populated both states")
         else:
             run_spread = float(run_final.max() - run_final.min())
             if run_spread > 2.0 * drift_tolerance_kj_mol:
-                reasons.append(f"runs_disagree: the independent runs give dF values {run_spread:.1f} kJ/mol apart "
+                reasons.append(f"delta_f_runs_disagree: the runs give dF values {run_spread:.1f} kJ/mol apart "
                                f"(> {2.0 * drift_tolerance_kj_mol})")
-    else:
-        warnings.append("one run only: no run-to-run check; start a second run_sst2 with another --random-seed")
-    # A run trapped in one basin is self-consistent in time (1KXV CDR-H3: seed 2 alone flat at -11 kJ/mol
-    # for 30 ns while seed 1 ended at +6), so one run can pass the time checks and still be wrong.
-    if reasons:
-        verdict = "not_converged"
-    elif n_runs < 2:
-        verdict = "converged_single_run"
-    else:
-        verdict = "converged"
-
+    verdict = "not_converged" if reasons else ("converged" if n_runs >= 2 else "converged_single_run")
     csv_path = out_dir / f"{output_name}_delta_f.csv"
     labels = [ws["label"] for ws in walker_summaries]
     with open(csv_path, "w", newline="") as fh:
@@ -594,22 +710,15 @@ def _sampling_block(walkers, walker_summaries, frame_rows, *, u_kn, k_n, row_ela
         for j, t in enumerate(times):
             row = [f"{t:.4f}", "" if not np.isfinite(pooled[j]) else f"{pooled[j]:.4f}"]
             if n_runs >= 2:
-                row += ["" if not np.isfinite(v) else f"{v:.4f}" for v in per_run[:, j]]
+                row += ["" if not np.isfinite(val) else f"{val:.4f}" for val in per_run[:, j]]
             wr.writerow(row)
-
     checks = {"drift": drift, "run_spread": run_spread, "tol": drift_tolerance_kj_mol,
               "ess_a": ess_a, "ess_b": ess_b, "t_ref": kT / GAS_CONSTANT_KJ_MOL_K}
     plot = _plot_delta_f(out_dir / f"{output_name}_delta_f.png", times, pooled, per_run, labels, state_a,
                          state_b, dF, checks, verdict, warnings)
-    for ws, v in zip(walker_summaries, run_final if n_runs >= 2 else [None] * n_runs):
-        ws["delta_f_kj_mol_this_run"] = None if v is None or not np.isfinite(v) else float(v)
+    for ws, val in zip(walker_summaries, run_final if n_runs >= 2 else [None] * n_runs):
+        ws["delta_f_kj_mol_this_run"] = None if val is None or not np.isfinite(val) else float(val)
     return {
-        "observable": "rmsd_nm",
-        "rmsd_atoms": int(rmsd_idx.size),
-        "align_atoms": int(align_idx.size),
-        "rmsd_selection": rmsd_selection or "solute backbone (N, CA, C, O)",
-        "align_selection": align_selection or "CA of protein residues outside the solute",
-        "reference": str(reference),
         "state_a_nm": list(state_a),
         "state_b_nm": list(state_b),
         "delta_f_kj_mol": dF,
@@ -618,12 +727,30 @@ def _sampling_block(walkers, walker_summaries, frame_rows, *, u_kn, k_n, row_ela
         "drift_tolerance_kj_mol": drift_tolerance_kj_mol,
         "effective_frames_state_a": ess_a,
         "effective_frames_state_b": ess_b,
-        "sampling_verdict": verdict,
-        "sampling_verdict_reasons": reasons,
+        "delta_f_verdict": verdict,
+        "reasons": reasons,
         "time_ns": float(times[-1]),
         "delta_f_csv": str(csv_path),
         "plot": plot,
-    }, values
+    }
+
+
+def _reference_rung_transitions(values, frame_rows, state_a, state_b) -> dict[str, int]:
+    """Committed A <-> B changes per run counted only over frames at the reference rung, in time order."""
+    out: dict[str, int] = {}
+    last: dict[str, int] = {}
+    for val, fr in zip(values, frame_rows):
+        if fr["rung"] != 0 or not np.isfinite(val):
+            continue
+        s = 0 if state_a[0] <= val <= state_a[1] else (1 if state_b[0] <= val <= state_b[1] else -1)
+        if s < 0:
+            continue
+        w = fr["walker"]
+        out.setdefault(w, 0)
+        if w in last and last[w] != s:
+            out[w] += 1
+        last[w] = s
+    return out
 
 
 def _plot_delta_f(path, times, pooled, per_run, labels, state_a, state_b, dF, checks, verdict,
@@ -695,6 +822,7 @@ def analyze_tempering(
     reference_pdb: Optional[str] = None,
     drift_tolerance_kj_mol: float = 2.5,
     n_time_points: int = 20,
+    profile_tolerance_kj_mol: float = 2.5,
     trajectory_files: Optional[list[str]] = None,
     topology_file: Optional[str] = None,
     output_name: str = "tempering",
@@ -732,24 +860,39 @@ def analyze_tempering(
     ``tempering_report_files`` (one per walker) and, for the frames table,
     ``output_frequency_ps``.
 
-    Sampling convergence (``state_a`` and ``state_b`` given): the
-    observable is the RMSD of the solute backbone to a reference after
-    superposing every frame on the protein framework outside the solute
-    (both overridable). For two states given as RMSD ranges in nm, the
-    free-energy difference at the reference temperature, dF(A - B), is
-    followed as a function of simulation time by MBAR on the rows recorded
-    up to that time, for all runs pooled and for every run alone.
-    ``sampling_verdict`` is ``converged`` when the pooled dF moved by less
-    than ``drift_tolerance_kj_mol`` over the second half, the independent
-    runs end within twice that of each other, and both states hold at
-    least 10 effective frames at the reference temperature; otherwise
-    ``not_converged`` with ``sampling_verdict_reasons``. With a single run
-    the time checks can pass for a run trapped in one basin, so a passing
-    single run reports ``converged_single_run``, never ``converged``. Outputs
-    ``{output_name}_delta_f.csv``, ``{output_name}_delta_f.png`` (dF(t) and
-    the end profile along the RMSD) and an ``rmsd_nm`` column in the frames
-    table. SST2 runs one trajectory per ``run_sst2`` node; "walker" here
-    means one independent run (one seed), not a coupled walker.
+    Sampling convergence, three views of one question: is the
+    reference-temperature ensemble converged?
+
+    1. Temperature walk: ``verdict`` above (every rung visited, round
+       trips, weights settled).
+    2. Temperature and structure together: ``{output_name}.png`` draws each
+       run's rung walk with every frame coloured by the observable, the RMSD
+       of the solute backbone to the start structure after superposing on
+       the protein framework outside the solute (both overridable). It shows
+       whether the conformation changes at the reference rung or only when
+       hot. Not part of the verdict.
+    3. Structural distribution: the reference-temperature distribution of
+       the observable, from MBAR, must agree between independent runs and
+       between the first and second half of the simulation time: on the bins
+       within 3 kT of the pooled minimum holding >= 5 effective frames, the
+       largest |dF| per bin must stay below ``profile_tolerance_kj_mol``
+       (default 2.5, one kT at 300 K).
+
+    ``sampling_verdict`` is ``converged`` when 1 and 3 pass with at least
+    two runs, ``converged_single_run`` when they pass with one run (a run
+    trapped in one basin is steady in time, so one run is never enough),
+    ``not_converged`` with ``sampling_verdict_reasons`` otherwise, and
+    ``not_assessed`` when no observable could be computed (no trajectory or
+    topology). The frames table gains an ``rmsd_nm`` column. SST2 runs one
+    trajectory per ``run_sst2`` node; "walker" in the outputs means one
+    independent run (one seed), not a coupled walker.
+
+    Question-specific number (``state_a`` and ``state_b``, disjoint RMSD
+    ranges in nm): dF(A - B) at the reference temperature followed in time,
+    pooled and per run, in ``{output_name}_delta_f.csv`` / ``.png`` with its
+    own ``delta_f_verdict`` (second-half drift below
+    ``drift_tolerance_kj_mol``, runs within twice that, >= 10 effective
+    frames per state); its reasons join ``sampling_verdict_reasons``.
 
     Args:
         state_a: Lower and upper RMSD edge of state A in nm
@@ -761,8 +904,10 @@ def analyze_tempering(
             protein residues outside the solute, same chains first).
         reference_pdb: Reference structure with the system's atom count
             (default: the topo node's topology.pdb, the start structure).
-        drift_tolerance_kj_mol: second-half drift allowed for the sampling
-            verdict (default 2.5, one kT at 300 K).
+        drift_tolerance_kj_mol: second-half drift allowed for dF(A - B)
+            (default 2.5, one kT at 300 K).
+        profile_tolerance_kj_mol: largest per-bin free-energy gap allowed
+            between runs and between halves (default 2.5).
         n_time_points: points on the dF(t) curve (default 20).
         trajectory_files: direct mode, one DCD per report (default: the
             trajectory.dcd next to each report).
@@ -850,6 +995,7 @@ def analyze_tempering(
             reference_pdb=reference_pdb,
             drift_tolerance_kj_mol=drift_tolerance_kj_mol,
             n_time_points=max(4, int(n_time_points)),
+            profile_tolerance_kj_mol=profile_tolerance_kj_mol,
         )
         summary["analysis_data_scope"] = scope_info["analysis_data_scope"]
         summary["parent_node_ids"] = scope_info["parent_node_ids"]
@@ -871,16 +1017,24 @@ def analyze_tempering(
             "n_frames": summary["frames"]["n_frames"],
             "walkers": summary["walkers"],
         })
-        smp = summary.get("sampling")
-        if smp:
+        smp = summary["sampling"]
+        dist = smp.get("distribution") or {}
+        result.update({
+            "sampling_verdict": smp["sampling_verdict"],
+            "sampling_verdict_reasons": smp["sampling_verdict_reasons"],
+            "distribution_run_gap_kj_mol": dist.get("run_gap_kj_mol"),
+            "distribution_run_unvisited_bins_nm": dist.get("run_unvisited_bins_nm"),
+            "distribution_halves_gap_kj_mol": dist.get("halves_gap_kj_mol"),
+        })
+        dfb = smp.get("delta_f")
+        if dfb:
             result.update({
-                "sampling_verdict": smp["sampling_verdict"],
-                "sampling_verdict_reasons": smp["sampling_verdict_reasons"],
-                "delta_f_kj_mol": smp["delta_f_kj_mol"],
-                "drift_second_half_kj_mol": smp["drift_second_half_kj_mol"],
-                "run_spread_kj_mol": smp["run_spread_kj_mol"],
-                "delta_f_csv": smp["delta_f_csv"],
-                "delta_f_plot": smp["plot"],
+                "delta_f_kj_mol": dfb["delta_f_kj_mol"],
+                "drift_second_half_kj_mol": dfb["drift_second_half_kj_mol"],
+                "run_spread_kj_mol": dfb["run_spread_kj_mol"],
+                "delta_f_verdict": dfb["delta_f_verdict"],
+                "delta_f_csv": dfb["delta_f_csv"],
+                "delta_f_plot": dfb["plot"],
             })
     except TemperingAnalysisError as exc:
         result["errors"].append(str(exc))
@@ -920,9 +1074,12 @@ def analyze_tempering(
                 "fixed_weights_only": fixed_weights_only,
                 "row_stride": row_stride,
             }
-            if result.get("sampling_verdict"):
-                metadata.update({k: result[k] for k in ("sampling_verdict", "sampling_verdict_reasons", "delta_f_kj_mol",
-                                                        "drift_second_half_kj_mol", "run_spread_kj_mol")})
+            metadata.update({k: result.get(k) for k in ("sampling_verdict", "sampling_verdict_reasons",
+                                                         "distribution_run_gap_kj_mol",
+                                                         "distribution_halves_gap_kj_mol")})
+            if result.get("delta_f_verdict"):
+                metadata.update({k: result[k] for k in ("delta_f_kj_mol", "drift_second_half_kj_mol",
+                                                        "run_spread_kj_mol", "delta_f_verdict")})
                 metadata["state_a_nm"] = list(states[0])
                 metadata["state_b_nm"] = list(states[1])
             complete_node(job_dir, node_id, artifacts=artifacts, metadata=metadata,
@@ -949,6 +1106,7 @@ def _analyze_walkers(
     reference_pdb: Optional[str] = None,
     drift_tolerance_kj_mol: float = 2.5,
     n_time_points: int = 20,
+    profile_tolerance_kj_mol: float = 2.5,
 ) -> dict:
     try:
         import pymbar
@@ -1191,18 +1349,58 @@ def _analyze_walkers(
             reasons.append(f"walkers disagree on f_k by up to {walker_spread:.1f} kJ/mol")
     verdict = "weights_converged" if not reasons else "weights_drifting"
 
-    # ---- sampling convergence: dF(A - B) at T_ref vs time ------------------------
+    # ---- sampling convergence ---------------------------------------------------------
+    # (1) temperature walk: the weights verdict above; (2) the observable per frame, shown on the walk;
+    # (3) the reference-temperature distribution of the observable agrees between runs and between halves.
     frame_values: Optional[np.ndarray] = None
-    sampling: Optional[dict] = None
-    if states is not None:
-        sampling, frame_values = _sampling_block(
-            walkers, walker_summaries, frame_rows, u_kn=u_kn, k_n=k_n,
-            row_elapsed=np.concatenate(elapsed_blocks) if have_time else None,
-            row_run=np.concatenate(run_blocks), K=K, kT=kT, states=states,
-            rmsd_selection=rmsd_selection, align_selection=align_selection, reference_pdb=reference_pdb,
-            drift_tolerance_kj_mol=drift_tolerance_kj_mol, n_time_points=n_time_points,
-            out_dir=out_dir, output_name=output_name, pymbar=pymbar, warnings=warnings,
-        )
+    observable_info: Optional[dict] = None
+    profile: Optional[dict] = None
+    delta_f: Optional[dict] = None
+    row_elapsed = np.concatenate(elapsed_blocks) if have_time else None
+    row_run = np.concatenate(run_blocks)
+    frame_idx = np.array([fr["pooled_row"] for fr in frame_rows], dtype=np.int64)
+    asked = states is not None or rmsd_selection or align_selection or reference_pdb
+    try:
+        frame_values, observable_info = _frame_observable(
+            walkers, frame_rows, rmsd_selection=rmsd_selection, align_selection=align_selection,
+            reference_pdb=reference_pdb, warnings=warnings)
+    except TemperingAnalysisError as exc:
+        if asked:
+            raise
+        warnings.append(f"sampling not assessed: {exc}")
+    if frame_values is not None and np.isfinite(frame_values).sum() >= 10:
+        profile = _profile_block(
+            frame_values, frame_idx=frame_idx, row_run=row_run, row_elapsed=row_elapsed, u_kn=u_kn, k_n=k_n, K=K,
+            kT=kT, final_log_w_frames=log_w_rows[frame_idx], labels=[ws["label"] for ws in walker_summaries],
+            tolerance=profile_tolerance_kj_mol, n_bins=15, pymbar=pymbar, warnings=warnings)
+        if states is not None:
+            delta_f = _delta_f_block(
+                frame_values, walker_summaries, frame_idx=frame_idx, u_kn=u_kn, k_n=k_n, row_elapsed=row_elapsed,
+                row_run=row_run, K=K, kT=kT, states=states, drift_tolerance_kj_mol=drift_tolerance_kj_mol,
+                n_time_points=n_time_points, out_dir=out_dir, output_name=output_name, pymbar=pymbar,
+                warnings=warnings)
+            trans = _reference_rung_transitions(frame_values, frame_rows, *states)
+            for ws in walker_summaries:
+                ws["transitions_at_reference_rung"] = trans.get(ws["label"], 0)
+    if profile is None:
+        sampling_verdict, sampling_reasons = "not_assessed", ["no observable per frame (see warnings)"]
+    else:
+        sampling_reasons = [f"temperature_walk: {r}" for r in reasons] + list(profile["reasons"])
+        if delta_f is not None:
+            sampling_reasons += delta_f["reasons"]
+        if len(walker_summaries) < 2:
+            warnings.append("one run only: no run-to-run check; start a second run_sst2 with another --random-seed")
+        # A run trapped in one basin is self-consistent in time (1KXV CDR-H3: seed 2 alone flat for 30 ns
+        # while seed 1 sat elsewhere), so one run never reports "converged".
+        sampling_verdict = ("not_converged" if sampling_reasons else
+                            ("converged" if len(walker_summaries) >= 2 else "converged_single_run"))
+    if frame_values is not None:
+        for ws in walker_summaries:
+            sel = [j for j, fr in enumerate(frame_rows) if fr["walker"] == ws["label"] and fr["rung"] == 0
+                   and np.isfinite(frame_values[j])]
+            if sel:
+                ws["rmsd_nm_at_reference_rung_p5_p95"] = [float(np.percentile(frame_values[sel], 5)),
+                                                         float(np.percentile(frame_values[sel], 95))]
 
     # ---- outputs --------------------------------------------------------------
     with open(out_dir / "weights.json", "w") as fh:
@@ -1236,7 +1434,10 @@ def _analyze_walkers(
 
     for ws, fw in zip(walker_summaries, per_walker_f):
         ws["mbar_f_k_kj_mol_this_walker"] = fw
-    plot = _plot(out_dir / f"{output_name}.png", walker_summaries, ladder, f_k_kj, f_err * kT, warnings)
+    plot = _plot(out_dir / f"{output_name}.png", walker_summaries, ladder, frame_rows, frame_values, profile, kT,
+                 sampling_verdict if profile is not None else None, warnings)
+    if profile is not None:
+        profile.pop("_compared", None)
     for ws in walker_summaries:
         ws.pop("_rungs", None)
         ws.pop("_times", None)
@@ -1267,7 +1468,13 @@ def _analyze_walkers(
         "verdict": verdict,
         "verdict_reasons": reasons,
         "frames": frames_info,
-        "sampling": sampling,
+        "sampling": {
+            "sampling_verdict": sampling_verdict,
+            "sampling_verdict_reasons": sampling_reasons,
+            "observable": observable_info,
+            "distribution": profile,
+            "delta_f": delta_f,
+        },
         "weights_json": str(out_dir / "weights.json"),
         "plot": plot,
         "next": (
@@ -1279,59 +1486,96 @@ def _analyze_walkers(
     }
 
 
-def _plot(path: Path, walkers: list[dict], ladder: list[float], f_k_kj: list[float],
-          f_err_kj: np.ndarray, warnings: list[str]) -> Optional[str]:
+def _plot(path: Path, walkers: list[dict], ladder: list[float], frame_rows: list[dict],
+          values: Optional[np.ndarray], profile: Optional[dict], kT: float, verdict: Optional[str],
+          warnings: list[str]) -> Optional[str]:
+    """Left: the temperature (rung) walk of every run, each frame coloured by the observable.
+    Right: the reference-temperature distribution of the observable, run by run (top) and first half
+    against second half (bottom); gray bands mark the bins the verdict compares."""
     try:
         import matplotlib
 
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        from matplotlib.colors import LinearSegmentedColormap
     except Exception as exc:  # noqa: BLE001
         warnings.append(f"plot skipped: {exc}")
         return None
     K = len(ladder)
     n = len(walkers)
-    fig = plt.figure(figsize=(11, 1.3 * n + 2.6))
-    gs = fig.add_gridspec(n, 2, width_ratios=[2.4, 1], hspace=0.15, wspace=0.25)
-    has_time = any(ws["_times"] is not None for ws in walkers)
-    ax0 = None
+    fig = plt.figure(figsize=(11.5, max(4.2, 1.5 * n + 1.6)))
+    gs = fig.add_gridspec(max(n, 2), 2, width_ratios=[1.7, 1], hspace=0.35, wspace=0.28)
+    cmap = LinearSegmentedColormap.from_list("obs", ["#cfe0f5", "#2a78d6", "#0b2e5c"])
+    have_obs = values is not None and np.isfinite(values).any()
+    if have_obs:
+        fin = values[np.isfinite(values)]
+        vmin, vmax = float(np.percentile(fin, 1)), float(np.percentile(fin, 99))
+    jitter = np.random.default_rng(0)
+    sc = None
+    t_ref = kT / GAS_CONSTANT_KJ_MOL_K
+    left_axes = []
     for i, ws in enumerate(walkers):
-        ax = fig.add_subplot(gs[i, 0], sharex=ax0)
-        ax0 = ax0 or ax
+        ax = fig.add_subplot(gs[i, 0])
+        left_axes.append(ax)
         r = ws["_rungs"]
         t = ws["_times"] if ws["_times"] is not None else np.arange(len(r))
-        ax.plot(t, r, lw=0.3, color="#1F77B4", drawstyle="steps-post")
+        ax.plot(t, r, lw=0.25, color="0.8", drawstyle="steps-post", zorder=1)
+        if have_obs:
+            m = [(j, fr) for j, fr in enumerate(frame_rows) if fr["walker"] == ws["label"] and np.isfinite(values[j])]
+            if m:
+                tt = np.array([fr["time_ns"] if fr["time_ns"] is not None else 0.0 for _, fr in m])
+                kk = np.array([fr["rung"] for _, fr in m]) + jitter.uniform(-0.3, 0.3, len(m))
+                sc = ax.scatter(tt, kk, c=[values[j] for j, _ in m], s=1.5, cmap=cmap, vmin=vmin, vmax=vmax,
+                                linewidths=0, zorder=2)
         ax.set_yticks(range(K))
         ax.set_yticklabels([f"{T:.0f}" for T in ladder], fontsize=7)
-        ax.set_ylim(-0.5, K - 0.5)
-        ax.text(0.01, 0.95, f"{ws['label']}: {ws['round_trips']} round trips", transform=ax.transAxes,
-                fontsize=8, va="top")
-        if i < n - 1:
+        ax.set_ylim(-0.6, K - 0.4)
+        ax.set_ylabel("T / K", fontsize=8)
+        ax.set_title(f"{ws['label']}: {ws['round_trips']} round trips", fontsize=8.5, loc="left")
+        ax.grid(alpha=0.25)
+        if i == n - 1:
+            ax.set_xlabel("time / ns" if ws["_times"] is not None else "report row")
+        else:
             ax.tick_params(labelbottom=False)
-    if ax0 is not None:
-        fig.axes[-1].set_xlabel("time (ns)" if has_time else "report row")
-        fig.axes[0].set_title("rung (K) visited by each walker", fontsize=9)
-    ax = fig.add_subplot(gs[:, 1])
-    x = np.arange(K)
-    ax.axhspan(-2.5, 2.5, color="#E0E0E0", zorder=0)
-    ax.errorbar(x, np.zeros(K), yerr=np.nan_to_num(f_err_kj), fmt="o-", color="black", label="MBAR f_k (pooled)", zorder=3)
-    colors = ["#1F77B4", "#D95F02", "#7570B3", "#1B9E77", "#E7298A", "#66A61E"]
-    for i, ws in enumerate(walkers):
-        c = colors[i % len(colors)]
-        otf = ws["on_the_fly_weights_kj_mol"]
-        if otf and len(otf) == K:
-            ax.plot(x, [(v - otf[0]) - f for v, f in zip(otf, f_k_kj)], "s--", ms=4, lw=0.9, color=c,
-                    label=f"{ws['label']} on-the-fly")
-        own = ws.get("mbar_f_k_kj_mol_this_walker")
-        if own:
-            ax.plot(x, [v - f for v, f in zip(own, f_k_kj)], "^:", ms=4, lw=0.9, color=c, alpha=0.7,
-                    label=f"{ws['label']} MBAR alone")
-    ax.set_xticks(x)
-    ax.set_xticklabels([f"{T:.0f}" for T in ladder], fontsize=8)
-    ax.set_xlabel("rung temperature (K)")
-    ax.set_ylabel("deviation from pooled MBAR f_k (kJ/mol)")
-    ax.set_title("weights: on-the-fly and per-walker vs pooled", fontsize=9)
-    ax.legend(fontsize=6)
-    fig.savefig(path, dpi=130, bbox_inches="tight")
+    if sc is not None:
+        cb = fig.colorbar(sc, ax=left_axes, location="right", shrink=0.8, pad=0.01, aspect=30)
+        cb.set_label("RMSD / nm", fontsize=8)
+        cb.ax.tick_params(labelsize=7)
+    if profile is not None:
+        edges = np.asarray(profile["edges_nm"])
+        c = 0.5 * (edges[1:] + edges[:-1])
+
+        def _F(p):
+            p = np.asarray(p, dtype=float)
+            with np.errstate(divide="ignore"):
+                G = -kT * np.log(p)
+            G[~np.isfinite(G)] = np.nan
+            return G - np.nanmin(G)
+
+        panels = (("runs", [(lab["label"], profile["per_run"][k]) for k, lab in enumerate(walkers)]
+                   if profile["per_run"] else [], profile["run_gap_kj_mol"], profile["run_unvisited_bins_nm"]),
+                  ("halves", [("first half", profile["first_half"]), ("second half", profile["second_half"])],
+                   profile["halves_gap_kj_mol"], profile["halves_unvisited_bins_nm"]))
+        half_rows = max(n, 2) // 2
+        for j, (title, curves, gap, unvisited) in enumerate(panels):
+            ax = fig.add_subplot(gs[j * half_rows:(j + 1) * half_rows if j == 0 else max(n, 2), 1])
+            colours = _RUN_COLORS if j == 0 else ["#9a9a9a", "#0b0b0b"]
+            for k, (lab, p) in enumerate(curves):
+                if p is not None:
+                    ax.plot(c, _F(p), "-", lw=1.4, color=colours[k] if k < len(colours) else "gray", label=lab)
+            if not curves:
+                ax.text(0.5, 0.5, "one run only", transform=ax.transAxes, ha="center", va="center", color="0.4")
+            gap_txt = "" if gap is None else f": gap {gap:.1f} kJ/mol" + (" + unvisited bins" if unvisited else "")
+            ax.set_title(f"{title}{gap_txt}", fontsize=8.5, loc="left")
+            ax.set_ylabel("F / kJ mol$^{-1}$", fontsize=8)
+            ax.set_ylim(-0.5, 6.0 * kT)
+            ax.grid(alpha=0.25)
+            if any(p is not None for _, p in curves):
+                ax.legend(fontsize=7, frameon=False)
+            if j == 1:
+                ax.set_xlabel(f"RMSD / nm  (distribution at {t_ref:.0f} K)")
+    if verdict:
+        fig.suptitle(f"sampling: {verdict}", x=0.01, ha="left", fontsize=10)
+    fig.savefig(path, dpi=140, bbox_inches="tight")
     plt.close(fig)
     return str(path)

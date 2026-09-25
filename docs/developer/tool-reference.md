@@ -599,21 +599,25 @@ signature, update the relevant section here and the matching skill examples.
   `tempering_report_missing`, `tempering_report_invalid`,
   `tempering_walkers_incompatible`, `tempering_scope_unsupported`,
   `pymbar_not_installed`.
-  With `state_a` / `state_b` (two disjoint RMSD ranges in nm) it also judges
-  the sampling: the observable is the RMSD of the solute backbone (or
-  `rmsd_selection`) to the start structure (or `reference_pdb`, same atom
-  count) after superposing on the protein CA outside the solute (or
-  `align_selection`); dF(A - B) at the reference temperature is followed
-  over `n_time_points` times by MBAR on the rows recorded up to each time,
-  pooled and per run. `sampling_verdict` is `converged` when the pooled dF
-  drifts less than `drift_tolerance_kj_mol` (2.5) over the second half, the
-  runs end within twice that and each state has >= 10 effective frames;
-  a single passing run gives `converged_single_run`; otherwise
-  `not_converged` with `sampling_verdict_reasons`. Artifacts
-  `tempering_delta_f` (CSV) and `tempering_delta_f_plot`, plus an `rmsd_nm`
-  column in the frames table. Direct mode takes `trajectory_files` and
-  `topology_file`. Codes: `tempering_states_invalid`,
-  `tempering_observable_invalid`.
+  Sampling convergence comes with every run: the observable (RMSD of the
+  solute backbone, or `rmsd_selection`, to the start structure or
+  `reference_pdb`, after superposing on the protein CA outside the solute,
+  or `align_selection`; water and ions in a selection are refused) is
+  computed per frame and added to the frames table as `rmsd_nm`.
+  `sampling_verdict` is `converged` when the temperature walk passes (the
+  weights verdict) and the reference-temperature distribution of the
+  observable agrees between the independent runs and between the first and
+  second half of the time (largest per-bin gap below
+  `profile_tolerance_kj_mol`, 2.5, on the bins within 3 kT holding >= 5
+  expected effective frames, and no run missing such a bin); one passing
+  run gives `converged_single_run`; `not_assessed` when no observable could
+  be computed. `tempering.png` draws each run's rung walk coloured by the
+  observable next to the 300 K distributions by run and by half. With
+  `state_a` / `state_b` (disjoint RMSD ranges in nm) it also follows
+  dF(A - B) at T_ref in time, pooled and per run (`delta_f_verdict`,
+  artifacts `tempering_delta_f` and `tempering_delta_f_plot`). Direct mode
+  takes `trajectory_files` and `topology_file`. Codes:
+  `tempering_states_invalid`, `tempering_observable_invalid`.
 - `analyze_rmsd(...)`, `analyze_distance(...)`, and `analyze_q_value(...)`:
   write a CSV `time_ns` column only when a DAG-resolved `frame_times_ns`
   artifact exists. Direct and legacy inputs without it produce frame-only CSVs

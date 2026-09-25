@@ -51,6 +51,7 @@ def _write_walker(
     weights_fixed: bool = False,
     visit_top: bool = True,
     pdb: str | None = None,
+    extra_shift_nm: float = 0.0,
 ) -> tuple[Path, Path]:
     """Write tempering.csv / tempering.json of one synthetic walker.
 
@@ -90,7 +91,7 @@ def _write_walker(
         "step": int(steps[-1]), "dt_fs": DT_FS, "solute_atoms": 42,
     }))
     if pdb is not None:
-        _write_dcd(directory, x[(steps % FRAME_STEPS) == 0], pdb)
+        _write_dcd(directory, x[(steps % FRAME_STEPS) == 0] + extra_shift_nm, pdb)
     return report, state
 
 
@@ -528,3 +529,48 @@ def test_observable_selection_refuses_solvent(tmp_path):
     assert exc.value.code == "tempering_observable_invalid" and "water or ion" in str(exc.value)
     rmsd_idx, _ = _observable_atoms(str(pdb), [4, 5, 6, 7], "protein and resSeq 2 and name N CA C O", "resSeq 1")
     assert rmsd_idx.tolist() == [4, 5, 6, 7]
+
+
+# --------------------------------------------------------------------------- #
+# default sampling verdict: temperature walk + distribution agreement          #
+# --------------------------------------------------------------------------- #
+
+def _two_runs(tmp_path, pdb, shift2=0.0):
+    runs = [_write_walker(tmp_path / "w1", 6000, seed=1, pdb=pdb),
+            _write_walker(tmp_path / "w2", 6000, seed=2, pdb=pdb, extra_shift_nm=shift2)]
+    return analyze_tempering(
+        tempering_report_files=[str(r) for r, _ in runs], tempering_state_files=[str(st) for _, st in runs],
+        output_frequency_ps=FRAME_STEPS * DT_FS / 1000.0, topology_file=pdb, align_selection="resname ACE NME",
+        _out_dir_override=str(tmp_path / "out"))
+
+
+def test_distribution_verdict_passes_for_matching_runs(tmp_path, alanine_dipeptide_pdb):
+    pytest.importorskip("pymbar")
+    res = _two_runs(tmp_path, alanine_dipeptide_pdb)
+    assert res["success"], res
+    assert res["sampling_verdict"] == "converged", res["sampling_verdict_reasons"]
+    assert res["distribution_run_gap_kj_mol"] < 2.5
+    assert res["distribution_halves_gap_kj_mol"] < 2.5
+    assert "delta_f_kj_mol" not in res                      # no states: no question-specific number
+    summary = json.loads((tmp_path / "out" / "tempering_mbar.json").read_text())
+    assert summary["sampling"]["distribution"]["compared_bins"] >= 5
+    assert (tmp_path / "out" / "tempering.png").is_file()
+
+
+def test_distribution_verdict_catches_runs_in_different_basins(tmp_path, alanine_dipeptide_pdb):
+    pytest.importorskip("pymbar")
+    res = _two_runs(tmp_path, alanine_dipeptide_pdb, shift2=1.5)   # run 2 sits 1.5 nm further out
+    assert res["success"], res
+    assert res["sampling_verdict"] == "not_converged"
+    assert any(r.startswith("runs_disagree") for r in res["sampling_verdict_reasons"])
+
+
+def test_sampling_not_assessed_without_trajectories(tmp_path):
+    pytest.importorskip("pymbar")
+    runs = [_write_walker(tmp_path / f"w{i}", 3000, seed=i) for i in (1, 2)]
+    res = analyze_tempering(tempering_report_files=[str(r) for r, _ in runs],
+                            tempering_state_files=[str(st) for _, st in runs],
+                            output_frequency_ps=FRAME_STEPS * DT_FS / 1000.0, _out_dir_override=str(tmp_path / "out"))
+    assert res["success"], res
+    assert res["sampling_verdict"] == "not_assessed"
+    assert any(w.startswith("sampling not assessed") for w in res["warnings"])

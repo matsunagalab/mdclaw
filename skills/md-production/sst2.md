@@ -91,11 +91,11 @@ over packed plain MD.
    `continue_from` carries the rung, the running averages and the state;
    the solute and ladder must match the parent.
 
-Converged weights are not a converged ensemble: to decide whether the
-300 K populations can be believed, run `analyze_tempering` with
-`--state-a/--state-b` and read `sampling_verdict`
-(`skills/md-analyze/tempering.md`). Two runs with different seeds are the
-minimum for a `converged` verdict.
+Converged weights are not a converged ensemble: read `sampling_verdict` and
+`tempering.png` from the same `analyze_tempering` run
+(`skills/md-analyze/tempering.md`); it also checks that the 300 K structure
+distribution agrees between runs and between halves. Two runs with
+different seeds are the minimum for a `converged` verdict.
 
 If the verdict is `weights_drifting`, act on `verdict_reasons` (extend the
 adaptive stage with `continue_from`, replace a trapped walker with a fresh

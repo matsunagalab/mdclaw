@@ -7,6 +7,16 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-26 — SST2 の収束判定を「温度の巡り + 300 K 構造分布の一致」に作り直し、1KXV の solute 3 条件を比較
+
+ユーザーとの議論で決めた判定（同日）: SST2 の収束は (1) 温度の時系列（全段訪問・往復・重み）と (3) 300 K の構造分布の変化で判定し、(2) 両者のつながり（高温で形が変わるだけか、300 K でも入れ替わるか）は図で見せる。`analyze_tempering` は観測量（solute 主鎖 RMSD、既定）を毎回計算し、MBAR で 300 K に再重み付けした分布を run 単独どうし・前半と後半で比べる（プール分布で最小から 3 kT 以内かつ期待有効フレーム ≥ 5 のビンで、ビンごとの |ΔF| の最大 < 2.5 kJ/mol、かつどの run もそのビンを訪問）。`sampling_verdict` = 温度の巡り（重み判定）と分布の一致の両方で `converged`、1 run なら `converged_single_run`、観測量が無ければ `not_assessed`。図 `tempering.png` は左に run ごとの rung 時系列を RMSD で色分け、右に run ごと・前後半の 300 K 分布。2 状態の dF(t) は `--state-a/--state-b` のときだけの問い別の数値に格下げ（`delta_f_verdict`）。
+
+途中の修正: (a) ビンの「訪問」を bin 内の Kish ESS で数えると、高温 rung の重み 1e-25 のフレーム 1 個でも 1 になり、H3 + 殻で run 間差 142 kJ/mol という偽の値が出た。ビン確率 × 全体 ESS（期待有効フレーム数）で数えるよう変更し 15.9 に。(b) `--rmsd-selection "resSeq 98 to 110 and name N CA C O"` が同番号の水の O を拾い RMSD が 3 nm 超、全条件 NaN になった（MDTraj DSL の罠、ユーザーが以前警告したもの）。選択に水・イオンが入れば `tempering_observable_invalid` で拒否（248c010）。
+
+1KXV 50 ns × 2 seed の結果（RMSD は 3 条件とも H3 13 残基の主鎖、framework で重ね合わせ）: 300 K 分布の run 間の最大差は H3 のみ 9.6 kJ/mol（seed 1 だけが 3.2–3.6 Å を占有）、H3 + 殻 15.9（ただし分布の広がりは両 seed とも 4.5–6 Å まで）、二面角のみ 5.9（両 seed とも結晶近傍から出ない）。前後半の差は 9.0 / 4.5 / 2.8。3 条件とも `not_converged`。RMSD で色分けした rung 時系列で見ると、H3 のみと二面角のみは温度はよく巡る（48–418 往復）が 300 K では形が変わらず、H3 のみ seed 1 は高温で別の形（Tyr101–Gly102–Leu103 の主鎖が組み替わり Gly102 の φ −65°→149°、Pro104–Gly105 の反転ではない）に入り 38 ns 以降それを 300 K に持ち帰って居座った。H3 + 殻は 300 K でも形が入れ替わるが、rung 交換 3–5 %・往復 7–13 回でラダーが粗い。次: H3 + 殻で 8–9 段のラダー、2 seed。通常 MD（prod_014/015）の 300 K 分布は 3 Å 手前で立ち上がり、B（2.5–6 Å）の占有は 0–0.4 %。
+
+---
+
 ## 2026-09-25 — `analyze_tempering` に SST2 のサンプリング収束判定（dF(t)）を追加
 
 ユーザー要望（metadynamics と同じようにサンプリングの収束を判定する図、SST2 に合った手法で）。`analyze_metadynamics` の「2 状態の dF(t) と後半のドリフト」を SST2 向けに置き換えた。SST2 は CV を持たないので、観測量は solute の主鎖 RMSD（既定: solute の N/CA/C/O、solute 外の蛋白 CA で重ね合わせ、参照は topo の topology.pdb = 出発構造。いずれも上書き可）。`--state-a/--state-b` で RMSD の 2 範囲（nm）を与えると、各時刻までに記録された行だけで MBAR を解き直して 300 K の dF(A − B) を時刻の関数にする（全 run プールと run 単独の両方、既定 20 点）。判定 `sampling_verdict`: プール dF の後半ドリフト < 2.5 kJ/mol、run 間の最終値の差 < 5 kJ/mol、両状態の 300 K 有効フレーム ≥ 10 で `converged`。成果物 `tempering_delta_f.csv` / `.png`（左 dF(t)、右 300 K の RMSD プロファイル、プールと run ごと）、frames 表に `rmsd_nm` 列。
