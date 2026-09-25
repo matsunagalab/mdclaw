@@ -400,3 +400,87 @@ class TestStageToolAudit:
                     f"{name} validates node type {match.group(1)!r} but declares "
                     f"{info['node_type']!r}: missing @node_tool?"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Large DAGs: id lists are capped so next_action stays visible
+# ---------------------------------------------------------------------------
+
+
+class TestLargeDagListings:
+    def test_dag_snapshot_caps_long_lists(self):
+        index = {f"prod_{i:03d}": {"type": "prod", "status": "completed", "parents": []}
+                 for i in range(100)}
+        snapshot = dag_snapshot(index)
+        assert snapshot["node_count"] == 100
+        assert len(snapshot["completed"]) == 40
+        assert snapshot["completed"][:2] == ["prod_000", "prod_001"]
+        assert snapshot["completed"][-1] == "prod_099"
+        assert len(snapshot["leaves"]) == 40
+        assert snapshot["truncated"] == {"completed": 60, "leaves": 60}
+        assert snapshot["pending"] == [] and snapshot["failed"] == []
+
+    def test_small_dag_snapshot_has_no_truncation_marker(self):
+        index = {"source_001": {"type": "source", "status": "completed", "parents": []}}
+        assert "truncated" not in dag_snapshot(index)
+
+    def test_node_missing_caps_existing_ids(self, job_dir):
+        for _ in range(50):
+            assert create_node(str(job_dir), "prod")["success"]
+        err = node_missing_error(str(job_dir), "prod_999", expected_type="prod")
+        assert err["code"] == "node_missing"
+        assert err["existing_node_count"] == 50
+        assert len(err["existing_node_ids"]) == 40
+        assert err["existing_node_ids"][0] == "prod_001"
+        assert err["existing_node_ids"][-1] == "prod_050"
+        assert any("(+10 more)" in hint for hint in err["hints"])
+
+
+def test_dag_context_of_an_unreachable_job_dir_does_not_suggest_a_source_node(tmp_path):
+    from mdclaw._envelope import dag_context
+
+    context = dag_context(str(tmp_path / "no_such_job"), None, _tools())
+    assert context["next"]["action"] == "blocked"
+    assert "does not exist" in context["next"]["reason"]
+    assert "dag" not in context
+
+
+class TestStrictProgressLoad:
+    def test_strict_loader_retries_a_torn_read_then_raises(self, tmp_path, monkeypatch):
+        import mdclaw.node.progress as progress_module
+        from mdclaw._envelope import _load_nodes_strict
+
+        calls = {"n": 0}
+
+        def flaky(path, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise ValueError("torn read")
+            return {"schema_version": 3, "nodes": {"a": {"status": "completed"}}, "params": {"x": 1}}
+
+        monkeypatch.setattr(progress_module, "_load_progress_v3", flaky)
+        nodes, params = _load_nodes_strict(str(tmp_path), attempts=5, delay=0.0)
+        assert nodes == {"a": {"status": "completed"}} and params == {"x": 1} and calls["n"] == 3
+
+        def broken(path, **kwargs):
+            raise ValueError("still torn")
+
+        monkeypatch.setattr(progress_module, "_load_progress_v3", broken)
+        with pytest.raises(ValueError, match="still torn"):
+            _load_nodes_strict(str(tmp_path), attempts=2, delay=0.0)
+
+    def test_preflight_reports_an_unreadable_index_not_a_missing_parent(self, tmp_path, monkeypatch):
+        from mdclaw import _envelope
+        from mdclaw._cli import _node_type_preflight_error
+
+        node = tmp_path / "nodes" / "prod_001"
+        node.mkdir(parents=True)
+        (node / "node.json").write_text(json.dumps({
+            "node_id": "prod_001", "node_type": "prod", "status": "pending", "conditions": {},
+            "parent_node_ids": ["eq_001"], "metadata": {}, "artifacts": {}}))
+        (tmp_path / "progress.json").write_text('{"schema_version": 3, "nodes": {"eq_0')   # torn
+        monkeypatch.setattr(_envelope.time, "sleep", lambda seconds: None)
+        error = _node_type_preflight_error(tool_name="run_production", job_dir=str(tmp_path),
+                                           node_id="prod_001", expected_node_type="prod")
+        assert error["code"] == "progress_unreadable" and "not spent" in error["message"]
+        assert "Unreadable progress.json" in error["message"]

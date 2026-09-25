@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -16,10 +17,16 @@ def _atomic_write_json(path: Path, data: dict) -> None:
     """Write *data* as JSON to *path* atomically (tmp + os.replace).
 
     Ensures that a crash mid-write never leaves a truncated or corrupt file.
+    ``progress.json`` is written compact: it is an index rewritten on every
+    node operation, and at 26k nodes the indented form was 13.7 MB and took
+    five times longer to serialize than the 8.7 MB compact one.
     """
     tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
     try:
-        tmp.write_text(json.dumps(data, indent=2, default=str))
+        if path.name == "progress.json":
+            tmp.write_text(json.dumps(data, separators=(",", ":"), default=str))
+        else:
+            tmp.write_text(json.dumps(data, indent=2, default=str))
         os.replace(str(tmp), str(path))
     except Exception:
         try:
@@ -126,10 +133,42 @@ def _resolve_structured_artifact_paths(
     return value
 
 
+READ_RETRY_ATTEMPTS = 5
+READ_RETRY_DELAY = 0.1
+
+
+def _load_json_settled(path: Path, *, attempts: int = READ_RETRY_ATTEMPTS,
+                       delay: float = READ_RETRY_DELAY) -> Optional[dict]:
+    """Load a JSON record that another host may be replacing right now.
+
+    Every record (``progress.json``, ``node.json``) is written as tmp +
+    rename, so a reader on the same host sees either version. On a shared
+    file system (Lustre, NFS) a reader on *another* client can find the path
+    absent, stale or unparsable for a moment while the rename lands (seen on
+    RIKYU: ``progress.json is missing`` for a file that never went away), so
+    a miss is retried before it is believed. Returns ``None`` when the file
+    stays absent; a file that stays unparsable raises ``ValueError``, other
+    persistent OS errors surface as ``OSError``.
+    """
+    last: Optional[Exception] = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            last = exc
+        if attempt + 1 < attempts:
+            time.sleep(delay)
+    if isinstance(last, FileNotFoundError):
+        return None
+    if isinstance(last, json.JSONDecodeError):
+        raise ValueError(f"Corrupt JSON at {path}: {last}") from last
+    raise last  # type: ignore[misc]
+
+
 def _read_node_json_path(node_json: Path, *, strict: bool = False) -> Optional[dict]:
     try:
-        return json.loads(node_json.read_text())
-    except json.JSONDecodeError as exc:
+        return _load_json_settled(node_json)
+    except ValueError as exc:
         if strict:
             raise ValueError(f"Corrupt node.json at {node_json}: {exc}") from exc
         return None

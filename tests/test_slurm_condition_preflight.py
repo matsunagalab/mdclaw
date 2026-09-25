@@ -83,6 +83,29 @@ def test_shell_or_unknown_payload_is_not_claimed_as_validated(job, payload):
     assert production_preflight(payload, str(job), "prod_001")["status"] == "skipped"
 
 
+def test_other_nodes_and_other_tools_are_not_applicable(job):
+    eq = job / "nodes/eq_001"
+    eq.mkdir(parents=True)
+    (eq / "node.json").write_text(json.dumps({
+        "node_id": "eq_001", "node_type": "eq", "status": "pending",
+        "conditions": {"npt_time_ns": 1.0}, "parent_node_ids": ["min_001"], "metadata": {}, "artifacts": {},
+    }))
+    eq_command = f"mdclaw --job-dir {shlex.quote(str(job))} --node-id eq_001 run_equilibration --npt-time-ns 1"
+    assert production_preflight(eq_command, str(job), "eq_001")["status"] == "not_applicable"
+    # an opaque script on a non-prod node is not a production check either
+    assert production_preflight("bash run.sh", str(job), "eq_001")["status"] == "not_applicable"
+    # a prod node run by another literal tool
+    other = command(job).replace("run_production", "run_sst2")
+    assert production_preflight(other, str(job), "prod_001")["status"] == "not_applicable"
+    # the eq submission carries no "preflight skipped" warning
+    with patch("mdclaw.slurm._base.run_command") as run:
+        run.return_value.stdout = "Submitted batch job 4242\n"
+        run.return_value.returncode = 0
+        result = submit_job(eq_command, job_dir=str(job), node_id="eq_001")
+    assert result["condition_preflight"]["status"] == "not_applicable"
+    assert not any("preflight skipped" in w for w in result.get("warnings") or [])
+
+
 def test_different_node_and_invalid_arguments_are_rejected(job):
     for cmd in (command(job).replace("prod_001", "prod_002"),
                 command(job, "--simulation-time-ns bad")):

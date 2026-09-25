@@ -2053,3 +2053,18 @@ def test_benchmark_harness_record_is_noop_without_env(tmp_path, monkeypatch):
         started_at=__import__("time").monotonic(),
     )
     assert list(tmp_path.iterdir()) == []
+
+
+def test_native_stdout_goes_to_stderr_while_a_tool_runs(capfd):
+    """Descriptor-level prints (mdtraj's dcdplugin, OpenMM plugins) must never
+    land in the JSON result stream."""
+    import os
+
+    from mdclaw._cli import _NativeStdoutToStderr
+
+    with _NativeStdoutToStderr():
+        os.write(1, b"native line\n")
+    os.write(1, b"after restore\n")
+    out, err = capfd.readouterr()
+    assert "native line" in err and "native line" not in out
+    assert "after restore" in out

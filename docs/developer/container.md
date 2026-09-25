@@ -385,3 +385,16 @@ singularity exec --nv \
   independent of the OpenMM `cu118` build. Verify each with
   `mdclaw check_model_backend --model <name>`.
 - Boltz is pinned to `surrogate_server.BOLTZ_VERSION`; bump deliberately.
+
+## Binds made by the launcher
+
+`bin/mdclaw` binds the working directory and the package root into the
+container, and (since 2026-09-21) the deepest existing directory of every
+absolute path found in the arguments — a `--job-dir` outside the working
+directory, a `--study-dir`, a reference structure inside a JSON argument —
+minus `$HOME` (bound by default) and system prefixes, reduced to a minimal
+set (`_mdclaw_arg_bind_dirs`). Before that, a job directory outside the
+working directory was invisible inside the container and the tools reported
+an existing job as "no progress.json; bootstrap the job first"; the `rounds`
+tools now answer `rounds_job_dir_unreachable` when a job directory does not
+exist from the process, instead of suggesting a bootstrap.

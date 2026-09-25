@@ -1,6 +1,5 @@
 """progress.json index: init, per-node sync, summaries, rebuild."""
 
-import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +11,7 @@ from mdclaw._lock import file_lock
 logger = logging.getLogger(__name__)
 
 from mdclaw.node.constants import SCHEMA_VERSION  # noqa: E402
-from mdclaw.node.io import _atomic_write_json, _read_node_json_path  # noqa: E402
+from mdclaw.node.io import _atomic_write_json, _load_json_settled, _read_node_json_path  # noqa: E402
 
 
 def _node_progress_summary(node_data: dict) -> dict:
@@ -114,17 +113,22 @@ def _load_progress_v3(
     """Read ``progress.json`` and require schema v3.
 
     Returns ``None`` only when the file is missing and ``create_if_missing``
-    is False. All present files must declare ``schema_version == 3``.
+    is False. All present files must declare ``schema_version == 3``. A
+    miss is retried first (``_load_json_settled``): on a shared file system
+    another host's rename can hide the file for a moment, and initializing a
+    fresh index on such a miss would erase the job's index.
     """
-    if not progress_path.exists():
-        if create_if_missing:
-            init_progress_v3(str(progress_path.parent))
-        else:
-            return None
     try:
-        data = json.loads(progress_path.read_text())
-    except (json.JSONDecodeError, OSError) as exc:
+        data = _load_json_settled(progress_path)
+    except (ValueError, OSError) as exc:
         raise ValueError(f"Unreadable progress.json: {progress_path}") from exc
+    if data is None:
+        if not create_if_missing:
+            return None
+        init_progress_v3(str(progress_path.parent))
+        data = _load_json_settled(progress_path)
+        if data is None:
+            raise ValueError(f"Unreadable progress.json: {progress_path}")
 
     version = data.get("schema_version")
     if version != SCHEMA_VERSION:

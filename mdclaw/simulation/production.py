@@ -2,6 +2,7 @@
 
 # Configure logging early to suppress noisy third-party logs
 import os
+import time
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -28,7 +29,7 @@ from mdclaw.simulation.integrator_plan import _compute_step_plan, _record_produc
 from mdclaw.simulation.restraints import DistanceRestraintError, load_distance_restraints, normalize_distance_restraints  # noqa: E402
 from mdclaw.simulation.steering import PROTOCOL_PARAMETER, DistanceSteering, TorchSteering, check_steering_handoff, prepare_torch_steering, validate_steering  # noqa: E402
 from mdclaw.simulation.plumed import PlumedRun, native_log, validate_run as validate_plumed  # noqa: E402
-from mdclaw.simulation.restart import _close_reporter_stream, _count_state_data_rows, _detect_ensemble_mismatch, _flush_reporter_stream, _integrator_restart_verdict, _load_state_into_simulation, _resolve_dcd_append_mode, _resolve_restart_node_id_for_run, _restart_random_seed, _restart_source_metadata, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
+from mdclaw.simulation.restart import _close_reporter_stream, _count_state_data_rows, _detect_ensemble_mismatch, _flush_reporter_stream, _integrator_restart_verdict, _load_state_into_simulation, _resolve_dcd_append_mode, _resolve_restart_node_id_for_run, _restart_random_seed, _restart_source_metadata, _save_checkpoint_atomic, _save_state_atomic, _sibling_seed_collision  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _effective_pressure_bar, _integrator_signature, _load_xml_topology_inputs, _signature_mismatches, _system_signature, _validate_xml_system_contract  # noqa: E402
 
 
@@ -104,6 +105,7 @@ def run_production(
     steering_time_ns: Optional[float] = None,
     steering_update_interval_ps: float = 1.0,
     plumed_file: Optional[str] = None,
+    allow_seed_reuse: bool = False,
 ) -> dict:
     """Run MD simulation using OpenMM.
 
@@ -215,7 +217,14 @@ def run_production(
                      Controls integrator and initial velocity randomization.
                      If None (default), OpenMM uses system entropy.
                      Different seeds produce independent trajectories from
-                     the same initial configuration.
+                     the same initial configuration. In node mode a seed a
+                     completed sibling already ran from the same restart
+                     ancestor is refused (``production_sibling_seed_collision``):
+                     the effective seed derives from the seed and the
+                     ancestor's step count, so the run would repeat that
+                     sibling's trajectory exactly.
+        allow_seed_reuse: Accept such a repeated seed on purpose (a bit-exact
+                     replay of a sibling segment).
 
     Returns:
         Dict with:
@@ -233,6 +242,7 @@ def run_production(
             - errors: list[str] - Error messages if any
             - warnings: list[str] - Non-critical warnings
     """
+    _started_monotonic = time.monotonic()
     # Auto-resolve inputs from DAG when in node mode
     _eq_final_ensemble: Optional[str] = None
     _eq_pressure_bar: Optional[float] = None
@@ -387,6 +397,38 @@ def run_production(
             explicit_restart_from=_explicit_restart_from,
             inputs=_inputs,
         )
+        # Two unbiased segments that restart from one ancestor with one
+        # random_seed integrate the same noise (the effective seed is derived
+        # from the seed and the ancestor's step count) and are the same
+        # trajectory. Refuse before anything runs unless a bit-exact replay is
+        # intended; the node stays pending. A biased run (custom force,
+        # restraints, PLUMED, steering) integrates a different System and is
+        # left alone.
+        _plain_run = not (custom_force_script or distance_restraints or plumed_file
+                          or steering_time_ns is not None)
+        if random_seed is not None and not allow_seed_reuse and _plain_run:
+            _collision = _sibling_seed_collision(
+                job_dir, node_id, _restart_from_node_id, random_seed,
+            )
+            if _collision is not None:
+                from mdclaw._node import fail_node_from_result
+                _sibling = _collision["sibling_node_id"]
+                _msg = (
+                    f"random_seed={random_seed} was already run by completed sibling "
+                    f"'{_sibling}' from restart ancestor '{_collision['restart_node_id']}'; "
+                    "this run would repeat that trajectory exactly."
+                )
+                return fail_node_from_result(job_dir, node_id, create_validation_error(
+                    "random_seed",
+                    _msg,
+                    expected="a random_seed no completed sibling used from the same restart ancestor",
+                    actual=f"random_seed={random_seed}, sibling={_sibling}",
+                    hints=[
+                        "Pass a different --random-seed for an independent replicate.",
+                        "Pass --allow-seed-reuse for a deliberate bit-exact replay.",
+                    ],
+                    code="production_sibling_seed_collision",
+                ), default_error=_msg)
         # Catch implicit-solvent model mismatches between the topo node's
         # build-time metadata and the runtime --implicit-solvent flag
         # before any System is built. Mirror of the run_equilibration
@@ -1215,6 +1257,7 @@ def run_production(
             f"(start_step={start_step}, target_total={simulation_steps})"
         )
 
+        _md_started = time.monotonic()
         if steps_to_run > 0:
             if steering:
                 steering.step(steps_to_run)
@@ -1229,6 +1272,15 @@ def run_production(
                     )
             else:
                 simulation.step(steps_to_run)
+        # Integration time alone (reporters included, Simulation build and
+        # state I/O excluded) so a scheme of short segments can separate the
+        # MD from the per-segment overhead.
+        _md_seconds = time.monotonic() - _md_started
+        result["md_seconds"] = round(_md_seconds, 3)
+        result["ns_per_day"] = (
+            round(steps_to_run * timestep_fs * 1e-6 / _md_seconds * 86400.0, 1)
+            if _md_seconds > 0 and steps_to_run > 0 else None
+        )
 
         # Save final checkpoint + state (periodic reporter may not have
         # fired for short runs). Both formats so downstream can choose.
@@ -1348,6 +1400,7 @@ def run_production(
 
     # Node state update
     if _node_mode:
+        result["wall_seconds"] = round(time.monotonic() - _started_monotonic, 3)
         _record_production_node_result(
             result=result,
             job_dir=job_dir,

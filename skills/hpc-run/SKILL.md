@@ -49,6 +49,12 @@ from the DAG.
 - Shared SIF with no host MDClaw installation: [direct SIF invocation](sif-slurm.md).
 - One DAG node as one SLURM job:
   `skills/hpc-run/submit-single.md`
+- A rounds scheme (replicas of `skills/md-production/rounds.md`, weighted
+  ensemble of `skills/md-we/SKILL.md`): one GPU job runs `run_rounds
+  --max-wall-hours <limit - 1>` via `submit_job --script`; resubmit the same
+  command to continue (the state is in the DAG). Small systems:
+  `run_rounds --executor mps` on the login node submits each round as
+  `submit_mps_job` jobs instead.
 - Several nodes at the same stage whose systems are too small to fill the
   GPU (replicates, seeds, several small systems), sharing one GPU under
   NVIDIA MPS -- the default for replicate sets of small systems on any

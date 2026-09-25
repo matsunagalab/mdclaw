@@ -235,4 +235,22 @@ _LABEL_SAFE_CHARS = set(
 )
 
 
+# Structured ids for the nodes a driver creates under one naming rule (the
+# rounds of a sampling scheme): ``<type>_<scope>_r0013_w0050`` — a scope word
+# (the scheme id) followed by numbered parts (round, replica). A directory
+# listing then sorts by scheme, round and replica, and ``_next_node_id``
+# ignores these ids (their suffix is not an integer), so the ordinary
+# ``<type>_NNN`` allocation is untouched.
+STRUCTURED_NODE_ID_RE = re.compile(
+    r"^(?P<type>[a-z]+)_(?P<scope>[a-z][a-z0-9]{0,15})(?P<parts>(?:_[a-z]\d{4})+)$"
+)
+
+
+# Longest node-id list an agent-facing result carries in full. Longer lists
+# keep their first and last entries and say how many were left out: a
+# round-driven scheme has thousands of nodes, and listing them all on every
+# result buries the ``next_action``.
+ID_LIST_CAP = 40
+
+
 _RESTART_NODE_ID_UNSET = object()

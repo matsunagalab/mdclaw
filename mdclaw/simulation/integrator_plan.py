@@ -145,6 +145,10 @@ def _record_production_node_result(
             "final_step": result.get("steps_completed"),
             "system_signature": result.get("system_signature"),
             "integrator_signature": result.get("integrator_signature"),
+            # Timing: integration alone, the whole tool call, and the rate.
+            "md_seconds": result.get("md_seconds"),
+            "wall_seconds": result.get("wall_seconds"),
+            "ns_per_day": result.get("ns_per_day"),
         }
         custom_force = result.get("custom_force")
         if result.get("plumed"):

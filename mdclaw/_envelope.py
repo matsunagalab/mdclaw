@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -130,6 +131,12 @@ def _is_abfe_leg(job_dir: str, node_id: str) -> bool:
     """An analyze_fep node of a ligand-decoupling leg (absolute binding)."""
     mutation = ((_read_node(job_dir, node_id) or {}).get("metadata") or {}).get("mutation")
     return str(mutation or "").startswith("decouple:")
+
+
+def _is_we_analysis_shape(job_dir: str, node: dict) -> bool:
+    """An analyze node whose parents are all weighted-ensemble policy nodes."""
+    parents = node.get("parent_node_ids") or []
+    return bool(parents) and all(_analysis_kind(job_dir, pid) == "we_resample" for pid in parents)
 
 
 def _is_ddg_shape(job_dir: str, node: dict) -> bool:
@@ -336,6 +343,28 @@ def _load_nodes(job_dir: str) -> tuple[dict, dict]:
     return progress.get("nodes", {}) or {}, progress.get("params", {}) or {}
 
 
+def _load_nodes_strict(job_dir: str, attempts: int = 5, delay: float = 0.4) -> tuple[dict, dict]:
+    """``_load_nodes`` for callers that refuse a run on the index: a
+    progress.json that cannot be read (a transient file-system error, a
+    torn read on a shared file system) is retried, then raised as ValueError,
+    so an I/O hiccup is never reported as a missing parent."""
+    from mdclaw.node.progress import _load_progress_v3
+
+    last: Optional[Exception] = None
+    for attempt in range(max(1, attempts)):
+        try:
+            progress = _load_progress_v3(Path(job_dir) / "progress.json")
+        except Exception as exc:  # noqa: BLE001 - retried, then surfaced
+            last = exc
+        else:
+            if progress:
+                return progress.get("nodes", {}) or {}, progress.get("params", {}) or {}
+            last = ValueError(f"progress.json is missing under {job_dir}")
+        if attempt + 1 < attempts:
+            time.sleep(delay)
+    raise ValueError(str(last))
+
+
 def _read_node(job_dir: str, node_id: str) -> Optional[dict]:
     try:
         return json.loads((Path(job_dir) / "nodes" / node_id / "node.json").read_text())
@@ -407,6 +436,9 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
         return None
     node_type = node.get("node_type") or node.get("type")
     status = node.get("status")
+    scheme = (node.get("metadata") or {}).get("scheme")
+    if isinstance(scheme, dict) and scheme.get("scheme_id"):
+        return _scheme_next(job_dir, node_id, node_type, str(scheme["scheme_id"]), params)
     if status in _OPEN:
         blocker = blocking_ancestor(node, nodes)
         if blocker and _depth < 32:
@@ -431,6 +463,11 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
             if closing in stage_tools:
                 stage_tools.remove(closing)
                 stage_tools.insert(0, closing)
+        elif node_type == "analyze" and _is_we_analysis_shape(job_dir, node) and "analyze_we" in stage_tools:
+            # The terminal analysis of a weighted ensemble: its parents are
+            # we_resample policy nodes.
+            stage_tools.remove("analyze_we")
+            stage_tools.insert(0, "analyze_we")
         run = _run_command(job_dir, node_id, stage_tools[0] if stage_tools else None)
         step = {"action": "run", "node_id": node_id, "node_type": node_type,
                 "stage_tools": stage_tools, "run_command": run, "inputs": "auto_resolved"}
@@ -439,7 +476,8 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
         return step
     if status == "completed":
         if node_type == "analyze":
-            step = _alchemical_analyze_next(job_dir, node_id, node, nodes, tools, params, _depth)
+            step = _we_analysis_next(job_dir, node_id, node) or _alchemical_analyze_next(
+                job_dir, node_id, node, nodes, tools, params, _depth)
             if step:
                 return step
         forward = CANONICAL_FORWARD_NODE_TYPE.get(node_type)
@@ -483,10 +521,82 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
     return None
 
 
+def _we_analysis_next(job_dir: str, node_id: str, node: dict) -> Optional[dict]:
+    """After ``analyze_we``: done when the flux is steady, otherwise more
+    rounds of the scheme (the verdict says the rate is only a lower bound)."""
+    meta = node.get("metadata") or {}
+    if meta.get("analysis") != "we_kinetics":
+        return None
+    verdict = meta.get("verdict")
+    scheme_ids = [s for s in (meta.get("scheme_ids") or []) if isinstance(s, str) and not s.startswith("manual:")]
+    if verdict in ("flux_steady", "two_state_fitted") or not scheme_ids:
+        return {"action": "done", "node_id": node_id, "node_type": "analyze",
+                "note": f"verdict {verdict}: the rate is recorded on this node (artifacts/we_kinetics.json)"}
+    more = meta.get("next_rounds_suggested") or 20
+    scheme_id = scheme_ids[0]
+    run = (f"mdclaw run_rounds --job-dir {shlex.quote(job_dir)} --scheme-id {shlex.quote(scheme_id)} "
+           f"--max-rounds {int(more)}")
+    why = {
+        "flux_undersampled": "too few recycling events for an estimate (no rate)",
+        "no_target_events": "no walker has reached the target yet (no rate)",
+        "flux_transient": "the flux is still rising (the rate is a lower bound)",
+        "two_state_unfitted": "the target population could not be fitted",
+    }.get(verdict, "the rate is not settled")
+    return {"action": "run", "node_type": "analyze", "scheme_id": scheme_id, "stage_tools": ["run_rounds"],
+            "run_command": run, "inputs": "auto_resolved",
+            "note": (f"verdict {verdict}: {why}; run about {int(more)} more rounds "
+                     f"({meta.get('next_rounds_basis') or 'estimate'}; add --max-aggregate-ns to cap the "
+                     "GPU time), then create a new analyze node over the latest policy node and run "
+                     "analyze_we again")}
+
+
+def _scheme_next(job_dir: str, node_id: str, node_type: Optional[str], scheme_id: str,
+                 params: Optional[dict] = None) -> dict:
+    """A node of a round-driven sampling scheme is never the unit of work:
+    ``run_rounds`` propagates the pending segments, retries the failed ones,
+    runs the policy and creates the next round. A closed scheme
+    (``close_rounds``) is done."""
+    recorded = ((params or {}).get("sampling_schemes") or {}).get(scheme_id) or {}
+    closed = recorded.get("closed")
+    if isinstance(closed, dict):
+        from mdclaw.rounds.scheme import _analysis_hint
+
+        return {
+            "action": "done", "node_id": node_id, "node_type": node_type, "scheme_id": scheme_id,
+            "note": (f"{node_id} belongs to sampling scheme '{scheme_id}', closed at {closed.get('at')}"
+                     + (f" ({closed.get('reason')})" if closed.get("reason") else "")
+                     + f"; nothing of it runs again — {_analysis_hint(recorded.get('policy'))}, or "
+                     "setup_rounds with a new scheme_id"),
+            "inspect_command": (f"mdclaw inspect_rounds --job-dir {shlex.quote(job_dir)} "
+                                f"--scheme-id {shlex.quote(scheme_id)}"),
+        }
+    return {
+        "action": "run", "node_id": node_id, "node_type": node_type, "scheme_id": scheme_id,
+        "stage_tools": ["run_rounds"],
+        "run_command": (f"mdclaw run_rounds --job-dir {shlex.quote(job_dir)} "
+                        f"--scheme-id {shlex.quote(scheme_id)}"),
+        "inputs": "auto_resolved",
+        "note": (f"{node_id} belongs to sampling scheme '{scheme_id}'; run_rounds advances the "
+                 f"whole round (inspect: mdclaw inspect_rounds --job-dir {shlex.quote(job_dir)} "
+                 f"--scheme-id {shlex.quote(scheme_id)})"),
+    }
+
+
 def dag_context(job_dir: Optional[str], node_id: Optional[str], tools: dict) -> dict:
     """``dag``, ``next`` and the node's status for a result or an error."""
     if not job_dir:
         return {}
+    if not Path(job_dir).is_dir():
+        # No directory, no DAG: a "create the source node" step here would
+        # send an agent to bootstrap a second job next to one that merely is
+        # not visible from this process (a container without the bind).
+        return {
+            "dag_guidance": DAG_GUIDANCE,
+            "next": {"action": "blocked", "reason": (
+                f"job_dir {job_dir} does not exist from this process; inside a container it is "
+                "probably not bound (run from the job's parent directory or bind it). Do not "
+                "create a new job here.")},
+        }
     nodes, params = _load_nodes(job_dir)
     context = {"dag": dag_snapshot(nodes)}
     step = next_step(job_dir, node_id, tools, nodes, params)

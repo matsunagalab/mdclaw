@@ -12,7 +12,28 @@ from pathlib import Path
 import shlex
 
 
+def _node_type(job_dir, node_id):
+    try:
+        node = json.loads((Path(job_dir) / "nodes" / node_id / "node.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return node.get("node_type") or node.get("type")
+
+
 def production_preflight(command, job_dir, node_id):
+    """Cross-check a literal ``run_production`` command against the node's
+    declared conditions before it is submitted.
+
+    ``status``: ``checked`` (validated), ``failed`` (a mismatch, or a
+    production command that cannot be parsed), ``skipped`` (an opaque
+    command on a ``prod`` node — shell constructs, wrapper scripts — so the
+    runtime guard is the only check) or ``not_applicable`` (the node is not
+    a ``prod`` node, or the literal command runs another tool).
+    """
+    node_type = _node_type(job_dir, node_id)
+    if node_type and node_type != "prod":
+        return {"status": "not_applicable",
+                "reason": f"{node_type} node: production conditions do not apply"}
     report = {"status": "skipped", "reason": "not a literal production CLI command"}
     # Expansions, redirections, compound scripts and wrappers are not evaluated.
     if any(c in command for c in "$`\n;&|<>()"):
@@ -31,10 +52,12 @@ def production_preflight(command, job_dir, node_id):
     else:
         return report
     from mdclaw._cli import _build_parser, _coerce_value, _detect_subcommand, _tool_param_specs
-    if _detect_subcommand(argv) != "run_production":
-        return report
+    subcommand = _detect_subcommand(argv)
+    if subcommand != "run_production":
+        return {"status": "not_applicable",
+                "reason": f"literal mdclaw command runs {subcommand or 'no tool'}, not run_production"}
     if any(a in {"--help", "-h", "--version", "--list", "--list-json"} for a in argv):
-        return report
+        return {"status": "not_applicable", "reason": "informational mdclaw invocation"}
     from mdclaw.simulation.production import run_production
     from mdclaw._node import read_node
     from mdclaw.node.lifecycle import validate_declared_conditions

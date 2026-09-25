@@ -100,6 +100,16 @@
     "requires_node": true,
     "server": "analyze"
   },
+  "analyze_we": {
+    "job_dir_is_data": false,
+    "node_type": "analyze",
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": true,
+    "server": "we"
+  },
   "boltz2_protein_from_seq": {
     "job_dir_is_data": false,
     "node_type": null,
@@ -214,6 +224,16 @@
     ],
     "requires_node": false,
     "server": "structure"
+  },
+  "close_rounds": {
+    "job_dir_is_data": false,
+    "node_type": null,
+    "required_params": [
+      "job_dir",
+      "scheme_id"
+    ],
+    "requires_node": false,
+    "server": "rounds"
   },
   "concat_trajectory": {
     "job_dir_is_data": false,
@@ -451,6 +471,16 @@
     "required_params": [],
     "requires_node": false,
     "server": "md_simulation"
+  },
+  "inspect_rounds": {
+    "job_dir_is_data": false,
+    "node_type": null,
+    "required_params": [
+      "job_dir",
+      "scheme_id"
+    ],
+    "requires_node": false,
+    "server": "rounds"
   },
   "list_available_lipids": {
     "job_dir_is_data": false,
@@ -710,6 +740,26 @@
     "requires_node": true,
     "server": "md_simulation"
   },
+  "run_rounds": {
+    "job_dir_is_data": false,
+    "node_type": null,
+    "required_params": [
+      "job_dir",
+      "scheme_id"
+    ],
+    "requires_node": false,
+    "server": "rounds"
+  },
+  "run_segment_batch": {
+    "job_dir_is_data": false,
+    "node_type": null,
+    "required_params": [
+      "job_dir",
+      "node_ids"
+    ],
+    "requires_node": false,
+    "server": "rounds"
+  },
   "run_sst2": {
     "job_dir_is_data": false,
     "node_type": "prod",
@@ -753,6 +803,16 @@
     ],
     "requires_node": false,
     "server": "surrogate"
+  },
+  "setup_rounds": {
+    "job_dir_is_data": false,
+    "node_type": null,
+    "required_params": [
+      "job_dir",
+      "scheme"
+    ],
+    "requires_node": false,
+    "server": "rounds"
   },
   "show_policy": {
     "job_dir_is_data": false,
@@ -844,5 +904,15 @@
     ],
     "requires_node": false,
     "server": "node"
+  },
+  "we_resample": {
+    "job_dir_is_data": false,
+    "node_type": "analyze",
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": true,
+    "server": "we"
   }
 }

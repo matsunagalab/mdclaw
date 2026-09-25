@@ -153,6 +153,18 @@ one job: the unfolded-state model is a `prep` child of the protein's `prep`
 (`estimate_ddg`). See the `fep/` section of `tool-reference.md` and
 `skills/md-fep/`.
 
+Round-driven sampling (`mdclaw/rounds/`) is the same chain repeated: a
+*scheme* (`setup_rounds`) starts `n_replicas` `prod` segments from a
+completed `eq` / `prod` node, a policy plans the next batch — the built-in
+`replicas` rule, or an analyze node over the round's segments such as the
+weighted-ensemble resampler `we_resample` — and `run_rounds` creates and runs
+the next round (`prod_<scheme>_r<round>_w<replica>`, `continue_from` the
+parent segment, `dependency_node_ids` the policy node). Segments are
+ordinary `prod` nodes carrying `metadata.scheme` (round, replica, seed,
+weight, lineage), so every DAG tool works on them unchanged; `analyze_we` is
+the terminal analysis of a weighted ensemble. Design notes:
+`docs/research/weighted-ensemble-plan.md`.
+
 An absolute binding free energy has the same two-leg shape with a decoupling
 `topo` (`build_decoupled_system`): the solvent leg is a `prep` child
 (`extract_ligand`), and `estimate_binding_dg` closes the cycle. Its complex leg
@@ -304,6 +316,14 @@ jobs/main/
 DAG invariants:
 
 - Parent-child relationships are stored in each node's `parent_node_ids`.
+- Node ids are `<type>_<seq>` (`prod_007`), allocated by `create_node`; agents
+  never choose them. A Python driver that creates many nodes under one rule
+  (the rounds of a sampling scheme) uses structured ids
+  `<type>_<scope>_<letter><4 digits>...` (`prod_h3flip_r0013_w0050`: scheme,
+  round, replica; `STRUCTURED_NODE_ID_RE`), which sort a directory listing by
+  scheme and round and leave sequential allocation untouched. Agent-facing id
+  lists (`dag`, `existing_node_ids`, parent candidates) are capped at
+  `ID_LIST_CAP` entries with the omitted count.
 - Workflow nodes require both `job_dir` and `node_id`.
 - Tools should auto-resolve inputs from ancestors when that is the documented
   contract.

@@ -31,6 +31,51 @@ GUARDRAIL_CODES: dict[str, str] = {
     "missing_required_arguments": "Add the listed required flags (see `mdclaw --list-json`).",
     "input_resolution_blocked": "Resolve inputs via the DAG or provide explicit paths.",
 
+    # --- round-driven sampling schemes (setup_rounds / run_rounds) ---
+    "rounds_scheme_invalid": "Fix the scheme JSON as the message says (scheme_id [a-z][a-z0-9]{0,15}; policy 'replicas' or an analyze tool; a prod stage_tool; start.node_ids and n_replicas), then rerun setup_rounds.",
+    "rounds_scheme_exists": "The scheme id is already recorded; pass --overwrite true before its first round has run, or choose another scheme_id.",
+    "rounds_scheme_missing": "No scheme of that id in this job; record it with setup_rounds (mdclaw inspect_job shows params.sampling_schemes).",
+    "rounds_job_invalid": "The job has no valid progress.json; bootstrap the job (bootstrap_md_workflow) before recording a scheme.",
+    "rounds_job_dir_unreachable": "The job directory does not exist from this process (inside a container it is probably not bound): run from the job's parent directory or bind it; do not bootstrap a new job.",
+    "rounds_start_node_invalid": "start.node_ids must name completed eq or prod nodes of this job that carry a state artifact; run or fix those nodes first.",
+    "rounds_tool_invalid": "stage_tool must be a prod-stage tool (run_production, run_sst2) and policy an analyze-stage tool or 'replicas'; check names with mdclaw --list-json <tool>.",
+    "rounds_executor_invalid": "Use --executor local (segments run in this process) or --executor mps (segments submitted as MPS tasks; run the driver on the host).",
+    "progress_unreadable": "progress.json could not be read even after retries (a transient shared-file-system error or a corrupt index); the node is not spent — rerun the same command, and if it repeats inspect progress.json by hand.",
+    "rounds_scheme_closed": "The scheme was closed (close_rounds); nothing more runs — analyze its last policy node, or record a new scheme (setup_rounds with a new scheme_id) to continue the study.",
+    "batch_segment_skipped": "run_segment_batch left this node alone because it was no longer pending (already run, or sealed by another task); nothing to do.",
+    "rounds_batch_invalid": "run_segment_batch needs a non-empty list of pending segment nodes of a rounds scheme and a JSON stage_args object; the message names the offending node or field.",
+    "rounds_owner_lost": "The run_rounds that was running this node died (its heartbeat went stale or its process is gone); the driver sealed the node failed and retries it with a new seed — nothing to do unless it repeats (rounds_replica_unstable).",
+    "rounds_submit_failed": "submit_mps_job refused the round's segments (its code is in the message): fix the cluster config (.mdclaw_cluster.json in the working directory: container image, --nv, policy) or the stage_args, then rerun run_rounds --executor mps.",
+    "rounds_slurm_unavailable": "check_job could not read the state of the round's Slurm job repeatedly; check the Slurm clients from this host, then rerun run_rounds --executor mps (queued or running segments are waited for).",
+    "rounds_round_in_progress": "A segment or policy node of the current round is running or queued (another run_rounds or a Slurm job owns it); wait for it, or clear a dead submission with update_workflow_state --clear-slurm-metadata.",
+    "rounds_round_incomplete": "The round has no segments or not every replica completed; rerun run_rounds (it propagates and retries) before asking the policy for the next round.",
+    "rounds_segment_refused": "The stage tool refused a segment before running it (its code is in the message); fix the scheme's stage_args or the DAG and rerun run_rounds.",
+    "rounds_replica_unstable": "A replica failed three attempts in a row; read trace_failure on the listed node, fix the cause (timestep, restraints, platform), and rerun run_rounds.",
+    "rounds_policy_failed": "The policy tool failed on the round's analyze node; read trace_failure on that node, fix the policy_args, and rerun run_rounds.",
+    "rounds_plan_invalid": "The policy wrote an unusable next_round.json (message says which field); fix the policy tool or its policy_args and rerun run_rounds.",
+    "rounds_create_failed": "create_node refused a segment of the next round (its code is in the message); fix the DAG and rerun run_rounds.",
+
+    # --- collective variables on trajectories (analyze/cv.py) ---
+    "cv_spec_invalid": "Fix the pcoord spec as the message says: type distance / rmsd / dihedral / q, a unique name, and that type's keys only.",
+    "cv_selection_invalid": "Fix the mdtraj selection: it must match atoms of the topology (and the same number in the reference), disjoint groups for a distance, one atom per dihedral selection, no solvent.",
+    "cv_box_missing": "A distance between molecules is a minimum-image distance and needs box vectors; write the trajectory from a periodic system, or measure a distance inside one molecule.",
+    "cv_trajectory_empty": "The segment trajectory has no frames; rerun the segment with an output_frequency_ps shorter than its length.",
+
+    # --- weighted ensemble (we_resample / analyze_we) ---
+    "we_policy_args_invalid": "Fix policy_args: pcoord (CV specs), bins.edges (one increasing list per pcoord dimension), walkers_per_bin >= 1, target.pcoord_ranges ([lo, hi] or null per dimension) when recycling, basis nodes.",
+    "we_weights_invalid": "Every walker needs a finite positive weight and the weights must sum to 1; set initial_weights on the scheme (weighted policies default to uniform) and do not edit segment weights by hand.",
+    "we_pcoord_out_of_bins": "A walker's pcoord lies outside bins.edges; widen the edges or leave extend_bins true so the outer bins run to infinity.",
+    "we_target_exceeds_half_box": "A minimum-image distance is only defined up to half the box; keep the target and the bin edges of an intermolecular distance below it, or solvate with a larger box.",
+    "we_inputs_missing": "we_resample runs on the analyze node of a rounds scheme whose parents are the round's completed segments (trajectory + metadata.scheme.weight); analyze_we takes we_resample policy nodes as parents.",
+    "we_scope_unsupported": "Create the policy node with analysis_data_scope 'segment' (run_rounds does this); analyze_we pools rounds itself and does not take a comparison scope.",
+    "we_start_in_target": "The start (basis) structure already lies inside target.pcoord_ranges; start from a structure on the other side of the transition (an unfolded basis from a restraint-free high-temperature eq chain, an unbound pose) or move the target.",
+    "we_start_structure_missing": "A start node needs a final_structure or state artifact to evaluate its pcoord; use a completed eq or prod node produced by run_equilibration / run_production.",
+
+    # --- structured node ids (drivers only) and repeated production seeds ---
+    "node_id_invalid": "Omit _node_id for a sequential id, or follow '<type>_<scope>_<letter><4 digits>...' (scope: a lowercase word of up to 16 letters and digits), e.g. prod_h3flip_r0013_w0050.",
+    "node_id_exists": "That structured node id is taken; use the next round / replica number, or explain_node the existing node.",
+    "production_sibling_seed_collision": "Pass a different --random-seed (a completed sibling already ran this seed from the same restart ancestor), or --allow-seed-reuse for a deliberate bit-exact replay.",
+
     # --- solute tempering (run_sst2) ---
     "sst2_not_installed": "The runtime image bundles SST2; run inside it (or set MDCLAW_SST2_HOME to a checkout of the matsunagalab/SST2 fork for development), then rerun.",
     "sst2_solute_required": "Pass exactly one of --solute-selection (mdtraj DSL) or --solute-indices-file.",
@@ -97,7 +142,6 @@ GUARDRAIL_CODES: dict[str, str] = {
     "fep_leg_role_ambiguous": "Neither parent descends from an extract_tripeptide prep node, so the legs cannot be told apart; derive the unfolded leg with extract_tripeptide, or declare analysis_subjects [{\"label\": \"folded\"}, {\"label\": \"unfolded\"}] in the same order as --parent-node-ids.",
     "fep_legs_incompatible": "The two legs differ in mutation, lambda protocol, force field, water model, HMR, temperature or pressure; rebuild the unfolded leg's build_hybrid_system / run_fep with the folded leg's options so the thermodynamic cycle closes.",
     "hybrid_topology_production_blocked": "The topo ancestor is a hybrid (alchemical) topology; production nodes never run on it. Create a fep node under the eq node (run_fep) to sample lambda windows, or a plain topo node (build_amber_system) from the same solv node for wild-type MD. The prod node is still pending.",
-
     "distance_restraint_exceeds_half_box": "A distance between two molecules is a minimum-image distance, defined only up to half the box; solvate with a larger box or keep every target / window centre below half the shortest box vector.",
 
     # --- well-tempered metadynamics (run_metadynamics) ---
@@ -131,6 +175,8 @@ GUARDRAIL_CODES: dict[str, str] = {
     "residue_range_endpoint_unobserved": "A requested range ends in residues the deposit does not resolve and nothing would build them; ask for the observed span the error names (or --build-terminal-missing-residues for up to 10 residues at a true chain end), then run the same (still pending) node again.",
     "invalid_disulfide_pairs": "Pass --disulfide-pairs as a JSON list of {\"cys1\": {\"chain\": ..., \"resnum\": ...}, \"cys2\": {...}} objects; the error names the offending entry.",
     "built_system_energy_implausible": "The relaxed built state has atoms on top of each other (over 1e5 kJ/mol per particle); rebuild the solvation on a new node, do not minimize it.",
+    "modeller_models_geometry_invalid": "Every MODELLER model has a folded aromatic ring or overlapping atoms (named in the error); build more models or change the random seed, then run a new node.",
+    "water_residue_name_unrecognised": "A residue with water's composition (one O, up to two H) carries a name the loader does not know as water (listed in the error) and would be built flexible with repartitioned hydrogens; name water HOH or WAT in the prepared PDB, or exclude it, then run a new topo node.",
     "system_net_charge_without_ions": "The solv node ran with --no-salt and the solute is charged; create a new solv node with --salt --saltcon 0 (counter-ions only) or --saltcon 0.15, then a new topo node.",
     "prepared_atoms_overlap": "The prepared structure has two atoms on one point (under 0.1 A, listed in the error); the deposit duplicates them or a completion landed on another piece; trim or exclude the offending residues, or use the missing-residue repair; no minimizer parts them.",
     "prepared_close_contacts": "Not an error: atom pairs under 0.8 A that no bond holds (listed in the warning), usually a PDBFixer-modelled loop or a placed hydrogen; the topology build and the min node run a capped steepest descent before L-BFGS, which parts them.",
@@ -139,8 +185,6 @@ GUARDRAIL_CODES: dict[str, str] = {
     "chain_ids_read_as_author": "Not an error: the requested chain ids matched author chains while the same letters are label ids of other chains in this entry, so they were read as author ids (the map is in the adjustment).",
     "parent_required": "Pass --parent-node-ids with one of the listed candidates, or create the missing parent stage first.",
     "missing_node_context": "Pass both --job-dir and --node-id for this workflow tool.",
-    "modeller_models_geometry_invalid": "Every MODELLER model has a folded aromatic ring or overlapping atoms (named in the error); build more models or change the random seed, then run a new node.",
-    "water_residue_name_unrecognised": "A residue with water's composition (one O, up to two H) carries a name the loader does not know as water (listed in the error) and would be built flexible with repartitioned hydrogens; name water HOH or WAT in the prepared PDB, or exclude it, then run a new topo node.",
     "node_id_requires_job_dir": "--node-id was passed without --job-dir; pass both together.",
     "create_node_id_not_allowed": "Omit --node-id; use the node_id returned by create_node.",
     "node_mode_required": "Specify the node mode required by this tool.",
@@ -446,7 +490,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     # --- analyze ---
     "analyze_requires_parent": "analyze needs a parent node; create it with a valid parent.",
     "analyze_parent_missing": "The analyze parent is missing; reference a real node.",
-    "analyze_parent_invalid_type": "analyze parent must be a valid producing node type.",
+    "analyze_parent_invalid_type": "analyze nodes hang from prod, fep or analyze nodes. To evaluate the structure of an eq or prep node, run a short prod from it and analyze that; a rounds scheme (setup_rounds) evaluates its start node's pcoord itself.",
     "analyze_parents_mixed": "analyze parents are mixed/incompatible; use one consistent set.",
     "analyze_conditions_invalid": "Provide valid analyze conditions.",
     "comparison_requires_two_analyze": "Comparison needs exactly two analyze nodes.",

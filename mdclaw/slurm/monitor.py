@@ -34,6 +34,16 @@ from mdclaw.slurm.tracker import _candidate_job_paths, _find_job_metadata, _find
 _STATUS_QUERY_ERRORS = (subprocess.SubprocessError, OSError, ValueError, TypeError, AttributeError)
 
 
+def _normalize_reason(value) -> Optional[str]:
+    """Slurm's pending/held reason as text, or None when it says nothing."""
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if value is None:
+        return None
+    text = str(value).strip()
+    return None if text in ("", "None", "none") else text
+
+
 def _controller_job(stdout: str, job_id: str) -> dict:
     """Read only the requested allocation, including Slurm's array-task identity."""
     for line in stdout.splitlines():
@@ -46,6 +56,7 @@ def _controller_job(stdout: str, job_id: str) -> dict:
         return {
             "state": fields["JobState"], "elapsed": fields.get("RunTime"),
             "node": fields.get("NodeList"), "exit_code": fields.get("ExitCode"),
+            "reason": _normalize_reason(fields.get("Reason")),
         }
     raise ValueError(f"No matching controller record for job {job_id}")
 
@@ -249,6 +260,8 @@ def check_job(
           - success: bool
           - job_id: str
           - state: str - RUNNING, PENDING, COMPLETED, FAILED, TIMEOUT, etc.
+          - reason: str | None - Slurm's pending/held reason (e.g. Priority,
+            Resources, JobHeldUser, launch_failed_requeued_held)
           - elapsed: str - Elapsed time
           - node: str - Node(s) allocated
           - exit_code: str - Exit code (for completed jobs)
@@ -263,6 +276,7 @@ def check_job(
         "success": False,
         "job_id": str(job_id),
         "state": None,
+        "reason": None,
         "elapsed": None,
         "node": None,
         "exit_code": None,
@@ -302,18 +316,20 @@ def check_job(
             time_info = job.get("time", {})
             elapsed = time_info.get("elapsed", "") if isinstance(time_info, dict) else time_info
             observation = {"state": str(state), "node": str(job.get("nodes", "")),
-                           "elapsed": str(elapsed), "state_source": "squeue"}
+                           "elapsed": str(elapsed), "state_source": "squeue",
+                           "reason": _normalize_reason(job.get("state_reason"))}
 
     except _STATUS_QUERY_ERRORS:
         # squeue --json may fail on old SLURM or if job is completed
         try:
-            proc = query(["squeue", "-j", str(job_id), "-o", "%T %M %N"])
+            proc = query(["squeue", "-j", str(job_id), "-o", "%T %M %N %r"])
             lines = proc.stdout.strip().splitlines()
             if len(lines) > 1:
                 parts = lines[1].split()
                 observation = {"state": parts[0] if parts else "UNKNOWN",
                                "elapsed": parts[1] if len(parts) > 1 else None,
                                "node": parts[2] if len(parts) > 2 else None,
+                               "reason": _normalize_reason(" ".join(parts[3:])) if len(parts) > 3 else None,
                                "state_source": "squeue"}
         except _STATUS_QUERY_ERRORS as exc:
             result["warnings"].append(f"squeue lookup unavailable: {exc}")

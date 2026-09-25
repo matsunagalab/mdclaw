@@ -11,13 +11,27 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+from mdclaw.node.constants import ID_LIST_CAP
+
+
+def cap_ids(ids: list, cap: int = ID_LIST_CAP) -> tuple[list, int]:
+    """``(shown, omitted)``: the list itself when it fits, else its first and
+    last ``cap // 2`` entries and how many were left out of the middle."""
+    ids = list(ids)
+    if len(ids) <= cap:
+        return ids, 0
+    half = cap // 2
+    return [*ids[:half], *ids[-half:]], len(ids) - 2 * half
+
 
 def dag_snapshot(nodes_index: dict) -> dict:
     """Frontier and status summary of a job's node index.
 
     ``leaves`` are nodes that no other node names as a parent. All lists keep
     the index's creation order (``source_001`` before ``prep_001``), which is
-    stable between calls and reads as the workflow.
+    stable between calls and reads as the workflow. A list longer than
+    ``ID_LIST_CAP`` keeps its first and last entries; ``truncated`` then says
+    how many ids were left out of the middle of each list.
     """
     referenced: set[str] = set()
     for info in nodes_index.values():
@@ -26,16 +40,28 @@ def dag_snapshot(nodes_index: dict) -> dict:
     for node_id, info in nodes_index.items():
         by_status.setdefault(str(info.get("status") or "unknown"), []).append(node_id)
     leaves = [node_id for node_id in nodes_index if node_id not in referenced]
-    return {
+    pending = [nid for nid in nodes_index
+               if nid in by_status.get("pending", []) + by_status.get("queued", [])]
+    truncated: dict[str, int] = {}
+
+    def shown(key: str, ids: list) -> list:
+        kept, omitted = cap_ids(ids)
+        if omitted:
+            truncated[key] = omitted
+        return kept
+
+    snapshot = {
         "node_count": len(nodes_index),
         "leaves": [{"node_id": nid, "type": nodes_index[nid].get("type"),
-                    "status": nodes_index[nid].get("status")} for nid in leaves],
-        "pending": [nid for nid in nodes_index
-                    if nid in by_status.get("pending", []) + by_status.get("queued", [])],
-        "running": by_status.get("running", []),
-        "failed": by_status.get("failed", []),
-        "completed": by_status.get("completed", []),
+                    "status": nodes_index[nid].get("status")} for nid in shown("leaves", leaves)],
+        "pending": shown("pending", pending),
+        "running": shown("running", by_status.get("running", [])),
+        "failed": shown("failed", by_status.get("failed", [])),
+        "completed": shown("completed", by_status.get("completed", [])),
     }
+    if truncated:
+        snapshot["truncated"] = truncated
+    return snapshot
 
 
 def describe_nodes(nodes_index: dict, node_ids: list[str]) -> str:
@@ -81,13 +107,17 @@ def node_missing_error(job_dir, node_id: str, *, expected_type: Optional[str] = 
     hints: list[str] = []
     same = nodes_of_type(index, expected_type) if expected_type else []
     open_same = [nid for nid in same if index[nid].get("status") in _OPEN_STATUSES]
+    shown_all, omitted_all = cap_ids(list(index))
     if index:
         if expected_type:
+            shown_same, omitted_same = cap_ids(same)
             hints.append(
-                f"Existing {expected_type} nodes: {describe_nodes(index, same)}" if same
-                else f"This job has no {expected_type} node yet"
+                f"Existing {expected_type} nodes: {describe_nodes(index, shown_same)}"
+                + (f" (+{omitted_same} more)" if omitted_same else "")
+                if same else f"This job has no {expected_type} node yet"
             )
-        hints.append(f"Existing nodes: {describe_nodes(index, list(index))}")
+        hints.append(f"Existing nodes: {describe_nodes(index, shown_all)}"
+                     + (f" (+{omitted_all} more)" if omitted_all else ""))
     else:
         hints.append("This job has no nodes yet; the DAG starts with a source node: "
                      f"mdclaw create_node --job-dir {jd} --node-type source")
@@ -111,7 +141,8 @@ def node_missing_error(job_dir, node_id: str, *, expected_type: Optional[str] = 
         "next_action": next_action,
         "job_dir": str(jd),
         "node_id": node_id,
-        "existing_node_ids": list(index),
+        "existing_node_ids": shown_all,
+        "existing_node_count": len(index),
         "dag": dag_snapshot(index),
         "recoverable": True,
     }

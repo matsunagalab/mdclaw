@@ -73,8 +73,9 @@ mdclaw create_node --job-dir <job_dir> --node-type prod \
 ```
 `--conditions` is one JSON string argument; quote it as shown.
 Pass the same production length to `run_production --simulation-time-ns`.
-For node-linked SLURM submissions, inspect `condition_preflight`: a skipped
-check is not validation. Keep declarations and the actual command consistent;
+For node-linked SLURM submissions, inspect `condition_preflight`: a `skipped`
+check is not validation (`not_applicable` means the node is not a `prod`
+node). Keep declarations and the actual command consistent;
 see `docs/developer/tool-reference.md` for the supported submission forms.
 
 **Branching** (multiple prod from same eq):
@@ -115,6 +116,12 @@ the runtime image bundles the SST2 fork, and SST2 data is analyzed with
 For **a free-energy profile along one distance across a barrier** (one or
 several walkers, well-tempered metadynamics), **read and follow
 `skills/md-production/metadynamics.md`**.
+For **several replicas run and extended together** (N seeds x k segments
+without hand-made `--continue-from` chains), **read and follow
+`skills/md-production/rounds.md`**. For **a rate constant or mean
+first-passage time** (folding, conformational change, ligand unbinding or
+binding), this skill does not apply: use the weighted ensemble of
+`skills/md-we/SKILL.md`.
 
 ## Handoff
 

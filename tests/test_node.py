@@ -4139,3 +4139,53 @@ class TestNodeServerRegistration:
         from mdclaw._registry import SERVER_REGISTRY
         assert "node" in SERVER_REGISTRY
         assert SERVER_REGISTRY["node"] == "mdclaw.node"
+
+
+# ── structured node ids (drivers) ────────────────────────────────────────
+
+
+class TestStructuredNodeIds:
+    """``create_node(_node_id=...)``: the naming rule a round-driving scheme
+    uses for its many nodes, living next to sequential allocation."""
+
+    def test_structured_id_coexists_with_sequential_allocation(self, job_with_prep):
+        job_dir, prep_id = job_with_prep
+        structured = create_node(
+            str(job_dir), "solv", parent_node_ids=[prep_id],
+            _node_id="solv_scheme1_r0001_w0002",
+        )
+        assert structured["success"] is True, structured
+        assert structured["node_id"] == "solv_scheme1_r0001_w0002"
+        assert (job_dir / "nodes" / "solv_scheme1_r0001_w0002" / "node.json").is_file()
+        sequential = create_node(str(job_dir), "solv", parent_node_ids=[prep_id])
+        assert sequential["node_id"] == "solv_001"
+        index = json.loads((job_dir / "progress.json").read_text())["nodes"]
+        assert {"solv_scheme1_r0001_w0002", "solv_001"} <= set(index)
+        assert index["solv_scheme1_r0001_w0002"]["parents"] == [prep_id]
+
+    @pytest.mark.parametrize("bad", [
+        "solv_Scheme_r0001",      # scope must be lowercase
+        "solv_x_r1",              # numbered parts carry four digits
+        "prod_x_r0001",           # another node type
+        "solv_x",                 # no numbered part
+        "solv_x_r0001_",          # trailing separator
+        "solv_x_r0001_ww01",      # one letter per part
+        "solv_001",               # a sequential id is not structured
+    ])
+    def test_invalid_structured_ids_are_refused(self, job_with_prep, bad):
+        job_dir, prep_id = job_with_prep
+        result = create_node(str(job_dir), "solv", parent_node_ids=[prep_id], _node_id=bad)
+        assert result["success"] is False
+        assert result["code"] == "node_id_invalid"
+        assert not (job_dir / "nodes" / bad).exists()
+
+    def test_duplicate_structured_id_is_refused(self, job_with_prep):
+        job_dir, prep_id = job_with_prep
+        first = create_node(str(job_dir), "solv", parent_node_ids=[prep_id],
+                            _node_id="solv_x_r0001_w0001")
+        assert first["success"] is True
+        again = create_node(str(job_dir), "solv", parent_node_ids=[prep_id],
+                            _node_id="solv_x_r0001_w0001")
+        assert again["success"] is False
+        assert again["code"] == "node_id_exists"
+        assert "explain_node" in again["next_action"]

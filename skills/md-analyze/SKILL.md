@@ -66,6 +66,11 @@ Read by task:
 - Metadynamics (`run_metadynamics`) walkers: dF between two states versus
   time, one number and one figure, with the verdict:
   `skills/md-analyze/metadynamics.md`
+- Weighted-ensemble rounds (`we_resample` policy nodes, segments
+  `prod_<scheme>_r<round>_w<replica>`): rates, verdicts and weighted
+  distributions come from `analyze_we`, `skills/md-we/kinetics.md`; frames of
+  a weighted ensemble are averaged with their walker weights
+  (`we_frames.csv`), never as equal frames
 - On errors (missing artifacts, bad selections, empty DCDs), act on the
   returned `code`/`hints`. Do not silently switch atom selections; ask the
   user if the requested selection does not match the topology.

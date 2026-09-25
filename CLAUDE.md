@@ -213,6 +213,16 @@ Core schema v3 rules:
   topo is refused (`abfe_restraint_required`), as is one with no equilibrated
   ancestor (`fep_equilibration_required`). Design notes:
   `docs/research/abfe-references.md`.
+- Round-driven sampling (`mdclaw/rounds/`, `skills/md-production/rounds.md`,
+  `skills/md-we/`): `setup_rounds` records a scheme, `run_rounds` runs a batch
+  of `prod` segments (`prod_<scheme>_r<round>_w<replica>`, ordinary nodes run
+  by `run_production`), lets the policy plan the next batch (`replicas`
+  continues every replica; `we_resample` splits, merges and recycles walkers
+  by weight on an `analyze` node whose parents are the round's segments) and
+  creates it; `--executor mps` packs each round under MPS (`submit_mps_job`)
+  with the driver on the host. Segments carry `metadata.scheme` (round, replica, seed,
+  weight); `analyze_we` turns the recycled flux into a rate. Never advance
+  one segment by hand: the `next` of any scheme node is `run_rounds`.
 - Each node owns `node.json`, `node.lock`, and `artifacts/`.
 - `progress.json` is a thin index plus cached summaries.
 - Events are append-only JSON files in `events/`.

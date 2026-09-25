@@ -161,7 +161,42 @@ Lipid21 topology, but the subsequent OpenMM patch equilibration segfaults
 compositions are unaffected. Root-causing the crash (likely a bad packed
 contact or PGR-specific topology issue feeding NaN forces) is deferred.
 
+### Large DAGs: every status change rewrites the whole progress.json
+
+`progress.json` is one JSON index rewritten (under `progress.lock`) by every
+node operation: creation, Slurm stamping, `begin_node`, `complete_node`. On
+a 26k-node weighted-ensemble job (13.7 MB indented) the driver's own work
+became ~90 % of a round's wall time (WE-26). Done so far: the index is
+written compact (8.7 MB, serialization 0.20 s -> 0.04 s), a round's
+segments are created in one write with no per-node preflight
+(`lifecycle._create_nodes_bulk`: 0.22 s -> 0.003 s per node at 26k nodes),
+and `inspect_rounds` no longer reads every segment (WE-25). Still per
+segment: the Slurm stamp at submission and the tool's own `begin` /
+`complete` (2-3 index rewrites per segment, lock-serialized across the
+packed tasks). Beyond ~10^5 nodes the index needs a different shape (a
+per-scheme sub-index, or a journal folded into the index periodically).
+
 ## Resolved
+
+### Shared file systems: a record replaced by another host can be missed for a moment
+
+`progress.json` and every `node.json` are written as tmp + `os.replace`, so a
+reader on the same host always sees a complete version. On Lustre (RIKYU,
+`flock` mount) a reader on *another* client found `progress.json` absent for
+a moment while a rename from a different host landed: the index was intact
+throughout (node directories == index entries), but lock-free readers on
+compute nodes — the CLI preflight, input resolution, the execution-context
+check — reported "progress.json is missing", refused the run and spent the
+segment (`parent_not_completed`, `input_resolution_blocked`,
+`node_execution_context_invalid`; 6 of ~10,000 WE segments on 2026-09-21).
+Readers now go through `mdclaw/node/io.py::_load_json_settled` (5 reads,
+0.1 s apart, before a miss is believed; `_load_progress_v3`,
+`_read_node_json_path`, `read_node`, the rounds driver's `_node_exists`),
+and `_load_progress_v3(create_if_missing=True)` never initializes a fresh
+index on such a miss. The CLI preflight additionally answers
+`progress_unreadable` (node not spent) when the index stays unreadable.
+Writers were never the problem: all of them hold `progress.lock` (cluster-wide
+flock) and write atomically.
 
 ### Membrane Building: patch-tile Backend
 

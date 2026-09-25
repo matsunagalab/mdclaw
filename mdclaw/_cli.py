@@ -33,6 +33,7 @@ from mdclaw._common import create_validation_error, finalize_error
 from mdclaw._envelope import (
     OUTPUT_MODES,
     _load_nodes,
+    _load_nodes_strict,
     blocking_ancestor,
     brief_result,
     dag_context,
@@ -349,6 +350,47 @@ def _emit_result(
             pass
         exit_code = exit_code or 0
     sys.exit(exit_code)
+
+
+def _flush_c_stdio() -> None:
+    """Flush the C stdio buffers (what compiled libraries print through)."""
+    try:
+        import ctypes
+
+        ctypes.CDLL(None).fflush(None)
+    except Exception:  # noqa: BLE001 - best effort; a missing libc handle is not an error
+        pass
+
+
+class _NativeStdoutToStderr:
+    """Send descriptor-level stdout to stderr while a tool runs.
+
+    Compiled libraries print straight to file descriptor 1 (mdtraj's DCD
+    reader announces every file it opens, OpenMM plugins log), past Python's
+    ``sys.stdout``; buffered in the C stdio layer, that text surfaces at exit,
+    after the JSON result, and breaks the agent's parser. For the duration of
+    the tool, descriptor 1 is a copy of stderr; the C buffers are flushed and
+    the original descriptor restored before the result is printed.
+    """
+
+    def __enter__(self):
+        self._saved = None
+        try:
+            self._saved = os.dup(1)
+            os.dup2(2, 1)
+        except OSError:
+            self._saved = None
+        return self
+
+    def __exit__(self, *exc):
+        if self._saved is None:
+            return False
+        _flush_c_stdio()
+        try:
+            os.dup2(self._saved, 1)
+        finally:
+            os.close(self._saved)
+        return False
 
 
 class _TailCaptureStream:
@@ -965,20 +1007,31 @@ def _node_type_preflight_error(
                 "create a new node instead"
             )
         else:
-            nodes, _params = _load_nodes(job_dir)
-            blocker = blocking_ancestor(node, nodes)
-            if blocker is None:
-                return None
-            # Refuse here, before the tool starts: a stage tool that resolves
-            # its inputs itself seals the node as failed on a pending parent,
-            # which spends a node the agent only ran too early (chains of
-            # pending nodes are legitimate since parent auto-resolution
-            # accepts open parents).
-            code = "parent_not_completed"
-            message = (
-                f"Parent '{blocker[0]}' of '{node_id}' is {blocker[1]}; '{node_id}' "
-                "cannot run yet and stays pending (not spent)"
-            )
+            nodes = None
+            try:
+                nodes, _params = _load_nodes_strict(job_dir)
+            except ValueError as exc:
+                # An unreadable index is not a missing parent: say so and
+                # leave the node pending so the same command can be rerun.
+                code = "progress_unreadable"
+                message = (
+                    f"progress.json of {job_dir} could not be read ({exc}); '{node_id}' "
+                    "stays pending (not spent) — rerun the same command"
+                )
+            if nodes is not None:
+                blocker = blocking_ancestor(node, nodes)
+                if blocker is None:
+                    return None
+                # Refuse here, before the tool starts: a stage tool that resolves
+                # its inputs itself seals the node as failed on a pending parent,
+                # which spends a node the agent only ran too early (chains of
+                # pending nodes are legitimate since parent auto-resolution
+                # accepts open parents).
+                code = "parent_not_completed"
+                message = (
+                    f"Parent '{blocker[0]}' of '{node_id}' is {blocker[1]}; '{node_id}' "
+                    "cannot run yet and stays pending (not spent)"
+                )
 
     error = create_validation_error(
         "node_id",
@@ -1828,7 +1881,9 @@ def main(argv: list[str] | None = None) -> None:
             _LOG_TAIL.reset()
             if heartbeat_seconds and heartbeat_seconds > 0:
                 heartbeat = _Heartbeat(tool_name, stderr_capture, heartbeat_seconds).start()
-            result = _run_tool(fn, is_async, kwargs)
+            old_stdout.flush()
+            with _NativeStdoutToStderr():
+                result = _run_tool(fn, is_async, kwargs)
         finally:
             if heartbeat is not None:
                 heartbeat.stop()

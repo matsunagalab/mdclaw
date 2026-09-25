@@ -485,9 +485,17 @@ signature, update the relevant section here and the matching skill examples.
   `distance_restraint_exceeds_half_box`.
 - `run_production(...)`: production MD with topology-inherited HMR/implicit
   solvent, state/checkpoint persistence,
-  DAG restart resolution, and timeline metadata. Refuses a hybrid (alchemical)
+  DAG restart resolution, and timeline metadata (including `md_seconds`,
+  `wall_seconds` and `ns_per_day`: integration time, whole tool call, rate). Refuses a hybrid (alchemical)
   topology ancestor (`hybrid_topology_production_blocked`, node left pending;
-  `run_sst2` too) — lambda windows are the `fep` stage. Accepts an optional custom
+  `run_sst2` too) — lambda windows are the `fep` stage. An unbiased run
+  refuses a `random_seed` a completed unbiased sibling already ran from the
+  same restart ancestor (`production_sibling_seed_collision`, node left
+  pending): the effective seed derives from the seed and the ancestor's step
+  count, so the run would repeat that trajectory exactly;
+  `allow_seed_reuse=True` accepts it for a deliberate bit-exact replay.
+  Biased runs (custom force, restraints, PLUMED, steering) integrate a
+  different System and are not checked. Accepts an optional custom
   force / CV bias via `custom_force_script` (an autograd-backed
   `energy(positions, ctx)` wrapped in `PythonTorchForce`; upstream deprecated
   the TorchScript `TorchForce`, so this is the only route), plus
@@ -873,9 +881,11 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
   For a linked node and a literal `mdclaw ... run_production` (or
   `python -m mdclaw._cli ...`) command, `condition_preflight` reports the
   declaration/argument check before sbatch, using CLI defaults and the runtime
-  comparator. Inherited conditions are deferred; shell scripts/wrappers that
-  cannot be checked are explicitly marked skipped, not validated. The runtime
-  guard remains authoritative. Neither check changes requested conditions.
+  comparator. Inherited conditions are deferred; shell scripts/wrappers on a
+  `prod` node that cannot be checked are explicitly marked `skipped` (a
+  warning), not validated; a node of another type, or a literal command that
+  runs another tool, is `not_applicable` (no warning). The runtime guard
+  remains authoritative. Neither check changes requested conditions.
   When the run command requests a GPU OpenMM platform (`--platform CUDA`/
   `OpenCL`) but no `--gpus`/`--gres` is given, it auto-sets `--gpus 1` (warning
   emitted) so a CUDA run is never scheduled on a CPU-only node. Container
@@ -934,6 +944,10 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
   When squeue answers, no longer lists the job, and a non-terminal node still
   carries that job id, the code is `slurm_job_vanished` with `stranded_nodes`, `stderr_tail`, and a `--clear-slurm-metadata` `next_action`;
   the node is reported, never sealed on that inference.
+  `reason` carries Slurm's pending/held reason (`Priority`, `Resources`,
+  `JobHeldUser`, `launch_failed_requeued_held`, ...) from `squeue --json`,
+  the text fallback (`%r`) or `scontrol` (`Reason=`), so a caller can tell a
+  held job from one that is merely waiting.
 - `list_jobs(...)`, `cancel_job(...)`, `check_job_log(...)`: operational
   helpers.
 - `set_policy(...)`, `show_policy(...)`: resource policy management.
@@ -975,6 +989,11 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
   `source_already_exists`, `analyze_parents_mixed`, `referenced_node_missing`).
   Successful creation returns a `next_command`
   pointing to the read-only `explain_node` preflight for the new node.
+  Python drivers that create many nodes under one naming rule pass the
+  private `_node_id` (a structured id `<type>_<scope>_<letter><4 digits>...`,
+  e.g. `prod_h3flip_r0013_w0050`; `node_id_invalid` / `node_id_exists`);
+  it is never a CLI flag. Parent candidates in `parent_required` are capped
+  at `ID_LIST_CAP` entries (`candidate_parent_count` carries the total).
 - `inspect_job(...)`: read-only summary of node statuses, leaves, unfinished-node
   claims/open needs, warnings, and the progress index for weak-agent re-entry.
 - `wait_node(...)`: read-only polling helper for long-running nodes. It waits
@@ -1028,6 +1047,228 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
   `--record-type` selector (`decision` / `question` / `token_usage`). Merges the
   former `record_study_decision` / `record_study_question` / `record_token_usage`
   tools.
+
+## `rounds/`
+
+Round-driven sampling on the job DAG: a *scheme* runs a batch of `prod`
+segments (one node each), a *policy* plans the next batch, and the driver
+creates it as the next round. Seed-varied replicas (built-in `replicas`
+policy: every replica continues), a weighted ensemble (`we_resample`) and any
+analyze tool that writes `next_round.json` share the loop. Segments are
+ordinary `prod` nodes run by the scheme's stage tool (`run_production` by
+default; `run_sst2` accepted), so restart resolution,
+`concat_trajectory` over a lineage and `trace_failure` work on them
+unchanged. Design notes: `docs/research/weighted-ensemble-plan.md`.
+
+- `setup_rounds(job_dir, scheme, overwrite=False)`: validate and record a
+  scheme under `progress.json.params.sampling_schemes[<scheme_id>]`. `scheme`
+  is a JSON object: `scheme_id` (`[a-z][a-z0-9]{0,15}`), `policy`
+  (`replicas` or an analyze-stage tool), `policy_args`, `stage_tool` (a
+  prod-stage tool), `stage_args` (its arguments; never `job_dir`, `node_id`,
+  `random_seed` or restart paths), `start` (`node_ids`: completed `eq` /
+  `prod` nodes with a `state`, cycled over `n_replicas`), `initial_weights`
+  (`uniform`, one number per replica, or none; weighted policies default to
+  `uniform`), `segment_conditions` (declared on every segment), `seed` (base
+  of every segment's `random_seed`), `max_rounds`. A `we_resample` policy is
+  checked here, before any segment runs: the arguments resolve, the CVs
+  compile on the scheme's topology, each start structure's pcoord is
+  evaluated (`scheme.start_pcoords`) and must lie outside the target
+  (`we_start_in_target`), and an intermolecular target stays below half the
+  box. Codes: `rounds_scheme_invalid`, `rounds_scheme_exists`,
+  `rounds_tool_invalid`, `rounds_start_node_invalid`, plus the `we_*` / `cv_*`
+  codes of the policy check.
+- `run_rounds(job_dir, scheme_id, max_rounds=None, max_aggregate_ns=None,
+  max_wall_hours=None, executor="local", platform=None, device_index=None,
+  mps_tasks_per_gpu=8, mps_gpus=1, mps_segments_per_task=None,
+  mps_max_jobs=8, mps_time_limit="04:00:00", mps_poll_seconds=30.0,
+  slurm_output_dir=None)`:
+  advance the scheme. Per round: run the pending segments (`executor=local`:
+  one after another in this process; `executor=mps`: submitted as
+  `submit_mps_job` tasks, `mps_tasks_per_gpu x mps_gpus` segments per job,
+  each task `mdclaw --job-dir .. --node-id .. <stage_tool> <stage_args as
+  flags> --random-seed .. --platform CUDA`, waited for with `check_job`;
+  a failed replica is retried as a `_t000N` sibling with a
+  new seed, `rounds_replica_unstable` after three), plan the next round
+  (`replicas`, or the policy tool on `analyze_<scheme>_r<round>` whose parents
+  are the round's completed segments and whose dependency is the previous
+  policy node), create it (`prod_<scheme>_r<round>_w<replica>`,
+  `continue_from` the parent segment or `parent_node_ids=[start_node_id]`,
+  `dependency_node_ids=[policy node]`, `metadata.scheme` with round, replica,
+  seed, weight and lineage, `conditions.random_seed`; the whole round goes
+  into the index in one write through `lifecycle._create_nodes_bulk`, with
+  no per-node `explain_node` preflight — one node at a time cost 0.22 s per
+  node on a 26k-node index, the bulk path 0.003 s). Returns at a round
+  boundary on `max_rounds`, `max_aggregate_ns`, `max_wall_hours` or the
+  policy's `stop`; rerun to continue — the state is read from the DAG. Codes:
+  `rounds_scheme_missing`, `rounds_job_dir_unreachable` (the job directory
+  does not exist from this process — inside a container, not bound),
+  `rounds_executor_invalid`, `rounds_round_in_progress`, `rounds_segment_refused`,
+  `rounds_replica_unstable`, `rounds_policy_failed`, `rounds_plan_invalid`,
+  `rounds_create_failed`, `rounds_submit_failed` (`submit_mps_job` refused
+  the round; its code is in the message), `rounds_slurm_unavailable`
+  (`check_job` could not read the queue 20 polls in a row),
+  `rounds_scheme_closed` (closed by `close_rounds`). Every node the
+  driver runs in-process (local segments, in-process policy runs) carries an
+  owner record while it runs (`nodes/<id>/owner.json`: host, pid, the
+  driver's `SLURM_JOB_ID`, a heartbeat touched every 30 s;
+  `mdclaw/rounds/owner.py`). A `running` node whose owner is gone — its
+  process dead on this host, or its heartbeat older than 5 min from another
+  host — is stale: `run_rounds` seals it `rounds_owner_lost`, retries it
+  and lists it under `recovered`; a live owner answers
+  `rounds_round_in_progress` naming host, pid, Slurm job and heartbeat age
+  plus the manual release (`update_workflow_state --clear-slurm-metadata`).
+  Nodes without a record (run by hand, mps tasks) are never judged stale.
+  When the record names the owner's Slurm job and this host has `squeue`,
+  a job that has ended (or that the controller no longer knows) makes the
+  owner stale at once instead of after the heartbeat timeout (WE-16b).
+- `executor=mps` runs the driver on the host: the launcher routes
+  `run_rounds --executor mps` to the host Python (it needs `sbatch`), the
+  policy runs through the launcher — inside the container — when the driver's
+  interpreter has no OpenMM and in-process otherwise, and the Slurm scripts
+  and logs go to `slurm_output_dir` (default `<job_dir>/slurm`). A segment
+  whose job ended without sealing it is failed by `check_job`'s node sync
+  (`slurm_completed_without_node_completion`; `slurm_job_vanished` when the
+  queue kept no record) and retried like any failed replica. Segments left
+  queued or running by an earlier driver are waited for, never resubmitted
+  (the local executor answers `rounds_round_in_progress` for them). The MPS
+  jobs run `mps_segments_per_task` segments per task one after another in
+  one process (`run_segment_batch`, so the ~11 s container/Python/CUDA
+  start-up is paid once per task; the task's first node is the one Slurm
+  tracks, the others carry owner records while they run; segments a task
+  never reached stay pending and go out again with the same seed). The
+  default chooses it per round so the round still fills `mps_max_jobs`
+  jobs — `ceil(pending / (tasks_per_gpu x gpus x mps_max_jobs))`, at most
+  8 — because a task's segments run in series on one GPU and a large value
+  with few segments would leave GPUs idle; `mps_time_limit` must cover that
+  many packed segments (`slurm_jobs[].segments_per_task` reports the value
+  used). The MPS
+  jobs are submitted `--no-requeue`, so a node-side launch failure ends the
+  job (FAILED / NODE_FAIL → segments failed and retried) instead of leaving
+  it requeued and held; a job that is nevertheless PENDING with a held
+  `reason` (`check_job` now reports Slurm's pending reason) is released
+  twice for `launch_failed_requeued_held`, then cancelled so its segments
+  are retried, while a user/admin hold is reported in `warnings` and waited
+  for.
+- `inspect_rounds(job_dir, scheme_id)`: read-only rounds: per-round status
+  counts, the policy node and its ledger summary (`policy_summary`: walkers
+  in / out, recycling events and weight, target weight, weight range),
+  running nodes, `stale` (running nodes whose owner is gone: rerun
+  `run_rounds` to recover them) with the owners' liveness reasons, totals
+  (`aggregate_ns` = completed segments x `stage_args.simulation_time_ns`
+  when the scheme states it — `aggregate_ns_source`; reading every
+  segment's node.json took 298 s on a 13,300-segment scheme —
+  `flux_events_total`) and
+  `next_action` — `wait` while a round has running or queued nodes (a
+  `run_rounds` process owns them), otherwise `run_rounds`; a closed scheme
+  reports `closed` and `next` = `done`. Each round also lists `retired`
+  replicas (failed with `node_abandoned`: never retried, the round completes
+  without them — a weighted policy then refuses on the weight sum).
+- `run_segment_batch(job_dir, node_ids, stage_tool="run_production",
+  stage_args=None, platform=None, device_index=None)`: the MPS task command
+  behind `mps_segments_per_task`: runs the listed pending (or queued: the
+  task's tracked node) segments one after another in this process with the
+  scheme's stage tool, each with its recorded seed and an owner record +
+  heartbeat; a failed or refused segment does not stop the batch (the driver
+  retries / resubmits). Returns per-segment `results` and `completed` /
+  `failed` / `refused` / `skipped` counts; `rounds_batch_invalid` for a
+  non-segment or missing node, `rounds_tool_invalid` for an unknown stage
+  tool.
+- `close_rounds(job_dir, scheme_id, reason=None)`: end a scheme on purpose
+  (`scheme.closed = {at, reason}` in `progress.json`): `run_rounds` answers
+  `rounds_scheme_closed`, `inspect_rounds` and the envelope's `next` of every
+  node of the scheme say `done`; running segments finish, pending ones stay
+  pending (retire them with `update_workflow_state --abandon`). A scheme with
+  rounds is never replaced: continue under a new `scheme_id`.
+- `next_round.json` (the policy contract, `mdclaw/rounds/plan.py`): a policy
+  tool registers artifact `next_round` on its analyze node with
+  `children[] = {replica, parent_node_id | start_node_id, weight?,
+  random_seed?, conditions?, extra?}` and optional `stop` / `stop_reason`.
+  Parents must be completed segments of the round; starts must be completed
+  `eq` / `prod` nodes with a `state`.
+- Every node of a scheme carries `metadata.scheme`, and the result envelope's
+  `next` for such a node is `run_rounds` (never a single-node command). The
+  scheme-level results (`setup_rounds`, `run_rounds`, `inspect_rounds`) carry
+  a `message` and their own `next` (`scheme_next`: `run` with the
+  `run_rounds` command, `wait` while another driver owns a round, `done`
+  once the policy stopped the scheme).
+
+## `we/`
+
+Weighted ensemble (Huber & Kim 1996) as the policy of a `rounds` scheme:
+walkers are the scheme's segments (`prod` nodes carrying
+`metadata.scheme.weight`), the round's analyze node resamples them, and the
+terminal analyze node turns the recycled flux into a rate. Design notes:
+`docs/research/weighted-ensemble-plan.md`.
+
+- `we_resample(job_dir, node_id, pcoord=None, bins=None, walkers_per_bin=None,
+  target=None, recycle=None, basis_node_ids=None, extend_bins=None, chunk=1000)`:
+  the policy tool (`scheme.policy = "we_resample"`; arguments default to the
+  scheme's `policy_args`). Evaluates `pcoord` (CV specs of `analyze/cv.py`:
+  `distance`, `rmsd`, `dihedral`, `q`) over every parent segment's
+  trajectory, bins the last frame on `bins.edges` (outer bins run to
+  infinity unless `extend_bins` is false), recycles walkers inside
+  `target.pcoord_ranges` to `basis_node_ids` (default: the scheme's start
+  nodes) with their weight when `recycle` is on (default: a target is given),
+  merges the lightest pair and splits the heaviest walker until every bin
+  holds `walkers_per_bin` (default 5). Artifacts: `next_round` (the `rounds`
+  contract), `we_round` (walkers with weight, pcoord, bin, fate; bin ledger;
+  flux; `target_weight`), `we_pcoords` (every frame). Merged-away and
+  recycled walkers get `we_merged` / `we_recycled` events. Codes:
+  `we_policy_args_invalid`, `we_weights_invalid`, `we_pcoord_out_of_bins`,
+  `we_target_exceeds_half_box` (an intermolecular distance is a minimum-image
+  distance), `we_inputs_missing`, `we_scope_unsupported`, and the CV codes
+  `cv_spec_invalid`, `cv_selection_invalid`, `cv_box_missing`,
+  `cv_trajectory_empty`. Argument errors leave the node pending.
+- `analyze_we(job_dir, node_id, tau_ns=None, burn_in_rounds=None,
+  temperature_kelvin=300.0, n_bootstrap=200, min_events=10)`: terminal analysis over
+  `we_resample` policy nodes (the latest round is enough; the chain is
+  followed back through `metadata.scheme.previous_policy_node_id`). With
+  recycling: the per-round flux `F(t)` is fitted with `F_ss (1 - exp(-t/tau))`,
+  the rate is the mean over the rounds after a burn-in of two relaxation
+  times (never less than the last quarter; `window` in the result; Hill
+  relation). `verdict` is `flux_steady` when the window mean agrees with a
+  determined plateau (`f_ss_err / f_ss < 0.5`), the relaxation is shorter
+  than half the run — or, when the fit cannot pin the relaxation down (a
+  spiky fast flux fits an exponential badly), when the flux has a stationary
+  stretch at the end of the run: no Mann-Kendall trend (`p >= 0.05`) over at
+  least a quarter of the run holding `min_events` events, the earliest such
+  start after the first recycling event (a burst in the middle of a flat
+  flux fails the test only for starts right at the burst and does not
+  shorten the window; `window.stationarity`: test, start, p-value,
+  candidates tested); the window is then that whole stretch and the
+  bootstrap block its integrated autocorrelation time. Either way the window
+  must be level (`window.level_check`: its first quarter against the rest,
+  block-bootstrap intervals or 20 %), the fit path's burn-in is counted from
+  the first recycling event, and `window.sensitivity` reports the mean for
+  the start pushed later by quarters of the window (WE-24: an overshoot
+  after the first arrivals and a rise a trend test missed moved rates by
+  1.5x);
+  `flux_undersampled` when the window holds fewer than
+  `min_events` recycling events (default 10; `rate` is null — the window
+  mean is a fluctuation, not a bound); `flux_transient` otherwise (enough
+  events but still rising: a lower bound); `no_target_events` when nothing
+  was recycled. Every non-steady verdict carries `next_rounds_suggested`
+  (two fitted relaxation times, or the rounds that fill the window with
+  `min_events` at the observed event rate; 10-50) and the result
+  envelope's `next` is then `run_rounds`. A
+  moving-block bootstrap (block = the relaxation time in rounds, capped so
+  at least five blocks fit the window — `window.block_capped` marks an
+  optimistic interval instead of a zero-width one) gives the interval,
+  `mfpt_ns = 1/k`, and, when the
+  pcoord holds an intermolecular distance and the box volume is known, the
+  rate per molar (`k_on` if the target is a bound state). Without
+  recycling: the target population is fitted with the two-state relaxation
+  (`k_ab`, `k_ba`). Several schemes as parents are analysed separately and
+  pooled (mean, SEM). Artifacts: `we_kinetics` (JSON), `we_iterations`,
+  `we_bins` (weighted bin populations after burn-in, `-kT ln P`),
+  `we_frames` (every frame with its walker weight — the input of any
+  weighted observable), `we_plot`.
+- `analyze/cv.py` (no tool): `normalize_cv_specs`, `compile_cvs`,
+  `evaluate_cvs` — the CV evaluators shared by `we_resample` and future
+  adaptive schemes. A `distance` inside one molecule is measured on raw
+  coordinates, between molecules with the minimum image; `rmsd` may align on
+  one selection (`align_selection`) and measure another; `dihedral` is in
+  degrees; `q` is the Best-Hummer-Eaton fraction of native contacts.
 
 ## `evidence/`
 

@@ -12,11 +12,11 @@ from mdclaw._lock import file_lock
 
 logger = logging.getLogger(__name__)
 
-from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPE_ORDER, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, TERMINAL_NODE_STATUSES, _ALLOWED_PARENT_TYPES, _AUTO_PARENT_PREFERENCE, normalize_node_type, suggest_node_type  # noqa: E402
+from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPE_ORDER, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, STRUCTURED_NODE_ID_RE, TERMINAL_NODE_STATUSES, _ALLOWED_PARENT_TYPES, _AUTO_PARENT_PREFERENCE, normalize_node_type, suggest_node_type  # noqa: E402
 from mdclaw.node.condition_hints import describe_condition_key, resolve_condition_key  # noqa: E402
 from mdclaw.node.io import _atomic_write_json, _values_match, normalize_artifact_paths  # noqa: E402
 from mdclaw.node.progress import _load_progress_v3, _next_node_id, _node_progress_summary  # noqa: E402
-from mdclaw.node.snapshot import dag_snapshot, describe_nodes, node_missing_error, nodes_of_type  # noqa: E402
+from mdclaw.node.snapshot import cap_ids, dag_snapshot, describe_nodes, node_missing_error, nodes_of_type  # noqa: E402
 from mdclaw.node.validation import _node_is_terminal, _normalize_node_status, _terminal_node_sealed_response, _validate_analyze_conditions  # noqa: E402
 
 
@@ -149,7 +149,8 @@ def _parent_required_error(node_type: str, nodes_index: dict, jd) -> dict:
 
     preferred = _AUTO_PARENT_PREFERENCE.get(node_type, ())
     present_type = next((ptype for ptype in preferred if nodes_of_type(nodes_index, ptype)), None)
-    candidates = _auto_parent_candidates(node_type, nodes_index)
+    all_candidates = _auto_parent_candidates(node_type, nodes_index)
+    candidates, omitted = cap_ids(all_candidates)
     command_prefix = (
         f"mdclaw create_node --job-dir {jd} --node-type {node_type} --parent-node-ids"
     )
@@ -166,8 +167,9 @@ def _parent_required_error(node_type: str, nodes_index: dict, jd) -> dict:
         next_action = (f"mdclaw create_node --job-dir {jd} --node-type {present_type}"
                        f"  (then run it, then create the {node_type} node)")
     else:
-        reason = (f"{len(candidates)} {present_type} nodes are candidates: "
-                  f"{describe_nodes(nodes_index, candidates)}")
+        reason = (f"{len(all_candidates)} {present_type} nodes are candidates: "
+                  f"{describe_nodes(nodes_index, candidates)}"
+                  + (f" (+{omitted} more)" if omitted else ""))
         next_action = candidate_commands[0]
     message = (
         f"Cannot choose a parent for node type '{node_type}': {reason}. "
@@ -186,6 +188,7 @@ def _parent_required_error(node_type: str, nodes_index: dict, jd) -> dict:
             *candidate_commands[:3],
         ],
         "candidate_parent_node_ids": candidates,
+        "candidate_parent_count": len(all_candidates),
         "candidate_parents": [
             {"node_id": nid, "status": nodes_index.get(nid, {}).get("status")}
             for nid in candidates
@@ -227,6 +230,32 @@ def _invalid_node_type_error(requested, job_dir) -> dict:
     }
 
 
+def _structured_node_id_error(candidate, node_type: str) -> Optional[dict]:
+    """Refuse a driver-supplied id that does not follow the structured rule
+    (``STRUCTURED_NODE_ID_RE``) or names another node type."""
+    match = STRUCTURED_NODE_ID_RE.match(candidate) if isinstance(candidate, str) else None
+    if match is not None and match.group("type") == node_type:
+        return None
+    message = (
+        f"Node id {candidate!r} does not follow the structured rule "
+        f"'{node_type}_<scope>_<letter><4 digits>...' (scope: a lowercase word of "
+        "up to 16 letters and digits), e.g. 'prod_h3flip_r0013_w0050'"
+    )
+    return {
+        "success": False,
+        "code": "node_id_invalid",
+        "error": message,
+        "message": message,
+        "errors": [message],
+        "warnings": [],
+        "next_action": (
+            "Omit _node_id for a sequential id, or fix the scope word and the "
+            "numbered parts."
+        ),
+        "recoverable": True,
+    }
+
+
 def _split_node_id_list(values: Optional[list[str]]) -> Optional[list[str]]:
     if values is None:
         return None
@@ -249,6 +278,8 @@ def create_node(
     conditions: Optional[dict] = None,
     continue_from: Optional[str] = None,
     node_id: Optional[str] = None,
+    _node_id: Optional[str] = None,
+    _metadata: Optional[dict] = None,
 ) -> dict:
     """Create a new node directory and register it in ``progress.json``.
 
@@ -263,6 +294,18 @@ def create_node(
     per-tool ``--node-id`` flag receive a structured error. IDs are always
     allocated by this function and are never caller-selectable.
 
+    ``_node_id`` is for Python drivers that create many nodes under one
+    naming rule (the rounds of a sampling scheme): a structured id
+    ``<type>_<scope>_<letter><4 digits>...`` such as
+    ``prod_h3flip_r0013_w0050`` (``STRUCTURED_NODE_ID_RE``), which sorts a
+    directory listing by scheme, round and replica and leaves sequential
+    allocation untouched. Underscore-prefixed, so it never becomes a CLI
+    flag; agents do not choose ids. ``_metadata`` is the same drivers'
+    creation-time metadata (the round, replica and weight of a segment): it
+    is merged into ``node.json.metadata`` next to ``continued_from`` and
+    survives completion, unlike ``conditions``, which are a contract the
+    stage tool must cross-check.
+
     Returns::
 
         {
@@ -273,6 +316,80 @@ def create_node(
             "next_command": "mdclaw explain_node --job-dir ... --node-id eq_001",
         }
     """
+    prepared = _create_node_prepare(job_dir, node_type, parent_node_ids, dependency_node_ids,
+                                    continue_from, node_id, _node_id, _metadata)
+    if not prepared.get("ok"):
+        return prepared
+    jd = prepared["jd"]
+    with file_lock(jd / "progress.lock"):
+        pj = jd / "progress.json"
+        progress = _load_progress_v3(pj, create_if_missing=True)
+        outcome = _create_node_in_progress(
+            jd, progress, node_type=prepared["node_type"], parents=prepared["parents"], deps=prepared["deps"],
+            label=label, conditions=conditions, continue_from=prepared["continue_from"],
+            _node_id=_node_id, _metadata=_metadata)
+        if not outcome.get("_created"):
+            return outcome
+        _atomic_write_json(pj, progress)
+    return _create_node_finish(job_dir, jd, outcome)
+
+
+def _create_nodes_bulk(job_dir: str, specs: list[dict]) -> list[dict]:
+    """Create several nodes under one ``progress.lock`` with one index write
+    and no per-node preflight: a driver creating a round of segments on a
+    large DAG (a 26k-node index rewritten per node made the driver's own
+    work most of a round's wall time). Each spec holds the keyword
+    arguments of ``create_node`` (``node_type``, ``parent_node_ids``,
+    ``dependency_node_ids``, ``label``, ``conditions``, ``continue_from``,
+    ``_node_id``, ``_metadata``). Stops at the first failure; the nodes made
+    before it are registered, and the results (one per spec processed) say
+    which."""
+    results: list[dict] = []
+    prepared_specs: list[tuple[dict, dict]] = []
+    for spec in specs:
+        prepared = _create_node_prepare(
+            job_dir, spec["node_type"], spec.get("parent_node_ids"), spec.get("dependency_node_ids"),
+            spec.get("continue_from"), None, spec.get("_node_id"), spec.get("_metadata"))
+        if not prepared.get("ok"):
+            results.append(prepared)
+            return results
+        prepared_specs.append((spec, prepared))
+    if not prepared_specs:
+        return results
+    jd = prepared_specs[0][1]["jd"]
+    created: list[dict] = []
+    with file_lock(jd / "progress.lock"):
+        pj = jd / "progress.json"
+        progress = _load_progress_v3(pj, create_if_missing=True)
+        for spec, prepared in prepared_specs:
+            outcome = _create_node_in_progress(
+                jd, progress, node_type=prepared["node_type"], parents=prepared["parents"],
+                deps=prepared["deps"], label=spec.get("label"), conditions=spec.get("conditions"),
+                continue_from=prepared["continue_from"], _node_id=spec.get("_node_id"),
+                _metadata=spec.get("_metadata"))
+            if outcome.get("_created"):
+                created.append(outcome)
+            else:
+                results.append(outcome)
+                break
+        if created:
+            _atomic_write_json(pj, progress)
+    finished = [_create_node_finish(job_dir, jd, outcome, preflight=False) for outcome in created]
+    return finished + results
+
+
+def _create_node_prepare(
+    job_dir: str,
+    node_type: str,
+    parent_node_ids: Optional[list[str]],
+    dependency_node_ids: Optional[list[str]],
+    continue_from: Optional[str],
+    node_id: Optional[str],
+    _node_id: Optional[str],
+    _metadata: Optional[dict],
+) -> dict:
+    """The checks of ``create_node`` that need no index: an error dict
+    (``success`` False) or the normalized arguments (``ok`` True)."""
     if node_id is not None:
         message = (
             "create_node assigns the node id automatically; do not supply "
@@ -295,6 +412,19 @@ def create_node(
     node_type = normalize_node_type(node_type)
     if node_type is None:
         return _invalid_node_type_error(requested_node_type, job_dir)
+    if _node_id is not None:
+        structured_error = _structured_node_id_error(_node_id, node_type)
+        if structured_error is not None:
+            return structured_error
+    if _metadata is not None and (
+        not isinstance(_metadata, dict)
+        or set(_metadata) & set(OPERATIONAL_METADATA_KEYS)
+        or "continued_from" in _metadata
+    ):
+        raise ValueError(
+            "_metadata must be a dict without operational keys "
+            f"{OPERATIONAL_METADATA_KEYS} or continued_from"
+        )
 
     # The CLI collects ``--parent-node-ids a b c`` with nargs='+'; agents also
     # write ``a,b,c`` (one token), which used to fail as a missing node named
@@ -353,294 +483,355 @@ def create_node(
                 ),
             }
 
-    with file_lock(jd / "progress.lock"):
-        # Bootstrap progress.json if needed
-        pj = jd / "progress.json"
-        progress = _load_progress_v3(pj, create_if_missing=True)
-        nodes_index = progress.get("nodes", {})
+    return {"ok": True, "node_type": node_type, "parents": parents, "deps": deps,
+            "continue_from": continue_from, "jd": jd}
 
-        # Soft study-first check: the source node is the entry point of a job
-        # DAG, so this is the one place to flag a job created outside a study.
-        # Non-blocking by design — bare job_dirs remain valid for tests, repair,
-        # and advanced use — but weak agents get an actionable, branchable signal
-        # instead of a silent convention violation. See the study-first design
-        # decision in docs/developer/architecture.md.
-        study_context_missing = node_type == "source" and not _job_has_study_context(
-            jd, progress.get("params", {}) or {}
-        )
 
-        # Auto-resolve the canonical forward parent when none was supplied.
-        # Removes the most common weak-agent failure: hardcoding a literal
-        # example id (e.g. ``topo_001``) that does not match the real DAG.
-        auto_parent_node_id: Optional[str] = None
-        if (
-            not parents
-            and continue_from is None
-            and node_type in _AUTO_PARENT_PREFERENCE
-        ):
-            resolved = _auto_resolve_parent(node_type, nodes_index)
-            if resolved is not None:
-                parents = [resolved]
-                auto_parent_node_id = resolved
+def _create_node_in_progress(
+    jd: Path,
+    progress: dict,
+    *,
+    node_type: str,
+    parents: list[str],
+    deps: list[str],
+    label: Optional[str],
+    conditions: Optional[dict],
+    continue_from: Optional[str],
+    _node_id: Optional[str],
+    _metadata: Optional[dict],
+) -> dict:
+    """Validate against the loaded index, write ``node.json`` and register
+    the node in ``progress`` (not yet written to disk). Called under
+    ``progress.lock`` by ``create_node`` (one node, one index write) and by
+    ``_create_nodes_bulk`` (a round of segments, one index write)."""
+    nodes_index = progress.get("nodes", {})
 
-        # Canonical study jobs must not accumulate non-runnable parentless
-        # nodes. Bare job directories remain available to low-level repair and
-        # tests, but normal CLI workflows get an actionable error before any
-        # node directory or progress entry is written.
-        if (
-            node_type != "source"
-            and not parents
-            and _job_has_study_context(jd, progress.get("params", {}) or {})
-        ):
-            return _parent_required_error(node_type, nodes_index, jd)
+    # Soft study-first check: the source node is the entry point of a job
+    # DAG, so this is the one place to flag a job created outside a study.
+    # Non-blocking by design — bare job_dirs remain valid for tests, repair,
+    # and advanced use — but weak agents get an actionable, branchable signal
+    # instead of a silent convention violation. See the study-first design
+    # decision in docs/developer/architecture.md.
+    study_context_missing = node_type == "source" and not _job_has_study_context(
+        jd, progress.get("params", {}) or {}
+    )
 
-        # Validate parent/dependency references
-        for ref in parents + deps:
-            if ref not in nodes_index:
-                return {
-                    "success": False,
-                    "code": "referenced_node_missing",
-                    "error": f"Referenced node '{ref}' does not exist in progress.json",
-                }
+    # Auto-resolve the canonical forward parent when none was supplied.
+    # Removes the most common weak-agent failure: hardcoding a literal
+    # example id (e.g. ``topo_001``) that does not match the real DAG.
+    auto_parent_node_id: Optional[str] = None
+    if (
+        not parents
+        and continue_from is None
+        and node_type in _AUTO_PARENT_PREFERENCE
+    ):
+        resolved = _auto_resolve_parent(node_type, nodes_index)
+        if resolved is not None:
+            parents = [resolved]
+            auto_parent_node_id = resolved
 
-        # If continue_from was used, the referenced node must be a prod node.
-        if continue_from is not None:
-            ref_type = nodes_index.get(continue_from, {}).get("type")
-            if ref_type != "prod":
-                return {
-                    "success": False,
-                    "code": "continue_from_not_prod",
-                    "error": (
-                        f"continue_from='{continue_from}' must reference a "
-                        f"prod node (got type='{ref_type}')"
-                    ),
-                }
+    # Canonical study jobs must not accumulate non-runnable parentless
+    # nodes. Bare job directories remain available to low-level repair and
+    # tests, but normal CLI workflows get an actionable error before any
+    # node directory or progress entry is written.
+    if (
+        node_type != "source"
+        and not parents
+        and _job_has_study_context(jd, progress.get("params", {}) or {})
+    ):
+        return _parent_required_error(node_type, nodes_index, jd)
 
-        existing_source_nodes = [
-            nid for nid, info in nodes_index.items()
-            if info.get("type") == "source"
-        ]
-        if node_type == "source" and existing_source_nodes:
-
-            existing = existing_source_nodes[0]
-            existing_status = nodes_index.get(existing, {}).get("status")
-            if existing_status == "pending" and not parents and not deps:
-                # bootstrap_md_workflow creates the source node; an agent or
-                # skill page that then asks for one wants that node, not a
-                # duplicate and not an error. Hand it back unchanged.
-                node_dir = jd / "nodes" / existing
-                return {
-                    "success": True,
-                    "node_id": existing,
-                    "node_dir": str(node_dir),
-                    "artifacts_dir": str(node_dir / "artifacts"),
-                    "reused_existing_node": True,
-                    "warnings": [
-                        f"{existing} already exists and is pending; a job has one "
-                        "source node, so it is reused instead of creating another."
-                    ],
-                    "next_command": (
-                        f"mdclaw explain_node --job-dir {jd} --node-id {existing}"
-                    ),
-                    "dag": dag_snapshot(nodes_index),
-                }
-            message = (
-                f"This job's source is {describe_nodes(nodes_index, [existing])}; "
-                "one source per job. Continue from it instead of creating another, "
-                "or use another study job for a distinct source."
-            )
-            if existing_status == "completed":
-                next_action = (
-                    f"mdclaw create_node --job-dir {jd} --node-type prep "
-                    f"--parent-node-ids {existing}"
-                )
-            else:
-                next_action = (
-                    f"mdclaw explain_node --job-dir {jd} --node-id {existing}"
-                    "  (then run the source tool on it)"
-                )
+    # Validate parent/dependency references
+    for ref in parents + deps:
+        if ref not in nodes_index:
             return {
                 "success": False,
-                "code": "source_already_exists",
-                "error": message,
-                "message": message,
-                "errors": [message],
-                "existing_node_id": existing,
-                "existing_node_status": existing_status,
-                "hints": [next_action],
-                "next_action": next_action,
-                "dag": dag_snapshot(nodes_index),
+                "code": "referenced_node_missing",
+                "error": f"Referenced node '{ref}' does not exist in progress.json",
             }
 
-        # Analyze nodes accept N ≥ 1 parents — multiple prods for
-        # comparing replicates/temperatures (Phase 3 multi-branch), or
-        # multiple analyze nodes to compose previously-concatenated
-        # branches downstream. Mixed shapes (one prod + one analyze)
-        # are rejected because the DAG semantics diverge: prods need
-        # chain-walking, analyze already expose a ready trajectory.
-        if node_type == "analyze":
-            if len(parents) < 1:
-                return {
-                    "success": False,
-                    "code": "analyze_requires_parent",
-                    "error": (
-                        "analyze nodes require at least 1 parent. For "
-                        "downstream analyses, parent the analyze node "
-                        "whose trajectory you want to consume; for "
-                        "concatenation, parent one or more prod nodes."
-                    ),
-                }
-            parent_types: list[str] = []
-            for pid in parents:
-                parent_entry = nodes_index.get(pid)
-                if parent_entry is None:
-                    return {
-                        "success": False,
-                        "code": "analyze_parent_missing",
-                        "error": (
-                            f"analyze parent '{pid}' does not exist in "
-                            "this job's progress.json"
-                        ),
-                    }
-                pt = parent_entry.get("type")
-                if pt not in ("prod", "fep", "analyze"):
-                    return {
-                        "success": False,
-                        "code": "analyze_parent_invalid_type",
-                        "error": (
-                            f"analyze parent must be a 'prod', 'fep' or "
-                            f"'analyze' node; got '{pid}' of type "
-                            f"'{pt}'. For DCD concatenation from the "
-                            "prod chain, parent one or more prods. For "
-                            "alchemical free energies, parent the fep "
-                            "window nodes. For downstream analyses, "
-                            "parent the analyze node(s) whose outputs "
-                            "you want to consume."
-                        ),
-                    }
-                parent_types.append(pt)
-            if len(set(parent_types)) > 1:
-                return {
-                    "success": False,
-                    "code": "analyze_parents_mixed",
-                    "error": (
-                        "analyze nodes cannot mix prod, fep and analyze "
-                        f"parents; got {parent_types}. Decide which "
-                        "layer you're operating at: concatenate prod "
-                        "chains (all parents = prod), estimate a free "
-                        "energy (all parents = fep), OR consume "
-                        "already-produced analyze outputs (all "
-                        "parents = analyze)."
-                    ),
-                }
-            conditions_error = _validate_analyze_conditions(conditions)
-            if conditions_error:
-                return {
-                    "success": False,
-                    "code": "analyze_conditions_invalid",
-                    "error": conditions_error,
-                }
-            if (
-                isinstance(conditions, dict)
-                and conditions.get("analysis_data_scope") == "alchemical"
-                and (not parent_types or set(parent_types) != {"fep"})
-            ):
-                return {
-                    "success": False,
-                    "code": "analyze_conditions_invalid",
-                    "error": (
-                        "analysis_data_scope 'alchemical' requires fep parents "
-                        f"(got {sorted(set(parent_types))}); parent the analyze node to the "
-                        "completed run_fep nodes."
-                    ),
-                }
-            if (
-                isinstance(conditions, dict)
-                and conditions.get("analysis_data_scope") != "alchemical"
-                and parent_types and set(parent_types) == {"fep"}
-            ):
-                return {
-                    "success": False,
-                    "code": "analyze_conditions_invalid",
-                    "error": (
-                        "analyze nodes over fep parents use analysis_data_scope "
-                        "'alchemical' (analyze_fep runs MBAR; there is no production chain)."
-                    ),
-                }
-            if (
-                isinstance(conditions, dict)
-                and conditions.get("analysis_data_scope") == "comparison"
-                and (len(parents) != 2 or set(parent_types) != {"analyze"})
-            ):
-                return {
-                    "success": False,
-                    "code": "comparison_requires_two_analyze",
-                    "error": (
-                        "comparison analyze nodes require exactly two "
-                        "analyze parents. Create one production_chain "
-                        "analyze node per branch first, then compare "
-                        "those analyze nodes."
-                    ),
-                }
+    # If continue_from was used, the referenced node must be a prod node.
+    if continue_from is not None:
+        ref_type = nodes_index.get(continue_from, {}).get("type")
+        if ref_type != "prod":
+            return {
+                "success": False,
+                "code": "continue_from_not_prod",
+                "error": (
+                    f"continue_from='{continue_from}' must reference a "
+                    f"prod node (got type='{ref_type}')"
+                ),
+            }
 
-        if node_type == "prep":
-            source_lineages = set()
-            queue = list(parents)
-            seen = set()
-            while queue:
-                ref = queue.pop(0)
-                if ref in seen:
-                    continue
-                seen.add(ref)
-                info = nodes_index.get(ref, {})
-                if info.get("type") == "source":
-                    source_lineages.add(ref)
-                queue.extend(info.get("parents", []))
-            if len(source_lineages) > 1:
-                return {
-                    "success": False,
-                    "code": "multiple_source_roots",
-                    "error": (
-                        "prep nodes must descend from at most one source root; "
-                        f"got multiple source ancestors {sorted(source_lineages)}. "
-                        "Use one source bundle per job."
-                    ),
-                }
+    existing_source_nodes = [
+        nid for nid, info in nodes_index.items()
+        if info.get("type") == "source"
+    ]
+    if node_type == "source" and existing_source_nodes:
 
-        # Allocate ID
-        node_id = _next_node_id(nodes_index, node_type)
-        node_dir = jd / "nodes" / node_id
-        artifacts_dir = node_dir / "artifacts"
-        artifacts_dir.mkdir(parents=True, exist_ok=True)
-
-        now = datetime.now(timezone.utc).isoformat()
-
-        # Write node.json
-        node_metadata: dict = {}
-        if continue_from is not None:
-            node_metadata["continued_from"] = continue_from
-        node_data = {
-            "schema_version": SCHEMA_VERSION,
-            "node_id": node_id,
-            "node_type": node_type,
-            "status": "pending",
-            "parent_node_ids": parents,
-            "dependency_node_ids": deps,
-            "label": label,
-            "created_at": now,
-            "updated_at": now,
-            "conditions": conditions or {},
-            "artifacts": {},
-            "metadata": node_metadata,
-            "warnings": [_STUDY_CONTEXT_WARNING] if study_context_missing else [],
+        existing = existing_source_nodes[0]
+        existing_status = nodes_index.get(existing, {}).get("status")
+        if existing_status == "pending" and not parents and not deps:
+            # bootstrap_md_workflow creates the source node; an agent or
+            # skill page that then asks for one wants that node, not a
+            # duplicate and not an error. Hand it back unchanged.
+            node_dir = jd / "nodes" / existing
+            return {
+                "success": True,
+                "node_id": existing,
+                "node_dir": str(node_dir),
+                "artifacts_dir": str(node_dir / "artifacts"),
+                "reused_existing_node": True,
+                "warnings": [
+                    f"{existing} already exists and is pending; a job has one "
+                    "source node, so it is reused instead of creating another."
+                ],
+                "next_command": (
+                    f"mdclaw explain_node --job-dir {jd} --node-id {existing}"
+                ),
+                "dag": dag_snapshot(nodes_index),
+            }
+        message = (
+            f"This job's source is {describe_nodes(nodes_index, [existing])}; "
+            "one source per job. Continue from it instead of creating another, "
+            "or use another study job for a distinct source."
+        )
+        if existing_status == "completed":
+            next_action = (
+                f"mdclaw create_node --job-dir {jd} --node-type prep "
+                f"--parent-node-ids {existing}"
+            )
+        else:
+            next_action = (
+                f"mdclaw explain_node --job-dir {jd} --node-id {existing}"
+                "  (then run the source tool on it)"
+            )
+        return {
+            "success": False,
+            "code": "source_already_exists",
+            "error": message,
+            "message": message,
+            "errors": [message],
+            "existing_node_id": existing,
+            "existing_node_status": existing_status,
+            "hints": [next_action],
+            "next_action": next_action,
+            "dag": dag_snapshot(nodes_index),
         }
-        _atomic_write_json(node_dir / "node.json", node_data)
 
-        # Register in progress.json
-        nodes_index[node_id] = _node_progress_summary(node_data)
-        progress["nodes"] = nodes_index
-        _atomic_write_json(pj, progress)
+    # Analyze nodes accept N ≥ 1 parents — multiple prods for
+    # comparing replicates/temperatures (Phase 3 multi-branch), or
+    # multiple analyze nodes to compose previously-concatenated
+    # branches downstream. Mixed shapes (one prod + one analyze)
+    # are rejected because the DAG semantics diverge: prods need
+    # chain-walking, analyze already expose a ready trajectory.
+    if node_type == "analyze":
+        if len(parents) < 1:
+            return {
+                "success": False,
+                "code": "analyze_requires_parent",
+                "error": (
+                    "analyze nodes require at least 1 parent. For "
+                    "downstream analyses, parent the analyze node "
+                    "whose trajectory you want to consume; for "
+                    "concatenation, parent one or more prod nodes."
+                ),
+            }
+        parent_types: list[str] = []
+        for pid in parents:
+            parent_entry = nodes_index.get(pid)
+            if parent_entry is None:
+                return {
+                    "success": False,
+                    "code": "analyze_parent_missing",
+                    "error": (
+                        f"analyze parent '{pid}' does not exist in "
+                        "this job's progress.json"
+                    ),
+                }
+            pt = parent_entry.get("type")
+            if pt not in ("prod", "fep", "analyze"):
+                message = (
+                    f"analyze parent must be a 'prod', 'fep' or "
+                    f"'analyze' node; got '{pid}' of type "
+                    f"'{pt}'. For DCD concatenation from the "
+                    "prod chain, parent one or more prods. For "
+                    "alchemical free energies, parent the fep "
+                    "window nodes. For downstream analyses, "
+                    "parent the analyze node(s) whose outputs "
+                    "you want to consume. To evaluate the structure "
+                    f"of '{pid}' itself, run a short prod from it and "
+                    "analyze that (a rounds scheme evaluates its start "
+                    "node's pcoord in setup_rounds)."
+                )
+                return {
+                    "success": False,
+                    "code": "analyze_parent_invalid_type",
+                    "error": message,
+                    "message": message,
+                    "errors": [message],
+                    "next_action": (
+                        f"mdclaw create_node --job-dir {jd} --node-type prod "
+                        f"--parent-node-ids {pid}  (then run it and analyze the prod)"
+                    ),
+                }
+            parent_types.append(pt)
+        if len(set(parent_types)) > 1:
+            return {
+                "success": False,
+                "code": "analyze_parents_mixed",
+                "error": (
+                    "analyze nodes cannot mix prod, fep and analyze "
+                    f"parents; got {parent_types}. Decide which "
+                    "layer you're operating at: concatenate prod "
+                    "chains (all parents = prod), estimate a free "
+                    "energy (all parents = fep), OR consume "
+                    "already-produced analyze outputs (all "
+                    "parents = analyze)."
+                ),
+            }
+        conditions_error = _validate_analyze_conditions(conditions)
+        if conditions_error:
+            return {
+                "success": False,
+                "code": "analyze_conditions_invalid",
+                "error": conditions_error,
+            }
+        if (
+            isinstance(conditions, dict)
+            and conditions.get("analysis_data_scope") == "alchemical"
+            and (not parent_types or set(parent_types) != {"fep"})
+        ):
+            return {
+                "success": False,
+                "code": "analyze_conditions_invalid",
+                "error": (
+                    "analysis_data_scope 'alchemical' requires fep parents "
+                    f"(got {sorted(set(parent_types))}); parent the analyze node to the "
+                    "completed run_fep nodes."
+                ),
+            }
+        if (
+            isinstance(conditions, dict)
+            and conditions.get("analysis_data_scope") != "alchemical"
+            and parent_types and set(parent_types) == {"fep"}
+        ):
+            return {
+                "success": False,
+                "code": "analyze_conditions_invalid",
+                "error": (
+                    "analyze nodes over fep parents use analysis_data_scope "
+                    "'alchemical' (analyze_fep runs MBAR; there is no production chain)."
+                ),
+            }
+        if (
+            isinstance(conditions, dict)
+            and conditions.get("analysis_data_scope") == "comparison"
+            and (len(parents) != 2 or set(parent_types) != {"analyze"})
+        ):
+            return {
+                "success": False,
+                "code": "comparison_requires_two_analyze",
+                "error": (
+                    "comparison analyze nodes require exactly two "
+                    "analyze parents. Create one production_chain "
+                    "analyze node per branch first, then compare "
+                    "those analyze nodes."
+                ),
+            }
 
+    if node_type == "prep":
+        source_lineages = set()
+        queue = list(parents)
+        seen = set()
+        while queue:
+            ref = queue.pop(0)
+            if ref in seen:
+                continue
+            seen.add(ref)
+            info = nodes_index.get(ref, {})
+            if info.get("type") == "source":
+                source_lineages.add(ref)
+            queue.extend(info.get("parents", []))
+        if len(source_lineages) > 1:
+            return {
+                "success": False,
+                "code": "multiple_source_roots",
+                "error": (
+                    "prep nodes must descend from at most one source root; "
+                    f"got multiple source ancestors {sorted(source_lineages)}. "
+                    "Use one source bundle per job."
+                ),
+            }
+
+    if _node_id is not None and (
+        _node_id in nodes_index or (jd / "nodes" / _node_id / "node.json").exists()
+    ):
+        message = f"Node id '{_node_id}' already exists in this job"
+        return {
+            "success": False,
+            "code": "node_id_exists",
+            "error": message,
+            "message": message,
+            "errors": [message],
+            "warnings": [],
+            "existing_node_id": _node_id,
+            "next_action": (
+                f"Use the existing node: mdclaw explain_node --job-dir {jd} "
+                f"--node-id {_node_id}"
+            ),
+            "dag": dag_snapshot(nodes_index),
+        }
+
+    # Allocate ID
+    node_id = _node_id or _next_node_id(nodes_index, node_type)
+    node_dir = jd / "nodes" / node_id
+    artifacts_dir = node_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Write node.json
+    node_metadata: dict = dict(_metadata or {})
+    if continue_from is not None:
+        node_metadata["continued_from"] = continue_from
+    node_data = {
+        "schema_version": SCHEMA_VERSION,
+        "node_id": node_id,
+        "node_type": node_type,
+        "status": "pending",
+        "parent_node_ids": parents,
+        "dependency_node_ids": deps,
+        "label": label,
+        "created_at": now,
+        "updated_at": now,
+        "conditions": conditions or {},
+        "artifacts": {},
+        "metadata": node_metadata,
+        "warnings": [_STUDY_CONTEXT_WARNING] if study_context_missing else [],
+    }
+    _atomic_write_json(node_dir / "node.json", node_data)
+
+    # Register in progress.json (the caller writes the index)
+    nodes_index[node_id] = _node_progress_summary(node_data)
+    progress["nodes"] = nodes_index
+    return {"success": True, "_created": True, "node_id": node_id, "node_dir": node_dir,
+            "artifacts_dir": artifacts_dir, "parents": parents, "label": label, "node_type": node_type,
+            "auto_parent_node_id": auto_parent_node_id, "study_context_missing": study_context_missing}
+
+
+def _create_node_finish(job_dir: str, jd: Path, outcome: dict, *, preflight: bool = True) -> dict:
+    """Event, log and result of a node ``_create_node_in_progress`` made;
+    ``preflight`` adds the read-only ``explain_node`` (an index load and
+    input resolution per node — drivers creating a round skip it)."""
+    node_id = outcome["node_id"]
+    node_type = outcome["node_type"]
+    parents = outcome["parents"]
+    label = outcome["label"]
+    node_dir = outcome["node_dir"]
+    artifacts_dir = outcome["artifacts_dir"]
+    auto_parent_node_id = outcome["auto_parent_node_id"]
+    study_context_missing = outcome["study_context_missing"]
     # Event (outside lock — append-only, no race)
     write_event(job_dir, node_id, "node_created", details={
         "node_type": node_type,
@@ -664,9 +855,10 @@ def create_node(
     # Include the same read-only preflight that next_command exposes. Agents
     # can act on create_node's result without losing validation when they omit
     # the separate discovery call.
-    from mdclaw.node.inputs import explain_node
+    if preflight:
+        from mdclaw.node.inputs import explain_node
 
-    result["preflight"] = explain_node(str(jd), node_id)
+        result["preflight"] = explain_node(str(jd), node_id)
     if auto_parent_node_id is not None:
         result["auto_resolved_parent"] = auto_parent_node_id
     if study_context_missing:
@@ -1196,9 +1388,16 @@ def fail_tool(
 
 
 def read_node(job_dir: str, node_id: str) -> dict:
-    """Read and return a node's ``node.json``."""
+    """Read and return a node's ``node.json`` (FileNotFoundError when the
+    node does not exist; a transient miss during another host's rename is
+    retried first)."""
+    from mdclaw.node.io import _load_json_settled
+
     node_json = Path(job_dir) / "nodes" / node_id / "node.json"
-    return json.loads(node_json.read_text())
+    data = _load_json_settled(node_json)
+    if data is None:
+        raise FileNotFoundError(f"No such node: {node_json}")
+    return data
 
 
 def validate_node_execution_context(

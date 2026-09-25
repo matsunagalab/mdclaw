@@ -18,6 +18,49 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Package root: plugin install or repo checkout
 PKG_ROOT="${CLAUDE_PLUGIN_ROOT:-$REPO_ROOT}"
 
+# Directories to bind for the absolute paths found in the arguments (a
+# job_dir, a study_dir, a reference structure inside a JSON argument): the
+# deepest existing directory of each path, one per line, minus the working
+# directory, the package root, $HOME (bound by default) and system prefixes.
+# Without this a job_dir outside the working directory is invisible inside
+# the container and the tools report a job that exists as "no progress.json".
+_mdclaw_arg_bind_dirs() {
+    local cwd="$1" pkg="$2"
+    shift 2
+    local arg path dir anc seen="|" skip
+    for arg in "$@"; do
+        while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            dir="$path"
+            while [ ! -d "$dir" ] && [ "$dir" != "/" ]; do
+                dir="$(dirname "$dir")"
+            done
+            { [ -d "$dir" ] && [ "$dir" != "/" ]; } || continue
+            case "$dir" in
+                /proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/usr|/usr/*|/etc|/etc/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/lib64/*|/opt|/opt/*|/tmp|/tmp/*|/var|/var/*|/run|/run/*|/root|/root/*) continue ;;
+                "$cwd"|"$cwd"/*|"$pkg"|"$pkg"/*) continue ;;
+            esac
+            if [ -n "${HOME:-}" ]; then
+                case "$dir" in "$HOME"|"$HOME"/*) continue ;; esac
+            fi
+            case "$seen" in *"|$dir|"*) continue ;; esac
+            seen="${seen}${dir}|"
+        done < <(printf '%s\n' "$arg" | grep -oE '/[^]"'"'"'[:space:],}]+' || true)
+    done
+    # Keep the minimal set: a directory whose ancestor is also listed is
+    # covered by that ancestor's bind (nested binds are not needed).
+    local candidate other
+    printf '%s\n' "${seen//|/$'\n'}" | sed '/^$/d' | while IFS= read -r candidate; do
+        skip=""
+        other="$(dirname "$candidate")"
+        while [ "$other" != "/" ]; do
+            case "$seen" in *"|$other|"*) skip=1; break ;; esac
+            other="$(dirname "$other")"
+        done
+        [ -n "$skip" ] || printf '%s\n' "$candidate"
+    done
+}
+
 # Tools that run natively on the host (need sbatch/squeue/sinfo/sacct/scancel)
 NATIVE_TOOLS="submit_job submit_array_job submit_mps_job check_job list_jobs cancel_job check_job_log inspect_cluster set_policy show_policy configure_container list_tracked_jobs"
 
@@ -126,7 +169,15 @@ case "${1:-}" in
 esac
 
 # --- SLURM tools run natively (host python3 + host sbatch/squeue) ---
-if [ -n "$TOOL" ] && echo " $NATIVE_TOOLS " | grep -q -- " $TOOL "; then
+# run_rounds --executor mps drives Slurm jobs itself (submit_mps_job,
+# check_job) and runs the policy through this launcher, so it is native too.
+NATIVE_ROUNDS=""
+if [ "$TOOL" = "run_rounds" ]; then
+    case " $* " in
+        *" --executor mps "*|*" --executor=mps "*) NATIVE_ROUNDS=1 ;;
+    esac
+fi
+if [ -n "$TOOL" ] && { echo " $NATIVE_TOOLS " | grep -q -- " $TOOL " || [ -n "$NATIVE_ROUNDS" ]; }; then
     PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
         exec python3 -m mdclaw._cli "$@"
 fi
@@ -174,8 +225,17 @@ case "$RUNTIME" in
         fi
         NV=()
         [ -n "$NV_FLAG" ] && NV=("$NV_FLAG")
+        # Absolute paths in the arguments (--job-dir, --study-dir, a reference
+        # PDB inside a JSON argument) are bound too: a job_dir outside the
+        # working directory is otherwise invisible in the container and the
+        # tools report "no progress.json; bootstrap the job" for a job that
+        # exists (2026-09-21).
+        ARG_BIND=()
+        while IFS= read -r _dir; do
+            [ -n "$_dir" ] && ARG_BIND+=(--bind "${_dir}:${_dir}")
+        done < <(_mdclaw_arg_bind_dirs "$CWD" "$PKG_ROOT" "$@")
         exec "$CONTAINER_CMD" exec ${NV[@]+"${NV[@]}"} \
-            --bind "${CWD}:${CWD}" ${PKG_BIND[@]+"${PKG_BIND[@]}"} \
+            --bind "${CWD}:${CWD}" ${PKG_BIND[@]+"${PKG_BIND[@]}"} ${ARG_BIND[@]+"${ARG_BIND[@]}"} \
             --pwd "${CWD}" \
             --env PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
             "$SIF" mdclaw "$@"
@@ -205,8 +265,12 @@ case "$RUNTIME" in
         [ -n "$GPU_FLAG" ] && GPU=($GPU_FLAG)
         USER_ARGS=()
         [ -n "$USER_FLAG" ] && USER_ARGS=($USER_FLAG)
+        ARG_MOUNT=()
+        while IFS= read -r _dir; do
+            [ -n "$_dir" ] && ARG_MOUNT+=(-v "${_dir}:${_dir}")
+        done < <(_mdclaw_arg_bind_dirs "$CWD" "$PKG_ROOT" "$@")
         exec docker run --rm ${GPU[@]+"${GPU[@]}"} ${USER_ARGS[@]+"${USER_ARGS[@]}"} \
-            -v "${CWD}:${CWD}" ${PKG_MOUNT[@]+"${PKG_MOUNT[@]}"} -w "${CWD}" \
+            -v "${CWD}:${CWD}" ${PKG_MOUNT[@]+"${PKG_MOUNT[@]}"} ${ARG_MOUNT[@]+"${ARG_MOUNT[@]}"} -w "${CWD}" \
             -e PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
             "$DOCKER_IMAGE" mdclaw "$@"
         ;;

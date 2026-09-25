@@ -3067,3 +3067,13 @@ class TestHostSearchPath:
         monkeypatch.setattr(_base, "_HOST_PATH_CACHE", {})
         monkeypatch.setattr(_base, "_ancestor_environments", lambda *a, **k: iter([{"PATH": "/nowhere"}]))
         assert _base.host_search_path() is None
+
+
+def test_controller_job_carries_the_pending_reason():
+    from mdclaw.slurm.monitor import _controller_job, _normalize_reason
+
+    line = ("JobId=128092 JobName=we1_r0015_5 JobState=PENDING Reason=launch_failed_requeued_held "
+            "Dependency=(null) RunTime=00:00:00 NodeList=(null) ExitCode=0:0")
+    assert _controller_job(line, "128092")["reason"] == "launch_failed_requeued_held"
+    assert _normalize_reason("None") is None and _normalize_reason(["Priority"]) == "Priority"
+    assert _normalize_reason("") is None and _normalize_reason("JobHeldUser") == "JobHeldUser"

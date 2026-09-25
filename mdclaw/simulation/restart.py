@@ -276,6 +276,11 @@ def _load_state_into_simulation(
 
 _OPENMM_RANDOM_SEED_MODULUS = 2_147_483_647
 
+# Metadata a biased production records; a sibling carrying any of these ran
+# a different System, so sharing its seed does not repeat its trajectory.
+_BIAS_METADATA_KEYS = ("custom_force", "distance_restraints", "plumed", "steering",
+                       "sampling_method", "sampling_role")
+
 
 def _restart_random_seed(
     random_seed: Optional[int],
@@ -287,6 +292,57 @@ def _restart_random_seed(
     offset = max(1, int(restart_step or 0))
     seed = int(random_seed)
     return ((seed + offset - 1) % _OPENMM_RANDOM_SEED_MODULUS) + 1
+
+
+def _sibling_seed_collision(
+    job_dir: Optional[str],
+    node_id: Optional[str],
+    restart_node_id: Optional[str],
+    random_seed: Optional[int],
+) -> Optional[dict]:
+    """The completed prod sibling that already ran ``random_seed`` from
+    ``restart_node_id``, or None.
+
+    The effective integrator seed of a restarted segment is derived from
+    ``random_seed`` and the ancestor's step count alone
+    (:func:`_restart_random_seed`), so two children of one ancestor with one
+    seed integrate the same noise and are the same trajectory: a replicate
+    that adds nothing, or a split whose branches never diverge. Only
+    completed, unbiased siblings count: a pending or failed one produced
+    nothing, and a sibling that ran a bias (custom force, restraints,
+    PLUMED, steering, an expanded ensemble) integrates a different System,
+    so the same seed does not repeat it.
+    """
+    from mdclaw.node.io import _read_node_json
+    from mdclaw.node.progress import _load_progress_v3
+
+    if not (job_dir and node_id and restart_node_id) or random_seed is None:
+        return None
+    progress = _load_progress_v3(Path(job_dir) / "progress.json")
+    if progress is None:
+        return None
+    for sibling_id, info in (progress.get("nodes") or {}).items():
+        if (sibling_id == node_id or info.get("type") != "prod"
+                or info.get("status") != "completed"
+                or restart_node_id not in (info.get("parents") or [])):
+            continue
+        meta = (_read_node_json(job_dir, sibling_id) or {}).get("metadata") or {}
+        source = meta.get("continued_from") or (info.get("parents") or [None])[0]
+        if source != restart_node_id:
+            continue
+        if any(meta.get(key) for key in _BIAS_METADATA_KEYS):
+            continue
+        try:
+            same_seed = int(meta.get("random_seed")) == int(random_seed)
+        except (TypeError, ValueError):
+            same_seed = False
+        if same_seed:
+            return {
+                "sibling_node_id": sibling_id,
+                "restart_node_id": restart_node_id,
+                "random_seed": int(random_seed),
+            }
+    return None
 
 
 def _save_checkpoint_atomic(simulation, path: Path) -> None:

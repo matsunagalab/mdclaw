@@ -48,7 +48,10 @@ mdclaw submit_job ... --job-dir <job_dir> --node-id <node_id>
 
 `--clear-slurm-metadata` removes the stale `slurm_job_id` (the cause of
 `slurm_node_already_submitted`) and returns the node to `pending`. It answers
-`slurm_job_still_active` while squeue lists the job; `cancel_job` first.
+`slurm_job_still_active` while squeue lists the job; `cancel_job` first. It
+also frees a `running` node that has no Slurm job (a segment a killed
+`run_rounds` left behind); `run_rounds` recovers those by itself once the
+driver's heartbeat is 5 min old, so use it only to skip that wait.
 Resubmit parents before children so `--dependency afterok:<new id>` is valid.
 
 A `container_not_configured:` warning on a submit result means the payload

@@ -2,6 +2,11 @@
 
 `mdclaw/_cli.py` auto-discovers tools from `SERVER_REGISTRY` and exposes them
 as argparse subcommands. Tool output is JSON on stdout; logs go to stderr.
+While a tool runs, file descriptor 1 is a copy of stderr
+(`_NativeStdoutToStderr`): compiled libraries that print past Python's
+`sys.stdout` (mdtraj's DCD reader, OpenMM plugins) cannot reach the JSON
+stream, and the C stdio buffers are flushed before the descriptor is
+restored for the result.
 
 ## Tool Module Pattern
 
@@ -239,6 +244,10 @@ job's node index (`_preflight_fix`), plus `dag` and `next`:
   before the tool starts so the node stays pending (stage tools that resolve
   their own inputs would otherwise seal it as failed); the fix names the
   parent's stage command or `wait_node`.
+- `progress_unreadable`: the job's `progress.json` could not be read even
+  after retries (`_load_nodes_strict`: 5 reads, 0.4 s apart) — a transient
+  shared-file-system error or a torn index, never reported as a missing
+  parent. The node stays pending; rerun the same command.
 - `tool_renamed`: a consolidated/renamed tool name was invoked; the message and
   `context.replacement` name the current tool.
 
