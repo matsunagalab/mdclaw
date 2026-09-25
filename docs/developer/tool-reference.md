@@ -622,10 +622,6 @@ signature, update the relevant section here and the matching skill examples.
   write a CSV `time_ns` column only when a DAG-resolved `frame_times_ns`
   artifact exists. Direct and legacy inputs without it produce frame-only CSVs
   instead of assuming a fixed output cadence.
-- `analyze_rmsd(...)`, `analyze_distance(...)`, and `analyze_q_value(...)`:
-  write a CSV `time_ns` column only when a DAG-resolved `frame_times_ns`
-  artifact exists. Direct and legacy inputs without it produce frame-only CSVs
-  instead of assuming a fixed output cadence.
 
 ## `fep/`
 

@@ -390,6 +390,12 @@ rung 往復回数。solute 原子数は 1 で 150–250、2 で 300–500 の見
   Torch バイアス経路は 2 倍遅い（memo 2026-08-26）ので使わない。
 - 系は 2 段: alanine dipeptide の φ（Phase 2 の玩具検証と共用）と、実サイズの 1 系
   （結合距離 CV のペプチド–タンパク質複合体など、GPU で数百 ns 規模）。
+  **2026-09-16/17 の実施状況（memo 参照）**: キャップ付き Ala3 の末端間距離（3 手法が 0.6–1.5 nm で
+  0.3–1 kJ/mol 一致、0.55 nm 以下は φ₁ の α_R/α_L が隠れた遅い変数で不決定）、deca-alanine
+  （ξ 方向は平坦、ヘリックス含量が隠れた遅い変数で walker が 150 ns 捕捉）、chignolin CLN025 の
+  Cα1–Cα10 距離（ξ 方向に本当の障壁、実行中）。p53–MDM2 の解離距離は非結合状態を定義する
+  flat-bottom（漏斗）拘束が要るので、`distance_restraints` に `flat_bottom_radius_nm` 型の
+  円筒拘束を足してから。
 - 同じ CV・窓配置で SEUS を走らせ、MBAR の PMF が統計誤差内で一致するか。窓ごとの滞在時間と
   往復回数も記録し、通常 umbrella の総コストと比較する。
 
@@ -516,7 +522,10 @@ Phase 1 の閉包テストと Phase 2 の玩具検証はコンテナ内 CPU で�
 2. 5awl で部分 solute の閉包テストを書き、失敗を確認（修正前の証拠）。
 3. 複製方式の副 System ビルダーと境界 1-4 修正を書き、閉包テストを通す。
 4. VHH 1 本（MDDataBench の 1KXV など、prep 済み）で solute の切り方 3 通り（H3 のみ / H3 + 接触殻 / 二面角のみ）を試走し比較。
-5. 並行して SEUS の玩具検証（1 次元二重井戸）を MDClaw 側で着手。
+5. ~~並行して SEUS の玩具検証（1 次元二重井戸）を MDClaw 側で着手。~~ **2026-09-22 に SEUS は撤去**（memo 参照、後継は well-tempered metadynamics）。経緯: 2026-09-16 に `run_seus`
+   （`mdclaw/simulation/expanded_ensemble.py`、prod ノード、SAMS + 全窓 Gibbs）を実装し、
+   玩具検証はキャップ付き Ala3 の end-to-end 距離（水中、23 窓）で既存 umbrella ルートと
+   突き合わせる形に置き換えた（memo 2026-09-16 参照）。
 6. SEUS の実サイズ検証系を 1 つ決め、既存 umbrella ルートで基準 PMF を作る。
 
 ---

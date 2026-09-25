@@ -470,11 +470,157 @@ All five read the skills (36-39 files each); none is a CLI-operation error. Each
 
 Pattern: 3 of 5 are the model trading the skill's defaults for speed or caution (smaller box, legacy backend, shorter equilibration), 1 is a routing miss inside the skill (the rule sat on a page the agent did not open), 1 is infrastructure. Skill-side fixes recorded in `roadmap-and-known-issues.md` under "Skill Text Fixes from the glm-5.3-flash Campaign".
 
+## 2026-09-16 — 1KXV SST2 試走の途中解析（38 ns 時点）: H3 + 殻の walker が通常 MD 200 ns に無い H3 の basin を見つけた
+
+DAG 外の暫定解析（`sst2-trials/1kxv-h3/analysis_interim/`、mdtraj）。H3（残基 98–110）の φ/ψ の cos/sin を特徴量に、全条件のフレームで PCA（PC1 32 %、PC2 14 %）を当て、2D の −kT ln P を条件ごとに描いた（`h3_fes_interim.png`）。SST2 側は 300 K rung にいたフレームだけ（適応段階なので近似）。通常 MD 2 本 200 ns は PC2 ≈ 0 の 2 basin だけ。SST2 H3 のみ（300 K 滞在 14 ns）は同じ 2 basin に加えて PC2 ≈ −1 と −2.3 の状態、H3 + 5 Å 殻（同 33 ns）はさらに PC2 ≈ −3 の広い basin を訪れた。その basin はプロリンの cis ではなく（H3 の Pro104/107/110 の cis 率 0）、Pro104–Gly105 のペプチド面の反転（ψ104 と φ105 が約 170° 違う、Gly105 の主鎖 flip）。見つけたのは殻 seed 1（300 K フレーム 1398 のうち 920）と H3 のみ seed 1（25 フレーム）で、seed 2 の 2 本は未訪問。滞在時間が長いのは walker がその basin に落ちたままなので、自由エネルギー差はまだ信用できない。rung 統計: H3 のみは 38 ns で往復 45〜83 回、重みは各ランで安定だが seed 間で最上段 20 kJ/mol の差。H3 + 殻は交換率 3–4 %、往復 7–10 回でラダーが粗い。二面角のみの seed 1 は下 2 段を一度も訪れず（適応重みの罠）、seed 2 は 303 往復。通常 MD ネガコン 2 本（prod_014/015、各 100 ns、823 ns/day）は完了。10 ps 間隔のフレーム間で 120° ビンが変わる回数を「遷移数」として数えると全条件 95/ns で飽和し、指標として無意味だった（次は basin 間遷移で数える）。
+
+MBAR で全 rung のフレームを活かした版（`mbar_fes.py`、pymbar 4.2）: レポート CSV の分数項 E_t と E_pw から u_m(X) = β[Σ λ_m^f E_t + √λ_m E_pw] を全 rung 分組み、rung 滞在数 N_k で MBAR。300 K の ESS は H3 のみ 1903 / 8790 フレーム（rung 0 のみだと 1402）、H3 + 殻 3732 / 8806（3293）、二面角のみ 766 / 8920（353）。MBAR の rung 自由エネルギーは SST2 の on-the-fly 重みと数 kJ/mol で一致し（H3 のみ: MBAR 256/466/643/788、seed 1 253/460/635/777、seed 2 257/469/648/795）、seed 間の差の中央に落ちる。二面角のみは MBAR が seed 2 の重みと完全一致、seed 1 の重みは最上段で 25 kJ/mol ずれていて、下段に戻れなかった walker の重みが偏っていたことの裏付け。図 `h3_fes_interim_mbar.png`（結晶構造を星印で重畳: PC1 0.59, PC2 −0.04、最深 basin の中）。
+
+---
+
+## 2026-09-22 — `analyze_metadynamics`: 収束判定を「2 状態間の ΔF(t) の後半ドリフト」1 本にした
+
+ユーザーの要望（多数の判定量ではなく、論文に書けて人に分かる単純な量）で、`mdclaw/analyze/metadynamics.py::analyze_metadynamics`（`@node_tool("analyze")`、親は同じ bias を共有した `run_metadynamics` prod ノード群、`production_chain` / `segment`）を追加。`--state-a LO HI --state-b LO HI`（nm、互いに素、バイアス範囲内）を受け、全ウォーカーの山を時刻順に合算して F(s, t) = −γ/(γ−1)·V(s, t) を `n_time_points`（50）回再構成し、ΔF(t) = −kT ln[∫_A e^{−F/kT} / ∫_B e^{−F/kT}] を `metadynamics_delta_f.csv` / `.png` と `metadynamics.json` に出す。verdict は「後半のドリフト < `drift_tolerance_kj_mol`（2.5 = 1 kT）かつ両状態を訪問」で `converged`、報告値は `delta_f_kj_mol ± drift_second_half_kj_mol`。診断の warning は 2 つだけ: `walkers_unequal_residence`（同じ bias を共有するウォーカーの A 滞在率の差 > 0.5、直交する遅い変数の兆候）と `gaussian_height_not_decayed`（最終高さが初期の 10 % 超）。コード 6 つ、テスト `tests/test_analyze_metadynamics.py` 4 本（2 プラトーの解析解との一致、verdict の 3 ケース、状態指定の拒否、ウォーカー不整合、玩具 2 ウォーカーのノードモード）、registry / cli / guardrail 154 本、golden 再生成（98 tools、474 codes）。skill `skills/md-analyze/metadynamics.md`、md-analyze / md-production の導線、tool-reference。
+
+3 系の analyze ノード（各 `analyze_001`）: Ala3（compact 0.55–0.95 vs extended 1.05–1.5）ΔF = −1.2 ± 2.6 kJ/mol → not_converged（ドリフト 2.55、閾値ぎりぎり）; deca-alanine（helix 1.0–1.8 vs extended 2.4–3.4）ΔF = −3.3 ± 2.7 → not_converged; chignolin（folded 0.45–0.8 vs unfolded 1.2–2.3）ΔF = −3.2 ± 4.1 → not_converged + `walkers_unequal_residence`（A 滞在率 0.00 / 0.03 / 0.79 / 0.06）。手作業の結論（Ala3 は 1 kT 級で収束、他 2 系は隠れ変数）と一致し、chignolin の隠れ変数は warning が自動で指摘する。 `run_metadynamics` / `analyze_metadynamics` 一式は 6941312 としてコミットし origin/main に push（6d7cdcc の最小像修正と合わせて 2 コミット）。memo と別セッションの rounds / WE の変更は未コミットのまま。
+
+---
+
+
+## 2026-09-22 — `run_metadynamics`: OpenMM 組み込みの well-tempered metadynamics を prod ノードに
+
+`mdclaw/simulation/metadynamics.py::run_metadynamics`（`@node_tool("prod")`）。CV は `distance_restraints` と同じ重心間距離（`resolve_centroid_groups`、分子内は生座標・分子間は最小像で `cv_max_nm` は箱の半分まで）。`openmm.app.metadynamics.Metadynamics` + `BiasVariable` で `[cv_min_nm, cv_max_nm]` のグリッド（既定は幅あたり 5 点）に山を積み、`bias_factor` で well-tempered。グリッド外は調和壁（`wall_force_constant_kj_mol_nm2`、force group 30）。**複数ウォーカー**は OpenMM の仕組みそのまま: `--bias-dir`（ノード外、study 配下）を共有し、`save_interval_ps`（既定 100 ps）ごとに自分のバイアス `.npy` を書いて他ウォーカーの新しいファイルを読む。同期なし、通信は数 KB のファイル読み書きだけ。最初のウォーカーが `metadynamics_manifest.json` を書き、設定が違うウォーカーは `metadynamics_shared_bias_mismatch` で拒否。単独ウォーカーの `--continue-from` は親の合計バイアスを子のディレクトリに `bias_0_1.npy` として置いて続きから積む（設定違いは `metadynamics_restart_mismatch`）。成果物: production と同名のものに加え `metadynamics.csv`（山ごとの ξ・バイアス・高さ）、`metadynamics.json`、`metadynamics_total_bias.npy` / `_self_bias.npy`、`free_energy.csv`（F = −(T+ΔT)/ΔT·V、最小 0）。コード 6 つ。テスト `tests/test_metadynamics.py` 8 本（玩具 2 粒子系: 単体、ノード継続でバイアスが足し上がる、共有ディレクトリで 2 ウォーカーの合計、設定違いの拒否）、registry / cli / guardrail 158 本、golden 再生成（96 tools、466 codes）。skill ページ `skills/md-production/metadynamics.md`（パラメータの目安表、適用限界、収束の見方）、SKILL.md の導線、tool-reference。
+
+初回投入（134514）で 4 本中 2 本が `metadynamics_shared_bias_mismatch` で即死: MPS で同時起動したウォーカーが、別ウォーカーが書き込み途中の manifest を空ファイルとして読んだ（競合）。修正: manifest は一時ファイル + `os.link` で原子的に作成（最初の 1 本だけが作れる）、読み側は 30 秒まで 0.5 秒ごとにリトライ、比較は key 順に依存しない canonical JSON。`free_energy_range_kj_mol` も訪問した範囲内で取る（未訪問のグリッド端が F = 0 の最大値になっていた）。テスト 9 本。残った 2 本（prod_056/057）は 2 ウォーカーの検証として続行。修正版で deca-alanine（グリッド 0.9–3.5、σ 0.1、γ 8、4 × 100 ns）と chignolin（0.4–2.3、σ 0.05、γ 12、4 × 150 ns）にも 4 ウォーカーずつ投入（ユーザー指示「SEUS でやったものもテスト」）。
+
+検証 1（Ala3、9/22）: `seus-trials/ala3-e2e` の eq_001 から 4 ウォーカー × 50 ns、共有 bias（`study/metadynamics/e2e_v1`）、グリッド 0.5–1.55 nm、σ 0.05、h 2.5 kJ/mol、γ 8、1 ps ごと（`launch_metad.sh`）。既存の umbrella 20 窓 × 20 ns と無バイアス 400 ns の PMF（`analysis/pmf_from055.json`）と比較する。
+
+検証 1 の結果（13:10、`analysis/pmf_metad.png`）: 2 ウォーカー × 50 ns（134514 の生き残り）。合計バイアスからの F は umbrella と 0.55–0.9 nm で RMS 1.3–1.5、0.9–1.5 nm で 0.7–0.9 kJ/mol、無バイアス（F<10）と 1.1–1.2 kJ/mol。umbrella vs 無バイアスが 0.7 なので、ほぼ誤差の範囲。山積みの前半だけで再構成した F との差は 0.4–0.9 kJ/mol。山の高さは 2.2 → 0.002 kJ/mol（1/1000）。速度は 2 本詰めで各 760 ns/day（SEUS の 905 より 15 % 遅い、山積みの GPU 往復分）。**端の人工物**: F の最小が 0.5 nm（グリッド端 = 壁の位置）に出た。壁の外（0.39 nm まで）で積んだガウス関数がグリッド端の点に積み上がるため（OpenMM の `_addGaussian` はグリッド外の中心でも端に寄与する）。修正: グリッドを壁の外側 4σ まで広げ（`GRID_MARGIN_SIGMAS`）、`free_energy.csv` は壁の内側だけを報告、最小もその範囲で 0 にする。修正版で Ala3 を 4 ウォーカー × 50 ns 再投入（`launch_metad2.sh`、bias `e2e_v2`）。走行中の deca-alanine / chignolin は旧グリッドなので、比較では端 1σ を除く。
+
+検証 1 v2（4 ウォーカー × 50 ns、修正グリッド、134605、15:08、`analysis/pmf_metad_v2.png`）: 4 本同時起動成功。F の最小は 1.18–1.19 nm（umbrella 1.17）。umbrella との RMS は 0.55–0.9 nm で 0.42、0.9–1.2 で 0.42、1.2–1.5 で 0.65 kJ/mol、無バイアス（F<10）と 0.57–0.60。umbrella vs 無バイアスの 0.69 と同等以下で、4 本の F は互いに 0.05 以内（合計バイアスを共有しているので当然）。山積み前半だけとの差 0.7–1.0 kJ/mol。1 本あたり 50 ns × 4 = 200 ns で umbrella 400 ns 相当の精度。
+
+検証 2（deca-alanine、4 ウォーカー × 100 ns、旧グリッド、134532、16:26、`ala10-e2e/analysis/pmf_metad.png`）: 4 本とも 0.80–3.65 nm を往復、h は 2.4 → 0.0004 kJ/mol。壁の内側 1σ を除いた RMS（1.4–2.6 nm で揃える）: metadynamics vs umbrella は 1.0–1.6 nm で 1.19、1.6–2.4 で 0.47、2.4–3.0 で 0.48、3.0–3.4 で 0.81 kJ/mol; vs 無バイアス（F<10）0.26 / 0.17 / 0.54（中央〜伸長側）、1.25（helix 側）; vs SEUS 合算 0.47 / 0.29 / 0.53、helix 側 1.31。参考: umbrella vs 無バイアス 0.35–0.52、SEUS 合算 vs umbrella 0.41–0.87。山積み前半 vs 全体 0.5–0.8（3.0–3.4 は 1.7）。つまり中央〜伸長側は 4 手法が 0.5 kJ/mol 以内で一致、helix 側（1.0–1.6 nm）だけ 1.2–1.3 kJ/mol の差が残る（SEUS で見たヘリックス含量の遅い変数がここでも効いている）。旧グリッドの端 0.9 nm に F の最小が出るのは端の人工物（修正版では消えることを Ala3 v2 で確認済み）。速度は 4 本詰めで各 515 ns/day（SEUS 536 と同等）。
+
+検証 3（chignolin、4 ウォーカー × 150 ns、旧グリッド、134533、18:10、`cln025-e2e/analysis/pmf_metad.png`、参照 `pmf_ref.json`）: 山は 2.3 → 0.0006 kJ/mol、3 本は 0.45–2.4 nm を往復、prod_052 だけ 1.86 nm まで。壁の内側 1σ を除き 0.5–0.9 nm で揃えた RMS: metadynamics vs umbrella は折り畳み側 0.5–0.8 nm で 2.4、遷移 0.8–1.3 で 2.1、変性側 1.3–1.8 で 0.5、1.8–2.3 で 0.8 kJ/mol; vs 無バイアス（折り畳み側のみ）2.1。山積み前半 vs 全体は折り畳み側 3.4、変性側 0.2–0.6。参照側も umbrella vs 無バイアスが 1.8 で、umbrella 自体の窓内相関時間が 1.1 ns と長い。ウォーカーの中身: walker 3 は compact（< 0.7 nm）が 62 %（天然 97 %）、他の 3 本は compact 0–2 %（native ↔ unfolded の往来 1–9 回）。合計バイアスは 4 本で共有しているのに滞在が全く違う、つまり d だけの関数のバイアスでは「天然ヘアピン」と「誤折り畳み／変性」の多様体を同時には平坦化できない。SEUS（レジスター）と同じ隠れ変数の診断で、metadynamics に替えても変性側の一致（0.5–0.8 kJ/mol）以上は得られない。
+
+**3 系の総括（9/22）。** well-tempered metadynamics は Ala3 で umbrella・無バイアスと 0.4–0.65 kJ/mol（200 ns で 400 ns 級の精度）、deca-alanine の中央〜伸長側で 0.2–0.5、chignolin の変性側で 0.5–0.8 kJ/mol と、直交する遅い変数が効かない領域では 3 系とも参照と一致。効く領域（deca-alanine の helix 側 1.2–1.3、chignolin の折り畳み側 2–3 kJ/mol）は SEUS と同じ限界。運用上は SEUS より単純（窓も重み学習も無し、4 本同時起動で通信はファイルだけ、速度低下 2–15 %）で、`run_metadynamics` を距離 PMF の標準ルートにする。次の一手は CV の拡張（角度・二面角、2 次元）と SST2 併用。GPU 時間: Ala3 2 × 1.6 h + 4 × 1.6 h、deca-alanine 4.7 h、chignolin 6.4 h ≈ 21 GPU 時間。
+
+---
+
+
+## 2026-09-22 — SEUS を撤去し、well-tempered metadynamics へ切り替える（ユーザー決定）
+
+3 系の検証（memo 9/16–9/22）の結論を受け、ユーザーの指示で `run_seus` を丸ごと削除した: `mdclaw/simulation/expanded_ensemble.py`、`tests/test_seus.py`、`skills/md-production/seus.md`、`seus_*` の guardrail code 5 つ、`TOOLS` 登録、tool-reference と md-production SKILL の導線、rounds / WE 側の `run_seus` 参照（`mdclaw/rounds/scheme.py` のメッセージ、`tests/test_slurm_condition_preflight.py`、`skills/md-we/SKILL.md`、`docs/research/weighted-ensemble-plan.md`）。golden 2 つを再生成（95 tools、460 codes）、ruff 通過、registry / cli / guardrail / receipt / steering / preflight / tempering 255 本通過。SEUS の副産物として残したもの: `restraints.resolve_centroid_groups` と `distance_cv_periodicity`（分子内 CV は生座標、分子間は箱の半分まで、`distance_restraint_exceeds_half_box`）、受領書の「入力由来のキャップ」表示。`/data1/rkp00079/rku00161/seus-trials/` の 3 ワークスペースと解析スクリプトはデータとして残す。 残したバグ修正は 6d7cdcc としてコミット（restraints の最小像修正と `resolve_centroid_groups`、受領書のキャップ表示、回帰テスト `tests/test_distance_cv_periodicity.py`）。別セッションの rounds / WE の変更は index から外して未コミットのまま。
+
+切り替え先は OpenMM 組み込みの well-tempered metadynamics（`openmm.app.metadynamics.Metadynamics` + 既存の重心距離の力）。理由（9/21–22 の議論）: 単一ウォーカーで距離 PMF を出す標準手法で、窓も重み学習も Gibbs 移動も要らず、探索の正のフィードバックがあり、複数ウォーカーは `biasDir` 共有で済む。ABF は OpenMM に無く、イメージの PLUMED 2.9 は `drr` モジュール無効（eABF 不可）、`OPES_METAD` も無し、`METAD` / `ABMD` / `EXTENDED_LAGRANGIAN` はあり。直交する遅い自由度の限界は手法によらず残る、という前提は変わらない。
+
+---
+
+
+## 2026-09-16 — 分子内の距離 CV が最小像で評価されていた: deca-alanine の umbrella が「伸びきりで固着」して発覚、`distance_restraints` と `run_seus` を修正
+
+deca-alanine（ACE-Ala10-NME、OPC、緩衝 12 Å → 箱 6.6 nm）の end-to-end 距離で SEUS vs umbrella を回したところ、umbrella の全 25 窓（中心 1.0–3.4 nm）の平均距離が 2.62–3.30 nm に張り付き、窓 1.0 nm ではバイアスエネルギー 330 kJ/mol（= 0.5·250·(2.62−1.0)²）がかかったまま動かなかった。原因は `load_distance_restraints` が `CustomCentroidBondForce` を周期系なら常に `usesPeriodicBoundaryConditions=True` にしていたこと。最小像距離は箱の半分（3.3 nm）で折り返すので、伸びきり 4.0 nm のペプチドは「実距離 3.98 = 最小像 2.62 nm」になり、umbrella が最小像距離を縮めようとすると実空間では両端を隣の像に向かって引き離す。ペプチドは結合が伸びきるまで引っ張られて固着した。`run_seus` も同じ経路で 3.3 nm 以上が壊れ、ウォーカー 4 本の固定段階は占有 0 の窓が出て無意味だった（118257 を scancel）。Ala3（箱 4.85 nm、最大 1.5 nm）と無バイアス軌道は影響なし。
+
+修正（`restraints.distance_cv_periodicity`、両ルート共通）: 2 群が同一分子（mdtraj `find_molecules`）なら最小像を使わない。OpenMM は Context 内の座標をラップしないので分子内距離は生座標で常に正しい。分子間の距離は最小像のままで、目標（umbrella の target、SEUS の最大窓中心）が最短箱ベクトルの半分を超えたら `distance_restraint_exceeds_half_box` で拒否。`collective_variables.meta.json` の signature と `run_seus` の `groups` に `minimum_image` を記録。テスト `tests/test_seus.py::test_intramolecular_cv_ignores_the_minimum_image...`。既存の umbrella ルートの結果で「窓中心が箱の半分に近い分子内距離」を使ったものは疑ってかかること（memo 2026-08-26 の TAS1R は分子間・箱 100 Å 超で該当しない）。
+
+deca-alanine は umbrella 25 窓と SEUS 4 ウォーカーを修正コードで eq_001 から投げ直した（`launch_v2.sh`、ラベル `*_v2_*`、Slurm 119400/119409/119413/119414、119428 → 119429）。無バイアス 4 × 200 ns はそのまま。
+
+**mean_force × 4 の結果（9/22 03:40、各 100 ns、`analysis/zeta_schemes.png`）。** 学習 ζ は自分のデータの MBAR f_k と 0.1–0.3 kT で一致（自己無撞着、WL の 0.5–3.4 kT より良い）。しかし端から端の往復は 4 本とも 1 回で、3 本は変性側（≥ 1.2 nm）に 89 % 滞在、folded ↔ unfolded の往来 1–13 回。ζ − (−f_umb) は folded 側で +6〜+8 kT、unfolded 側で −4〜−7 kT: 遷移窓（0.9–1.1 nm）で天然構造が引き伸ばしに抵抗して ⟨ξ⟩ − c が大きく負になり、平均力の積分が障壁を 10 kT 以上過大評価 → 重みが folded 窓を過剰に罰し、ウォーカーは変性側に押し出されて戻れない（deca-alanine walker 3 と同じ「窓に留まらないので直交緩和が終わらない」機構）。walker 4 だけ往来 59 回で ζ が umbrella の −f_k と RMS 0.9 kT、compact は 100 % 天然。結論: mean_force は過大駆動しない代わりに探索を駆動する正のフィードバックが無く、遷移窓の非平衡な平均力に引きずられる。WL は駆動するが重みが漂う。実用形は「WL で往復を稼いでから mean_force で仕上げる」二段か、SST2 と同じくウォーカー間で Σξ をプールすること。いずれも直交緩和の限界は残る。ウォーカー間 ζ RMS: sams 6.7、min_visits 1.8、WL 5.2、mean_force 3.5 kT。
+
+**SST2 型の重み推定を窓に移植（9/21、ユーザー提案）。** SST2 が rung ごとの走行平均エネルギーから台形則で重みを出すのと同じ構造で、窓中心 c に対して d(βf)/dc = −βk(⟨ξ⟩_c − c) なので、窓ごとの ξ の走行平均から隣接窓の差が台形則で出る（umbrella integration の平均力版、計画書 §5 の「Park & Pande 型」）。手元の chignolin データで後付け検証: umbrella 21 窓 × 27 ns で MBAR と RMS 0.07 kT、ウォーカーのデータでも 0.1–0.2 kT。各ウォーカーとも 50 ns 時点の推定が最終値の 0.4–0.9 kT 以内。WL の学習済み ζ は自分のデータの MBAR f_k とすら 3.4 kT ずれる例があった（s2）が、平均力ならそれは起きない。多様体の問題は残る（平均力の f_k と umbrella の差は依然 3–4 kT）。`run_seus --weight-update mean_force`（`--mf-min-samples` 20）として実装、サイドカーに `xi_sum` / `mf_counts` を持ち継続可能、段差ポテンシャルの玩具テストを 4 方式で通過（169 本）。chignolin で mean_force × 4 本（seed 31–34、100 ns、131340、`launch_adaptive_v3.sh`）を投入し、WL と並べる。
+
+**chignolin 無バイアス 4 × 500 ns（121561、9/18 01:30）。** 4 本とも 500 ns 全フレームが天然（主鎖 RMSD < 0.25 nm、Cα1–Cα10 0.43–0.99 nm）、ほどける事象 0 回。ff19SB/OPC の CLN025 は 300 K で 500 ns の間に一度もほどけず、変性側の PMF は無バイアスからは全く得られない（想定どおり）。chignolin の全ジョブ完了。GPU 時間: umbrella 3 × 1.5 h、SAMS 適応 2 h、umbrella 重み固定 8 h、新方式適応 4 h、新方式固定 8 h、無バイアス 16 h ≈ 43 GPU 時間。
+
+**WL / min_visits 自身の重みでの固定段階（122197、4 × 200 ns、9/17 23:10）。** 占有は平坦にならず（WL s1 0.003–0.36、WL s2 0.00–0.24）、WL s1 は固定段階で天然に再折り畳み（compact 57 %、天然 90 %）して ζ + f_k の広がり 1.3 kT、WL s2 は 200 ns 一度も compact にならず ζ + f_k の広がり 9.7 kT（学習した多様体と固定段階で居る多様体が違う）。適応段階で平坦化した重みが、100 ns 単位で起きる多様体の乗り換えで無意味になる、という総括どおりの結果。
+
+**総括（9/17 20:00、ユーザーの「SEUS はうまくいかないか」への回答）。** 3 系（Ala3、deca-alanine、chignolin）で、`run_seus` の ξ 方向の機構は検証できた（Gibbs 移動、凍結 ζ の閉じた式 = MBAR、Wang–Landau の重み学習）。同じ計算量で umbrella に勝ったのは直交障壁が弱い Ala3 だけ（2–9 倍）。deca-alanine と chignolin では直交する遅い変数（ヘリックス含量、レジスター）にウォーカーが捕まり、SEUS 固有の不利が出た: 重みをその基底で学習するので基底が変わると崩れる（umbrella は MBAR が事後に解くので頑健）、1 本が全窓を順に歩くので壁時計が窓数倍、Gibbs 移動が ξ の緩和より速く窓を動かして「留まって待つ」動きが起きない。結論: 距離 1 本の SEUS は直交自由度が速い系でしか有利でなく、欲しい系（結合、折り畳み）はその逆。投資先は SST2（CV フリー）を主軸に、必要なら SST2 の上に SEUS を載せる。結合 PMF は umbrella 窓 + MPS 詰めを主力にする。`run_seus` はツールとして残し、skill に適用条件を明記。umbrella も同じ直交問題を持ち、chignolin の umbrella PMF は「天然から始めた」初期条件依存の結果であって平衡ではない（ユーザー指摘 9/17）。
+
+**umbrella 由来の重みでの固定段階（121929、4 × 200 ns、9/17 19:00）。** ζ = −f_k(umbrella) を凍結して SAMS 適応ノードの末尾（変性状態）から続けた 4 本は、200 ns で compact（< 0.7 nm）フレーム 0 %、占有は 1.3–2.0 nm に集中、端から端の往復 1 / 1 / 1 / 5 回。umbrella の f_k が正しければ占有は平坦になるはずなので、ウォーカーが到達できる compact 状態（誤折り畳み）は umbrella 窓が持つ天然ヘアピンより自由エネルギーが高い、つまり律速は天然への再折り畳み（µs 級）。MBAR の f_k は umbrella と RMS 4.4–6.6 kT ずれるが、これは 2 つの異なる配座アンサンブル（天然を含む / 含まない）の差であって推定量の誤りではない。実験（天然が最安定、Tm 343 K）を踏まえると umbrella 側（天然 vs 変性）の方が真の平衡に近い。
+
+**新方式の結果（9/17 15:30、各 100 ns、`analysis/pmf_adaptive_v2.png`）。** 利得の問題は解決した: Wang–Landau は 2 本とも端から端の往復 24 / 28 回、γ は 9 / 7 回の半減で 0.002 / 0.008 kT、最後の 30 ns の占有は 0.03–0.09 と平坦。`sams_min_visits` は往復 4 / 14 回で占有 0.00–0.19 と不十分（時計は保てるが利得の形は SAMS のまま）。ところが学習した ζ はウォーカー間で RMS 5.2 kT（WL s1 vs s2）ずれ、umbrella の −f_k とは WL s1 が変性側で +13 kT、WL s2 が ±4 kT。原因は折り畳み側の配座が違うこと: 結晶構造から始めた umbrella の窓 0.5/0.6 nm と無バイアスは 100 % 天然（主鎖 RMSD 0.06–0.10 nm）だが、一度ほどけて再び縮んだウォーカーの compact 状態は天然が WL s1 77 %、min_visits s2 41 %、WL s2 19 %（RMSD 中央値 0.32 nm、レジスターのずれた誤折り畳み）。各ウォーカーは自分が居る配座多様体の ζ を平坦化しただけで、umbrella 側も 30 ns では天然基底から出ないので「天然に限った折り畳み ↔ 変性」の PMF になっている。chignolin の天然への再折り畳みは µs 級で、距離 1 本ではどの方法も同じ隠れ変数（レジスター）に阻まれる。固定段階: umbrella 由来の重み（121929）と WL / min_visits 自身の重み（122197、`launch_fixed_v2.sh`）を各 200 ns 走らせ、MBAR 合算と誤折り畳み割合で最終評価する。
+
+**SAMS 改善の実装（9/17 11:40、ユーザー指示）。** `run_seus --weight-update sams|sams_min_visits|wang_landau` を追加。`sams_min_visits` は SAMS の時計 t を交換回数ではなく「最も訪問の少ない窓の訪問数 × 窓数」にして、ラダー全体を踏破するまで利得を保つ。`wang_landau` は Rao–Blackwell 化した Wang–Landau（ζ += γ·p(m|ξ)、前回の半減以降に全窓の訪問数が平均の `--wl-flatness`（0.8）倍以上になったら γ を半減、`--wl-gamma0` 1 kT から `--wl-gamma-min` 0.01 kT で適応終了）。サイドカーに `weight_update`、`wl_gamma`、`wl_halvings`、`wl_counts` を保存し継続可能。テスト: 1 次元の 5 kT 段差ポテンシャル上を短い Metropolis 移動で遅く緩和する ξ に対して、3 方式とも窓自由エネルギーを 1 kT 以内で学習し全窓を訪問（`test_weight_updates_learn_a_stepped_ladder_with_slow_mixing`）。chignolin で `sams_min_visits` と `wang_landau` を 2 本ずつ 100 ns（121981、`launch_adaptive_v2.sh`）投入し、umbrella の −f_k と比較する。
+
+**chignolin 途中経過（9/17 11:10）。** umbrella 21 窓 × 30 ns（先頭 3 ns 捨て）の前半/後半差 RMS 4.4 kJ/mol、最大 14 kJ/mol: 本当の障壁がある系で 30 ns では窓が収束しない（窓 0.4/0.5 nm はヘアピンが 0.51 nm より縮まないので無駄）。MBAR の窓自由エネルギーは折り畳み側から変性側へ約 6 kT 上がる。無バイアス 4 × 31 ns は 0.43–0.99 nm（折り畳み）から一度も出ない。**SAMS の適応が破綻**: 50 ns で 4 本中 3 本が段階 1 のまま（ヒストグラムが平坦にならない）、端から端の通過は 1–3 回、凍結された ζ は walker 間で −24 〜 +8 kT とばらばら。段階 1 の利得 t^−0.8 は交換回数 t（1 ps 刻み）で減衰するので、障壁越えが数 ns に 1 回しか起きない系では探索が終わる前に利得が消える（速い混合を仮定する SAMS の既知の前提）。ゴミ ζ で始まった固定段階 121560 は scancel。代わりに umbrella の MBAR から ζ = −f_k を作り（`analysis/zeta_from_umbrella.json`）、`--weights-file` で固定段階 4 本 × 200 ns を投げた（`launch_fixed_umbweights.sh`）: 固定段階の推定量と「正しい重みなら障壁を往復できるか」の検証。SAMS 側の改善案: 利得を交換回数ではなく往復回数や訪問数で減衰させる、Wang–Landau 型（平坦化のたびに半減）に切り替える、段階 1 の最小利得を設ける。
+
+**次の系（ユーザー指示 9/17 08:40「もっとバリアがある系でやるべき」）: chignolin CLN025。** deca-alanine は ξ 方向の PMF の幅が 1 kJ/mol で、障壁が直交側にしかなく強化サンプリングの検証にならなかった。p53–MDM2 は非結合状態を定義する漏斗型（flat-bottom）拘束が MDClaw に無いので後回し。CLN025（5AWL、YYDPETGTWY、鎖 A）の Cα1–Cα10 距離は折り畳み（約 0.5 nm）↔ 変性（1.5–3 nm）の二重井戸で、無バイアスの折り畳み時間は µs 級。`/data1/rkp00079/rku00161/seus-trials/cln025-e2e`（`launch.sh`）: 緩衝 20 Å、窓 0.4–2.4 nm の 0.1 nm 刻み 21 窓、k = 250、umbrella 21 × 30 ns（MPS 7/7/7）、SEUS 4 ウォーカー（適応 50 → 固定 200 ns）、無バイアス 4 × 500 ns（出力 10 ps）。約 25 GPU 時間の見込み。
+
+**deca-alanine v2 最終（9/17 08:30、`analysis/pmf_v2.{json,png}`）。** umbrella 25 窓 × 20 ns（先頭 2 ns 捨て、400 ns 相当 450 ns）、SEUS 固定段階 150 ns × 4（600 ns）、無バイアス 4 × 200 ns。PMF は最小 2.43 nm、F(1.2) = 3.2、F(1.6) = 0.8、F(2.0) = 0.7、F(2.6) = 1.1、F(3.2) = 4.3 kJ/mol と 1.5–3.0 nm がほぼ平坦。無バイアスのレプリカ SD は 1.4 kJ/mol（ヘリックス含量が 0.21–0.55 とレプリカ間でばらつくため、200 ns でも未収束）。
+
+| RMS 差 kJ/mol（1.4–2.6 nm でオフセットを揃える） | 1.0–1.6 | 1.6–2.4 | 2.4–3.0 | 3.0–3.5 | 全域 |
+|---|---|---|---|---|---|
+| umbrella 前半/後半 | 1.05 | 0.55 | 1.26 | 1.53 | 1.09 |
+| umbrella vs 無バイアス（F<10） | 0.36 | 0.54 | 0.80 | 0.54 | 0.58 |
+| SEUS walker 4 vs umbrella | 0.84 | 0.41 | 0.56 | 0.43 | 0.58 |
+| SEUS walker 2 vs umbrella | 1.11 | 0.61 | 0.72 | 0.49 | 0.77 |
+| SEUS walker 1 vs umbrella | 1.97 | 0.72 | 1.65 | 1.59 | 1.50 |
+| SEUS walker 3 vs umbrella | 1.21 | 2.45 | 5.16 | 5.13 | 3.70 |
+| SEUS 4 本合算 vs umbrella | 0.67 | 0.90 | 1.52 | 1.62 | 1.19 |
+| SEUS 4 本合算 vs 無バイアス（F<10） | 0.52 | 0.47 | 0.79 | 1.29 | 0.77 |
+
+端から端の通過は 13 / 22 / 12 / 29 回。walker 3 は 150 ns の全フレームでヘリックス含量 > 0.5（平均 0.84）のまま 2.5 nm 以上の窓に一度も入らなかった。窓 2.4 nm での ξ の平均は中心より 0.14 nm 低く、上への移動確率 0.04、下へ 0.78: k = 250 の umbrella（0.1 nm ずれで 40 pN）ではヘリックスが解ける前に Gibbs 移動が窓を下げ戻す。walker 4 は ξ が全窓に追随（中心 ±0.03 nm）し umbrella と 0.58 kJ/mol で一致。無バイアスの helix ↔ 伸長の遷移は 200 ns に 6–27 回（時間スケール 10–30 ns）。結論: (1) 実装は正しい（walker 2, 4 と umbrella・無バイアスの一致、ξ|m の追随）。(2) この系の隠れた遅い変数はヘリックス含量で、距離 1 本の SEUS も umbrella も無バイアスも同じ制約を受ける。ウォーカーごとの差が誤差の実態で、1 本の前半/後半差は当てにならない。(3) 対処の順: 交換間隔を 10–20 ps に伸ばす（滞在中に ξ が追随できる）、k を上げる、が緩和策で、本命は SST2 との併用。GPU 時間: v1（バグ版）umbrella 4 × 1.3 h + SEUS 3.7 h、v2 umbrella 4 × 1.3 h + SEUS 0.8 + 6.7 h、無バイアス 7 h ≈ 29 GPU 時間。
+
+**deca-alanine v2 途中経過（9/17 04:10）。** umbrella v2 25 窓 × 20 ns（先頭 2 ns 捨て）の前半/後半差 RMS 1.09 kJ/mol。無バイアス 4 × 200 ns は 0.32–3.91 nm を全部訪れ（平均 2.00 nm）、F < 10 kJ/mol の範囲で umbrella と RMS 0.39 kJ/mol。PMF は 1.3–3.0 nm がほぼ平坦（窓自由エネルギー f_k の幅 1.6 kT）で、helix 側と伸長側の両方に肩。SEUS v2 は適応 40 ns 後の ζ が umbrella の −f_k から RMS 0.3–1.1 kT（4 本の平均なら 0.22 kT、`analysis/zeta_pooled_v2.json`）。ところが固定段階 52 ns 時点で walker 3（ζ 誤差 0.34 kT と最良）が 2.5 nm 以上の窓を一度も訪れず、walker 2 は 2.6 nm 以上に偏在: ζ の問題ではなく、helix ↔ 伸長の直交座標（ヘリックス含量）の障壁で数十 ns 捕まっている。Ala3 の φ₁ と同じ構図がより強く出ており、SST2 併用の動機。固定段階 150 ns の完了後に遷移回数と MBAR 合算で評価する。
+
+---
+
+## 2026-09-16 — `run_seus` 実装（SEUS を prod ノードに）と、キャップ付き Ala3 の end-to-end 距離での SEUS vs umbrella 検証を投入
+
+SST2 セッションの裏の試験計算として SEUS（serial expanded-ensemble umbrella sampling）を回すことにし、計画（`docs/research/sst2-seus-plan.md` §5）どおり MDClaw 側に MIT で書いた。ユーザーの指示で `run_sst2` と同じく DAG の `prod` ノードとして動く CLI にし、CV は既存の `distance_restraints` と同じ質量重み付き重心間距離にした（`restraints.resolve_centroid_groups` を切り出して両ルートで共有。複数原子の選択なら COM、1 原子なら原子間距離）。
+
+**実装** `mdclaw/simulation/expanded_ensemble.py::run_seus`。1 本のウォーカーが `CustomCVForce(0.5*seus_k*(d-seus_r0)^2)` を持ち、`exchange_interval_ps` ごとに `p(m|ξ) ∝ exp(-β w_m(ξ) - ζ_m)` の全窓 Gibbs 抽出で窓を選ぶ（`context.setParameter` 1 回）。ζ は SAMS（Tan 2017、Rao–Blackwell 化、二段スケジュール: 段階 1 γ=min(π_min, t^-0.8)、ヒストグラムの相対偏差 < 0.3 で段階 2 γ=1/(t-t0+t0^0.8)）で適応し、`--freeze-weights`（continue_from 親のサイドカー）か `--weights-file` で固定段階。成果物は production と同名（trajectory.dcd / energy.dat / state.xml / final_structure.pdb / collective_variables.csv に `seus_r0` 列）に加え、交換ごとの `seus.csv`（ξ, 窓, 次の窓, 段階）と `seus.json`（ζ, 訪問数, SAMS 時計, rng 状態）。`--continue-from` でウォーカーを継続（ラダー・k・CV が違えば `seus_restart_mismatch`）。コード 5 つ。`tests/test_seus.py` 10 本（玩具 2 粒子系での単体・ノード継続・凍結・COM 同値）、`test_registry`/`cli`/`guardrail` 217 本、golden 再生成。skill ページ `skills/md-production/seus.md`。
+
+**検証系** `/data1/rkp00079/rku00161/seus-trials/ala3-e2e`（`launch.sh`）。tleap で作った ACE-ALA3-NME を local source に登録 → prep（キャップ保持）→ solv（OPC、15 Å、0.15 M NaCl）→ topo（ff19SB/OPC/HMR、14,478 原子、箱 48.5 Å）→ min → eq（NVT 0.2 ns + NPT 1 ns）。CV は `resname ACE and name CH3` と `resname NME and name C` の距離（伸びきりで 1.465 nm）。窓 0.40–1.50 nm の 0.05 刻み 23 窓、k = 1000 kJ/mol/nm²。
+- 基準: `run_production --distance-restraints` の窓ノード 23 本、各 5.5 ns（先頭 0.5 ns を捨てる）、出力 2 ps、`submit_mps_job` 8/8/7 本詰めの 3 ジョブ（117772–117774）。
+- SEUS: ウォーカー 2 本（seed 1, 2）、適応 30 ns（117775、MPS 2 本詰め）→ `--freeze-weights` 継続で固定 100 ns（117776、afterok）。交換間隔 1 ps。
+- 解析: `analysis/pmf_mbar.py`（pymbar 4.2、両ルートを同じ窓バイアスで MBAR、0.02 nm ビン、前半/後半の差で誤差、窓自由エネルギー f_k と SEUS の ζ の一致も見る）。
+
+速度（GB200、4 fs、14,478 粒子、実測）: SEUS 2 本詰めで各 902/908 ns/day（30 ns = 7.5 M step を 48 分、`seus.json` の ns_per_day）、umbrella 8 本詰めで各 580 ns/day（5.5 ns を 13.6 分、GPU 合計 4.6 µs/day）、無バイアス 4 本詰めで各 930 ns/day。詰める本数を 2 → 4 にしても 1 本の速度が変わらないので、この大きさでは GPU ではなくステップあたりのレイテンシ（0.38 ms/step）が上限。1 本を速くはできず、本数を詰めて合計を稼ぐ。次回は緩衝 12 Å と 8 本詰めを既定にする。
+
+途中で見つけた別件: `prepare_complex` の受領書が、入力に付いてきた ACE/NME を保持したのに `termini: charged termini (no caps)` と書いていた（`_receipt._caps` が適用したキャップしか見ていなかった）。入力由来のキャップは `N ACE / C NME (caps kept from the input)` と出すよう修正、`test_receipt` に固定。
+
+**途中経過（17:35）**
+- umbrella 23 窓は 13 分で完了。MBAR PMF: 最小 1.19 nm、0.85–1.15 nm に約 2.5 kJ/mol の平坦域、0.45 nm で 13.9、1.41 nm で 10.3 kJ/mol。4 ブロック（1.25 ns）の SD は 0.6–0.9 kJ/mol（0.6–1.2 nm）だが 0.3–0.6 nm は 1.6 kJ/mol。窓 0.45 nm は統計的非効率 244 ps で独立サンプル 20 個、窓 0.40–0.45 の MBAR オーバーラップ 0.024 と、短距離側は未収束（折れ曲がり構造の主鎖遷移が遅い）。
+- SEUS 適応段階の途中（各 17 ns、SAMS 段階 2 に入って 6–10 ns）の (ξ, m) を MBAR にかけた暫定 PMF は、0.6–1.5 nm で umbrella と RMS 0.6–1.7 kJ/mol（umbrella 自身のブロック誤差の範囲内）、0.3–0.6 nm では 2–3 kJ/mol 低い。占有率は 0.032–0.084 とほぼ平坦、端から端への通過は 17 ns で 5 回と 9 回。
+- 解析上の注意 2 点: (1) SEUS の ξ 系列全体の相関時間（約 1.3 ns）は窓のランダムウォーク由来なので、それで間引くと数点しか残らない。MBAR の重みは相関に依存しないので全交換点を使い、誤差は前半/後半で見る。(2) pymbar 4.2 の `initialize="BAR"` は疎なデータで `BoundsError` → `ConvergenceError` 未定義の例外で落ちる。umbrella の f_k を `initial_f_k` に渡して回避。
+- ζ の収束基準は ζ_m = −f_m + const（占有を均すには ζ_m = ln Z_m）。閉じた式 F = −kT ln h + kT ln Σ_m exp(−βw_m − ζ_m) は ζ 固定の固定段階でのみ厳密（未知量なし）。適応段階のデータでは ζ が動くので MBAR の方が良い（最終 ζ で閉じた式を使うと RMS 3 kJ/mol に悪化）。
+- ユーザーの提案でネガティブコントロールとして無バイアス MD を追加: eq_001 から `run_production` 100 ns × 4 レプリカ（seed 201–204、出力 5 ps、MPS 1 ジョブ 117965）。到達できる領域（F < 10 kJ/mol）でヒストグラム PMF を独立の基準にする。
+
+**固定段階 30 ns 時点（18:43）と walker 間のずれの正体**
+- 3 手法は 0.6–1.5 nm で一致: SEUS 2 本 vs umbrella RMS 0.73 / 0.71 kJ/mol、無バイアス 162 ns vs umbrella RMS 0.68、SEUS vs 無バイアス（F < 10）0.54 / 0.97。凍結 ζ の閉じた式と MBAR は同じデータで RMS 0.1 kJ/mol（ζ 固定なら pymbar は不要、の裏付け）。
+- 0.45–0.60 nm では walker 1 と 2 が 2 kT ずれる。記録の整合性は問題なし（collective_variables.csv の `seus_r0`・バイアスエネルギーと seus.csv の窓を 16,000 フレームで照合、不一致 0）。原因は ξ と直交する遅い自由度: 折れ曲がった構造を walker 1 は残基 1 が α_R（φ < 0、87 %）で、walker 2 は残基 1 が α_L（φ > 0、72 %）で作っている。Ala の φ の符号反転は ns より遅く、窓あたりの滞在（30 ns で約 1 ns）では平均化されない。同じ領域で umbrella の 0.45 nm 窓も相関時間 244 ps で独立サンプル 20 個。計画書 §8 の「直交する遅い自由度」がこの玩具系でもう出た、ということ。対処は固定段階の延長（100 ns 走行中）と、本命は SST2 との併用。
+- umbrella をユーザー指示で全 23 窓 15 ns 延長（continue_from、118112–118114）。
+
+**umbrella 20 ns 版と、収束速度の比較（20:30）**
+- umbrella を 20 ns にしても 0.3–0.6 nm の前半/後半差は 2.3 kJ/mol（0.6 nm 以上は 0.3–0.9）。同じ総計算量で比べると誤差 × √ns は umbrella 26、SEUS 8.7 / 18 で、SEUS の方が 2–9 倍速く収束する（1 本の前半/後半差は基底に居座ると過小評価するので上限側）。機構は φ₁ の α_R/α_L 切り替え: umbrella の窓は 20 ns で 0–13 回、SEUS のウォーカーは伸びた配座で反転して 1 ns に約 5 回。ただし長寿命の α_L 状態の割合は umbrella 0.40 窓 38 %、SEUS 1 % / 25 % と、どの方法も決められていない。
+- ユーザーの結論: 0.40–0.50 nm は末端を押し込んだひずみ配座しか入らない領域で、距離 1 本の座標で扱うべきではない。ラダーは到達可能域（PMF ≲ 10 kJ/mol、0.55 nm 以上）に限る。最終比較は窓 0.55 nm 以上に絞り、`skills/md-production/seus.md` にラダー選びの注意として記した。
+
+**次の検証系（ユーザー決定 20:20）: deca-alanine → p53–MDM2。** より難しい例として、(1) ACE-Ala10-NME の end-to-end 距離（helix ↔ 伸長の協同転移、ヘリックス核形成が直交変数）、(3) ペプチド–タンパク質解離の重心間距離（計画書 §6 の実サイズ、SST2 併用の動機）の順に進める。(2) chignolin は保留。角度・二面角 CV は `run_seus` 未対応（`CustomCentroidBondForce` の `angle`/`dihedral` で 1–2 時間の拡張、二面角は差を [−π, π] に巻く）。deca-alanine は `/data1/rkp00079/rku00161/seus-trials/ala10-e2e`（`launch.sh`）: 緩衝 12 Å、窓 1.0–3.4 nm の 0.1 nm 刻み 25 窓、k = 250（σ = 0.1 nm）、umbrella 25 × 20 ns（MPS 7/7/7/4）、SEUS 4 ウォーカー（適応 40 ns → 固定 150 ns）、無バイアス 4 × 200 ns。伸びきりは 4.0 nm なので 3.4 nm までに留めた（0.4 nm の教訓）。
+
+**最終結果（20:45、全ノード完了）。** 窓 0.55 nm 以上（20 窓）で比較。umbrella 20 窓 × 20 ns = 400 ns、SEUS 固定段階 100 ns × 2 本（端から端への通過 38 回と 27 回、占有 0.02–0.08）、無バイアス 4 × 100 ns = 400 ns。`analysis/pmf_from055.{json,png}`（全窓版は `pmf_full.*`）。PMF: 最小 1.17 nm、0.85–1.15 nm に約 3 kJ/mol の平坦域、F(0.61) = 7.2、F(1.41) = 9.9 kJ/mol。
+
+| RMS 差 kJ/mol（0.8–1.3 nm でオフセットを揃える） | 0.55–0.9 | 0.9–1.2 | 1.2–1.5 | 0.55–1.5 |
+|---|---|---|---|---|
+| umbrella 前半/後半 | 1.33 | 0.48 | 0.34 | 0.88 |
+| SEUS walker 1 前半/後半 | 1.73 | 0.29 | 0.68 | 1.14 |
+| SEUS walker 2 前半/後半 | 3.46 | 2.18 | 3.26 | 3.04 |
+| walker 1 vs umbrella | 1.90 | 0.45 | 0.48 | 1.22 |
+| walker 2 vs umbrella | 1.26 | 0.76 | 1.64 | 1.27 |
+| walker 1 vs 無バイアス（F<10） | 0.97 | 0.30 | 0.32 | 0.67 |
+| walker 2 vs 無バイアス（F<10） | 0.50 | 0.47 | 1.06 | 0.68 |
+| umbrella vs 無バイアス（F<10） | 1.02 | 0.42 | 0.40 | 0.72 |
+| walker 1 vs walker 2 | 0.73 | 0.52 | 1.05 | 0.79 |
+
+無バイアスのレプリカ SD（F<10）は平均 0.97 kJ/mol。結論: (1) `run_seus` は umbrella・無バイアスと 0.9–1.5 nm で 0.3–0.5 kJ/mol、0.55–0.9 nm で 1–2 kJ/mol の範囲で一致し、実装は正しい。(2) 凍結 ζ の閉じた式は MBAR と RMS 0.03 kJ/mol で一致（pymbar は検算用）。ζ + f_k は 100 ns で 1 kT 以内の変動に収まり、SAMS 30 ns の ζ は 1 kT 程度の精度。(3) walker 2 は前半/後半差が 3 kJ/mol と大きく、φ₁ の α_L 状態（25 %）の出入りが固定段階でも数回しかない。1 本のウォーカーの前半/後半差は基底の滞在で過小にも過大にもなるので、誤差はウォーカー間の差（0.8 kJ/mol）で見る方がよい。(4) 短距離側（< 0.55 nm）はどの方法でも決まらない（φ₁ の α_R/α_L が隠れた遅い変数）。ラダーはそこに入れない。GPU 時間: umbrella 3 × 0.23 h + 延長 3 × 0.6 h + SEUS 0.8 + 2.7 h + 無バイアス 2.7 h ≈ 9 GPU 時間。
+
+
+---
+
 ## 2026-09-16 — 1KXV SST2 試走: min ジョブが `singularity: command not found` で落ちた原因と CLI 側の対策
 
 study `/data1/rkp00079/rku00161/sst2-trials/1kxv-h3`（bootstrap → prep_001 鎖 C 119 残基 → solv_001 OPC 80.2 Å → topo_001 ff19SB/OPC/HMR 71,013 原子）まではログインノードで完了。min_001 を Slurm に投げたところ 1 秒で FAILED、afterok 鎖の eq と prod 7 本が全部キャンセルされた。ジョブの stderr は `slurm_script: line 14: singularity: command not found`。原因: 提出を SIF 内の `mdclaw`（MDDataBench の試作ラッパー `runs/prep/bin/mdclaw`）で行ったが、そのラッパーは `MDCLAW_SLURM_PATH` を渡さない。CLI は sbatch に渡す環境の PATH を `MDCLAW_SLURM_PATH` + システム標準から組むので、未設定だとイメージ側の PATH（`/opt/mdclaw/bin` …）になり、生成スクリプトが裸の `singularity` を呼んで計算ノードで見つからない。`skills/hpc-run/sif-slurm.md` は `--env MDCLAW_SLURM_PATH="$PATH"` を指示しており、ページどおりに呼ばなかった自分の手順ミスだが、CLI が「実行できないジョブ」を黙って提出したのも問題。`export MDCLAW_SLURM_PATH="$PATH"` で min_002（117621、13 s で完了）→ eq_002（117642）→ MPS 1 ジョブに SST2 ウォーカー 6 本（117647、`submit_mps_job`、50 ns ブロック、10 h 上限）と md_ref（117648、100 ns）を afterok で投入し直した。
 
-CLI 側の対策（同日、commit 予定）: `mdclaw/slurm/config.py` に `resolve_container_runtime()` を追加し、`submit_job` / `submit_array_job` / `submit_mps_job` が提出前にランタイム（`singularity` → `apptainer`、または `configure_container --runtime` の指定）を `MDCLAW_SLURM_PATH`（なければ PATH）上で絶対パスに解決して sbatch スクリプトに書く。ユーザーの「変数を書かせずに済ませたい」に応えて、イメージ内で `MDCLAW_SLURM_PATH` が無いときはコンテナを起動した親プロセス（launcher）の環境を `/proc/<ppid>/environ` から読み、ホストの PATH を自動導出する（`_base.host_search_path`、PID 名前空間は共有なので読める）。それでも見つからなければ `container_runtime_not_found` で拒否、イメージ外なら警告のみ。スキルには「通常は何も設定不要、拒否されたら hint に従う」とだけ書いた。ユーザーの指摘で `run_sst2` に溶媒混入ガード（`sst2_solute_includes_solvent`: 水・イオン・仮想サイトが solute に入っていれば拒否、mdtraj DSL の `resid` は全体番号なので起きやすい）も追加。今回の index ファイルは protein 鎖 0 のみで混入なし。
+CLI 側の対策（同日、commit 予定）: `mdclaw/slurm/config.py` に `resolve_container_runtime()` を追加し、`submit_job` / `submit_array_job` / `submit_mps_job` が提出前にランタイム（`singularity` → `apptainer`、または `configure_container --runtime` の指定）を `MDCLAW_SLURM_PATH`（なければ PATH）上で絶対パスに解決して sbatch スクリプトに書く。ユーザーの「変数を書かせずに済ませたい」に応えて、イメージ内で `MDCLAW_SLURM_PATH` が無いときはコンテナを起動した親プロセス（launcher）の環境を `/proc/<ppid>/environ` から読み、ホストの PATH を自動導出する（`_base.host_search_path`、PID 名前空間は共有なので読める）。それでも見つからなければ `container_runtime_not_found` で拒否、イメージ外なら警告のみ。ただし RIKYU では user namespace のため親プロセスの environ は読めなかった（starter の cmdline は読める）。決め手は計算ノード側: `/etc/profile.d/apptainer-path.sh` が PATH を復元するので、コンテナ付き sbatch スクリプトの冒頭に「ランタイムが `command -v` で見つからなければ `/etc/profile`（と module init）を読む」前置きを入れた（`_container_runtime_preamble`）。イメージ内から変数なしで `submit_job --script "mdclaw --list"` を投げた job 117688 が計算ノードで COMPLETED（9 s）。イメージ内で解決できない場合は拒否ではなく警告、絶対パスで設定した `--runtime` が存在しない場合だけ `container_runtime_not_found`。テストはイメージ内 309 本・外 156 本 pass。commit 87f6862。この 2 件（前置き + 溶媒混入ガード）を焼いたイメージは `mdclaw-rikyu-arm64-cuda130-cufft121-sst2-26406c5ca5c3.sif`（sha256 409f0517…6b50、HEAD 87f6862 と 196 ファイル一致）。ユーザーが `/data1/rkp00079` に配置（sha256 一致を確認）。1KXV study の `.mdclaw_cluster.json` はこのイメージに切り替え済み（走行中の 117647 / 117648 は 0a15ed1cf7d1 のまま完走させる）。 ネガコン（通常 MD 300 K）は prod_014（seed 1、117648、単独で約 820 ns/day）に加え、ユーザーの指摘で seed 2 を prod_015（117769）として追加。この投入は新イメージから変数なしで行い、生成スクリプトに `/etc/profile` の前置きが入っていることを確認。ユーザーの指摘で `run_sst2` に溶媒混入ガード（`sst2_solute_includes_solvent`: 水・イオン・仮想サイトが solute に入っていれば拒否、mdtraj DSL の `resid` は全体番号なので起きやすい）も追加。今回の index ファイルは protein 鎖 0 のみで混入なし。
 
 ## 2026-09-16 — SST2 同梱イメージ `sst2-0a15ed1cf7d1`: run_sst2 が SIF だけで 1KXV の DAG 上を走る
 
