@@ -483,7 +483,7 @@ def _sampling_convergence(*, u_kn, k_n, row_elapsed, row_run, frame_rows_idx, fr
             "final_log_w": final_logw, "frame_values": f_val, "frame_run": row_run[f_idx]}
 
 
-_RUN_COLORS = ["#1F77B4", "#D95F02", "#7570B3", "#1B9E77", "#E7298A", "#66A61E"]
+_RUN_COLORS = ["#2a78d6", "#eb6834", "#1baf7a"]   # categorical slots 1-3 (validated all-pairs); more runs fold to gray
 
 
 def _sampling_block(walkers, walker_summaries, frame_rows, *, u_kn, k_n, row_elapsed, row_run, K, kT, states,
@@ -587,8 +587,10 @@ def _sampling_block(walkers, walker_summaries, frame_rows, *, u_kn, k_n, row_ela
                 row += ["" if not np.isfinite(v) else f"{v:.4f}" for v in per_run[:, j]]
             wr.writerow(row)
 
+    checks = {"drift": drift, "run_spread": run_spread, "tol": drift_tolerance_kj_mol,
+              "ess_a": ess_a, "ess_b": ess_b, "t_ref": kT / GAS_CONSTANT_KJ_MOL_K}
     plot = _plot_delta_f(out_dir / f"{output_name}_delta_f.png", times, pooled, per_run, labels, conv, state_a,
-                         state_b, kT, dF, drift, verdict, walker_summaries, u_kn, k_n, row_run, frame_idx, values,
+                         state_b, kT, dF, checks, verdict, u_kn, k_n, row_run, frame_idx, values,
                          K, pymbar, warnings)
     for ws, v in zip(walker_summaries, run_final if n_runs >= 2 else [None] * n_runs):
         ws["delta_f_kj_mol_this_run"] = None if v is None or not np.isfinite(v) else float(v)
@@ -615,8 +617,15 @@ def _sampling_block(walkers, walker_summaries, frame_rows, *, u_kn, k_n, row_ela
     }, values
 
 
-def _plot_delta_f(path, times, pooled, per_run, labels, conv, state_a, state_b, kT, dF, drift, verdict,
-                  walker_summaries, u_kn, k_n, row_run, frame_idx, values, K, pymbar, warnings) -> Optional[str]:
+def _plot_delta_f(path, times, pooled, per_run, labels, conv, state_a, state_b, kT, dF, checks, verdict,
+                  u_kn, k_n, row_run, frame_idx, values, K, pymbar, warnings) -> Optional[str]:
+    """One figure that answers "is the reference-temperature ensemble converged?".
+
+    Left: F(A) - F(B) at T_ref as the run grows, all runs pooled (black) and
+    each run alone; the gray band is the tolerance around the final value over
+    the half the verdict reads. Right: the T_ref free-energy profile along
+    the RMSD at the end, with the two states marked. Bottom: the three
+    checks behind the verdict, each with its number and limit."""
     try:
         import matplotlib
 
@@ -625,71 +634,134 @@ def _plot_delta_f(path, times, pooled, per_run, labels, conv, state_a, state_b, 
     except Exception as exc:  # noqa: BLE001
         warnings.append(f"plot skipped: {exc}")
         return None
-    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(11, 3.9), gridspec_kw={"width_ratios": [1.25, 1]})
-    ax.axvspan(times[-1] / 2.0, times[-1], color="#2CA02C" if verdict == "converged" else "#D62728",
-               alpha=0.08, lw=0)
+    INK, INK2, MUTED, GRID = "#0b0b0b", "#52514e", "#898781", "#e6e5e0"
+    GOOD, BAD = "#0ca30c", "#d03b3b"
+    tol = float(checks["tol"])
+    t_ref = checks["t_ref"]
     n_runs = per_run.shape[0]
-    if n_runs >= 2:
-        for r in range(n_runs):
-            ax.plot(times, per_run[r], "-", lw=1.2, color=_RUN_COLORS[r % len(_RUN_COLORS)],
-                    label=f"{labels[r]} alone")
-    ax.plot(times, pooled, "-", lw=2.2, color="black", label="all runs pooled")
+    run_color = [_RUN_COLORS[r] if r < len(_RUN_COLORS) else MUTED for r in range(n_runs)]
+
+    fig = plt.figure(figsize=(11.5, 5.2))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1, 0.16], width_ratios=[1.25, 1], hspace=0.42, wspace=0.28)
+    ax = fig.add_subplot(gs[0, 0])
+    ax2 = fig.add_subplot(gs[0, 1])
+    for a in (ax, ax2):
+        a.set_facecolor("#fcfcfb")
+        a.grid(color=GRID, lw=0.8)
+        a.set_axisbelow(True)
+        for side in ("top", "right"):
+            a.spines[side].set_visible(False)
+        for side in ("left", "bottom"):
+            a.spines[side].set_color(MUTED)
+        a.tick_params(colors=INK2, labelsize=8)
+
+    ok_word = {"converged": "converged", "converged_single_run": "passes, but only one run",
+               "not_converged": "not converged"}[verdict]
+    fig.suptitle(f"Is the {t_ref:.0f} K ensemble converged?  {ok_word.upper()}", x=0.01, ha="left",
+                 fontsize=12, fontweight="bold", color=GOOD if verdict == "converged" else BAD)
+
+    # ---- left: F(A) - F(B) vs time ---------------------------------------------
+    half = times[-1] / 2.0
     if np.isfinite(dF):
-        ax.axhline(dF, color="gray", lw=0.7, ls="--")
-    # scale to the later 80 % of the run: the first points rest on a few ns and would flatten the rest
+        ax.fill_between([half, times[-1]], dF - tol, dF + tol, color="#d9d8d2", lw=0, zorder=0)
+        ax.text(times[-1], dF + tol, f"allowed: final value \u00b1 {tol:.1f}", ha="right", va="bottom",
+                fontsize=7.5, color=INK2)
+    ax.axvline(half, color=MUTED, lw=0.8, ls=(0, (4, 3)))
+    ax.text(half, 0.02, " second half: the verdict reads this part", transform=ax.get_xaxis_transform(),
+            ha="left", va="bottom", fontsize=7.5, color=INK2)
+    ax.axhline(0.0, color=MUTED, lw=0.8)
+    for r in range(n_runs if n_runs >= 2 else 0):
+        ax.plot(times, per_run[r], "-", lw=1.4, color=run_color[r], label=f"run {labels[r]} alone")
+        last = per_run[r][np.isfinite(per_run[r])]
+        if last.size:
+            ax.annotate(f"{labels[r]} alone", (times[-1], last[-1]), xytext=(4, 0), textcoords="offset points",
+                        va="center", fontsize=7.5, color=INK2)
+    ax.plot(times, pooled, "-", lw=2.4, color=INK, label="all runs pooled (reported)")
+    if np.isfinite(dF):
+        ax.annotate(f"{'pooled' if n_runs >= 2 else 'this run'} {dF:+.1f}", (times[-1], dF), xytext=(4, 0), textcoords="offset points", va="center",
+                    fontsize=8.5, fontweight="bold", color=INK)
     late = times >= 0.2 * times[-1]
     shown = np.concatenate([pooled[late], per_run[:, late].ravel()]) if n_runs >= 2 else pooled[late]
     shown = shown[np.isfinite(shown)]
     if shown.size:
-        pad = max(2.0, 0.15 * float(shown.max() - shown.min()))
-        ax.set_ylim(float(shown.min()) - pad, float(shown.max()) + pad)
-    ax.set_xlabel("simulation time per run / ns")
-    ax.set_ylabel("dF(A - B) at T_ref / kJ mol$^{-1}$")
-    ax.set_title(f"dF = {dF:.1f} kJ/mol, second-half drift {drift:.1f} ({verdict})", fontsize=9)
-    ax.grid(alpha=0.3)
-    ax.legend(fontsize=7, frameon=False)
+        lo_y = min(float(shown.min()), dF - tol if np.isfinite(dF) else float(shown.min()), 0.0)
+        hi_y = max(float(shown.max()), dF + tol if np.isfinite(dF) else float(shown.max()), 0.0)
+        pad = max(1.5, 0.12 * (hi_y - lo_y))
+        ax.set_ylim(lo_y - pad, hi_y + pad)
+    ax.set_xlim(0, times[-1] * 1.22)
+    ax.set_xlabel("simulation time per run (ns)", color=INK2, fontsize=9)
+    ax.set_ylabel(f"F(A) \u2212 F(B) at {t_ref:.0f} K (kJ/mol)\nbelow 0: A more stable", color=INK2, fontsize=9)
+    ax.set_title("free-energy difference as the run grows", loc="left", fontsize=9.5, color=INK)
 
-    # reference-temperature profile along the observable at the end, pooled and per run
-    ok = np.isfinite(values)
+    # ---- right: profile at the end ---------------------------------------------
+    finite = np.isfinite(values)
     lo = min(float(np.nanmin(values)), state_a[0], state_b[0])
     hi = max(float(np.nanmax(values)), state_a[1], state_b[1])
-    edges = np.linspace(lo, hi, 41)
+    edges = np.linspace(lo, hi, 31)
     centres = 0.5 * (edges[1:] + edges[:-1])
+    cap = 25.0   # kJ/mol: 10 kT at 300 K; bins above it hold too little weight to draw
+
+    def _label_end(G, text, colour, weight="normal"):
+        idx = np.nonzero(np.isfinite(G))[0]
+        if idx.size:
+            ax2.annotate(text, (centres[idx[-1]], G[idx[-1]]), xytext=(4, 0), textcoords="offset points",
+                         va="center", fontsize=7.5, color=colour, fontweight=weight)
 
     def _profile(v, lw):
         w = np.exp(lw - lw.max())
         H, _ = np.histogram(v, bins=edges, weights=w)
+        n, _ = np.histogram(v, bins=edges)
         G = np.full(len(H), np.nan)
-        m = H > 0
+        m = (H > 0) & (n >= 5)
         G[m] = -kT * np.log(H[m] / H[m].max())
+        G[G > cap] = np.nan
         return G
 
-    for (a, b), c, name in ((state_a, "#1F77B4", "A"), (state_b, "#D95F02", "B")):
-        ax2.axvspan(a, b, color=c, alpha=0.10, lw=0)
-        ax2.text(0.5 * (a + b), 0.97, name, transform=ax2.get_xaxis_transform(), ha="center", va="top",
-                 fontsize=9, color="#333333")
+    for (a, b), name in ((state_a, "A"), (state_b, "B")):
+        ax2.axvspan(a, b, color="#ecebe6", lw=0, zorder=0)
+        ax2.text(0.5 * (a + b), 0.98, f"{name}\n{a:g}\u2013{b:g} nm", transform=ax2.get_xaxis_transform(),
+                 ha="center", va="top", fontsize=8, color=INK2)
     if n_runs >= 2:
         for r in range(n_runs):
             sub = np.nonzero(row_run == r)[0]
             pos = -np.ones(len(row_run), dtype=np.int64)
             pos[sub] = np.arange(len(sub))
-            fr_r = ok & (row_run[frame_idx] == r)
+            fr_r = finite & (row_run[frame_idx] == r)
             try:
                 lw_r, _ = _reference_log_weights(u_kn[:, sub], k_n[sub], K, pymbar)
-                ax2.plot(centres, _profile(values[fr_r], lw_r[pos[frame_idx[fr_r]]]), "-", lw=1.2,
-                         color=_RUN_COLORS[r % len(_RUN_COLORS)], label=f"{labels[r]} alone")
+                G = _profile(values[fr_r], lw_r[pos[frame_idx[fr_r]]])
+                ax2.plot(centres, G, "-", lw=1.4, color=run_color[r], label=f"run {labels[r]} alone")
+                _label_end(G, f"{labels[r]} alone", INK2)
             except Exception:  # noqa: BLE001
                 pass
     if conv["final_log_w"] is not None:
-        ax2.plot(centres, _profile(conv["frame_values"], conv["final_log_w"]), "-", lw=2.2, color="black",
-                 label="all runs pooled")
-    ax2.set_xlabel("RMSD to reference / nm")
-    ax2.set_ylabel("F at T_ref / kJ mol$^{-1}$")
-    ax2.set_title("profile at the end of the run", fontsize=9)
-    ax2.grid(alpha=0.3)
-    ax2.legend(fontsize=7, frameon=False)
-    fig.tight_layout()
-    fig.savefig(path, dpi=140)
+        G = _profile(conv["frame_values"], conv["final_log_w"])
+        ax2.plot(centres, G, "-", lw=2.4, color=INK, label="all runs pooled")
+        _label_end(G, "pooled" if n_runs >= 2 else "this run", INK, "bold")
+    ax2.set_ylim(-0.5, cap + 1)
+    ax2.set_xlabel("RMSD to the reference structure (nm)", color=INK2, fontsize=9)
+    ax2.set_ylabel(f"free energy at {t_ref:.0f} K (kJ/mol)", color=INK2, fontsize=9)
+    ax2.set_title("where the ensemble sits at the end", loc="left", fontsize=9.5, color=INK)
+    ax2.set_xlim(edges[0], edges[-1] + 0.2 * (edges[-1] - edges[0]))
+
+    # ---- bottom: the three checks ------------------------------------------------
+    axc = fig.add_subplot(gs[1, :])
+    axc.axis("off")
+    drift, spread, ess_a, ess_b = checks["drift"], checks["run_spread"], checks["ess_a"], checks["ess_b"]
+    items = [
+        (np.isfinite(drift) and drift <= tol,
+         f"pooled value moved {drift:.1f} kJ/mol over the second half (limit {tol:.1f})"),
+        (None if spread is None else spread <= 2 * tol,
+         "only one run: no run-to-run check" if spread is None
+         else f"runs end {spread:.1f} kJ/mol apart (limit {2 * tol:.1f})"),
+        (ess_a >= 10 and ess_b >= 10, f"effective frames at {t_ref:.0f} K: A {ess_a:.0f}, B {ess_b:.0f} (need 10 each)"),
+    ]
+    for k, (passed, text) in enumerate(items):
+        mark, colour = ("\u2713", GOOD) if passed else (("\u2014", MUTED) if passed is None else ("\u2717", BAD))
+        y = 0.8 - 0.4 * k
+        axc.text(0.0, y, mark, fontsize=11, fontweight="bold", color=colour, va="center", transform=axc.transAxes)
+        axc.text(0.022, y, text, fontsize=8.5, color=INK, va="center", transform=axc.transAxes)
+    fig.savefig(path, dpi=140, bbox_inches="tight", facecolor="#fcfcfb")
     plt.close(fig)
     return str(path)
 
