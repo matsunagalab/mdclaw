@@ -37,10 +37,12 @@ Before every state-changing command in this skill:
 4. Segments run on a GPU (`--platform CUDA`) for anything larger than a
    peptide. One round is `n_walkers x segment length` of MD.
 5. Never quote a rate except from a completed `analyze_we` node whose
-   `verdict` is `flux_steady`; `flux_transient` is a lower bound,
-   `flux_undersampled` and `no_target_events` are no estimate at all (the
-   result's `rate_note` says which). Report the verdict and its reasons
-   verbatim.
+   `verdict` is `flux_steady` (the flux is steady *and* the rate stopped
+   moving over the second half of the run, `we_convergence.png`);
+   `rate_not_converged` is quoted only with its drift, `flux_transient` is a
+   lower bound, `flux_undersampled` and `no_target_events` are no estimate
+   at all (the result's `rate_note` says which). Report the verdict and its
+   reasons verbatim.
 
 ## Step 0: Parse and Confirm
 
@@ -151,7 +153,9 @@ request; otherwise ask for the coordinate and the two ranges.
    ```
 
    The latest policy node is enough: the chain of rounds is followed back.
-   Read the result with `skills/md-we/kinetics.md`.
+   Read the result with `skills/md-we/kinetics.md`; `we_convergence.png`
+   is the figure that says whether the rate has settled (the rate the
+   analysis would have reported had the run stopped after each round).
 
    To stop a scheme for good (budget, a redesign), close it instead of
    leaving its frontier pending: `mdclaw close_rounds --job-dir "$JOB"
@@ -160,9 +164,10 @@ request; otherwise ask for the coordinate and the two ranges.
    retired with `update_workflow_state --abandon` is never retried, but a
    weighted scheme cannot lose a walker's weight — close the scheme instead.
 
-5. Report the rate with its verdict, interval, the number of rounds, the
-   aggregate sampled time and the pcoord / target definition, as in
-   `skills/common/run-loop.md` step 5. For an independent error estimate run
+5. Report the rate with its verdict, interval, the drift over the second
+   half (`convergence.drift_factor`) with `we_convergence.png`, the number
+   of rounds, the aggregate sampled time and the pcoord / target
+   definition, as in `skills/common/run-loop.md` step 5. For an independent error estimate run
    a second scheme (`scheme_id` `we2`, another `seed`) and give `analyze_we`
    both policy nodes as parents.
 
@@ -179,3 +184,4 @@ request; otherwise ask for the coordinate and the two ranges.
 | `rounds_submit_failed` | `submit_mps_job` refused the round (its code is in the message): the cluster config (`configure_container`, policy) or a stage arg; fix it, rerun `run_rounds --executor mps` |
 | `rounds_scheme_closed` | the scheme was ended with `close_rounds` (budget spent, design redone): analyze its last policy node, or continue under a new `scheme_id` |
 | `no_target_events` (verdict) | no walker reached the target yet: more rounds, or a target closer to the initial state |
+| `rate_not_converged` (verdict) | the window is steady, but the rate the analysis would have reported moved by 1 kT (a factor of e) or more over the second half of the run (`we_convergence.png`, red half): run the `next` (`next_rounds_suggested`, half the run again) and analyze again on a new node; until then quote the rate only with its drift |

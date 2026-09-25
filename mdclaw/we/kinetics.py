@@ -218,8 +218,82 @@ def stationary_suffix(flux: np.ndarray, events: Optional[np.ndarray], *, first_i
     return None
 
 
+DRIFT_TOLERANCE_KT = 1.0
+MAX_FIRST_HALF_POINTS = 40
+
+
+def rate_history(t: np.ndarray, flux: np.ndarray, *, events: Optional[np.ndarray] = None, n_boot: int = 100,
+                 seed: int = 0, min_events: int = 10, max_first_half: int = MAX_FIRST_HALF_POINTS) -> list[dict]:
+    """The rate this analysis would have reported had the run stopped after
+    each round: ``steady_state_rate`` on the rounds up to that one (window
+    choice included), from the first round with a recycling event on. Every
+    round of the second half of the run is a stop (the drift is judged
+    there); the first half is thinned to ``max_first_half`` stops for the
+    figure. A point's ``rate`` is the window mean even when that stop would
+    have been undersampled (``verdict`` says so).
+    """
+    t = np.asarray(t, dtype=float)
+    flux = np.asarray(flux, dtype=float)
+    ev = None if events is None else np.asarray(events)
+    n = int(t.size)
+    if n == 0:
+        return []
+    first = int(np.argmax(flux > 0)) if np.any(flux > 0) else n
+    half = n // 2
+    early = list(range(first, min(half, n)))
+    if len(early) > max_first_half:
+        early = sorted(set(np.linspace(early[0], early[-1], num=max_first_half).round().astype(int).tolist()))
+    ends = early + list(range(max(first, half), n))
+    rows: list[dict] = []
+    for e in ends:
+        res = steady_state_rate(t[: e + 1], flux[: e + 1], events=None if ev is None else ev[: e + 1],
+                                n_boot=n_boot, seed=seed, min_events=min_events, _history=False)
+        window = res.get("window") or {}
+        rate = res["rate"] if res["rate"] is not None else window.get("mean")
+        rows.append({"round_index": int(e), "time": float(t[e]), "rate": None if rate is None else float(rate),
+                     "low": res.get("rate_low", window.get("low")), "high": res.get("rate_high", window.get("high")),
+                     "verdict": res["verdict"], "window_start_index": window.get("first_round_index")})
+    return rows
+
+
+def history_drift(history: list[dict], n_rounds: int, *,
+                  tolerance_kt: float = DRIFT_TOLERANCE_KT) -> Optional[dict]:
+    """How far the reported rate moved over the second half of the run:
+    ``ln(max k / min k)`` over the stops in rounds ``[n_rounds // 2,
+    n_rounds)`` — the range, as ``analyze_metadynamics`` takes the range of
+    dF(t) over the second half. Since ``k ~ exp(-dG/kT)`` it is the drift of
+    the barrier in kT: ``converged`` when it stays below ``tolerance_kt``
+    (1 kT, a factor of e in the rate, by default — the tolerance
+    metadynamics uses on dF). A second half that starts before the first
+    arrival (no estimate at the middle of the run) is an infinite drift: a
+    rate first seen in the second half has not been shown to hold. None
+    without a final estimate.
+    """
+    if not history or history[-1]["rate"] is None or history[-1]["rate"] <= 0:
+        return None
+    half = int(n_rounds) // 2
+    second = [h for h in history if h["round_index"] >= half]
+    covered_from = min((h["round_index"] for h in history), default=n_rounds)
+    rates = [h["rate"] for h in second]
+    finite = covered_from <= half and all(r is not None and r > 0 for r in rates)
+    low = min(second, key=lambda h: h["rate"] if h["rate"] else math.inf)
+    high = max(second, key=lambda h: h["rate"] if h["rate"] else -math.inf)
+    drift = math.log(high["rate"] / low["rate"]) if finite else math.inf
+    return {
+        "tolerance_kt": float(tolerance_kt),
+        "tolerance_factor": round(math.exp(tolerance_kt), 4),
+        "drift_kt": round(float(drift), 4) if finite else None,
+        "drift_factor": round(float(math.exp(drift)), 4) if finite else None,
+        "converged": bool(finite and drift < tolerance_kt),
+        "second_half_start_index": half,
+        "lowest": {"round_index": int(low["round_index"]), "rate": low["rate"]},
+        "highest": {"round_index": int(high["round_index"]), "rate": high["rate"]},
+    }
+
+
 def steady_state_rate(t: np.ndarray, flux: np.ndarray, *, events: Optional[np.ndarray] = None,
-                      n_boot: int = 200, seed: int = 0, min_events: int = 10) -> dict:
+                      n_boot: int = 200, seed: int = 0, min_events: int = 10,
+                      drift_tolerance_kt: float = DRIFT_TOLERANCE_KT, _history: bool = True) -> dict:
     """Rate from the recycled flux: the mean over the rounds after the
     relaxation (burn-in of twice the fitted relaxation time, at most three
     quarters of the run; the last quarter when nothing can be fitted),
@@ -241,6 +315,15 @@ def steady_state_rate(t: np.ndarray, flux: np.ndarray, *, events: Optional[np.nd
     events, but the flux is still rising, so the window mean is a lower bound.
     The bootstrap block is the fitted relaxation time or, without one, the
     window's integrated autocorrelation time.
+
+    A steady window is not yet a converged rate: ``convergence`` follows the
+    rate this analysis would have reported had the run stopped after each
+    round (``rate_history``) and measures how far it moved over the second
+    half of the run (``history_drift``, in kT of barrier). A drift of
+    ``drift_tolerance_kt`` (1 kT: a factor of e) or more turns
+    ``flux_steady`` into ``rate_not_converged``: the window is fine, but
+    more rounds changed the answer by more than the tolerance, so the number
+    is not settled. ``_history=False`` skips it (used by the history itself).
     """
     t = np.asarray(t, dtype=float)
     flux = np.asarray(flux, dtype=float)
@@ -316,10 +399,14 @@ def steady_state_rate(t: np.ndarray, flux: np.ndarray, *, events: Optional[np.nd
         # Two heavy walkers arriving in the same round make a window mean
         # several times the true rate; with this few events the number is a
         # fluctuation in either direction, not a bound.
-        return {"verdict": "flux_undersampled",
-                "verdict_reasons": [f"only {window_events} recycling events in the averaging window "
-                                    f"(need {min_events}); the window mean is not an estimate"],
-                "rate": None, "rate_low": None, "rate_high": None, "window": window_info, "fit": fit}
+        result = {"verdict": "flux_undersampled",
+                  "verdict_reasons": [f"only {window_events} recycling events in the averaging window "
+                                      f"(need {min_events}); the window mean is not an estimate"],
+                  "rate": None, "rate_low": None, "rate_high": None, "window": window_info, "fit": fit}
+        # The history is still drawn (how the window mean moved), the verdict stays.
+        _attach_convergence(result, t, flux, events, n_boot=n_boot, seed=seed, min_events=min_events,
+                            drift_tolerance_kt=drift_tolerance_kt, enabled=_history)
+        return result
     verdict = "flux_steady"
     if boot["block_capped"]:
         reasons.append(f"bootstrap block capped to {boot['block']} rounds (a fifth of the window; the "
@@ -341,19 +428,47 @@ def steady_state_rate(t: np.ndarray, flux: np.ndarray, *, events: Optional[np.nd
                 reasons.append(f"window mean {rate:.3g} differs from the fitted plateau {fit['f_ss']:.3g} "
                                f"and the window still trends (Mann-Kendall p = {mk['p_value']:.2f})")
     elif path == "stationary":
+        level = stationarity.get("level_check") or {}
+        if level.get("head_mean") is not None and level.get("rest_mean") is not None:
+            level_text = f"is level (first quarter {level['head_mean']:.3g} vs rest {level['rest_mean']:.3g})"
+        else:
+            level_text = "is too short to split for the level check"
         reasons.append(
             f"the relaxation fit does not give the window ({'; '.join(fit_reasons)}), but the flux from "
             f"round {stationarity['start_round_index'] + 1} on shows no trend (Mann-Kendall p = "
-            f"{stationarity['p_value']:.2f}) and is level (first quarter "
-            f"{stationarity['level_check']['head_mean']:.3g} vs rest {stationarity['level_check']['rest_mean']:.3g}; "
-            f"{stationarity['events']} events over {stationarity['rounds']} rounds): the window is that stretch")
+            f"{stationarity['p_value']:.2f}) and {level_text} "
+            f"({stationarity['events']} events over {stationarity['rounds']} rounds): the window is that stretch")
     else:
         verdict = "flux_transient"
         reasons.extend(fit_reasons)
         reasons.append(f"no stationary, level stretch with at least {min_events} events at the end of the "
                        "run (Mann-Kendall trend test and first-quarter check); the last quarter is reported")
-    return {"verdict": verdict, "verdict_reasons": reasons, "rate": rate,
-            "rate_low": boot["low"], "rate_high": boot["high"], "window": window_info, "fit": fit}
+    result = {"verdict": verdict, "verdict_reasons": reasons, "rate": rate,
+              "rate_low": boot["low"], "rate_high": boot["high"], "window": window_info, "fit": fit}
+    _attach_convergence(result, t, flux, events, n_boot=n_boot, seed=seed, min_events=min_events,
+                        drift_tolerance_kt=drift_tolerance_kt, enabled=_history)
+    return result
+
+
+def _attach_convergence(result: dict, t: np.ndarray, flux: np.ndarray, events: Optional[np.ndarray], *,
+                        n_boot: int, seed: int, min_events: int, drift_tolerance_kt: float, enabled: bool) -> None:
+    """Add ``convergence`` (history + drift) and, for a steady window whose
+    reported rate still moved by ``drift_tolerance_kt`` or more over the
+    second half of the run, turn the verdict into ``rate_not_converged``."""
+    if not enabled:
+        return
+    history = rate_history(t, flux, events=events, n_boot=min(n_boot, 100), seed=seed, min_events=min_events)
+    drift = history_drift(history, int(np.asarray(t).size), tolerance_kt=drift_tolerance_kt)
+    result["convergence"] = None if drift is None else {**drift, "history": history}
+    if result["verdict"] == "flux_steady" and drift is not None and not drift["converged"]:
+        result["verdict"] = "rate_not_converged"
+        moved = ("had no estimate yet at the middle of the run" if drift["drift_factor"] is None
+                 else f"moved by a factor of {drift['drift_factor']:.2f} ({drift['drift_kt']:.2f} kT of barrier)")
+        result["verdict_reasons"].append(
+            f"the reported rate {moved} over the second half of the run (from round "
+            f"{drift['second_half_start_index'] + 1}); converged below {drift_tolerance_kt:g} kT "
+            f"(a factor of {drift['tolerance_factor']:.2f}): the window is steady but more rounds still "
+            "change the answer")
 
 
 def _two_state(t, p_inf, k_tot):

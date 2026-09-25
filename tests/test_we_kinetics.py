@@ -14,7 +14,9 @@ from mdclaw.we import kinetics as kinetics_module
 from mdclaw.we.kinetics import (
     block_bootstrap_mean,
     flux_relaxation_fit,
+    history_drift,
     integrated_autocorrelation_rounds,
+    rate_history,
     mann_kendall,
     stationary_suffix,
     steady_state_rate,
@@ -224,7 +226,10 @@ class TestStationarity:
         walk = stationary_suffix(flux, events, first_index=7, min_rounds=16, min_events=10, level_check=False)
         assert walk["start_round_index"] <= 10 and walk["rounds"] >= n - 10 and walk["candidates_tested"] == 1
         result = steady_state_rate(t, flux, events=events)
-        assert result["verdict"] == "flux_steady", result["verdict_reasons"]
+        # The window is steady either way; a burst this heavy (x8 over 14 of
+        # the last 58 rounds) also moves the reported rate by about 1 kT over
+        # the second half, which the convergence rule may flag.
+        assert result["verdict"] in ("flux_steady", "rate_not_converged"), result["verdict_reasons"]
         stat = result["window"]["stationarity"]
         assert stat["p_value"] >= 0.05 and stat["rounds"] >= 0.6 * n and stat["level_check"]["compatible"]
 
@@ -306,3 +311,89 @@ class TestLevelWindow:
         if result["verdict"] == "flux_steady":
             assert window["level_check"]["compatible"] is True
             assert result["rate"] > 0.9   # not the 0.5 of the low stretch
+
+
+# ---------------------------------------------------------------------------
+# convergence: the rate reported had the run stopped earlier (cf. dF(t))
+# ---------------------------------------------------------------------------
+
+
+def _steady_flux(n, rng, *, level=1.0, start=5, empty=0.2, sigma=0.5):
+    flux = np.zeros(n)
+    for i in range(start, n):
+        flux[i] = 0.0 if rng.random() < empty else level * rng.lognormal(0.0, sigma)
+    return flux
+
+
+class TestConvergence:
+    def test_history_ends_at_the_reported_rate_and_starts_at_the_first_arrival(self):
+        rng = np.random.default_rng(31)
+        n = 90
+        t = np.arange(1, n + 1) * 0.1
+        flux = _steady_flux(n, rng, start=8)
+        events = (flux > 0).astype(int) * 3
+        result = steady_state_rate(t, flux, events=events)
+        history = result["convergence"]["history"]
+        assert history[0]["round_index"] == int(np.argmax(flux > 0))
+        assert history[-1]["round_index"] == n - 1
+        assert history[-1]["rate"] == pytest.approx(result["rate"])
+        assert all(h["verdict"] for h in history)
+        # every round of the second half is a stop; the first half is thinned
+        assert [h["round_index"] for h in history if h["round_index"] >= n // 2] == list(range(n // 2, n))
+        # rate_history on its own gives the same stops
+        again = rate_history(t, flux, events=events)
+        assert [h["round_index"] for h in again] == [h["round_index"] for h in history]
+
+    def test_a_steady_long_run_is_converged(self):
+        rng = np.random.default_rng(32)
+        n = 150
+        t = np.arange(1, n + 1) * 0.1
+        flux = _steady_flux(n, rng, sigma=0.4, empty=0.1)
+        result = steady_state_rate(t, flux, events=(flux > 0).astype(int) * 4)
+        conv = result["convergence"]
+        assert result["verdict"] == "flux_steady", result["verdict_reasons"]
+        assert conv["converged"] is True and conv["drift_kt"] < 1.0
+        assert conv["tolerance_kt"] == 1.0 and conv["tolerance_factor"] == pytest.approx(math.e, rel=1e-3)
+        assert conv["second_half_start_index"] == n // 2
+
+    def test_a_rate_that_jumps_in_the_second_half_is_not_converged(self):
+        # fold1 of the CLN025 campaign: a second route opens at round 60 and
+        # the flux quadruples; the final window is steady, the answer is not
+        rng = np.random.default_rng(33)
+        n = 100
+        t = np.arange(1, n + 1) * 0.2
+        flux = np.concatenate([_steady_flux(60, rng, level=0.5, sigma=0.3, empty=0.1),
+                               _steady_flux(40, rng, level=2.0, start=0, sigma=0.3, empty=0.1)])
+        result = steady_state_rate(t, flux, events=(flux > 0).astype(int) * 4)
+        conv = result["convergence"]
+        assert result["verdict"] == "rate_not_converged", result["verdict_reasons"]
+        assert conv["converged"] is False and conv["drift_factor"] > math.e
+        assert result["rate"] == pytest.approx(2.0, rel=0.3)          # the number is still reported
+        assert any("second half of the run" in r for r in result["verdict_reasons"])
+        # with a tolerance above the jump the same run passes
+        lenient = steady_state_rate(t, flux, events=(flux > 0).astype(int) * 4, drift_tolerance_kt=3.0)
+        assert lenient["verdict"] == "flux_steady" and lenient["convergence"]["converged"] is True
+
+    def test_a_first_arrival_after_the_middle_is_not_converged(self):
+        rng = np.random.default_rng(34)
+        n = 100
+        t = np.arange(1, n + 1) * 0.1
+        flux = np.concatenate([np.zeros(70), _steady_flux(30, rng, start=0, sigma=0.3, empty=0.0)])
+        result = steady_state_rate(t, flux, events=(flux > 0).astype(int) * 5)
+        conv = result["convergence"]
+        assert conv["converged"] is False and conv["drift_factor"] is None and conv["drift_kt"] is None
+        assert result["verdict"] in ("rate_not_converged", "flux_transient", "flux_undersampled")
+
+    def test_history_drift_edge_cases(self):
+        assert history_drift([], 10) is None
+        assert history_drift([{"round_index": 9, "rate": None}], 10) is None
+        flat = [{"round_index": i, "rate": 2.0} for i in range(3, 10)]
+        drift = history_drift(flat, 10)
+        assert drift["converged"] is True and drift["drift_kt"] == 0.0 and drift["drift_factor"] == 1.0
+        late = [{"round_index": i, "rate": 2.0} for i in range(7, 10)]    # no estimate at the middle
+        assert history_drift(late, 10)["converged"] is False
+        # the range over the second half, not the distance from the last value
+        wander = [{"round_index": i, "rate": r} for i, r in zip(range(5, 10), (1.0, 3.0, 1.2, 1.1, 1.5))]
+        drift = history_drift(wander, 10)
+        assert drift["drift_factor"] == pytest.approx(3.0) and drift["converged"] is False
+        assert drift["lowest"]["round_index"] == 5 and drift["highest"]["round_index"] == 6

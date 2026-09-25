@@ -67,7 +67,9 @@ Read by task:
   time, one number and one figure, with the verdict:
   `skills/md-analyze/metadynamics.md`
 - Weighted-ensemble rounds (`we_resample` policy nodes, segments
-  `prod_<scheme>_r<round>_w<replica>`): rates, verdicts and weighted
+  `prod_<scheme>_r<round>_w<replica>`): rates, verdicts, the convergence
+  figure (`we_convergence.png`: the rate had the run stopped after each
+  round, judged over the second half like `analyze_metadynamics`) and weighted
   distributions come from `analyze_we`, `skills/md-we/kinetics.md`; frames of
   a weighted ensemble are averaged with their walker weights
   (`we_frames.csv`), never as equal frames

@@ -101,9 +101,24 @@ def test_weighted_ensemble_rounds_and_analysis(tmp_path, periodic_triple):  # no
     assert scheme_out["n_rounds"] == 3 and scheme_out["recycle"] is True
     assert scheme_out["time_ns"] == pytest.approx(0.006)
     assert scheme_out["kinetics"]["mode"] == "steady_state_flux"
-    assert outcome["verdict"] in {"flux_steady", "flux_transient", "flux_undersampled", "no_target_events"}
+    assert outcome["verdict"] in {"flux_steady", "rate_not_converged", "flux_transient", "flux_undersampled",
+                                  "no_target_events"}
     if total_events == 0:
         assert outcome["verdict"] == "no_target_events"
+        assert "we_convergence" not in outcome["artifacts"] and outcome["convergence"] == {}
+    else:
+        # the convergence history: the rate reported had the run stopped after each round
+        conv = scheme_out["kinetics"]["convergence"]
+        assert conv is not None and "history" not in conv and conv["tolerance_kt"] == 1.0
+        assert outcome["convergence"]["we1"]["tolerance_kt"] == 1.0
+        assert set(outcome["artifacts"]) >= {"we_convergence"}
+        with (jd / "nodes" / analysis["node_id"] / "artifacts" / "we_convergence.csv").open() as fh:
+            history = list(csv.DictReader(fh))
+        assert history and history[-1]["scheme_id"] == "we1" and int(history[-1]["round"]) == 3
+        full = json.loads((jd / "nodes" / analysis["node_id"] / "artifacts" / "we_kinetics.json").read_text())
+        assert full["schemes"]["we1"]["kinetics"]["convergence"]["history"][-1]["round"] == 3
+        if "we_convergence_plot" in outcome["artifacts"]:
+            assert (jd / "nodes" / analysis["node_id"] / outcome["artifacts"]["we_convergence_plot"]).is_file()
     node = read_node(str(jd), analysis["node_id"])
     assert node["status"] == "completed" and node["metadata"]["analysis"] == "we_kinetics"
     artifacts_dir = jd / "nodes" / analysis["node_id"] / "artifacts"

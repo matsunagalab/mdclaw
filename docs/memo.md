@@ -7,6 +7,19 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-25 — `analyze_we` の収束判定: 「その時点で止めていたら報告された速度」の後半での動き（metadynamics の dF(t) に対応）
+
+ユーザー要望（metadynamics と同じようにサンプリングの収束を判定する図、WE に合った手法で）。`analyze_metadynamics` の設計（1 つの数値 = 後半での dF(t) の範囲、1 枚の図 = dF(t)、後半を緑 / 赤で塗る、許容 1 kT）に合わせた:
+
+- 手法: `we/kinetics.py::rate_history` が、各 round で run を止めていたら `analyze_we` が報告した速度（`steady_state_rate` を先頭からその round までに適用、窓の選び方も込み）を並べ、`history_drift` がその後半での範囲 `ln(max k / min k)` を取る。`k ∝ exp(−ΔG‡/kT)` なのでこれは障壁の揺れを kT で測ったもので、許容は metadynamics と同じ 1 kT（速度で e 倍）。後半の開始時点でまだ到達が無ければ無限大（後半に初めて出た速度は保証されない）。後半の全 round を評価し、前半は図用に 40 点へ間引く。
+- 判定: 窓が定常（従来の `flux_steady` 条件）でも、drift が 1 kT 以上なら新しい verdict `rate_not_converged`（`next_rounds_suggested` = run の半分、10–50）。複数 scheme では node の verdict を最も未収束の scheme のものにし（`verdict_scheme_id`、`next` は `next_scheme_id` を延長）、scheme 間で速度が e 倍以上違えば `schemes_disagree` 警告。
+- 図 `we_convergence.png`（artifact `we_convergence_plot`、scheme ごとに 1 パネル）と `we_convergence.csv`（`we_convergence`）。`--drift-tolerance-kt`（既定 1.0）。
+- 却下した案: 最終窓の中だけで前向き / 後ろ向き累積平均を見る方法。窓は定常になるよう選ばれているので、中だけ見ても動きが出ない。unf1 を 40 round で止めた場合、この方法だと ×1.46 で「収束」になるが、実際の推定値は最終値の約 3 倍だった。
+- キャンペーン実データで較正（ledger を読むだけ、DAG は変更なし）: we1 ×2.51（0.92 kT）収束、we2 ×6.4（1.86 kT、26 ns 付近のバースト）未収束、unf1 ×2.06（0.72 kT）収束（途中の 30–90 round で止めた場合はすべて未収束 = 初到達直後の行き過ぎを検出）、fold1 ×7.0（1.95 kT、60 round 以降に推定値が約 3 倍へ跳ねた）未収束。範囲でなく最終値からの距離にしても判定は同じ（we1 ×2.19、we2 ×2.97、unf1 ×1.99、fold1 ×4.30）。
+- 限界: 閾値内で単調に上がり続ける場合は収束と判定される（we1 は後半で 1.2e7 → 3e7 と上昇）。skill には「上がり続けているならそう書く」と明記した。
+- 同時に既存バグを修正: 定常区間が 8 round 未満のとき、判定理由の組み立てが `level_check` の `head_mean` を読んで `KeyError` になっていた（32d4b51 に含まれていた。短い run の履歴計算で発覚）。
+- テスト: `test_we_kinetics.py::TestConvergence`（5 件: 履歴の端、定常な長い run は収束、後半で 4 倍に跳ぶと `rate_not_converged`、中間より後の初到達、`history_drift` の境界）。WE-23b のバースト試験は、窓の選び方はそのまま検証しつつ verdict を `flux_steady` / `rate_not_converged` のどちらでもよいとした（8 倍のバーストは実際に推定値を約 1 kT 動かす）。`test_we_nodes` に収束 artifact の検証を追加。
+
 ## 2026-09-21 — `run_rounds --executor mps`: round の segment を `submit_mps_job` の task として投げる（テスター WE-4）
 
 - 実装: `mdclaw/rounds/driver.py`。`--executor mps` では pending segment を `mps_tasks_per_gpu × mps_gpus` 本ずつ `submit_mps_job` に渡し（task = `mdclaw --job-dir .. --node-id .. run_production <stage_args をフラグ化> --random-seed .. --platform CUDA`）、`check_job` を `mps_poll_seconds` 間隔で回して待つ。policy（`we_resample`）はドライバの python に OpenMM が無ければ launcher 経由（コンテナ内）、あれば同一プロセス。ドライバ自体はホストで動く（`bin/mdclaw` が `run_rounds --executor mps` を native に回す）。Slurm のスクリプト・ログは `<job_dir>/slurm/`。

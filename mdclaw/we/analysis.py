@@ -35,7 +35,7 @@ from mdclaw._tool_meta import node_tool
 from mdclaw.analyze.inputs import _rel_to_node_root
 from mdclaw.node.io import _read_artifact_from_node, _read_node_json
 from mdclaw.rounds.scheme import RoundsError, read_scheme
-from mdclaw.we.kinetics import steady_state_rate, two_state_fit
+from mdclaw.we.kinetics import DRIFT_TOLERANCE_KT, steady_state_rate, two_state_fit
 from mdclaw.we.policy import WEError
 
 logger = setup_logger(__name__)
@@ -148,7 +148,8 @@ def _bin_bounds(bin_indices: list[int], edges: list[list]) -> list[list]:
 
 
 def _analyze_scheme(job_dir: str, key: str, rounds: list[dict], *, tau_ns: float, burn_in_rounds: Optional[int],
-                    temperature_kelvin: float, n_bootstrap: int, min_events: int) -> dict:
+                    temperature_kelvin: float, n_bootstrap: int, min_events: int,
+                    drift_tolerance_kt: float = DRIFT_TOLERANCE_KT) -> dict:
     ledgers = [entry["ledger"] for entry in rounds]
     round_numbers = np.asarray([entry["round"] if entry["round"] is not None else i + 1
                                 for i, entry in enumerate(rounds)], dtype=float)
@@ -174,8 +175,21 @@ def _analyze_scheme(job_dir: str, key: str, rounds: list[dict], *, tau_ns: float
         ],
     }
     if recycle:
-        rate = steady_state_rate(t, flux_per_ns, events=events, n_boot=n_bootstrap, min_events=min_events)
+        rate = steady_state_rate(t, flux_per_ns, events=events, n_boot=n_bootstrap, min_events=min_events,
+                                 drift_tolerance_kt=drift_tolerance_kt)
         result["kinetics"] = {"mode": "steady_state_flux", **rate}
+        convergence = rate.get("convergence")
+        if convergence:
+            # Rounds and per-second rates for readers of the JSON; the round
+            # index of the ledgers is 0-based.
+            for point in convergence["history"]:
+                point["round"] = int(round_numbers[point["round_index"]])
+                for key_ns, key_s in (("rate", "rate_per_s"), ("low", "low_per_s"), ("high", "high_per_s")):
+                    point[key_s] = None if point.get(key_ns) is None else point[key_ns] * 1e9
+            convergence["second_half_start_round"] = int(round_numbers[min(convergence["second_half_start_index"],
+                                                                           len(round_numbers) - 1)])
+            for extreme in ("lowest", "highest"):
+                convergence[extreme]["round"] = int(round_numbers[convergence[extreme]["round_index"]])
         if rate["rate"]:
             result["kinetics"]["rate_per_s"] = rate["rate"] * 1e9
             result["kinetics"]["rate_low_per_s"] = (rate["rate_low"] or 0.0) * 1e9
@@ -200,7 +214,13 @@ def _analyze_scheme(job_dir: str, key: str, rounds: list[dict], *, tau_ns: float
         # Capped at 50: a degenerate fit once suggested 200 rounds (100 GPU-h
         # on a 0.5 GPU-h round), so the budget stays with --max-aggregate-ns.
         fit = rate.get("fit") or {}
-        if rate["verdict"] != "flux_steady":
+        if rate["verdict"] == "rate_not_converged":
+            # The window is steady but the answer still moved: half the run
+            # again lets the second half of the longer run test it.
+            result["kinetics"]["next_rounds_suggested"] = max(10, min(int(math.ceil(len(rounds) / 2)), 50))
+            result["kinetics"]["next_rounds_basis"] = ("the reported rate still moved by more than the drift "
+                                                       "tolerance over the second half: half the run again")
+        elif rate["verdict"] != "flux_steady":
             determined = (fit.get("fitted") and fit.get("tau") and fit.get("tau_err") is not None
                           and fit.get("f_ss_err") is not None and fit["f_ss"] > 0
                           and fit["tau_err"] / fit["tau"] < 0.5 and fit["f_ss_err"] / fit["f_ss"] < 0.5)
@@ -219,6 +239,9 @@ def _analyze_scheme(job_dir: str, key: str, rounds: list[dict], *, tau_ns: float
             result["kinetics"]["next_rounds_basis"] = basis
         result["kinetics"]["rate_note"] = {
             "flux_steady": "steady-state flux: the rate constant (Hill relation)",
+            "rate_not_converged": ("steady window, but the reported rate still moves by more than the drift "
+                                   "tolerance over the second half of the run: quote it only with that drift, "
+                                   "or extend the scheme"),
             "flux_transient": "the flux is still rising: the window mean is a lower bound of the rate",
             "flux_undersampled": "too few recycling events: no rate; run more rounds",
             "no_target_events": "no walker reached the target: no rate",
@@ -361,6 +384,109 @@ def _plot(out_dir: Path, analyses: dict[str, dict]) -> Optional[str]:
     return str(path)
 
 
+def _write_convergence_csv(out_dir: Path, analyses: dict[str, dict]) -> Optional[Path]:
+    rows = []
+    for key, analysis in analyses.items():
+        conv = (analysis.get("kinetics") or {}).get("convergence") or {}
+        for point in conv.get("history") or []:
+            rows.append([key, point["round"], f"{point['time']:.6f}",
+                         "" if point.get("rate_per_s") is None else f"{point['rate_per_s']:.6e}",
+                         "" if point.get("low_per_s") is None else f"{point['low_per_s']:.6e}",
+                         "" if point.get("high_per_s") is None else f"{point['high_per_s']:.6e}",
+                         point.get("verdict") or "",
+                         "" if point.get("window_start_index") is None
+                         else analysis["rounds"][point["window_start_index"]]["round"]])
+    if not rows:
+        return None
+    path = out_dir / "we_convergence.csv"
+    with path.open("w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["scheme_id", "round", "time_ns", "rate_per_s", "low_per_s", "high_per_s",
+                         "verdict_at_stop", "window_start_round"])
+        writer.writerows(rows)
+    return path
+
+
+def _plot_convergence(out_dir: Path, analyses: dict[str, dict], pooled: Optional[dict]) -> Optional[str]:
+    """One panel per scheme: the rate the analysis would have reported had
+    the run stopped after each round (with its bootstrap interval), the
+    final estimate, and the second half of the run that the drift verdict
+    looks at (green converged, red not) — the weighted-ensemble counterpart
+    of dF(t) in ``analyze_metadynamics``. The per-round flux is in
+    ``we_flux.png``."""
+    panels = [(key, a) for key, a in analyses.items()
+              if ((a.get("kinetics") or {}).get("convergence") or {}).get("history")]
+    if not panels:
+        return None
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:  # noqa: BLE001
+        return None
+    fig, axes = plt.subplots(len(panels), 1, figsize=(6.4, 3.2 * len(panels)), squeeze=False)
+    for ax, (key, analysis) in zip(axes[:, 0], panels):
+        kin = analysis["kinetics"]
+        conv = kin["convergence"]
+        tau = analysis["tau_ns"]
+        history = [h for h in conv["history"] if h.get("rate_per_s")]
+        ht = np.asarray([h["time"] for h in history])
+        hk = np.asarray([h["rate_per_s"] for h in history])
+        lo = np.asarray([h["low_per_s"] if h.get("low_per_s") else h["rate_per_s"] for h in history])
+        hi = np.asarray([h["high_per_s"] if h.get("high_per_s") else h["rate_per_s"] for h in history])
+        ax.fill_between(ht, lo, hi, color="tab:blue", alpha=0.18, lw=0, label="95 % interval at that stop")
+        ax.plot(ht, hk, "-", color="tab:blue", lw=1.6, label="rate reported had the run stopped here")
+        under = [h for h in history if h.get("verdict") == "flux_undersampled"]
+        if under:
+            ax.plot([h["time"] for h in under], [h["rate_per_s"] for h in under], "o", mfc="white",
+                    mec="tab:blue", ms=3.5, label="that stop had too few events")
+        final = kin.get("rate_per_s") or (float(hk[-1]) if hk.size else None)
+        band = (kin.get("rate_low_per_s"), kin.get("rate_high_per_s"))
+        if final:
+            ax.axhline(final, color="0.3", lw=0.9, ls="--", label="final estimate")
+            if band[0] and band[1]:
+                ax.axhspan(band[0], band[1], color="0.5", alpha=0.10, lw=0)
+        window = kin.get("window") or {}
+        if window.get("first_round_index") is not None:
+            ax.axvline(analysis["rounds"][window["first_round_index"]]["time_ns"] - tau, color="0.4", lw=0.8,
+                       ls=":", label="final averaging window starts")
+        t_end = analysis["rounds"][-1]["time_ns"]
+        t_half = analysis["rounds"][conv["second_half_start_index"]]["time_ns"] - tau
+        ok = bool(conv.get("converged"))
+        ax.axvspan(t_half, t_end, color="tab:green" if ok else "tab:red", alpha=0.08, lw=0)
+        ax.set_yscale("log")
+        values = [v for v in [*lo.tolist(), *hi.tolist(), *hk.tolist(), final, *band] if v and v > 0]
+        if values:
+            ax.set_ylim(min(values) / 1.6, max(values) * 1.6)
+        ax.set_xlim(0, t_end)
+        ax.set_xlabel("molecular time (rounds x segment length) / ns")
+        ax.set_ylabel("rate / s$^{-1}$")
+        rate_text = "no rate" if not final else f"k = {final:.3g} s$^{{-1}}$"
+        if band[0] and band[1]:
+            rate_text += f" [{band[0]:.3g}, {band[1]:.3g}]"
+        moved = ("no estimate yet at the middle of the run" if conv.get("drift_factor") is None
+                 else f"moved x{conv['drift_factor']:.2f} ({conv['drift_kt']:.2f} kT) over the second half")
+        state = "converged" if ok else "not converged"
+        extra = "" if kin.get("verdict") in ("flux_steady", "rate_not_converged") else f"; {kin.get('verdict')}"
+        ax.set_title(f"{key}: {rate_text}\n{moved}: {state} (tolerance {conv['tolerance_kt']:g} kT = "
+                     f"x{conv['tolerance_factor']:.2f}){extra}", fontsize=8.5)
+        ax.grid(alpha=0.3, which="major")
+        ax.legend(fontsize=6.5, loc="best", framealpha=0.85)
+    if pooled:
+        fig.suptitle(f"pooled over {pooled['n_schemes']} schemes: {pooled['rate_mean_per_s']:.3g} "
+                     f"+- {pooled['rate_sem_per_ns'] * 1e9:.2g} s$^{{-1}}$ (SEM)", fontsize=9)
+    fig.tight_layout()
+    path = out_dir / "we_convergence.png"
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return str(path)
+
+
+_VERDICT_ORDER = ("no_target_events", "flux_undersampled", "flux_transient", "rate_not_converged",
+                  "two_state_unfitted", "flux_steady", "two_state_fitted")
+
+
 @node_tool(node_type="analyze")
 def analyze_we(
     job_dir: str,
@@ -370,6 +496,7 @@ def analyze_we(
     temperature_kelvin: float = 300.0,
     n_bootstrap: int = 200,
     min_events: int = 10,
+    drift_tolerance_kt: float = DRIFT_TOLERANCE_KT,
 ) -> dict:
     """Rates, verdicts and weighted distributions of a weighted ensemble.
 
@@ -386,6 +513,11 @@ def analyze_we(
         n_bootstrap: Moving-block bootstrap samples for the rate interval.
         min_events: Recycling events the averaging window must hold for
             ``flux_steady`` (default 10).
+        drift_tolerance_kt: Converged when the rate this analysis would have
+            reported, had the run stopped after any round of its second half,
+            stays within this many kT of barrier of the final rate (default
+            1 kT: a factor of e). A larger drift makes a steady window
+            ``rate_not_converged``. ``we_convergence.png`` draws it.
     """
     node = _read_node_json(job_dir, node_id) or {}
     if (node.get("conditions") or {}).get("analysis_data_scope") == "comparison":
@@ -406,9 +538,10 @@ def analyze_we(
         analyses = {
             key: _analyze_scheme(job_dir, key, rounds, tau_ns=taus[key], burn_in_rounds=burn_in_rounds,
                                  temperature_kelvin=temperature_kelvin, n_bootstrap=n_bootstrap,
-                                 min_events=min_events)
+                                 min_events=min_events, drift_tolerance_kt=drift_tolerance_kt)
             for key, rounds in schemes.items()
         }
+        warnings: list[str] = []
         rates = [a["kinetics"].get("rate") for a in analyses.values()
                  if a["recycle"] and a["kinetics"].get("rate") is not None]
         pooled: Optional[dict] = None
@@ -417,6 +550,13 @@ def analyze_we(
             pooled = {"n_schemes": int(arr.size), "rate_mean_per_ns": float(arr.mean()),
                       "rate_sem_per_ns": float(arr.std(ddof=1) / math.sqrt(arr.size)),
                       "rate_mean_per_s": float(arr.mean() * 1e9)}
+            spread = float(arr.max() / arr.min()) if arr.min() > 0 else math.inf
+            pooled["max_over_min"] = None if not math.isfinite(spread) else round(spread, 3)
+            if spread >= math.exp(drift_tolerance_kt):
+                warnings.append(
+                    f"schemes_disagree: the independent schemes' rates differ by a factor of {spread:.2f} "
+                    f"(more than the {drift_tolerance_kt:g} kT drift tolerance); quote the pooled mean with its "
+                    "SEM, which carries that spread, and consider another scheme")
         iterations_csv = out_dir / "we_iterations.csv"
         with iterations_csv.open("w", newline="") as fh:
             writer = csv.writer(fh)
@@ -441,6 +581,12 @@ def analyze_we(
                                      "" if b["free_energy_kj_mol"] is None else f"{b['free_energy_kj_mol']:.4f}"])
         frames_csv = _write_frames(job_dir, out_dir, schemes, taus)
         plot = _plot(out_dir, analyses)
+        convergence_csv = _write_convergence_csv(out_dir, analyses)
+        try:
+            convergence_plot = _plot_convergence(out_dir, analyses, pooled)
+        except Exception as exc:  # noqa: BLE001 - the numbers stand without the figure
+            convergence_plot = None
+            warnings.append(f"convergence plot skipped: {type(exc).__name__}: {exc}")
         summary = {"schemes": analyses, "pooled": pooled, "temperature_kelvin": temperature_kelvin,
                    "parent_node_ids": node.get("parent_node_ids") or []}
         kinetics_json = out_dir / "we_kinetics.json"
@@ -460,14 +606,34 @@ def analyze_we(
         artifacts["we_frames"] = _rel_to_node_root(str(frames_csv), out_dir)
     if plot:
         artifacts["we_plot"] = _rel_to_node_root(plot, out_dir)
+    if convergence_csv:
+        artifacts["we_convergence"] = _rel_to_node_root(str(convergence_csv), out_dir)
+    if convergence_plot:
+        artifacts["we_convergence_plot"] = _rel_to_node_root(convergence_plot, out_dir)
+    # The node's verdict is the least settled scheme's: several independent
+    # schemes are done only when every one of them is.
+    ordered = sorted(analyses.items(),
+                     key=lambda item: _VERDICT_ORDER.index(item[1]["kinetics"].get("verdict"))
+                     if item[1]["kinetics"].get("verdict") in _VERDICT_ORDER else -1)
+    lead_key, lead = ordered[0]
     first = next(iter(analyses.values()))
     kinetics = first["kinetics"]
+    node_verdict = lead["kinetics"].get("verdict")
+    convergence_summary = {
+        key: {k: (a["kinetics"].get("convergence") or {}).get(k)
+              for k in ("drift_kt", "drift_factor", "converged", "tolerance_kt", "second_half_start_round")}
+        for key, a in analyses.items() if a["kinetics"].get("convergence")
+    }
     metadata = {
         "analysis": "we_kinetics",
         "n_schemes": len(analyses),
         "scheme_ids": list(analyses),
-        "verdict": kinetics.get("verdict"),
-        "verdict_reasons": kinetics.get("verdict_reasons"),
+        "verdict": node_verdict,
+        "verdict_reasons": lead["kinetics"].get("verdict_reasons"),
+        "verdict_scheme_id": lead_key,
+        "next_scheme_id": lead_key if node_verdict not in ("flux_steady", "two_state_fitted") else None,
+        "next_rounds_basis": lead["kinetics"].get("next_rounds_basis"),
+        "convergence": convergence_summary,
         "mode": kinetics.get("mode"),
         "rate_per_s": kinetics.get("rate_per_s"),
         "rate_low_per_s": kinetics.get("rate_low_per_s"),
@@ -476,7 +642,7 @@ def analyze_we(
         "k_ab_per_s": kinetics.get("k_ab_per_s"),
         "k_ba_per_s": kinetics.get("k_ba_per_s"),
         "window": kinetics.get("window"),
-        "next_rounds_suggested": kinetics.get("next_rounds_suggested"),
+        "next_rounds_suggested": lead["kinetics"].get("next_rounds_suggested"),
         "pooled": pooled,
         "burn_in_rounds": first["burn_in_rounds"],
     }
@@ -486,15 +652,21 @@ def analyze_we(
         "code": "ok",
         "job_dir": job_dir,
         "node_id": node_id,
+        # The per-stop history stays in we_kinetics.json / we_convergence.csv.
         "schemes": {key: {"n_rounds": a["n_rounds"], "time_ns": a["time_ns"], "aggregate_ns": a["aggregate_ns"],
-                          "recycle": a["recycle"], "kinetics": a["kinetics"], "burn_in_rounds": a["burn_in_rounds"],
-                          "bins_occupied": len(a["bins"])}
+                          "recycle": a["recycle"],
+                          "kinetics": {**a["kinetics"],
+                                       "convergence": ({k: v for k, v in a["kinetics"]["convergence"].items()
+                                                        if k != "history"}
+                                                       if a["kinetics"].get("convergence") else None)},
+                          "burn_in_rounds": a["burn_in_rounds"], "bins_occupied": len(a["bins"])}
                     for key, a in analyses.items()},
         "pooled": pooled,
-        "verdict": kinetics.get("verdict"),
-        "verdict_reasons": kinetics.get("verdict_reasons"),
+        "verdict": node_verdict,
+        "verdict_reasons": lead["kinetics"].get("verdict_reasons"),
+        "convergence": convergence_summary,
         "artifacts": artifacts,
-        "warnings": [],
+        "warnings": warnings,
     }
 
 

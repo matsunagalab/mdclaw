@@ -533,13 +533,15 @@ def _we_analysis_next(job_dir: str, node_id: str, node: dict) -> Optional[dict]:
         return {"action": "done", "node_id": node_id, "node_type": "analyze",
                 "note": f"verdict {verdict}: the rate is recorded on this node (artifacts/we_kinetics.json)"}
     more = meta.get("next_rounds_suggested") or 20
-    scheme_id = scheme_ids[0]
+    scheme_id = meta.get("next_scheme_id") if meta.get("next_scheme_id") in scheme_ids else scheme_ids[0]
     run = (f"mdclaw run_rounds --job-dir {shlex.quote(job_dir)} --scheme-id {shlex.quote(scheme_id)} "
            f"--max-rounds {int(more)}")
     why = {
         "flux_undersampled": "too few recycling events for an estimate (no rate)",
         "no_target_events": "no walker has reached the target yet (no rate)",
         "flux_transient": "the flux is still rising (the rate is a lower bound)",
+        "rate_not_converged": ("the reported rate still moved by more than the drift tolerance over the second "
+                               "half of the run (see we_convergence.png)"),
         "two_state_unfitted": "the target population could not be fitted",
     }.get(verdict, "the rate is not settled")
     return {"action": "run", "node_type": "analyze", "scheme_id": scheme_id, "stage_tools": ["run_rounds"],

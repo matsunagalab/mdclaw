@@ -1220,7 +1220,8 @@ terminal analyze node turns the recycled flux into a rate. Design notes:
   `cv_spec_invalid`, `cv_selection_invalid`, `cv_box_missing`,
   `cv_trajectory_empty`. Argument errors leave the node pending.
 - `analyze_we(job_dir, node_id, tau_ns=None, burn_in_rounds=None,
-  temperature_kelvin=300.0, n_bootstrap=200, min_events=10)`: terminal analysis over
+  temperature_kelvin=300.0, n_bootstrap=200, min_events=10,
+  drift_tolerance_kt=1.0)`: terminal analysis over
   `we_resample` policy nodes (the latest round is enough; the chain is
   followed back through `metadata.scheme.previous_policy_node_id`). With
   recycling: the per-round flux `F(t)` is fitted with `F_ss (1 - exp(-t/tau))`,
@@ -1247,7 +1248,17 @@ terminal analyze node turns the recycled flux into a rate. Design notes:
   `min_events` recycling events (default 10; `rate` is null — the window
   mean is a fluctuation, not a bound); `flux_transient` otherwise (enough
   events but still rising: a lower bound); `no_target_events` when nothing
-  was recycled. Every non-steady verdict carries `next_rounds_suggested`
+  was recycled. A steady window is not yet a converged rate:
+  `kinetics.convergence` follows the rate the analysis would have reported
+  had the run stopped after each round (`rate_history`: `steady_state_rate`
+  on the rounds up to that one, window choice included; every round of the
+  second half, the first half thinned) and takes its range over the second
+  half of the run, `ln(max k / min k)` in kT of barrier (`history_drift`;
+  `analyze_metadynamics` takes the range of dF(t) the same way); at
+  `drift_tolerance_kt` (1 kT = a factor of e) or more, or with no estimate
+  yet at the middle of the run, `flux_steady` becomes `rate_not_converged`
+  (`next_rounds_suggested` = half the run, 10-50). Every non-steady verdict
+  carries `next_rounds_suggested`
   (two fitted relaxation times, or the rounds that fill the window with
   `min_events` at the observed event rate; 10-50) and the result
   envelope's `next` is then `run_rounds`. A
@@ -1259,10 +1270,16 @@ terminal analyze node turns the recycled flux into a rate. Design notes:
   rate per molar (`k_on` if the target is a bound state). Without
   recycling: the target population is fitted with the two-state relaxation
   (`k_ab`, `k_ba`). Several schemes as parents are analysed separately and
-  pooled (mean, SEM). Artifacts: `we_kinetics` (JSON), `we_iterations`,
-  `we_bins` (weighted bin populations after burn-in, `-kT ln P`),
-  `we_frames` (every frame with its walker weight — the input of any
-  weighted observable), `we_plot`.
+  pooled (mean, SEM); the node's `verdict` is the least settled scheme's
+  (`verdict_scheme_id`; `next` extends `next_scheme_id`), and schemes whose
+  rates differ by the drift tolerance or more draw a `schemes_disagree`
+  warning. Artifacts: `we_kinetics` (JSON, with the per-stop history),
+  `we_iterations`, `we_bins` (weighted bin populations after burn-in,
+  `-kT ln P`), `we_frames` (every frame with its walker weight — the input
+  of any weighted observable), `we_plot` (flux and distribution),
+  `we_convergence` (CSV: scheme, round, rate and interval had the run
+  stopped there) and `we_convergence_plot` (`we_convergence.png`, one panel
+  per scheme, the second half shaded green / red).
 - `analyze/cv.py` (no tool): `normalize_cv_specs`, `compile_cvs`,
   `evaluate_cvs` — the CV evaluators shared by `we_resample` and future
   adaptive schemes. A `distance` inside one molecule is measured on raw
