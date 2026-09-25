@@ -599,6 +599,21 @@ signature, update the relevant section here and the matching skill examples.
   `tempering_report_missing`, `tempering_report_invalid`,
   `tempering_walkers_incompatible`, `tempering_scope_unsupported`,
   `pymbar_not_installed`.
+  With `state_a` / `state_b` (two disjoint RMSD ranges in nm) it also judges
+  the sampling: the observable is the RMSD of the solute backbone (or
+  `rmsd_selection`) to the start structure (or `reference_pdb`, same atom
+  count) after superposing on the protein CA outside the solute (or
+  `align_selection`); dF(A - B) at the reference temperature is followed
+  over `n_time_points` times by MBAR on the rows recorded up to each time,
+  pooled and per run. `sampling_verdict` is `converged` when the pooled dF
+  drifts less than `drift_tolerance_kj_mol` (2.5) over the second half, the
+  runs end within twice that and each state has >= 10 effective frames;
+  a single passing run gives `converged_single_run`; otherwise
+  `not_converged` with `sampling_verdict_reasons`. Artifacts
+  `tempering_delta_f` (CSV) and `tempering_delta_f_plot`, plus an `rmsd_nm`
+  column in the frames table. Direct mode takes `trajectory_files` and
+  `topology_file`. Codes: `tempering_states_invalid`,
+  `tempering_observable_invalid`.
 - `analyze_rmsd(...)`, `analyze_distance(...)`, and `analyze_q_value(...)`:
   write a CSV `time_ns` column only when a DAG-resolved `frame_times_ns`
   artifact exists. Direct and legacy inputs without it produce frame-only CSVs

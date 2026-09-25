@@ -92,6 +92,8 @@ GUARDRAIL_CODES: dict[str, str] = {
     "tempering_report_missing": "The tempering.csv of a run_sst2 segment is gone; rerun that segment or drop it from the parents.",
     "tempering_report_invalid": "The file is not a run_sst2 tempering.csv (needs Step, Aim Temp, E frac and E solvent-solute columns); point at the node's tempering_report artifact.",
     "tempering_walkers_incompatible": "Pool only walkers of one condition: same ladder, reference temperature, solute and fractional terms. Analyze each condition on its own node.",
+    "tempering_states_invalid": "Pass --state-a and --state-b as two disjoint RMSD ranges in nm (lower upper each), chosen from the question, e.g. near the reference 0.0 0.15 vs away from it 0.3 0.6.",
+    "tempering_observable_invalid": "Fix the observable inputs named in the message: the run_sst2 trajectories and the topo topology must exist, selections must match atoms, and --reference-pdb must have the system's atom count (or pass --rmsd-selection / --align-selection).",
     "tempering_scope_unsupported": "Create the analyze node with analysis_data_scope 'production_chain' (or 'segment') and the run_sst2 prod nodes as parents; analyze_tempering pools walkers itself.",
     "pymbar_not_installed": "Run inside the MDClaw runtime image (pymbar is bundled) or install pymbar >= 4 in the environment.",
 

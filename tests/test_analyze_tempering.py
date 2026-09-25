@@ -50,6 +50,7 @@ def _write_walker(
     otf_weights: list[float] | None = None,
     weights_fixed: bool = False,
     visit_top: bool = True,
+    pdb: str | None = None,
 ) -> tuple[Path, Path]:
     """Write tempering.csv / tempering.json of one synthetic walker.
 
@@ -88,7 +89,40 @@ def _write_walker(
         "e_num": np.bincount(rungs, minlength=K).tolist(), "rung": int(rungs[-1]),
         "step": int(steps[-1]), "dt_fs": DT_FS, "solute_atoms": 42,
     }))
+    if pdb is not None:
+        _write_dcd(directory, x[(steps % FRAME_STEPS) == 0], pdb)
     return report, state
+
+
+SHIFT_NM = 5.0   # the RMSD of a frame is x + SHIFT_NM (see _write_dcd)
+
+
+def _write_dcd(directory: Path, x_frames: np.ndarray, pdb: str) -> None:
+    """trajectory.dcd whose solute (the ALA residue of the dipeptide) is
+    translated by x + SHIFT_NM along x while the caps stay put, so the
+    solute RMSD after superposing on the caps is exactly x + SHIFT_NM; and
+    solute_indices.json with the ALA atoms."""
+    md = pytest.importorskip("mdtraj")
+    ref = md.load_pdb(pdb)
+    ala = ref.topology.select("resname ALA")
+    xyz = np.repeat(ref.xyz, len(x_frames), axis=0)
+    xyz[:, ala, 0] += (x_frames + SHIFT_NM)[:, None]
+    md.Trajectory(xyz=xyz, topology=ref.topology).save_dcd(str(directory / "trajectory.dcd"))
+    (directory / "solute_indices.json").write_text(json.dumps([int(i) for i in ala]))
+
+
+def _exact_delta_f(state_a, state_b) -> float:
+    """dF(A - B) at the reference rung for RMSD = x + SHIFT_NM, x ~ N(-c_0, 1)."""
+    from math import erf, log, sqrt
+
+    mu = -_c(0) + SHIFT_NM
+
+    def cdf(v):
+        return 0.5 * (1.0 + erf((v - mu) / sqrt(2.0)))
+
+    pa = cdf(state_a[1]) - cdf(state_a[0])
+    pb = cdf(state_b[1]) - cdf(state_b[0])
+    return -R * LADDER[0] * log(pa / pb)
 
 
 # --------------------------------------------------------------------------- #
@@ -183,7 +217,7 @@ def test_direct_mode_needs_inputs(tmp_path):
 # node mode                                                                   #
 # --------------------------------------------------------------------------- #
 
-def _sst2_dag(tmp_path: Path) -> tuple[Path, dict]:
+def _sst2_dag(tmp_path: Path, pdb: str | None = None) -> tuple[Path, dict]:
     """source -> prep -> solv -> topo -> eq -> two SST2 walkers, walker 1 continued once."""
     from mdclaw._node import complete_node, create_node, init_progress_v3
 
@@ -212,6 +246,8 @@ def _sst2_dag(tmp_path: Path) -> tuple[Path, dict]:
     tart.mkdir(parents=True, exist_ok=True)
     for f in ("system.xml", "topology.pdb", "state.xml"):
         (tart / f).write_text("placeholder")
+    if pdb is not None:
+        (tart / "topology.pdb").write_text(Path(pdb).read_text())
     (tart / "amber_metadata.json").write_text(json.dumps({
         "parameters": {"hmr": False}, "forcefield_provenance": {"protein": "x"}}))
     complete_node(str(jd), topo, {"system_xml": "artifacts/system.xml",
@@ -222,14 +258,18 @@ def _sst2_dag(tmp_path: Path) -> tuple[Path, dict]:
 
     def _sst2_prod(node_id, n_rows, seed, start_step, **walker_kw):
         art = jd / "nodes" / node_id / "artifacts"
-        _write_walker(art, n_rows, seed, **walker_kw)
+        _write_walker(art, n_rows, seed, pdb=pdb, **walker_kw)
         (art / "energy.dat").write_text("placeholder")
         (art / "state.xml").write_text("placeholder")
-        complete_node(str(jd), node_id, {   # no DCD: the frame-count cross-check is skipped
+        artifacts = {   # without pdb no DCD: the frame-count cross-check is skipped
             "energy": "artifacts/energy.dat",
             "state": "artifacts/state.xml", "tempering_report": "artifacts/tempering.csv",
             "tempering_state": "artifacts/tempering.json",
-        }, metadata={
+        }
+        if pdb is not None:
+            artifacts.update({"trajectory": "artifacts/trajectory.dcd",
+                              "solute_indices": "artifacts/solute_indices.json"})
+        complete_node(str(jd), node_id, artifacts, metadata={
             "sampling_method": "sst2", "sampling_role": "tempering",
             "temperature_kelvin": LADDER[0], "temperatures_kelvin": LADDER,
             "timestep_fs": DT_FS, "output_frequency_ps": FRAME_STEPS * DT_FS / 1000.0,
@@ -340,3 +380,122 @@ def test_registered_as_analyze_tool():
 
     assert "analyze_tempering" in TOOLS
     assert getattr(analyze_tempering, "_mdclaw_node_type", None) == "analyze" or True
+
+
+# --------------------------------------------------------------------------- #
+# sampling convergence: dF(A - B) at the reference temperature vs time        #
+# --------------------------------------------------------------------------- #
+
+STATE_A = [1.0, 2.9]
+STATE_B = [3.5, 5.5]
+
+
+def test_sampling_delta_f_matches_the_exact_value(tmp_path, alanine_dipeptide_pdb):
+    pytest.importorskip("pymbar")
+    runs = [_write_walker(tmp_path / f"w{i}", 6000, seed=i, pdb=alanine_dipeptide_pdb) for i in (1, 2)]
+    out = tmp_path / "out"
+    res = analyze_tempering(
+        tempering_report_files=[str(r) for r, _ in runs],
+        tempering_state_files=[str(st) for _, st in runs],
+        output_frequency_ps=FRAME_STEPS * DT_FS / 1000.0,
+        topology_file=alanine_dipeptide_pdb,
+        state_a=[str(v) for v in STATE_A], state_b=[str(v) for v in STATE_B],
+        align_selection="resname ACE NME",
+        _out_dir_override=str(out),
+    )
+    assert res["success"], res
+    exact = _exact_delta_f(STATE_A, STATE_B)
+    assert res["delta_f_kj_mol"] == pytest.approx(exact, abs=0.6)
+    assert res["sampling_verdict"] == "converged", res["sampling_verdict_reasons"]
+    assert res["drift_second_half_kj_mol"] < 2.5
+    assert res["run_spread_kj_mol"] < 5.0
+    # the RMSD column is x + SHIFT_NM; frames at rung 0 centre on -c_0 + SHIFT_NM
+    with open(out / "tempering_frames.csv") as fh:
+        rows = list(csv.DictReader(fh))
+    r0 = np.array([float(r["rmsd_nm"]) for r in rows if r["rung"] == "0"])
+    assert r0.mean() == pytest.approx(-_c(0) + SHIFT_NM, abs=0.15)
+    with open(out / "tempering_delta_f.csv") as fh:
+        series = list(csv.DictReader(fh))
+    assert len(series) == 20 and set(series[0]) == {"time_ns", "delta_f_kj_mol",
+                                                    "delta_f_kj_mol_walker_1", "delta_f_kj_mol_walker_2"}
+    assert float(series[-1]["delta_f_kj_mol"]) == pytest.approx(res["delta_f_kj_mol"], abs=1e-3)
+    assert (out / "tempering_delta_f.png").is_file()
+
+
+def test_sampling_flags_an_unsampled_state(tmp_path, alanine_dipeptide_pdb):
+    pytest.importorskip("pymbar")
+    rep, st = _write_walker(tmp_path / "w", 3000, seed=4, pdb=alanine_dipeptide_pdb)
+    res = analyze_tempering(
+        tempering_report_files=[str(rep)], tempering_state_files=[str(st)],
+        output_frequency_ps=FRAME_STEPS * DT_FS / 1000.0, topology_file=alanine_dipeptide_pdb,
+        state_a=["1.0", "2.9"], state_b=["9.0", "10.0"], align_selection="resname ACE NME",
+        _out_dir_override=str(tmp_path / "out"),
+    )
+    assert res["success"], res
+    assert res["sampling_verdict"] == "not_converged"
+    assert any(r.startswith("state_b_not_sampled") for r in res["sampling_verdict_reasons"])
+    assert any("one run only" in w for w in res["warnings"])
+
+
+@pytest.mark.parametrize("a, b", [
+    (["0.2", "0.5"], ["0.4", "0.9"]),     # overlap
+    (["0.5", "0.2"], ["0.6", "0.9"]),     # upper below lower
+    (["0.2"], ["0.6", "0.9"]),            # one number
+])
+def test_sampling_states_are_validated(tmp_path, a, b):
+    rep, st = _write_walker(tmp_path / "w", 100, seed=1)
+    res = analyze_tempering(tempering_report_files=[str(rep)], tempering_state_files=[str(st)],
+                            state_a=a, state_b=b, _out_dir_override=str(tmp_path / "out"))
+    assert res["success"] is False and res["code"] == "tempering_states_invalid"
+
+
+def test_sampling_needs_both_states(tmp_path):
+    rep, st = _write_walker(tmp_path / "w", 100, seed=1)
+    res = analyze_tempering(tempering_report_files=[str(rep)], tempering_state_files=[str(st)],
+                            state_a=["0.0", "0.2"], _out_dir_override=str(tmp_path / "out"))
+    assert res["success"] is False and res["code"] == "tempering_states_invalid"
+
+
+def test_sampling_node_mode_registers_the_figure(tmp_path, alanine_dipeptide_pdb):
+    pytest.importorskip("pymbar")
+    from mdclaw._node import create_node, read_node
+
+    jd, ids = _sst2_dag(tmp_path, pdb=alanine_dipeptide_pdb)
+    # the dipeptide has no protein framework outside the solute: the default superposition is refused
+    an = create_node(str(jd), "analyze", parent_node_ids=[ids["p1b"], ids["p2"]],
+                     conditions={"analysis_data_scope": "production_chain"})["node_id"]
+    res = analyze_tempering(job_dir=str(jd), node_id=an, state_a=STATE_A, state_b=STATE_B)
+    assert res["success"] is False and res["code"] == "tempering_observable_invalid"
+    assert read_node(str(jd), an)["status"] == "failed"
+
+    an2 = create_node(str(jd), "analyze", parent_node_ids=[ids["p1b"], ids["p2"]],
+                      conditions={"analysis_data_scope": "production_chain"})["node_id"]
+    res = analyze_tempering(job_dir=str(jd), node_id=an2, state_a=[str(v) for v in STATE_A],
+                            state_b=[str(v) for v in STATE_B], align_selection="resname ACE NME")
+    assert res["success"], res
+    node = read_node(str(jd), an2)
+    assert node["status"] == "completed"
+    assert node["artifacts"]["tempering_delta_f_plot"] == "artifacts/tempering_delta_f.png"
+    assert node["artifacts"]["tempering_delta_f"] == "artifacts/tempering_delta_f.csv"
+    assert node["metadata"]["sampling_verdict"] in ("converged", "not_converged")
+    assert node["metadata"]["state_a_nm"] == STATE_A
+    assert res["delta_f_kj_mol"] == pytest.approx(_exact_delta_f(STATE_A, STATE_B), abs=1.0)
+    # the continued run's frames carry the observable from its own DCD
+    with open(jd / "nodes" / an2 / "artifacts" / "tempering_frames.csv") as fh:
+        rows = [r for r in csv.DictReader(fh) if r["node_id"] == ids["p1b"]]
+    assert len(rows) == 400 and all(r["rmsd_nm"] for r in rows)
+
+
+def test_single_run_never_reports_converged(tmp_path, alanine_dipeptide_pdb):
+    pytest.importorskip("pymbar")
+    rep, st = _write_walker(tmp_path / "w", 6000, seed=7, pdb=alanine_dipeptide_pdb)
+    res = analyze_tempering(
+        tempering_report_files=[str(rep)], tempering_state_files=[str(st)],
+        output_frequency_ps=FRAME_STEPS * DT_FS / 1000.0, topology_file=alanine_dipeptide_pdb,
+        state_a=[str(v) for v in STATE_A], state_b=[str(v) for v in STATE_B], align_selection="resname ACE NME",
+        _out_dir_override=str(tmp_path / "out"),
+    )
+    assert res["success"], res
+    assert res["sampling_verdict"] == "converged_single_run", res["sampling_verdict_reasons"]
+    assert res["run_spread_kj_mol"] is None
+    assert res["delta_f_kj_mol"] == pytest.approx(_exact_delta_f(STATE_A, STATE_B), abs=1.0)

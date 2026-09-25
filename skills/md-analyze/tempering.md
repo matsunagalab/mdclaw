@@ -59,6 +59,58 @@ Typical reasons and the action:
 - walkers disagree on `f_k` but each is self-consistent: not enough sampling
   yet; extend every walker with `continue_from` and analyze again.
 
+## Is the sampling converged? dF(t) between two states
+
+The weights verdict says the ladder is working; it does not say the 300 K
+ensemble is converged. For that, name two states of the question as ranges
+of the solute's RMSD in nm (for a loop: near the reference vs away from
+it), and follow their free-energy difference at the reference temperature
+as the simulation grows, with one number and one figure, as for
+metadynamics.
+
+```bash
+mdclaw --job-dir "$JOB" --node-id analyze_002 analyze_tempering \
+  --state-a 0.0 0.15 --state-b 0.25 0.6
+```
+
+The observable is the RMSD of the solute backbone to the start structure
+(the topo node's `topology.pdb`) after superposing on the protein CA atoms
+outside the solute. Change it only when the question needs it:
+`--reference-pdb` (a structure with the same atoms, e.g. a frame of the
+run), `--rmsd-selection`, `--align-selection`. Choose the states from the
+question, not from the shape of the profile; they must be disjoint.
+
+| Key | Meaning |
+|---|---|
+| `delta_f_kj_mol` | dF(A − B) at the reference temperature at the end; the number to report |
+| `drift_second_half_kj_mol` | how much the pooled dF moved over the second half |
+| `run_spread_kj_mol` | how far apart the independent runs (seeds) end; the honest error |
+| `sampling_verdict` | `converged`, `converged_single_run` or `not_converged` with `sampling_verdict_reasons` |
+| `tempering_delta_f.png` | left: dF(t) pooled and per run, the shaded second half is what the verdict reads; right: the 300 K profile along the RMSD, pooled and per run |
+
+`converged` needs the pooled dF to move less than
+`--drift-tolerance-kj-mol` (default 2.5, one kT) over the second half, the
+runs to end within twice that of each other, and at least 10 effective
+frames at the reference temperature in each state.
+
+One SST2 run is one trajectory; "walker" in the output keys means one
+independent run (one seed). One run is allowed, but a run stuck in one basin
+looks steady in time: on 1KXV CDR-H3, seed 2 alone sat at −11 kJ/mol for
+30 ns while seed 1 ended at +6. So a single run that passes the time checks
+reports `converged_single_run`; report it as unconfirmed and, if the answer
+matters, add a second `run_sst2` with another `--random-seed`.
+
+Reasons and actions:
+
+- `runs_disagree`: the runs sample different basins. Extend every run with
+  `continue_from`; if one run never reaches a state the others visit, the
+  solute or ladder is too weak for that barrier (a larger solute, more
+  rungs, a higher top rung).
+- `delta_f_drifting` only: extend every run and analyze again.
+- `state_a_not_sampled` / `state_b_not_sampled`: the state is not reached
+  at the reference temperature; check the ranges against the profile panel
+  before extending.
+
 ## Artifacts
 
 - `weights.json`: the pooled MBAR `f_k` as a plain list. Fixed-weight stage:
@@ -79,6 +131,9 @@ Typical reasons and the action:
 - `tempering_mbar.json`: everything above plus `N_k`, MBAR errors, the
   ladder and the reduced-potential definition.
 - `tempering.png`: rung timeline per walker and the weight deviations.
+- With `--state-a/--state-b`: `tempering_delta_f.csv` (time, pooled dF,
+  dF per run), `tempering_delta_f.png`, and an `rmsd_nm` column in
+  `tempering_frames.csv`.
 
 ## Structural metrics on SST2 data
 

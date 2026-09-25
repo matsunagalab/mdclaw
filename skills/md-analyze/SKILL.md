@@ -60,7 +60,7 @@ Read by task:
   `skills/md-report/SKILL.md`.
 - Collective variables and bias energy from custom-force production runs:
   `skills/md-analyze/collective-variables.md`
-- Solute tempering (`run_sst2`) walkers: MBAR reweighting of all rungs,
+- Solute tempering (`run_sst2`) runs: MBAR reweighting of all rungs, the dF(t) sampling verdict,
   weight convergence verdict, per-frame weights and the fixed-weight handoff:
   `skills/md-analyze/tempering.md` (run it before any metric on SST2 data)
 - Metadynamics (`run_metadynamics`) walkers: dF between two states versus

@@ -7,6 +7,18 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-25 — `analyze_tempering` に SST2 のサンプリング収束判定（dF(t)）を追加
+
+ユーザー要望（metadynamics と同じようにサンプリングの収束を判定する図、SST2 に合った手法で）。`analyze_metadynamics` の「2 状態の dF(t) と後半のドリフト」を SST2 向けに置き換えた。SST2 は CV を持たないので、観測量は solute の主鎖 RMSD（既定: solute の N/CA/C/O、solute 外の蛋白 CA で重ね合わせ、参照は topo の topology.pdb = 出発構造。いずれも上書き可）。`--state-a/--state-b` で RMSD の 2 範囲（nm）を与えると、各時刻までに記録された行だけで MBAR を解き直して 300 K の dF(A − B) を時刻の関数にする（全 run プールと run 単独の両方、既定 20 点）。判定 `sampling_verdict`: プール dF の後半ドリフト < 2.5 kJ/mol、run 間の最終値の差 < 5 kJ/mol、両状態の 300 K 有効フレーム ≥ 10 で `converged`。成果物 `tempering_delta_f.csv` / `.png`（左 dF(t)、右 300 K の RMSD プロファイル、プールと run ごと）、frames 表に `rmsd_nm` 列。
+
+用語の訂正（ユーザー指摘）: SST2 は 1 本の軌跡が rung を渡る単一 walker の方法で、metadynamics のような結合した walker は無い。出力キーの "walker" は「独立な run（seed）」の意味で、図と skill では run と書く。
+
+1 run の扱い（ユーザー指摘「1 本だけのこともある」）: 1KXV H3 のみで確かめると、seed 2（prod_011）単独は 17 ns 以降 dF ≈ −11 kJ/mol で平坦、後半ドリフトも小さく時間方向の検査は通るが、seed 1（prod_008）は +6 で終わる（プールは −1.3、後半ドリフト 6.8、run 差 17.2 → `not_converged`）。1 本の軌跡が 1 つの basin に留まると時間方向には自己無撞着に見えるので、1 run で検査を通った場合は `converged` ではなく `converged_single_run` を返すようにした（skill では「未確認として報告、必要なら別 seed を追加」）。
+
+検証: RMSD を合成ガウス模型の座標に結び付けた（alanine dipeptide の ALA を x + 5 nm 並進、キャップで重ね合わせ）DCD で dF が厳密値 −0.94 に対し −0.92 kJ/mol。途中で見つけたバグ: direct mode では 2 本の run の node_id が同じ（レポートの祖父ディレクトリ名）になり、観測量のキャッシュを node_id で引いたため run 2 に run 1 の軌跡が使われていた。軌跡パスで引くよう修正。テスト 17 本 pass。1KXV（2 run × 50 ns、10,000 フレーム）で 33 秒、analyze_004–006 に結果。
+
+---
+
 ## 2026-09-25 — `analyze_we` の収束判定: 「その時点で止めていたら報告された速度」の後半での動き（metadynamics の dF(t) に対応）
 
 ユーザー要望（metadynamics と同じようにサンプリングの収束を判定する図、WE に合った手法で）。`analyze_metadynamics` の設計（1 つの数値 = 後半での dF(t) の範囲、1 枚の図 = dF(t)、後半を緑 / 赤で塗る、許容 1 kT）に合わせた:
