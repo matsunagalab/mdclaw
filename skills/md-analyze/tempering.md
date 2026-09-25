@@ -86,7 +86,7 @@ question, not from the shape of the profile; they must be disjoint.
 | `drift_second_half_kj_mol` | how much the pooled dF moved over the second half |
 | `run_spread_kj_mol` | how far apart the independent runs (seeds) end; the honest error |
 | `sampling_verdict` | `converged`, `converged_single_run` or `not_converged` with `sampling_verdict_reasons` |
-| `tempering_delta_f.png` | the headline says the verdict; left: F(A) − F(B) as the run grows, pooled (black) and each run, with the allowed band over the second half; right: the 300 K profile along the RMSD with A and B marked; bottom: the three checks with their numbers and limits |
+| `tempering_delta_f.png` | dF(t): black all runs pooled, thin lines each run alone; the shaded second half is what the verdict reads (green converged, red otherwise) |
 
 `converged` needs the pooled dF to move less than
 `--drift-tolerance-kj-mol` (default 2.5, one kT) over the second half, the
