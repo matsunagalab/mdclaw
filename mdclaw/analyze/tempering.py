@@ -340,6 +340,16 @@ def _observable_atoms(topology_file: str, solute: list[int], rmsd_selection: Opt
         if idx.size == 0:
             raise TemperingAnalysisError(code="tempering_observable_invalid",
                                          message=f"{what} {expr!r} matched no atoms in {topology_file}")
+        # resSeq / resid in the mdtraj DSL count over the whole system, so "resSeq 98 to 110 and name O"
+        # also picks the water oxygens numbered 98-110; refuse instead of measuring the solvent.
+        solvent = [int(i) for i in idx if top.atom(int(i)).residue.is_water or top.atom(int(i)).residue.n_atoms == 1]
+        if solvent:
+            res = top.atom(solvent[0]).residue
+            raise TemperingAnalysisError(
+                code="tempering_observable_invalid",
+                message=f"{what} {expr!r} picks {len(solvent)} water or ion atoms (first: {res}); "
+                "restrict it, e.g. 'protein and resSeq 98 to 110 and name N CA C O'",
+            )
         return idx
 
     solute_set = set(int(i) for i in solute)

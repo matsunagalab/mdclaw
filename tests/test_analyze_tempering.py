@@ -499,3 +499,32 @@ def test_single_run_never_reports_converged(tmp_path, alanine_dipeptide_pdb):
     assert res["sampling_verdict"] == "converged_single_run", res["sampling_verdict_reasons"]
     assert res["run_spread_kj_mol"] is None
     assert res["delta_f_kj_mol"] == pytest.approx(_exact_delta_f(STATE_A, STATE_B), abs=1.0)
+
+
+def test_observable_selection_refuses_solvent(tmp_path):
+    pytest.importorskip("mdtraj")
+    from mdclaw.analyze.tempering import TemperingAnalysisError, _observable_atoms
+
+    # a two-residue peptide plus a water that shares residue number 2
+    lines = [
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N",
+        "ATOM      2  CA  ALA A   1       1.458   0.000   0.000  1.00  0.00           C",
+        "ATOM      3  C   ALA A   1       2.009   1.420   0.000  1.00  0.00           C",
+        "ATOM      4  O   ALA A   1       1.251   2.390   0.000  1.00  0.00           O",
+        "ATOM      5  N   ALA A   2       3.332   1.536   0.000  1.00  0.00           N",
+        "ATOM      6  CA  ALA A   2       3.970   2.846   0.000  1.00  0.00           C",
+        "ATOM      7  C   ALA A   2       5.486   2.705   0.000  1.00  0.00           C",
+        "ATOM      8  O   ALA A   2       6.009   1.593   0.000  1.00  0.00           O",
+        "TER",
+        "HETATM    9  O   HOH B   2      10.000  10.000  10.000  1.00  0.00           O",
+        "HETATM   10  H1  HOH B   2      10.957  10.000  10.000  1.00  0.00           H",
+        "HETATM   11  H2  HOH B   2       9.760  10.927  10.000  1.00  0.00           H",
+        "END",
+    ]
+    pdb = tmp_path / "pep_water.pdb"
+    pdb.write_text("\n".join(lines) + "\n")
+    with pytest.raises(TemperingAnalysisError) as exc:
+        _observable_atoms(str(pdb), [4, 5, 6, 7], "resSeq 2 and name N CA C O", "resSeq 1")
+    assert exc.value.code == "tempering_observable_invalid" and "water or ion" in str(exc.value)
+    rmsd_idx, _ = _observable_atoms(str(pdb), [4, 5, 6, 7], "protein and resSeq 2 and name N CA C O", "resSeq 1")
+    assert rmsd_idx.tolist() == [4, 5, 6, 7]
