@@ -36,7 +36,7 @@ Before every state-changing command in this skill:
    `add_boresch_restraint`: its `fep` nodes are children of that `topo` node.
    A `fep` node under the leg's `eq` is refused (`abfe_restraint_required`). The tool chooses the restraint atoms;
    do not pick them.
-5. `run_fep` runs on a GPU (`--platform CUDA`). The defaults are 23 windows
+5. `run_fep` runs on a GPU (`--platform CUDA`). The defaults are 24 windows
    (complex) and 18 (solvent); never start them on CPU.
 6. Never quote a binding free energy except from a completed
    `estimate_binding_dg` node whose two `analyze_fep` parents each have
@@ -51,7 +51,7 @@ Before every state-changing command in this skill:
 | Execution mode | `autonomous` / `human_in_the_loop` |
 | Solvent regime | `explicit` (implicit is not supported) |
 | Sampling per window | user-specified; autonomous default 1 ns (sanity) |
-| Ligand symmetry number | 1 unless the ligand has indistinguishable orientations (benzene: 12) |
+| Ligand symmetry number | 1 unless the ligand has indistinguishable orientations it did **not** visit during the restraint selection run (the `boresch.statistics.reorients` flag); a ligand that turned there gets 1 |
 
 Autonomous default: proceed without asking when exactly one neutral ligand is
 kept.
@@ -112,9 +112,13 @@ source ─ prep_001 ─ solv ─ topo(decoupled) ─ min ─ eq ─ topo(boresch
    ```
 
    It samples the complex for 200 ps, anchors three ligand heavy atoms to three
-   backbone atoms, and writes the restrained topology plus the 23-window
+   backbone atoms, and writes the restrained topology plus the 24-window
    protocol. Report the `boresch` block (atoms, reference values, fluctuation
-   statistics). On `abfe_restraint_unstable` see the table below.
+   statistics). A warning that the ligand *turns* in its site (benzene
+   spinning in a cavity) is not a failure: the restraint holds the most
+   populated orientation and the restrain phase pays for confining it; pass
+   `--ligand-symmetry-number 1` at step 7. On `abfe_restraint_unstable` see
+   the table below.
 
 5. **Sample and analyse the complex leg** as in `skills/md-fep/SKILL.md`
    step 4–5, with the `fep` nodes **under the topo of step 4**
@@ -152,7 +156,7 @@ Options that change the physics, identical on both legs unless stated:
 | `--elec-lambdas`, `--sterics-lambdas` | `build_decoupled_system` | a phase shows `min_neighbour_overlap < 0.03`; add values there, on both legs |
 | `--restraint-lambdas` | `add_boresch_restraint` | low overlap inside the `restrain` phase (complex leg only) |
 | `--sampling-time-ps` | `add_boresch_restraint` | a flexible ligand whose pose needs longer to characterise |
-| `--ligand-symmetry-number N` | `estimate_binding_dg` | the restraint confines the ligand to one of N indistinguishable orientations |
+| `--ligand-symmetry-number N` | `estimate_binding_dg` | the restraint confines the ligand to one of N indistinguishable orientations that it never visited during the selection run; refused (`abfe_symmetry_already_sampled`) when the ligand turned there |
 
 ## What to report
 
@@ -169,7 +173,8 @@ is not included and that the result is for the prepared pose.
 | `abfe_charged_ligand_unsupported`, `abfe_ligand_covalent`, `abfe_ligand_too_small` | Out of scope. Report; do not alter the ligand. |
 | `abfe_restraint_required` | The `fep` node is under the complex leg's `eq`; do step 4 and create the `fep` node under that `topo`. Retire the misplaced node (`update_workflow_state --abandon`). |
 | `fep_equilibration_required` | The `fep` node has no equilibrated ancestor; run min → eq first. |
-| `abfe_restraint_unstable` | The pose moves too much. Add an `eq → eq` node (longer NPT), then a new `topo` under it with `add_boresch_restraint`. If it fails again, report that the pose is not stable. |
+| `abfe_restraint_unstable` | The ligand leaves the site. Add an `eq → eq` node (longer NPT), then a new `topo` under it with `add_boresch_restraint`. If it fails again, report that the pose is not stable. |
+| `abfe_symmetry_already_sampled` | The ligand turned in its site during the selection run; rerun `estimate_binding_dg` with `--ligand-symmetry-number 1` and report unvisited orientations as uncorrected. |
 | `abfe_topology_required` | `add_boresch_restraint` runs once, on a `topo` whose parent is the complex leg's completed `eq`. |
 | `abfe_receptor_missing` | This is the solvent leg; it takes no restraint. Run `run_fep` under its `eq`. |
 | `abfe_ligand_prep_required` | `extract_ligand` needs the complex's `prep` node as parent. |

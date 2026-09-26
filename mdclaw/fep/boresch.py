@@ -17,7 +17,8 @@ Atom selection is done here, from frames of the equilibrated complex, and
 never left to the caller: candidates are scored by how far the six
 coordinates fluctuate in units of their thermal width, angles near 0 / 180
 degrees (where the Jacobian and the dihedrals degenerate) are excluded, and
-a pose that does not hold still is refused rather than restrained.
+a ligand that leaves the site is refused rather than restrained; one that
+stays but turns is restrained to its most populated orientation.
 """
 
 from __future__ import annotations
@@ -137,6 +138,21 @@ def _circular_mean_std(values: np.ndarray) -> tuple[float, float]:
     return mean, float(np.sqrt((wrapped ** 2).mean()))
 
 
+def _modal_frame(angles: np.ndarray, bandwidths: np.ndarray) -> int:
+    """Index of the frame at which the joint kernel density of the five
+    periodic coordinates peaks: the orientation the ligand adopts most.
+
+    A ligand that spins in its site puts the coordinates into several wells
+    at once; the circular mean of each series lies between its wells, where
+    the ligand never is, and the modes of the coordinates taken one by one
+    can combine into an orientation that was never adopted either. One frame
+    is a pose that exists (Mobley 2006 took Boresch references from histogram
+    modes for the same reason). ``bandwidths`` are the thermal widths."""
+    delta = (angles[:, None, :] - angles[None, :, :] + np.pi) % (2 * np.pi) - np.pi
+    density = np.exp(-0.5 * ((delta / bandwidths) ** 2).sum(axis=2)).sum(axis=1)
+    return int(np.argmax(density))
+
+
 # --------------------------------------------------------------------------- #
 # Selection                                                                     #
 # --------------------------------------------------------------------------- #
@@ -235,36 +251,45 @@ def select_boresch_restraint(
                 rejected["distance"] += 1
         for rec in near:
             series = boresch_coordinates(frames, boxes_nm, rec, lig)
-            means, stds = np.empty(6), np.empty(6)
+            means, stds, refs = np.empty(6), np.empty(6), np.empty(6)
             means[0], stds[0] = series[:, 0].mean(), series[:, 0].std()
+            refs[0] = means[0]
             for k in range(1, 6):
                 means[k], stds[k] = _circular_mean_std(series[:, k])
-            if not (lo <= means[1] <= hi and lo <= means[2] <= hi):
+            refs[1:] = series[_modal_frame(series[:, 1:], thermal[1:]), 1:]
+            if not (lo <= refs[1] <= hi and lo <= refs[2] <= hi):
                 rejected["angle"] += 1
                 continue
             score = float(((stds / thermal) ** 2).sum())
             if best is None or score < best[0]:
-                best = (score, rec, lig, means, stds)
+                best = (score, rec, lig, means, stds, refs)
     if best is None:
         raise BoreschError(
             code="abfe_restraint_unstable",
             message=f"no receptor backbone within {DISTANCE_RANGE_NM[0]}-{DISTANCE_RANGE_NM[1]} nm of the ligand gives "
             f"angles inside [{MIN_ANGLE_DEG:.0f}, {180 - MIN_ANGLE_DEG:.0f}] degrees (rejected: {rejected}); is the "
             "ligand in the binding site?")
-    score, rec, lig, means, stds = best
-    if stds[0] > MAX_DISTANCE_STD_NM or math.degrees(stds[1:].max()) > MAX_ANGLE_STD_DEG:
+    score, rec, lig, means, stds, refs = best
+    if stds[0] > MAX_DISTANCE_STD_NM:
         raise BoreschError(
             code="abfe_restraint_unstable",
-            message=f"the pose does not hold still: best anchor has std(r) = {stds[0]:.3f} nm and max angular std = "
-            f"{math.degrees(stds[1:].max()):.1f} deg (limits {MAX_DISTANCE_STD_NM} nm / {MAX_ANGLE_STD_DEG} deg). "
-            "Equilibrate longer, or check that the ligand is bound in this pose")
+            message=f"the ligand does not stay in the site: best anchor has std(r) = {stds[0]:.3f} nm "
+            f"(limit {MAX_DISTANCE_STD_NM} nm). Equilibrate longer, or check that the ligand is bound in this pose")
     names = ("r_nm", "theta_a_rad", "theta_b_rad", "phi_a_rad", "phi_b_rad", "phi_c_rad")
+    # A ligand that stays put but turns in the site (benzene spinning in the
+    # T4L cavity: r std 0.03 nm, one dihedral std 86 deg) is restrained to the
+    # orientation it adopts most, not refused: the restrain phase of the FEP
+    # then pays the cost of confining it, so the estimate must not add a
+    # symmetry correction for orientations that were sampled here.
+    reorienting = [names[k] for k in range(1, 6) if math.degrees(stds[k]) > MAX_ANGLE_STD_DEG]
     return BoreschRestraint(
         receptor_atoms=tuple(int(i) for i in rec), ligand_atoms=tuple(int(i) for i in lig),
-        r0_nm=float(means[0]), theta_a0=float(means[1]), theta_b0=float(means[2]),
-        phi_a0=float(means[3]), phi_b0=float(means[4]), phi_c0=float(means[5]),
+        r0_nm=float(refs[0]), theta_a0=float(refs[1]), theta_b0=float(refs[2]),
+        phi_a0=float(refs[3]), phi_b0=float(refs[4]), phi_c0=float(refs[5]),
         k_distance=float(k_distance), k_angle=float(k_angle),
         statistics={"n_frames": int(len(frames)), "score": score,
+                    "reference": "distance mean; angles from the most populated orientation of the selection run",
+                    "reorients": bool(reorienting), "reorienting_coordinates": reorienting,
                     "mean": dict(zip(names, (float(x) for x in means))),
                     "std": dict(zip(names, (float(x) for x in stds))),
                     "thermal_width": dict(zip(names, (float(x) for x in thermal)))},

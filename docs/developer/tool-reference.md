@@ -869,7 +869,7 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
   (`abfe_restraint_unstable`). Ligand bonds come from the System
   (`bonded_pairs`), since `topology.pdb` has no CONECT records. Re-issues the
   XML triple with one `CustomCompoundBondForce` scaled by the global
-  `fep_restraint` (default 1) and writes the 23-window protocol (`restrain`,
+  `fep_restraint` (default 1) and writes the 24-window protocol (`restrain`,
   `decharge`, `decouple_sterics`; `--restraint-lambdas`). Protocols now name
   their parameters (`global_parameters`, `protocol_parameter_names`) and may
   name their `phases`.
@@ -881,7 +881,9 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
   nodes; legs identified from each leg's manifest): `dG_bind = dG_solvent -
   dG_complex + dG_restraint - kT ln(sigma)` with the analytic Boresch term
   (`standard_state_restraint_free_energy`, 1 M) and
-  `--ligand-symmetry-number`. `abfe_legs_invalid` / `abfe_legs_incompatible`
+  `--ligand-symmetry-number` (refused as `abfe_symmetry_already_sampled` when
+  the ligand turned in its site during the selection run, since the restrain
+  phase already paid for that). `abfe_legs_invalid` / `abfe_legs_incompatible`
   otherwise. Writes `artifacts/binding_dg.json`, `analysis = "abfe_binding"`.
 
 ## `visualization/`

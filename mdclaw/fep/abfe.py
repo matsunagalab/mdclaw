@@ -34,6 +34,7 @@ from mdclaw._tool_meta import node_tool
 from mdclaw.fep.boresch import (
     DEFAULT_K_ANGLE,
     DEFAULT_K_DISTANCE,
+    MAX_ANGLE_STD_DEG,
     RESTRAINT_PARAMETER,
     BoreschError,
     BoreschRestraint,
@@ -57,7 +58,9 @@ _KB = 0.008314462618
 
 DEFAULT_ELEC_LAMBDAS = (1.0, 0.75, 0.5, 0.25, 0.0)
 DEFAULT_STERICS_LAMBDAS = (1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1, 0.05, 0.0)
-DEFAULT_RESTRAINT_LAMBDAS = (0.0, 0.02, 0.08, 0.2, 0.5, 1.0)
+# 0.04 sits where a ligand that turns in its site is confined to one well
+# (angular width 70 -> 50 -> 35 deg over 0.02 / 0.04 / 0.08 at the default k_angle).
+DEFAULT_RESTRAINT_LAMBDAS = (0.0, 0.02, 0.04, 0.08, 0.2, 0.5, 1.0)
 
 _SOLVENT_RESIDUES = frozenset({"HOH", "WAT", "TIP3", "TIP", "SOL", "H2O", "OPC", "TP3", "SPC"})
 
@@ -651,7 +654,7 @@ def add_boresch_restraint(
 
     Args:
         restraint_lambdas: ``fep_restraint`` from 0 to 1
-            (default ``0,0.02,0.08,0.2,0.5,1``).
+            (default ``0,0.02,0.04,0.08,0.2,0.5,1``).
         sampling_time_ps / frame_interval_ps: length and stride of the
             selection run (default 200 ps, one frame every 2 ps).
         temperature_kelvin: temperature of the selection run and of the
@@ -779,6 +782,13 @@ def add_boresch_restraint(
                "selection_run": {"sampling_time_ps": sampling_time_ps, "frame_interval_ps": frame_interval_ps,
                                  "temperature_kelvin": temperature_kelvin}}
     dg_restraint = standard_state_restraint_free_energy(restraint, temperature_kelvin)
+    if restraint.statistics.get("reorients"):
+        turning = ", ".join(restraint.statistics.get("reorienting_coordinates") or [])
+        result["warnings"].append(
+            f"the ligand stays in the site but turns there during the {sampling_time_ps:.0f} ps selection run "
+            f"(angular std above {MAX_ANGLE_STD_DEG:.0f} deg in {turning}); the restraint holds its most populated "
+            "orientation, and the restrain phase of the FEP pays for confining it. Do not add a ligand symmetry "
+            "number for orientations sampled here: estimate_binding_dg refuses --ligand-symmetry-number > 1 on this leg")
     schedules = {**manifest["schedules"], "restraint_lambdas": lambdas}
     new_manifest = {**manifest, "boresch": boresch, "schedules": schedules, "restraint_required": False,
                     "derived_from_topo_node_id": parent_topo_id,
@@ -954,6 +964,13 @@ def estimate_binding_dg(
             raise AbfeError(code="abfe_legs_invalid",
                             message="the complex leg carries no Boresch restraint; it must be sampled on the topology "
                             "written by add_boresch_restraint")
+        reorients = bool((man_c["boresch"].get("statistics") or {}).get("reorients"))
+        if reorients and ligand_symmetry_number > 1:
+            raise AbfeError(code="abfe_symmetry_already_sampled",
+                            message=f"ligand_symmetry_number={ligand_symmetry_number} would count orientations twice: the "
+                            "ligand turned in its site during the restraint selection run, so the restrain phase of the "
+                            "complex leg already contains the cost of confining it to one orientation. Rerun with "
+                            "--ligand-symmetry-number 1 (orientations the ligand did not visit remain uncorrected)")
         mismatches = []
         for key, a, b in [("ligand", (man_c.get("ligand") or {}).get("residue_name"), (man_s.get("ligand") or {}).get("residue_name")),
                           ("ligand smiles", (man_c.get("ligand") or {}).get("smiles"), (man_s.get("ligand") or {}).get("smiles")),
@@ -985,6 +1002,11 @@ def estimate_binding_dg(
     err = math.sqrt(leg_s.get("dG_error_kj_mol", 0.0) ** 2 + leg_c.get("dG_error_kj_mol", 0.0) ** 2)
     for label, leg in ((LEG_COMPLEX, leg_c), (LEG_SOLVENT, leg_s)):
         result["warnings"].extend(f"[{label}] {w}" for w in leg.get("warnings") or [])
+    if reorients:
+        result["warnings"].append(
+            "the ligand turned in its site before the restraint was chosen, so sampled orientations are paid for in the "
+            "restrain phase and no symmetry correction is applied; any equivalent orientation the ligand never "
+            "visited (e.g. a flip of a planar ring) is not corrected for (at most kT ln 2 per unsampled twofold)")
 
     def _block(path: str, leg: dict, node: Optional[str]) -> dict:
         return {"file": str(Path(path).resolve()), "node_id": node, "dG_kj_mol": leg["dG_kj_mol"],
@@ -1002,6 +1024,7 @@ def estimate_binding_dg(
         "terms_kj_mol": {"solvent_leg": leg_s["dG_kj_mol"], "complex_leg": leg_c["dG_kj_mol"],
                          "restraint_standard_state": dg_restraint, "ligand_symmetry": dg_symmetry},
         "temperature_kelvin": temperature, "ligand_symmetry_number": ligand_symmetry_number,
+        "ligand_reorients_in_site": reorients,
         "boresch": man_c["boresch"],
         "legs": {LEG_COMPLEX: _block(complex, leg_c, leg_nodes[LEG_COMPLEX]),
                  LEG_SOLVENT: _block(solvent, leg_s, leg_nodes[LEG_SOLVENT])},

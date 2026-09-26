@@ -37,15 +37,15 @@ source ─ prep ─ solv ─ topo[build_decoupled_system] ─ min ─ eq ─ top
 | leg の判定 | 中身から自動（リガンド・水・単原子イオン以外があれば complex） | エージェントの判断点を作らない |
 | 電荷の扱い | 静電は **annihilate**（電荷を 0 へ。分子内クーロンも消える）、立体は **decouple**（リガンド内 LJ は別の `CustomNonbondedForce` で常時フル） | openmmtools / YANK の既定。PME 下で静電を decouple するには分子内の全ペアを別の力で足し戻す必要がある。分子内クーロンの消失分は両 leg で同一なので結合自由エネルギーでは相殺。**単独の solvent leg は水和自由エネルギーではない**（真空 leg が要る） |
 | λ の契約 | hybrid の 5 parameter のうち `fep_elec_old` / `fep_sterics_old` を流用（残りは宣言して 0 固定）、complex は 6 番目 `fep_restraint`。protocol が `global_parameters` と `phases` を自分で名乗る | `run_fep` / `analyze_fep` を ABFE 用に分岐させない。窓は明示的な parameter 値を持つので順序（拘束 on → 電荷 off → 立体 off）は protocol ファイルが契約 |
-| 既定の窓 | 拘束 `0,0.02,0.08,0.2,0.5,1`、電荷 `1,0.75,0.5,0.25,0`、立体 14 点（0 付近を密に）→ complex 23 窓、solvent 18 窓 | 電荷は立体が完全に on のうちに消す（裸の電荷がソフトコア内に入らない） |
+| 既定の窓 | 拘束 `0,0.02,0.04,0.08,0.2,0.5,1`（0.04 は回転するリガンドが 1 つの井戸に絞られる区間。実効角度幅 70 → 50 → 35°）、電荷 `1,0.75,0.5,0.25,0`、立体 14 点（0 付近を密に）→ complex 24 窓、solvent 18 窓 | 電荷は立体が完全に on のうちに消す（裸の電荷がソフトコア内に入らない） |
 
 ## 3. Boresch 原子の選択（ツール側で完結）
 
 1. eq の state から結合状態（拘束なし）で 200 ps の NVT を走らせ、2 ps ごとにフレームを取る。
 2. リガンド側: 結合した重原子 3 つの鎖 (A, B, C)。A は重原子重心に近い順に最大 4 候補、B は A の隣接で次数最大、C は B（なければ A）の隣接。結合は **System の結合項と拘束から取る**（`topology.pdb` は CONECT を持たず、非標準残基は読み戻すと無結合になる — 3PWB の実走で判明）。
 3. 受容体側: 各残基の主鎖 (c, b, a) = (N, C, CA)。a–A の初期距離が 0.4–1.5 nm のものだけ。
-4. 6 座標の時系列（最小像、二面角は円周統計）から、θA・θB の平均が [40°, 140°] に入る候補だけ残し、Σ(std / 熱的幅)² が最小の組を採る。基準値は平均。
-5. 最良候補でも std(r) > 0.15 nm または角度 std > 25° なら `abfe_restraint_unstable` で拒否（拘束を書かない）。
+4. 6 座標の時系列（最小像、二面角は円周統計）から、θA・θB の基準値が [40°, 140°] に入る候補だけ残し、Σ(std / 熱的幅)² が最小の組を採る。基準値は距離が平均、角度は**最も多い向きのフレームの値**（5 つの周期座標の同時カーネル密度が最大のフレーム。帯域幅は熱的幅。座標ごとの最頻値を組み合わせると実在しない向きになりうるので 1 フレームから取る。Mobley 2006 のヒストグラム最頻値と同じ考え）。
+5. 最良候補でも std(r) > 0.15 nm なら `abfe_restraint_unstable` で拒否（リガンドが部位を離れている）。角度 std > 25° は拒否しない: 部位に留まったまま向きを変えるリガンド（T4L 空洞のベンゼン: r std 0.03 nm、面内回転で二面角 1 つの std 86°、200 ps で 6 つの等価な向きを 103 回乗り換え）は最も多い向きに拘束し、`statistics.reorients` と該当座標を記録して警告を出す。閉じ込めのコストは拘束相の FEP が払うので、`estimate_binding_dg` はこの leg で σ > 1 を `abfe_symmetry_already_sampled` として拒否する（サンプリングされた向きの二重計上を防ぐ）。選択実行で訪れなかった等価な向き（平面環の裏返しなど）は補正しない近似で、1 つの 2 回対称につき最大 kT ln 2 = 0.42 kcal/mol。9/26 までの実装は角度 std > 25° も拒否しており、ベンゼンで「平衡化を延ばせ」と誤った案内を出していた。
 
 内部座標の符号規約は OpenMM の `distance/angle/dihedral` と一致させてある。最初の実装は二面角の符号が逆で、
 「測った基準値で力のエネルギーが 0 になる」テストがそれを捕まえた（`test_coordinates_follow_openmm_conventions`）。
@@ -92,14 +92,13 @@ ABFE の定番ベンチマーク。実験値 **−5.19 kcal/mol**（Morton et al
    `skills/md-fep/windows.md`）→ `analyze_fep`。
 4. solvent leg: `extract_ligand --ligand BNZ` → `solvate_structure --dist 12` → `build_decoupled_system` → min → eq
    → `run_fep`（18 窓 × 2 ns）→ `analyze_fep`。
-5. `estimate_binding_dg --ligand-symmetry-number 12`。
+5. `estimate_binding_dg --ligand-symmetry-number 1`（ベンゼンは選択実行で回転するので σ は付けない）。
 
 報告してほしいもの:
 
 - `dG_bind_kcal_mol ± error` と `terms_kj_mol` の 4 項、各 leg の `phases`、`min_neighbour_overlap`、窓あたりのサンプリング時間。
 - `add_boresch_restraint` の `boresch` ブロック（選ばれた 6 原子の名前、r0・角度、`statistics.std`）。
-  **ベンゼンは空洞内で面内回転する**ので `abfe_restraint_unstable` が出る可能性がある。出た場合はその数値
-  （std）ごと報告してほしい（しきい値 25° の妥当性の最初の実データになる）。
+  **ベンゼンは空洞内で面内回転する**ので `reorients` の警告が出る。その場合 σ は 1（`--ligand-symmetry-number 12` は拒否される）。
 - 収束: 窓あたり時間を半分にしたときの dG_bind の変化、`restrain` 相の overlap。
 - 拒否や案内（`code` / `next_action` / `next`）で次の一手が決まらなかった箇所。
 

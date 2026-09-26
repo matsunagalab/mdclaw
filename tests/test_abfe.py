@@ -202,6 +202,42 @@ def test_selection_anchors_bonded_heavy_atoms_to_a_backbone():
     assert BoreschRestraint.from_json(restraint.to_json()).ligand_atoms == restraint.ligand_atoms
 
 
+def _spinning_frames(n=100, seed=2):
+    """The ligand stays put but turns about its own centroid: every frame a
+    fresh random rotation about a fixed axis (benzene spinning in the T4L
+    cavity: r std 0.03 nm, one dihedral std 86 deg, 103 well hops in 200 ps)."""
+    rng = np.random.default_rng(seed)
+    frames = _frames(0.005, n=n, seed=seed)
+    axis = np.array([0.3, 0.2, 0.93]) / np.linalg.norm([0.3, 0.2, 0.93])
+    for f in range(n):
+        lig = frames[f, 16:]
+        centre = lig.mean(axis=0)
+        ang = rng.uniform(0, 2 * math.pi)
+        k = axis
+        K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+        R = np.eye(3) + math.sin(ang) * K + (1 - math.cos(ang)) * K @ K
+        frames[f, 16:] = (lig - centre) @ R.T + centre
+    return frames
+
+
+def test_a_ligand_that_turns_in_place_is_restrained_at_its_mode_not_refused():
+    from mdclaw.fep.boresch import boresch_coordinates, select_boresch_restraint
+
+    top, ligand = _complex_topology()
+    frames = _spinning_frames()
+    restraint = select_boresch_restraint(top, frames, None, ligand)
+    stats = restraint.statistics
+    assert stats["reorients"] is True
+    assert stats["reorienting_coordinates"], stats
+    assert all(math.degrees(stats["std"][c]) > 25 for c in stats["reorienting_coordinates"])
+    assert stats["std"]["r_nm"] < 0.15
+    # the angular references are values the ligand adopted, not a mean between wells
+    series = boresch_coordinates(frames, None, restraint.receptor_atoms, restraint.ligand_atoms)
+    refs = np.array([restraint.theta_a0, restraint.theta_b0, restraint.phi_a0, restraint.phi_b0, restraint.phi_c0])
+    assert any(np.allclose(row[1:], refs, atol=1e-9) for row in series)
+    assert math.radians(40) <= restraint.theta_a0 <= math.radians(140)
+
+
 def test_selection_refuses_instead_of_restraining_a_loose_pose():
     from mdclaw.fep.boresch import select_boresch_restraint
 
@@ -380,6 +416,16 @@ def test_binding_free_energy_closes_the_cycle(tmp_path):
     assert res["terms_kj_mol"]["restraint_standard_state"] == pytest.approx(dg_r)
     twelve = estimate_binding_dg(complex=complex_leg, solvent=solvent_leg, ligand_symmetry_number=12, output_file=str(out))
     assert twelve["dG_bind_kj_mol"] == pytest.approx(res["dG_bind_kj_mol"] - KB_KJ_MOL_K * 300.0 * math.log(12))
+
+    # a ligand that turned in its site has its sampled orientations paid for in
+    # the restrain phase: a symmetry number on top would count them twice
+    turning = _restraint(statistics={"reorients": True, "reorienting_coordinates": ["phi_b_rad"]})
+    turning_leg = _leg_file(tmp_path, "turning", "complex", 60.0, boresch=turning.to_json())
+    twice = estimate_binding_dg(complex=turning_leg, solvent=solvent_leg, ligand_symmetry_number=12, output_file=str(out))
+    assert twice["success"] is False and twice["code"] == "abfe_symmetry_already_sampled", twice
+    once = estimate_binding_dg(complex=turning_leg, solvent=solvent_leg, ligand_symmetry_number=1, output_file=str(out))
+    assert once["success"] and once["ligand_reorients_in_site"] is True
+    assert any("no symmetry correction" in w for w in once["warnings"])
 
     for kwargs, code in (
         (dict(complex=solvent_leg, solvent=complex_leg), "abfe_legs_invalid"),                      # swapped
