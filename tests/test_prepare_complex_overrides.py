@@ -86,7 +86,6 @@ def test_prepare_node_context_includes_protonation_overrides(monkeypatch):
         include_ligand_resnames=None,
         exclude_ligand_ids=None,
         include_associated_ligands=False,
-        keep_crystal_waters=False,
     )
 
     assert result["success"] is True

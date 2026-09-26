@@ -1272,7 +1272,6 @@ def prepare_complex(
     protonation_method: str = "propka",
     preserve_input_protonation: bool = False,
     strip_input_caps: bool = False,
-    keep_crystal_waters: bool = False,
     solvent_type: Optional[str] = "explicit",
     source_structure_id: Optional[str] = None,
     source_candidate_id: Optional[str] = None,
@@ -1394,10 +1393,10 @@ def prepare_complex(
         protonate_ligands: When True (default), neutral CCD/dictionary ligand
                            SMILES are protonated to a pH-appropriate state via
                            Dimorphite-DL. Set False to keep SMILES as-is.
-        include_types: List of molecular types to include: "protein", "nucleic", "glycan", "ligand", "ion", "water".
-                       Default (None) includes ["protein", "nucleic", "glycan", "ligand", "ion"].
-        keep_crystal_waters: If True, retain crystal waters when "water" is in include_types.
-                            Default is False (crystal waters excluded for MD simulations).
+        include_types: List of molecular types to include: "protein", "nucleic", "glycan", "ligand", "ion".
+                       Default (None) includes all five. Crystal waters are not supported:
+                       "water" is refused (``crystal_waters_unsupported``) and water residues
+                       are always removed; explicit solvent comes from solvate_structure.
         solvent_type: Prep-stage solvent intent. Defaults to ``"explicit"``.
                       Pass ``"implicit"`` when building an implicit-solvent
                       topology downstream so explicit ion components are
@@ -1993,7 +1992,6 @@ def prepare_complex(
             include_ligand_resnames=include_ligand_resnames,
             exclude_ligand_ids=exclude_ligand_ids,
             include_associated_ligands=include_associated_ligands,
-            keep_crystal_waters=keep_crystal_waters,
             residue_ranges=residue_ranges,
             join_range_pieces=join_range_pieces,
             join_range_groups=join_range_groups,

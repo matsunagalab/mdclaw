@@ -376,3 +376,40 @@ def test_a_protonation_state_outside_the_selection_refuses_with_the_node_pending
     assert result["code"] == "invalid_protonation_state", result.get("errors")
     assert "B:6" in result["errors"][0] and "components are A" in result["errors"][0]
     assert read_node(str(job_dir), prep)["status"] == "pending"
+
+
+# --- crystal waters -----------------------------------------------------------------
+# Not supported. --keep-crystal-waters was accepted but did nothing past the split
+# (merge never took the water files, nothing added their hydrogens): 181L asked for its
+# 136 waters and got a system with none, with no word of it (2026-09-26).
+
+_WATER = ("HETATM 5 O O   . HOH B 2 .   ? 5.0 5.0 5.0 1.0 0.0 ? 101 HOH A O   1\n"
+          "HETATM 6 O O   . HOH B 2 .   ? 8.0 5.0 5.0 1.0 0.0 ? 102 HOH A O   1\n#\n")
+
+
+def test_asking_for_crystal_waters_refuses_with_the_node_pending(tmp_path):
+    job_dir, prep = _prep(tmp_path)
+    result = pc.prepare_complex(job_dir=str(job_dir), node_id=prep, select_chains=["A"],
+                                include_types=["protein", "water"])
+    assert result["code"] == "crystal_waters_unsupported", result.get("errors")
+    assert any("solvate_structure" in hint for hint in result["hints"])
+    assert read_node(str(job_dir), prep)["status"] == "pending"
+
+
+def test_split_refuses_water_and_otherwise_drops_every_water(tmp_path):
+    from mdclaw.structure.split import split_molecules
+
+    deposit = tmp_path / "alanine_and_waters.cif"
+    deposit.write_text(_CIF.rstrip("#\n") + "\n" + _WATER, encoding="utf-8")
+
+    refused = split_molecules(structure_file=str(deposit), output_dir=str(tmp_path / "a"),
+                              include_types=["protein", "water"])
+    assert refused["success"] is False
+    assert refused["code"] == "crystal_waters_unsupported"
+    assert refused["context"]["field"] == "include_types"
+
+    split = split_molecules(structure_file=str(deposit), output_dir=str(tmp_path / "b"))
+    assert split["success"] is True, split.get("errors")
+    assert split["water_files"] == []
+    written = "".join(open(f).read() for f in split["protein_files"])
+    assert "HOH" not in written

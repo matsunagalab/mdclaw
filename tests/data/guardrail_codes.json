@@ -50,6 +50,7 @@
   "covalently_linked_glycan_chains_auto_included",
   "create_node_id_not_allowed",
   "cv_box_missing",
+  "crystal_waters_unsupported",
   "cv_selection_invalid",
   "cv_spec_invalid",
   "cv_trajectory_empty",

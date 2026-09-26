@@ -931,7 +931,6 @@ def split_molecules(
     include_ligand_ids: Optional[List[str]] = None,
     include_ligand_resnames: Optional[List[str]] = None,
     exclude_ligand_ids: Optional[List[str]] = None,
-    keep_crystal_waters: bool = False,
     include_associated_ligands: bool = False,
     residue_ranges: Optional[List[str]] = None,
     join_range_pieces: bool = False,
@@ -986,7 +985,9 @@ def split_molecules(
     Type Filtering:
         Use include_types to filter by molecular type. By default (None), all
         types except water are included. Valid types: "protein", "nucleic",
-        "glycan", "ligand", "ion", "water".
+        "glycan", "ligand", "ion". Crystal waters are not supported: "water" is
+        refused (``crystal_waters_unsupported``) and water residues are always
+        dropped; explicit solvent comes from solvate_structure.
 
     Tip: Use inspect_molecules first to understand the structure and identify
     which chains you want to extract. It shows both chain_id (label_asym_id)
@@ -1002,12 +1003,9 @@ def split_molecules(
                        entries. Use inspect_molecules to find available
                        IDs. If None, extracts all chains.
         include_types: List of molecular types to include. Valid values:
-                       "protein", "nucleic", "glycan", "ligand", "ion", "water".
+                       "protein", "nucleic", "glycan", "ligand", "ion".
                        If None (default), includes ["protein", "nucleic", "glycan", "ligand", "ion"].
-        keep_crystal_waters: If True, retain crystal waters when "water" is in include_types.
-                            Default is False (crystal waters are excluded even if "water"
-                            is in include_types). For most MD simulations, crystal waters
-                            should be excluded and bulk solvent added via solvate_structure.
+                       "water" is refused: crystal waters are not supported.
         include_ligand_ids: List of ligand unique IDs to include (format:
                            "author_chain:resname:resnum", e.g.,
                            ["A:ACP:501"]). If specified, only these ligands
@@ -1074,13 +1072,6 @@ def split_molecules(
         logger.warning(f"Invalid include_types ignored: {invalid_types}. Valid: {valid_types}")
         include_types = [t for t in include_types if t in valid_types]
 
-    # Remove crystal waters by default (can be overridden with keep_crystal_waters=True)
-    # Crystal waters are typically removed for both implicit and explicit solvent simulations
-    # (explicit solvent will add bulk water later via solvate_structure)
-    if "water" in include_types and not keep_crystal_waters:
-        logger.info("Crystal waters excluded (default behavior, use keep_crystal_waters=True to retain)")
-        include_types = [t for t in include_types if t != "water"]
-
     requested_ligand_ids: list[str] | None = None
     requested_ligand_id_set: set[str] | None = None
     requested_ligand_resnames = _normalize_ligand_resnames(include_ligand_resnames)
@@ -1124,6 +1115,28 @@ def split_molecules(
         "errors": [],
         "warnings": []
     }
+
+    # Crystal waters are not supported: nothing downstream carries them (the
+    # merge never took the split's water files and no stage adds their
+    # hydrogens), so asking for them used to end in a prepared system with no
+    # water and no word of it. Refuse the request instead of dropping it.
+    if "water" in include_types:
+        result.update(
+            create_validation_error(
+                "include_types",
+                "Crystal waters are not supported; water residues are always removed",
+                expected="Types from protein, nucleic, glycan, ligand, ion",
+                actual=include_types,
+                hints=[
+                    "Drop 'water' from --include-types; explicit solvent is added by "
+                    "solvate_structure after prep.",
+                    "A structural water the result depends on (for example one bridging "
+                    "a ligand) cannot be kept: report it as a limitation of the prepared model.",
+                ],
+                code="crystal_waters_unsupported",
+            )
+        )
+        return result
 
     # Parse the ranges before anything else touches the file: a malformed range
     # is the caller's to fix and there is nothing to read the structure for.
@@ -2040,9 +2053,9 @@ def split_molecules(
                     unit_residues.extend(list(member_span))
             for residue_index, residue in enumerate(unit_residues):
                 res_name = residue.name.strip()
-                # Skip water residues unless explicitly keeping them
-                # This ensures crystal waters are removed regardless of chain type
-                if res_name in WATER_NAMES and not keep_crystal_waters:
+                # Crystal waters are not supported: drop water residues
+                # regardless of chain type.
+                if res_name in WATER_NAMES:
                     waters_skipped += 1
                     continue
                 if chain_ranges:
