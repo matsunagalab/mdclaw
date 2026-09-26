@@ -279,7 +279,7 @@ def run_metadynamics(
     save_interval_ps: float = 100.0,
     simulation_time_ns: float = 1.0,
     output_frequency_ps: float = 10.0,
-    temperature_kelvin: float = 300.0,
+    temperature_kelvin: Optional[float] = None,
     pressure_bar: Optional[float] = None,
     timestep_fs: Optional[float] = None,
     restart_bias_file: Optional[str] = None,
@@ -318,7 +318,7 @@ def run_metadynamics(
         bias_width_nm: Gaussian width (sigma); about the coordinate's
             fluctuation in a free run, 0.02-0.1 nm for a distance.
         bias_height_kj_mol: Initial Gaussian height (default 2.5 kJ/mol,
-            about 1 kT at 300 K).
+            about 1 kT at 300 K; not rescaled with the run temperature).
         bias_factor: Well-tempered bias factor gamma (> 1; roughly the
             barrier to cross divided by a few kT, default 10).
         deposition_interval_ps: Interval between Gaussians (default 1 ps).
@@ -333,7 +333,15 @@ def run_metadynamics(
             rounded to a multiple of the deposition interval).
         simulation_time_ns: Time to run in this call.
         output_frequency_ps: Trajectory / energy / CV frame interval.
-        temperature_kelvin: Temperature (default 300 K).
+        temperature_kelvin: Temperature in Kelvin. Omitted in node mode: the
+            temperature of the node this walker starts from (the eq node for
+            a new walker, the parent walker on ``--continue-from``), recorded
+            as temperature_kelvin_source="inherited"; 300 K when that node
+            records none, when an explicit state file is not that node's
+            state, and outside node mode. It is part of the walker
+            manifest, so a continuation or a walker joining a shared
+            ``bias_dir`` must keep it; pass it only to run at another
+            temperature on purpose.
         pressure_bar: NPT pressure; None or 0 runs NVT.
         timestep_fs: Default 4 fs with HMR, 2 fs otherwise.
         restart_bias_file: Total bias grid (``.npy``) of a previous walker to
@@ -361,12 +369,15 @@ def run_metadynamics(
     }
     _node_mode = bool(job_dir and node_id)
     restart_from_node_id = None
+    _temperature_source = "explicit" if temperature_kelvin is not None else "default"
+    _temperature_inherited_from: Optional[str] = None
     if _node_mode:
         from mdclaw._node import fail_node_from_result, resolve_node_inputs, validate_node_execution_context
 
         _inputs = resolve_node_inputs(job_dir, node_id, "prod")
         system_xml_file = system_xml_file or _inputs.get("system_xml_file")
         topology_pdb_file = topology_pdb_file or _inputs.get("topology_pdb_file")
+        _explicit_state = bool(state_xml_file)
         if not state_xml_file:
             state_xml_file = _inputs.get("restart_from") or _inputs.get("state_xml_file")
         restart_from_node_id = _inputs.get("restart_from_node_id")
@@ -388,6 +399,40 @@ def run_metadynamics(
             result["errors"].append(_inputs.get("input_resolution_error") or "; ".join(_inputs.get("input_resolution_errors")))
             result["code"] = "input_resolution_blocked"
             return fail_node_from_result(job_dir, node_id, result)
+        # An omitted --temperature-kelvin is the temperature of the node whose
+        # state this walker starts from, as in run_production (MDDataBench
+        # glm-5.3-flash 3cond 010_membrane_6kux r3: eq at 310 K, production
+        # without the flag at 300 K). Before this, a walker after a 310 K eq
+        # ran at 300 K without a warning, and continuing a 310 K walker
+        # without the flag failed its node with metadynamics_restart_mismatch,
+        # because the temperature is part of the manifest. Resolved before
+        # the declared-condition check and before the manifest, kT and the
+        # well-tempered factor read it. An explicit state file that is not
+        # the restart node's state has no recorded temperature to inherit.
+        if temperature_kelvin is None:
+            _restart_t = _inputs.get("restart_temperature_kelvin")
+            _restart_state = _inputs.get("restart_from")
+            _state_is_restart_node = not _explicit_state or bool(
+                _restart_state and Path(state_xml_file).resolve() == Path(_restart_state).resolve())
+            if _restart_t is not None and restart_from_node_id and _state_is_restart_node:
+                temperature_kelvin = float(_restart_t)
+                _temperature_source = "inherited"
+                _temperature_inherited_from = restart_from_node_id
+                result["warnings"].append(
+                    f"temperature_kelvin={temperature_kelvin} inherited from "
+                    f"{_inputs.get('restart_temperature_node_type') or 'node'} "
+                    f"'{restart_from_node_id}', the node this walker starts from.")
+            else:
+                temperature_kelvin = 300.0
+                if restart_from_node_id and not _state_is_restart_node:
+                    result["warnings"].append(
+                        "temperature_kelvin=300.0 (default): the explicit state file is not the "
+                        f"state of restart node '{restart_from_node_id}', so there is no recorded "
+                        "temperature to inherit.")
+                elif restart_from_node_id:
+                    result["warnings"].append(
+                        f"temperature_kelvin=300.0 (default): restart node "
+                        f"'{restart_from_node_id}' records no temperature to inherit.")
         _ctx = validate_node_execution_context(
             job_dir, node_id, "prod",
             actual_conditions={
@@ -416,9 +461,16 @@ def run_metadynamics(
             return {"success": False, "error_type": "ValidationError", **_ctx}
         result["warnings"].extend(_ctx.get("warnings") or [])
     else:
+        if temperature_kelvin is None:
+            temperature_kelvin = 300.0
         hmr, _implicit, timestep_fs = _resolve_topology_run_settings(
             hmr=hmr, implicit_solvent=None, timestep_fs=timestep_fs,
         )
+    result.update({
+        "temperature_kelvin": temperature_kelvin,
+        "temperature_kelvin_source": _temperature_source,
+        "temperature_kelvin_inherited_from": _temperature_inherited_from,
+    })
 
     for label, path in (("system_xml_file", system_xml_file), ("topology_pdb_file", topology_pdb_file)):
         if not path or not Path(path).is_file():
@@ -792,6 +844,8 @@ def run_metadynamics(
                 "sampling_role": "metadynamics",
                 "simulation_time_ns": simulation_time_ns,
                 "temperature_kelvin": temperature_kelvin,
+                "temperature_kelvin_source": _temperature_source,
+                "temperature_kelvin_inherited_from": _temperature_inherited_from,
                 "pressure_bar": pressure_bar,
                 "ensemble": result.get("ensemble"),
                 "platform": result.get("platform", platform),

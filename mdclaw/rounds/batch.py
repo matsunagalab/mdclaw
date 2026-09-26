@@ -20,7 +20,15 @@ from typing import Any, Optional
 from mdclaw._common import setup_logger
 from mdclaw.node.io import _read_node_json
 from mdclaw.rounds.owner import OwnerHeartbeat, clear_owner, write_owner
-from mdclaw.rounds.scheme import RoundsError, _error, resolve_tool, segment_scheme_metadata
+from mdclaw.rounds.scheme import (
+    RoundsError,
+    _error,
+    read_scheme,
+    resolve_tool,
+    scheme_segment_temperature,
+    segment_scheme_metadata,
+    stage_takes_temperature,
+)
 
 logger = setup_logger(__name__)
 
@@ -39,7 +47,9 @@ def run_segment_batch(
     --mps-segments-per-task k`` (one MPS task, ``k`` segments); it can also
     run by hand. Each segment is run by ``stage_tool`` with the scheme's
     ``stage_args``, its own recorded seed, and ``platform`` /
-    ``device_index`` when given; the node carries an owner record with a
+    ``device_index`` when given; without ``temperature_kelvin`` in
+    ``stage_args`` it runs at its scheme's segment temperature (what
+    ``run_rounds`` passes); the node carries an owner record with a
     heartbeat while it runs. A segment that fails or is refused does not
     stop the batch: the driver retries failed segments and resubmits
     pending ones. The result lists every segment's outcome.
@@ -96,6 +106,23 @@ def run_segment_batch(
     jd = str(Path(job_dir).resolve())
     results: list[dict] = []
     counts = {"completed": 0, "failed": 0, "refused": 0, "skipped": 0}
+    # The driver puts the scheme's segment temperature in stage_args; a batch
+    # run by hand with the scheme's bare stage_args gets it here, so its
+    # segments run where the scheme's other segments do (see
+    # scheme_segment_temperature).
+    temperatures: dict[str, Optional[float]] = {}
+    takes_temperature = stage_takes_temperature(stage_tool, fn)
+
+    def _segment_temperature(scheme_id: str) -> Optional[float]:
+        if not takes_temperature:
+            return None
+        if scheme_id not in temperatures:
+            try:
+                temperatures[scheme_id] = scheme_segment_temperature(read_scheme(jd, scheme_id), fn)
+            except RoundsError:
+                temperatures[scheme_id] = None
+        return temperatures[scheme_id]
+
     for node_id in node_ids:
         status = (_read_node_json(jd, node_id) or {}).get("status")
         if status not in ("pending", "queued"):
@@ -111,6 +138,10 @@ def run_segment_batch(
         kwargs.pop("platform", None)
         kwargs.pop("device_index", None)
         kwargs.update(job_dir=jd, node_id=node_id, random_seed=meta.get("random_seed"))
+        if kwargs.get("temperature_kelvin") is None and scheme_id:
+            temperature = _segment_temperature(scheme_id)
+            if temperature is not None:
+                kwargs["temperature_kelvin"] = temperature
         if platform:
             kwargs["platform"] = platform
         if device_index:

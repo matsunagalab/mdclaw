@@ -17,6 +17,7 @@ a scheme is read back from the ids and statuses in ``progress.json`` alone.
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 import random
@@ -58,6 +59,11 @@ _RESERVED_STAGE_ARGS = frozenset({
 })
 _START_NODE_TYPES = frozenset({"eq", "prod"})
 _SEED_MODULUS = 2_147_483_647
+# The temperature of a scheme whose start nodes record none, and of every
+# scheme recorded before setup_rounds pinned one: run_production's former
+# default, so the segments of a running scheme keep the temperature they ran at.
+DEFAULT_SEGMENT_TEMPERATURE_K = 300.0
+_TEMPERATURE_TOLERANCE_K = 1e-6
 
 # Test hook: callables consulted before the tool registry.
 _TOOL_OVERRIDES: dict[str, Callable] = {}
@@ -257,7 +263,7 @@ def normalize_scheme(spec: Any, *, job_dir: str) -> dict:
         raise _bad("policy_args must be a JSON object")
 
     stage_tool = spec.get("stage_tool", DEFAULT_STAGE_TOOL)
-    _fn, stage_type = resolve_tool(stage_tool)
+    stage_fn, stage_type = resolve_tool(stage_tool)
     if stage_type != "prod":
         raise RoundsError(
             code="rounds_tool_invalid",
@@ -298,6 +304,22 @@ def normalize_scheme(spec: Any, *, job_dir: str) -> dict:
         raise _bad("segment_conditions must be a JSON object")
     if "random_seed" in segment_conditions:
         raise _bad("segment_conditions must not declare random_seed; the driver declares it")
+
+    # One temperature per scheme, pinned before any segment runs. Round 1 and
+    # recycled walkers restart from start / basis nodes, continued, split and
+    # merged walkers from their parent segment, and run_production takes an
+    # omitted temperature from the node it restarts from: start nodes at
+    # different temperatures would put walkers of one ensemble at different
+    # temperatures. Before that inheritance a scheme started from a 310 K eq
+    # ran every segment at the 300 K default — the rounds form of
+    # 010_membrane_6kux (MDDataBench 3cond, 2026-09-26: eq at 310 K,
+    # production without the flag at 300 K).
+    basis = policy_args.get("basis_node_ids")
+    basis = [b for b in basis if isinstance(b, str)] if isinstance(basis, list) else []
+    temperature = resolve_segment_temperature(
+        job_dir, stage_tool=stage_tool, stage_fn=stage_fn, stage_args=stage_args,
+        node_ids=[*node_ids, *basis], segment_conditions=segment_conditions,
+    )
 
     seed = spec.get("seed")
     if seed is None:
@@ -345,6 +367,9 @@ def normalize_scheme(spec: Any, *, job_dir: str) -> dict:
         "seed": seed,
         "max_rounds": max_rounds,
         "start_pcoords": start_pcoords,
+        "segment_temperature_kelvin": temperature["segment_temperature_kelvin"],
+        "segment_temperature_source": temperature["segment_temperature_source"],
+        "start_temperatures_kelvin": temperature["node_temperatures"],
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -367,6 +392,223 @@ def _validate_start_nodes(job_dir: str, node_ids: list[str]) -> None:
         if _read_artifact_from_node(job_dir, nid, "state") is None:
             raise RoundsError(code="rounds_start_node_invalid",
                               message=f"start node {nid!r} has no state artifact to restart from")
+
+
+# ---------------------------------------------------------------------------
+# segment temperature
+# ---------------------------------------------------------------------------
+
+
+def _real_number(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def stage_takes_temperature(stage_tool: str, stage_fn: Optional[Callable] = None) -> bool:
+    """Whether a stage tool accepts ``temperature_kelvin`` (run_production
+    does, run_sst2 takes a ladder instead). A wrapper with ``**kwargs``
+    forwards it."""
+    if stage_fn is None:
+        if stage_tool == DEFAULT_STAGE_TOOL:
+            # No registry lookup: the mps driver runs on the host, where the
+            # science stack (and so the tool registry) may not import.
+            return True
+        try:
+            stage_fn, _ = resolve_tool(stage_tool)
+        except Exception:  # noqa: BLE001 - an unresolvable tool gets no flag
+            return False
+    try:
+        params = inspect.signature(stage_fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == "temperature_kelvin" or p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
+
+
+def node_temperature(job_dir: str, node_id: str) -> Optional[float]:
+    """The temperature a node ran at, as a restart from it would inherit it
+    (``integrator_signature``, else ``metadata.temperature_kelvin``); None
+    when it records none."""
+    from mdclaw.node.inputs import _resolve_restart_temperature
+
+    return _resolve_restart_temperature(job_dir, node_id).get("restart_temperature_kelvin")
+
+
+def _prod_integrator_conflicts(job_dir: str, node_ids: list[str], stage_args: dict) -> dict[str, str]:
+    """Prod start/basis nodes a segment could not continue from with these
+    stage_args.
+
+    A segment restarting from a prod node is a prod -> prod continuation,
+    which run_production refuses when an explicit temperature or timestep
+    differs from the parent's (``production_restart_integrator_mismatch``).
+    With the value set in stage_args every segment from such a node would be
+    refused, and the scheme cannot be replaced once its first round exists.
+    Eq start nodes are fine: eq -> prod may change the temperature.
+    """
+    from mdclaw.node.io import _read_metadata_field
+    from mdclaw.node.lifecycle import read_node
+
+    wanted = {key: stage_args.get(key) for key in ("temperature_kelvin", "timestep_fs")
+              if _real_number(stage_args.get(key))}
+    if not wanted:
+        return {}
+    conflicts: dict[str, str] = {}
+    for nid in dict.fromkeys(node_ids):
+        try:
+            node_type = read_node(job_dir, nid).get("node_type")
+        except (FileNotFoundError, ValueError, OSError):
+            continue
+        signature = _read_metadata_field(job_dir, nid, "integrator_signature")
+        if node_type != "prod" or not isinstance(signature, dict):
+            continue
+        drift = [f"{key} {signature[key]:g} vs {float(value):g}" for key, value in wanted.items()
+                 if _real_number(signature.get(key))
+                 and abs(float(signature[key]) - float(value)) > _TEMPERATURE_TOLERANCE_K]
+        if drift:
+            conflicts[nid] = ", ".join(drift)
+    return conflicts
+
+
+def _refuse_prod_conflicts(conflicts: dict[str, str], role: str) -> None:
+    if conflicts:
+        raise RoundsError(
+            code="rounds_start_temperature_mismatch",
+            message=(f"{role} {', '.join(f'{nid} ({why})' for nid, why in conflicts.items())} ran at other "
+                     "integrator settings than stage_args asks for. A segment from a prod node continues "
+                     "it and must keep its temperature and timestep, so every such segment would be "
+                     "refused (production_restart_integrator_mismatch). Start from eq nodes, or from prod "
+                     "nodes at those settings, or drop the value from stage_args."),
+        )
+
+
+def _temperature_list(temperatures: dict[str, Optional[float]]) -> str:
+    return ", ".join(f"{nid}: {'none recorded' if t is None else f'{t:g} K'}" for nid, t in temperatures.items())
+
+
+def resolve_segment_temperature(job_dir: str, *, stage_tool: str, stage_fn: Optional[Callable],
+                                stage_args: dict, node_ids: list[str], segment_conditions: dict) -> dict:
+    """The one temperature every segment of a new scheme runs at.
+
+    ``stage_args.temperature_kelvin`` when given (the scheme runs there on
+    purpose); otherwise the temperature recorded by every start node and
+    every explicit WE basis node, which must agree
+    (``rounds_start_temperature_mismatch``). Nodes that record none take the
+    others' value; when none records one, segments run at 300 K and
+    ``segment_temperature_kelvin`` is null. A stage tool without a
+    ``temperature_kelvin`` argument (run_sst2) gets ``not_applicable``.
+    """
+    if not stage_takes_temperature(stage_tool, stage_fn):
+        return {"segment_temperature_kelvin": None, "segment_temperature_source": "not_applicable",
+                "node_temperatures": {}}
+    explicit = stage_args.get("temperature_kelvin")
+    node_temperatures: dict[str, Optional[float]] = {}
+    if explicit is not None:
+        if not _real_number(explicit) or explicit <= 0:
+            raise _bad(f"stage_args.temperature_kelvin must be a positive number (got {explicit!r})")
+        _refuse_prod_conflicts(_prod_integrator_conflicts(job_dir, node_ids, stage_args),
+                               "start/basis node(s)")
+        value: Optional[float] = float(explicit)
+        source = "stage_args"
+        described = "stage_args.temperature_kelvin"
+    else:
+        node_temperatures = {nid: node_temperature(job_dir, nid) for nid in dict.fromkeys(node_ids)}
+        recorded = {nid: t for nid, t in node_temperatures.items() if t is not None}
+        if recorded:
+            low, high = min(recorded.values()), max(recorded.values())
+            if high - low > _TEMPERATURE_TOLERANCE_K:
+                raise RoundsError(
+                    code="rounds_start_temperature_mismatch",
+                    message=(f"the start and basis nodes ran at different temperatures "
+                             f"({_temperature_list(node_temperatures)}). A segment restarts from one of them "
+                             "or from its parent segment, so one scheme would mix ensembles. Start every "
+                             "replica (and every WE basis) from nodes at one temperature, or put "
+                             "temperature_kelvin in stage_args to run every segment at one temperature on "
+                             "purpose."),
+                )
+            value = next(iter(recorded.values()))
+            source = "start_nodes"
+            described = f"the temperature of {', '.join(recorded)}"
+        else:
+            value = None
+            source = "default"
+            described = "the default: no start or basis node records a temperature"
+    declared = segment_conditions.get("temperature_kelvin")
+    run_at = value if value is not None else DEFAULT_SEGMENT_TEMPERATURE_K
+    if _real_number(declared) and abs(float(declared) - run_at) > _TEMPERATURE_TOLERANCE_K:
+        # Every segment would be refused by the declared-condition check and
+        # the scheme could not be replaced once its first round exists.
+        raise RoundsError(
+            code="rounds_start_temperature_mismatch",
+            message=(f"segment_conditions declares temperature_kelvin={declared} but the segments would run "
+                     f"at {run_at:g} K ({described}); start from nodes at {declared} K, or put "
+                     f"temperature_kelvin: {declared} in stage_args to run the scheme there on purpose."),
+        )
+    return {"segment_temperature_kelvin": value, "segment_temperature_source": source,
+            "node_temperatures": node_temperatures}
+
+
+def scheme_segment_temperature(scheme: dict, stage_fn: Optional[Callable] = None) -> Optional[float]:
+    """The ``temperature_kelvin`` the driver passes to every segment of a
+    scheme, or None when the stage tool takes none.
+
+    ``stage_args.temperature_kelvin``, else the temperature setup_rounds
+    pinned (``segment_temperature_kelvin``), else 300 K: start nodes that
+    record none, and schemes recorded before setup_rounds pinned one — their
+    segments ran at run_production's former 300 K default, and an explicit
+    value keeps a running scheme there (continued walkers would otherwise
+    inherit 300 K from their parents and recycled ones the basis's
+    temperature). Every segment command then carries an explicit flag the
+    Slurm preflight can check.
+    """
+    stage_args = scheme.get("stage_args") or {}
+    given = stage_args.get("temperature_kelvin")
+    if given is not None:
+        return float(given) if _real_number(given) else None     # the stage tool reports a bad value
+    if "segment_temperature_kelvin" in scheme:
+        if scheme.get("segment_temperature_source") == "not_applicable":
+            return None
+        pinned = scheme.get("segment_temperature_kelvin")
+        return float(pinned) if _real_number(pinned) else DEFAULT_SEGMENT_TEMPERATURE_K
+    if stage_takes_temperature(scheme.get("stage_tool") or DEFAULT_STAGE_TOOL, stage_fn):
+        return DEFAULT_SEGMENT_TEMPERATURE_K
+    return None
+
+
+def check_basis_temperatures(job_dir: str, scheme: dict, node_ids: list[str]) -> None:
+    """Refuse basis nodes whose temperature differs from the scheme's
+    (``rounds_start_temperature_mismatch``): a recycled walker restarts from
+    its basis node, and one ensemble must stay at one temperature.
+
+    Only schemes whose temperature setup_rounds took from its nodes are
+    checked. With ``stage_args.temperature_kelvin`` the temperature is set on
+    purpose (setup_rounds does not compare nodes either), and a scheme
+    recorded before the temperature was pinned runs every segment at an
+    explicit 300 K, so a basis elsewhere cannot split its ensemble — refusing
+    would stop a running campaign.
+    """
+    if "segment_temperature_kelvin" not in scheme:
+        return
+    if scheme.get("segment_temperature_source") == "stage_args":
+        # Set on purpose: any node temperature is fine for an eq basis, but a
+        # prod basis must match the explicit settings its recycled walkers
+        # continue with.
+        _refuse_prod_conflicts(_prod_integrator_conflicts(job_dir, node_ids,
+                                                          scheme.get("stage_args") or {}),
+                               "basis node(s)")
+        return
+    if scheme.get("segment_temperature_source") not in ("start_nodes", "default"):
+        return
+    expected = scheme_segment_temperature(scheme)
+    if expected is None:
+        return
+    temperatures = {nid: node_temperature(job_dir, nid) for nid in dict.fromkeys(node_ids)}
+    off = {nid: t for nid, t in temperatures.items()
+           if t is not None and abs(t - expected) > _TEMPERATURE_TOLERANCE_K}
+    if off:
+        raise RoundsError(
+            code="rounds_start_temperature_mismatch",
+            message=(f"basis node(s) {_temperature_list(off)} differ from the {expected:g} K scheme "
+                     f"{scheme.get('scheme_id')!r} runs at: a recycled walker would restart from a state at "
+                     "another temperature. Recycle to nodes at the scheme's temperature."),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -535,7 +777,15 @@ def setup_rounds(job_dir: str, scheme: dict, overwrite: bool = False) -> dict:
 
     Round 1 starts ``n_replicas`` segments from ``start.node_ids`` (cycled);
     each segment is a ``prod`` node run by ``stage_tool`` with ``stage_args``
-    plus its own ``random_seed``. After a round the policy plans the next one:
+    plus its own ``random_seed``. The temperature is not a stage argument:
+    it is read from the start nodes (and explicit WE ``basis_node_ids``),
+    which must agree (``rounds_start_temperature_mismatch``), recorded as
+    ``segment_temperature_kelvin`` and passed to every segment (the result's
+    ``segments_run_at_kelvin``; 300 K when no node records one); put
+    ``temperature_kelvin`` in ``stage_args`` only to run the scheme at
+    another temperature on purpose, and only from eq start nodes (a segment
+    from a prod node continues it and must keep its temperature and
+    timestep). After a round the policy plans the next one:
     ``replicas`` continues every replica; an analyze tool runs on a policy
     node whose parents are the round's segments and writes ``next_round``
     (see ``mdclaw.rounds.plan``). ``run_rounds`` advances the scheme.
@@ -547,6 +797,22 @@ def setup_rounds(job_dir: str, scheme: dict, overwrite: bool = False) -> dict:
         return _error(exc, job_dir=job_dir)
     jd = Path(job_dir).resolve()
     per_segment = (normalized.get("stage_args") or {}).get("simulation_time_ns")
+    run_at = scheme_segment_temperature(normalized)
+    source = normalized["segment_temperature_source"]
+    warnings: list[str] = []
+    if run_at is None:
+        temperature_note = ""
+    else:
+        temperature_note = f", segments at {run_at:g} K (" + {
+            "stage_args": "stage_args",
+            "start_nodes": "the start nodes' temperature",
+            "default": "default: the start nodes record no temperature",
+        }.get(source, source) + ")"
+        if source == "default":
+            warnings.append(
+                f"no start or basis node records a temperature, so every segment runs at {run_at:g} K; "
+                "put temperature_kelvin in stage_args (and rerun setup_rounds --overwrite true) if the "
+                "study runs at another temperature")
     return {
         "success": True,
         "code": "ok",
@@ -555,12 +821,18 @@ def setup_rounds(job_dir: str, scheme: dict, overwrite: bool = False) -> dict:
             f"{normalized['start']['n_replicas']} replicas from {normalized['start']['node_ids']}, "
             f"{normalized['stage_tool']}"
             + (f" {per_segment} ns per segment" if per_segment is not None else "")
+            + temperature_note
             + "; nothing runs until run_rounds"
         ),
         "job_dir": str(jd),
         "scheme_id": normalized["scheme_id"],
         "scheme": normalized,
-        "warnings": [],
+        # What the scheme recorded (null: the start nodes record none) and
+        # what every segment is run with.
+        "segment_temperature_kelvin": normalized["segment_temperature_kelvin"],
+        "segment_temperature_source": source,
+        "segments_run_at_kelvin": run_at,
+        "warnings": warnings,
         "next_action": (
             f"mdclaw run_rounds --job-dir {jd} --scheme-id {normalized['scheme_id']} "
             "--max-rounds <N>"

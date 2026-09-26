@@ -23,7 +23,7 @@ will convert durations to steps using the actual `timestep_fs`.
 |-----------|-------|
 | Target | (job directory) |
 | Execution mode | read `progress.json.params.execution_mode` |
-| Temperature | 300 K (default) |
+| Temperature | the requested value, else 300 K (default); production inherits it |
 | Pressure | 1.0 bar (default, explicit) / 0 (implicit) |
 | Other | (non-default parameters: seed, label, etc.) |
 

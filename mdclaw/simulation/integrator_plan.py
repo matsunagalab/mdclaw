@@ -133,6 +133,8 @@ def _record_production_node_result(
         metadata = {
             "simulation_time_ns": simulation_time_ns,
             "temperature_kelvin": temperature_kelvin,
+            "temperature_kelvin_source": result.get("temperature_kelvin_source"),
+            "temperature_kelvin_inherited_from": result.get("temperature_kelvin_inherited_from"),
             "pressure_bar": pressure_bar,
             "platform": result.get("platform") or platform,
             "hmr": hmr,

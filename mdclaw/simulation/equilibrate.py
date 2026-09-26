@@ -36,7 +36,7 @@ def run_equilibration(
     system_xml_file: Optional[str] = None,
     topology_pdb_file: Optional[str] = None,
     state_xml_file: Optional[str] = None,
-    temperature_kelvin: float = 300.0,
+    temperature_kelvin: Optional[float] = None,
     pressure_bar: Optional[float] = 1.0,
     nvt_steps: Optional[int] = None,
     npt_steps: Optional[int] = None,
@@ -91,7 +91,13 @@ def run_equilibration(
         state_xml_file: Path to ``state.xml`` from the same topo ancestor.
             Carries the build-time minimized positions / velocities / box
             and is preferred over the PDB coordinates when present.
-        temperature_kelvin: Temperature in Kelvin (default: 300.0)
+        temperature_kelvin: Target temperature in Kelvin. Omitted: 300 K. It
+            is never inherited from a parent eq stage: a stage restarting from
+            an eq node that ran at a temperature other than 300 K must state
+            it, and omitting it is refused before anything runs
+            (eq_restart_temperature_unstated; pass the parent's temperature
+            to keep it, or the new target). Production inherits the last eq
+            stage's temperature, so give a requested temperature here.
         pressure_bar: Pressure in bar. Controls whether NPT stage runs:
             - > 0 (e.g., 1.0): NVT + NPT equilibration (for NPT production)
             - 0 or None: NVT only (for NVT production or implicit solvent)
@@ -251,6 +257,45 @@ def run_equilibration(
             if not _explicit_restart_from
             else _restart_node_type_for_run(job_dir, _restart_from_node_id)
         )
+        # An eq restarting from an eq keeps the parent's velocities and skips
+        # the warmup; its target temperature comes only from the flag, and an
+        # omitted flag used to mean 300 K without a word. Production inherits
+        # the temperature of the node it restarts from (MDDataBench
+        # glm-5.3-flash 3cond 010_membrane_6kux r3: eq at 310 K, production
+        # without the flag at 300 K), so a silent 300 K stage here would now
+        # carry into production. Inheriting is not the fix for eq: after a
+        # deliberate hot stage (md-we's 500 K eq_002 before the 340 K basis
+        # eq_003) a forgotten flag would silently stay hot. Refuse only the
+        # ambiguous case, flag omitted after an eq that ran away from 300 K,
+        # before anything is recorded; min -> eq and 300 K chains keep the
+        # 300 K default unchanged.
+        if temperature_kelvin is None and _restart_from_node_type == "eq":
+            from mdclaw.node.inputs import _resolve_restart_temperature
+            _parent_t = _resolve_restart_temperature(job_dir, _restart_from_node_id).get(
+                "restart_temperature_kelvin")
+            if _parent_t is not None and abs(float(_parent_t) - 300.0) > 1e-6:
+                from mdclaw._node import fail_node_from_result
+                _msg = (
+                    f"this stage restarts from eq '{_restart_from_node_id}', which ran at "
+                    f"{float(_parent_t)} K, and --temperature-kelvin was not given; the 300 K "
+                    "default would silently change the temperature."
+                )
+                return fail_node_from_result(job_dir, node_id, create_validation_error(
+                    "temperature_kelvin",
+                    _msg,
+                    expected="an explicit --temperature-kelvin for an eq -> eq restart "
+                             "from a stage that did not run at 300 K",
+                    actual=f"omitted; parent eq '{_restart_from_node_id}' ran at {float(_parent_t)} K",
+                    hints=[
+                        f"Pass --temperature-kelvin {float(_parent_t):g} to keep the parent's temperature.",
+                        "Or pass the new target temperature to heat or cool on purpose.",
+                    ],
+                    context_extra={
+                        "restart_temperature_kelvin": float(_parent_t),
+                        "restart_temperature_node_id": _restart_from_node_id,
+                    },
+                    code="eq_restart_temperature_unstated",
+                ), default_error=_msg)
         # Catch implicit-solvent model mismatches between the topo node's
         # build-time metadata and the runtime --implicit-solvent flag
         # before any System is built. The run-side XML system validator's GB-force presence check
@@ -283,6 +328,8 @@ def run_equilibration(
             )
             err["errors"] = _topo_solvent_mismatch["errors"]
             return err
+    if temperature_kelvin is None:
+        temperature_kelvin = 300.0
     if not (job_dir and node_id):
         hmr, implicit_solvent, timestep_fs = _resolve_topology_run_settings(
             hmr=hmr,

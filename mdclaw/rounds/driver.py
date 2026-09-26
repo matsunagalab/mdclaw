@@ -51,6 +51,7 @@ from mdclaw.rounds.scheme import (
     read_scheme,
     resolve_tool,
     scheme_next,
+    scheme_segment_temperature,
     scheme_state,
     segment_label,
     segment_node_id,
@@ -119,6 +120,13 @@ class _Driver:
             self.stage_fn, _ = resolve_tool(scheme["stage_tool"])
             if scheme["policy"] != REPLICAS_POLICY:
                 self.policy_fn, _ = resolve_tool(scheme["policy"])
+        # Every segment is run with an explicit temperature_kelvin: the one
+        # setup_rounds pinned from the start nodes (300 K for a scheme
+        # recorded before it did). Left to run_production's inheritance, a
+        # continued walker would take its parent segment's temperature and a
+        # recycled one its basis node's, and a running scheme would change
+        # temperature under its walkers.
+        self.segment_temperature = scheme_segment_temperature(scheme, self.stage_fn)
         self.platform = platform
         self.device_index = device_index
         self.mps_tasks_per_gpu = max(1, int(mps_tasks_per_gpu))
@@ -370,7 +378,7 @@ class _Driver:
 
     def _run_segment(self, node_id: str) -> dict:
         meta = segment_scheme_metadata(self.job_dir, node_id)
-        kwargs: dict[str, Any] = dict(self.scheme.get("stage_args") or {})
+        kwargs: dict[str, Any] = self._stage_args()
         kwargs.update(job_dir=self.job_dir, node_id=node_id, random_seed=meta.get("random_seed"))
         if self.platform:
             kwargs["platform"] = self.platform
@@ -396,9 +404,17 @@ class _Driver:
 
     # -------------------------------------------------------------- mps path
 
+    def _stage_args(self) -> dict[str, Any]:
+        """The scheme's stage_args plus the segment temperature (every path
+        that runs a segment: in process, per-segment and batch MPS tasks)."""
+        args: dict[str, Any] = dict(self.scheme.get("stage_args") or {})
+        if self.segment_temperature is not None:
+            args["temperature_kelvin"] = self.segment_temperature
+        return args
+
     def _segment_command(self, node_id: str) -> str:
         meta = segment_scheme_metadata(self.job_dir, node_id)
-        args = dict(self.scheme.get("stage_args") or {})
+        args = self._stage_args()
         args.pop("platform", None)
         args.pop("device_index", None)
         args["random_seed"] = meta.get("random_seed")
@@ -409,7 +425,7 @@ class _Driver:
     def _batch_command(self, node_ids: list[str]) -> str:
         """One MPS task running several segments in one process
         (``run_segment_batch``): the start-up is paid once per task."""
-        args = dict(self.scheme.get("stage_args") or {})
+        args = self._stage_args()
         args.pop("platform", None)
         args.pop("device_index", None)
         parts = ["mdclaw", "run_segment_batch", "--job-dir", self.job_dir, "--node-ids", *node_ids,

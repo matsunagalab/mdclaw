@@ -74,6 +74,9 @@ GUARDRAIL_CODES: dict[str, str] = {
     # --- structured node ids (drivers only) and repeated production seeds ---
     "node_id_invalid": "Omit _node_id for a sequential id, or follow '<type>_<scope>_<letter><4 digits>...' (scope: a lowercase word of up to 16 letters and digits), e.g. prod_h3flip_r0013_w0050.",
     "node_id_exists": "That structured node id is taken; use the next round / replica number, or explain_node the existing node.",
+    "production_restart_integrator_mismatch": "A prod -> prod continuation keeps its parent's temperature and timestep: omit --temperature-kelvin (it is inherited) and pass the parent's --timestep-fs, or branch a new prod node from the eq node to run at another temperature.",
+    "eq_restart_temperature_unstated": "This equilibration restarts from an eq node that ran at a temperature other than 300 K: pass --temperature-kelvin with the parent's value to keep it, or the new target temperature.",
+    "rounds_start_temperature_mismatch": "Segments of one rounds scheme must sample one temperature. setup_rounds: start every replica (and WE basis node) from nodes at one temperature, or set stage_args.temperature_kelvin on purpose when the start nodes are eq nodes. we_resample: name basis_node_ids that ran at the scheme's segments_run_at_kelvin. analyze_we: pass only policy nodes of schemes whose segments ran at one temperature.",
     "production_sibling_seed_collision": "Pass a different --random-seed (a completed sibling already ran this seed from the same restart ancestor), or --allow-seed-reuse for a deliberate bit-exact replay.",
 
     # --- solute tempering (run_sst2) ---

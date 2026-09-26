@@ -16,14 +16,14 @@ NoCutoff / CutoffNonPeriodic electrostatics — always pass `--pressure-bar 0`.
 ```bash
 mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
   --simulation-time-ns <ns> \
-  --temperature-kelvin <T> \
   --pressure-bar 0 \
   --output-frequency-ps 10.0
 ```
 
 Choose the run length with the Default Decision Rule in `SKILL.md`.
-`system_xml_file`, `topology_pdb_file`, `state_xml_file`, and `restart_from`
-auto-resolve from DAG ancestors. For extension (`--continue-from`) and retry
+`system_xml_file`, `topology_pdb_file`, `state_xml_file`, `restart_from` and
+`temperature_kelvin` auto-resolve from DAG ancestors (temperature rule:
+`SKILL.md` Prerequisites). For extension (`--continue-from`) and retry
 details, read `skills/md-production/restart.md`; keep `--pressure-bar 0` on
 extension nodes. GPU selection and HMR flags are the same as
 `skills/md-production/explicit-water.md` "GPU / HMR". To bias production with a

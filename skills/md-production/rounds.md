@@ -33,6 +33,14 @@ mdclaw setup_rounds --job-dir "$JOB" --scheme '{
 
 - `stage_args` are the `run_production` arguments of every segment; never
   `random_seed`, `restart_from` or file paths — the driver sets those.
+- The temperature is not a stage argument either: `setup_rounds` reads it
+  from the start nodes (every start node, and every WE basis node, must have
+  run at one temperature: `rounds_start_temperature_mismatch`) and reports
+  the value every segment runs at as `segments_run_at_kelvin` (300 K, with a
+  warning, when no start node records one). Put `temperature_kelvin` in
+  `stage_args` only to run the scheme at another temperature on purpose, and
+  only from eq start nodes: a segment from a prod node continues it at its
+  own temperature.
 - Every segment gets its own `random_seed`, derived from `seed`, the round
   and the replica, so two replicas never integrate the same noise
   (`run_production` refuses that anyway: `production_sibling_seed_collision`).
@@ -103,6 +111,7 @@ replicas: one analyze node with all their latest segments as parents.
 |---|---|
 | `rounds_scheme_invalid` | the message names the field (scheme_id lowercase, stage_args without reserved keys, start.node_ids and n_replicas) |
 | `rounds_start_node_invalid` | start nodes must be completed eq / prod nodes with a state |
+| `rounds_start_temperature_mismatch` | the start (and WE basis) nodes ran at different temperatures, or `segment_conditions` declares another one: start from nodes equilibrated at one temperature, or set `temperature_kelvin` in `stage_args` on purpose |
 | `rounds_round_in_progress` | a segment is running or queued elsewhere (the message names host, pid, Slurm job, heartbeat age); wait, or free a node nobody runs any more with `update_workflow_state --clear-slurm-metadata` — a driver that died is detected after 5 min and its nodes retried (`rounds_owner_lost`) |
 | `rounds_segment_refused` | `run_production` refused before running (its code is in the message): fix `stage_args` |
 | `rounds_replica_unstable` | `trace_failure` on the listed node; fix the cause, rerun `run_rounds` |

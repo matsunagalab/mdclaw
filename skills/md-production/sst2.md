@@ -40,8 +40,10 @@ untouched and is a control, not a default.
 ## Ladder
 
 `--temperatures-kelvin` is increasing and contains the reference temperature
-(first rung by default). For 200-500 solute atoms start with five rungs from
-300 to 600 K spaced geometrically:
+(first rung by default). Make the reference rung the temperature the eq node
+ran at: `run_sst2` does not read it from the eq, unlike `run_production`. For
+200-500 solute atoms start with five rungs from 300 to 600 K spaced
+geometrically:
 
 ```bash
 --temperatures-kelvin 300 357 424 505 600

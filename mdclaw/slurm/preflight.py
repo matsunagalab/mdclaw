@@ -88,6 +88,13 @@ def production_preflight(command, job_dir, node_id):
                 "steering_time_ns", "steering_update_interval_ps"}
         defaults = inspect.signature(run_production).parameters
         actual = {k: values.get(k, defaults[k].default) for k in keys}
+        # An omitted --temperature-kelvin is resolved at run time from the node
+        # the state restarts from, which may still be pending when a chain is
+        # submitted: defer it to the runtime condition check instead of
+        # comparing a declared value with None. An explicit value is compared.
+        if actual.get("temperature_kelvin") is None:
+            keys = keys - {"temperature_kelvin"}
+            actual.pop("temperature_kelvin", None)
         declared = read_node(job_dir, node_id).get("conditions") or {}
         result = validate_declared_conditions({k: v for k, v in declared.items() if k in keys}, actual)
         return {**result, "status": "checked" if result["success"] else "failed",

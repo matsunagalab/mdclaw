@@ -19,6 +19,8 @@ mdclaw submit_job \
 
 Runtime resolution restarts only from the named `prod` node. If that node has no
 `state` or `checkpoint` artifact, `run_production` fails before touching OpenMM.
+The command carries no `--temperature-kelvin`: the extension runs at its
+parent's temperature (rule: `skills/md-production/SKILL.md` Prerequisites).
 
 `simulation_time_ns` is the additional time for this call, not the cumulative
 timeline length.

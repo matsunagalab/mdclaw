@@ -114,6 +114,7 @@ def test_run_metadynamics_standalone_fills_the_bond_well(xml_triple, tmp_path):
         **SHORT,
     )
     assert res["success"], res
+    assert res["temperature_kelvin"] == 300.0 and res["temperature_kelvin_source"] == "default"
     out = Path(res["output_dir"])
     for f in ("trajectory.dcd", "energy.dat", "state.xml", "final_structure.pdb", "metadynamics.csv",
               "metadynamics.json", "free_energy.csv", "metadynamics_total_bias.npy", "metadynamics_self_bias.npy",
@@ -138,7 +139,7 @@ def test_run_metadynamics_standalone_fills_the_bond_well(xml_triple, tmp_path):
     assert float(cv_rows[-1]["bias_energy_kj_mol"]) > 0
 
 
-def _job(xml_triple, tmp_path):
+def _job(xml_triple, tmp_path, eq_temperature=None):
     from mdclaw._node import complete_node, create_node, init_progress_v3
 
     jd = tmp_path / "job"
@@ -173,7 +174,14 @@ def _job(xml_triple, tmp_path):
     eart = jd / "nodes" / eq / "artifacts"
     eart.mkdir(parents=True, exist_ok=True)
     shutil.copy(xml_triple / "state.xml", eart / "equilibrated.xml")
-    complete_node(str(jd), eq, {"state": "artifacts/equilibrated.xml"}, metadata={"final_step": 0})
+    eq_meta = {"final_step": 0}
+    if eq_temperature is not None:
+        from mdclaw.simulation.xml_contract import _integrator_signature
+
+        eq_meta.update(temperature_kelvin=eq_temperature,
+                       integrator_signature=_integrator_signature(temperature_kelvin=eq_temperature,
+                                                                  timestep_fs=2.0))
+    complete_node(str(jd), eq, {"state": "artifacts/equilibrated.xml"}, metadata=eq_meta)
     return jd, eq, _node
 
 
@@ -206,6 +214,82 @@ def test_node_mode_continuation_carries_the_bias(xml_triple, tmp_path):
     res3 = run_metadynamics(job_dir=str(jd), node_id=prod3, **{**SHORT, "bias_factor": 8.0})
     assert res3["success"] is False and res3["code"] == "metadynamics_restart_mismatch"
     assert read_node(str(jd), prod3)["status"] == "failed"
+
+
+def _integrator_temperature(result):
+    import re
+
+    m = re.search(r'temperature="([0-9.eE+-]+)"', Path(result["integrator_file"]).read_text())
+    return float(m.group(1))
+
+
+def test_walker_without_the_flag_runs_at_the_eq_temperature_and_continues(xml_triple, tmp_path):
+    """A walker after a 310 K eq used to run at 300 K without a warning, and its
+    no-flag continuation then failed with metadynamics_restart_mismatch (the
+    temperature is in the manifest). Omitted, the temperature now follows the
+    node the walker starts from, as run_production does after 010_membrane_6kux."""
+    from mdclaw._node import read_node
+
+    jd, eq, _node = _job(xml_triple, tmp_path, eq_temperature=310.0)
+    w1 = _node("prod", parent_node_ids=[eq])
+    r1 = run_metadynamics(job_dir=str(jd), node_id=w1, **SHORT)
+    assert r1["success"], r1
+    assert r1["temperature_kelvin"] == 310.0 and _integrator_temperature(r1) == pytest.approx(310.0)
+    assert r1["temperature_kelvin_source"] == "inherited" and r1["temperature_kelvin_inherited_from"] == eq
+    assert any(f"inherited from eq '{eq}'" in w for w in r1["warnings"])
+    meta1 = read_node(str(jd), w1)["metadata"]
+    assert meta1["temperature_kelvin"] == 310.0
+    assert meta1["integrator_signature"]["temperature_kelvin"] == 310.0
+    assert meta1["temperature_kelvin_source"] == "inherited" and meta1["temperature_kelvin_inherited_from"] == eq
+    side = json.loads(Path(r1["metadynamics_state_file"]).read_text())
+    assert side["manifest"]["temperature_kelvin"] == 310.0
+    assert side["kT_kj_mol"] == pytest.approx(0.0083144626 * 310.0, rel=1e-6)
+
+    # a continuation without the flag keeps the walker's temperature and its bias
+    w2 = _node("prod", continue_from=w1)
+    r2 = run_metadynamics(job_dir=str(jd), node_id=w2, **SHORT)
+    assert r2["success"], r2
+    assert r2["temperature_kelvin"] == 310.0 and _integrator_temperature(r2) == pytest.approx(310.0)
+    assert r2["temperature_kelvin_inherited_from"] == w1
+    assert r2["metadynamics"]["loaded_walkers_at_start"] == [0]
+
+    # an explicit different temperature still cannot continue the walker
+    w3 = _node("prod", continue_from=w2)
+    r3 = run_metadynamics(job_dir=str(jd), node_id=w3, **{**SHORT, "temperature_kelvin": 300.0})
+    assert r3["success"] is False and r3["code"] == "metadynamics_restart_mismatch"
+    assert read_node(str(jd), w3)["status"] == "failed"
+
+
+def test_explicit_temperature_wins_and_eq_without_temperature_keeps_300(xml_triple, tmp_path):
+    from mdclaw._node import read_node
+
+    jd, eq, _node = _job(xml_triple, tmp_path, eq_temperature=310.0)
+    w = _node("prod", parent_node_ids=[eq])
+    r = run_metadynamics(job_dir=str(jd), node_id=w, **{**SHORT, "temperature_kelvin": 320.0})
+    assert r["success"], r
+    assert r["temperature_kelvin"] == 320.0 and _integrator_temperature(r) == pytest.approx(320.0)
+    assert r["temperature_kelvin_source"] == "explicit" and r["temperature_kelvin_inherited_from"] is None
+
+    (tmp_path / "legacy").mkdir()
+    jd2, eq2, _node2 = _job(xml_triple, tmp_path / "legacy")
+    w2 = _node2("prod", parent_node_ids=[eq2])
+    r2 = run_metadynamics(job_dir=str(jd2), node_id=w2, **SHORT)
+    assert r2["success"], r2
+    assert r2["temperature_kelvin"] == 300.0 and r2["temperature_kelvin_source"] == "default"
+    assert any("records no temperature to inherit" in w for w in r2["warnings"])
+    assert read_node(str(jd2), w2)["metadata"]["temperature_kelvin_source"] == "default"
+
+
+def test_declared_temperature_is_checked_against_the_inherited_value(xml_triple, tmp_path):
+    from mdclaw._node import create_node, read_node
+
+    jd, eq, _node = _job(xml_triple, tmp_path, eq_temperature=310.0)
+    ok = create_node(str(jd), "prod", parent_node_ids=[eq], conditions={"temperature_kelvin": 310.0})["node_id"]
+    assert run_metadynamics(job_dir=str(jd), node_id=ok, **SHORT)["success"]
+    bad = create_node(str(jd), "prod", parent_node_ids=[eq], conditions={"temperature_kelvin": 300.0})["node_id"]
+    rb = run_metadynamics(job_dir=str(jd), node_id=bad, **SHORT)
+    assert rb["success"] is False and "condition_mismatch" in rb["blocking_codes"]
+    assert read_node(str(jd), bad)["status"] == "pending"
 
 
 def test_shared_bias_dir_joins_walkers_and_refuses_other_settings(xml_triple, tmp_path):

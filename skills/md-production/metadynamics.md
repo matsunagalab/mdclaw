@@ -32,7 +32,7 @@ when such motions matter.
 |---|---|
 | `--cv-min-nm`, `--cv-max-nm` | The physically reachable range plus a little margin; harmonic walls hold the coordinate inside, and the bias grid itself reaches four widths beyond the walls so Gaussians deposited while the wall pushes back do not pile up on an edge point. `free_energy.csv` covers the range between the walls. Do not push into a range where the molecule must be crushed or overstretched. |
 | `--bias-width-nm` | The coordinate's fluctuation in a free run, 0.02–0.1 nm for a distance. |
-| `--bias-height-kj-mol` | 1 kT (2.5 kJ/mol at 300 K, the default). |
+| `--bias-height-kj-mol` | 1 kT at the run temperature (2.5 kJ/mol, the default, is 1 kT at 300 K). |
 | `--bias-factor` | The barrier to cross divided by a few kT: 5 for a few kT, 10 (default) for 10–20 kT, 15–20 above that. |
 | `--deposition-interval-ps` | 1 ps (default); longer when the coordinate relaxes slowly. |
 | `--bias-dir` | A directory outside the nodes, e.g. `<study_dir>/metadynamics/<label>`, shared by every walker of one system. The first walker writes a manifest; a walker with other settings is refused (`metadynamics_shared_bias_mismatch`). |
@@ -52,6 +52,10 @@ done
 #     --simulation-time-ns 100 --output-frequency-ps 10 --pressure-bar 1.0 \
 #     --bias-dir "$BIAS" --random-seed N --platform CUDA
 ```
+
+The temperature follows the eq node and, on a continuation, the parent
+walker: do not pass `--temperature-kelvin` (rule:
+`skills/md-production/SKILL.md` Prerequisites).
 
 Continue a walker with `--continue-from`; with a shared `--bias-dir` it
 simply rejoins the directory, without one it starts from the parent's total

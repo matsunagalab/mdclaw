@@ -18,6 +18,7 @@ node loop), `skills/common/solvent-regimes.md`, and
 | Target | (job directory) |
 | Execution mode | read `progress.json.params.execution_mode` |
 | Parent eq node | use a completed eq node from `inspect_job`, or an explicit branch parent |
+| Temperature | the eq node's, inherited (Prerequisites below); do not restate it |
 | Simulation time | user-specified, or per the Default Decision Rule below |
 | Other | (non-default parameters) |
 
@@ -27,11 +28,26 @@ Follow `skills/common/run-loop.md`. Start with
 `mdclaw inspect_job --job-dir <job_dir>` to confirm there is a completed `eq`
 node, no conflicting running work, and the intended `solvent_regime`. For an
 extension, use `--continue-from` (below) rather than a default forward edge.
-Topology and restart inputs auto-resolve from DAG ancestors. `pressure_bar`
-defaults to the eq node's `metadata.final_ensemble` so the common eq → prod
-handoff matches by default; override `--pressure-bar` to switch ensembles
-freely (see `skills/md-production/restart.md` "Switching Ensembles Across
-Nodes").
+Topology and restart inputs auto-resolve from DAG ancestors, and so do the
+temperature and the pressure.
+
+**The temperature is given once, to `run_equilibration`.** Omit
+`--temperature-kelvin` on every production command, local or submitted: the
+run takes the temperature of the node its state restarts from — the eq node
+on a fresh eq → prod, the prod parent on `--continue-from` — even when that
+node was still queued at submission. Rounds segments run at the temperature
+`setup_rounds` pins (`rounds.md`). Pass the flag only to change the
+temperature on purpose: a value different from the eq's runs with a warning;
+one different from a prod parent is refused before anything runs
+(`production_restart_integrator_mismatch`; the result says whether the node is
+still pending or, when it had been submitted, must be replaced). The result
+records where the value came from (`temperature_kelvin_source`: `inherited`,
+`explicit` or `default`).
+
+`pressure_bar` defaults to the eq node's `metadata.final_ensemble` so the
+common eq → prod handoff matches by default; override `--pressure-bar` to
+switch ensembles freely (see `skills/md-production/restart.md` "Switching
+Ensembles Across Nodes").
 
 If no completed eq node exists, suggest running `skills/md-equilibration/SKILL.md`
 on the same `job_dir` first (`/md-equilibration <job_dir>` when slash commands
@@ -76,7 +92,10 @@ Pass the same production length to `run_production --simulation-time-ns`.
 For node-linked SLURM submissions, inspect `condition_preflight`: a `skipped`
 check is not validation (`not_applicable` means the node is not a `prod`
 node). Keep declarations and the actual command consistent;
-see `docs/developer/tool-reference.md` for the supported submission forms.
+see `docs/developer/tool-reference.md` for the supported submission forms. An
+omitted `--temperature-kelvin` is not compared before submission: a declared
+`temperature_kelvin` is then listed under `deferred_conditions`, and the run
+compares it with the inherited value.
 
 **Branching** (multiple prod from same eq):
 ```bash

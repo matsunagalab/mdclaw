@@ -59,7 +59,7 @@ def energy(positions, ctx):
 
 ```bash
 mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
-  --simulation-time-ns 0.1 --temperature-kelvin 300 \
+  --simulation-time-ns 0.1 \
   --custom-force-script restraint_ca.py \
   --custom-force-parameters '{"selection": "name CA", "k": 1000.0}'
 ```
@@ -184,7 +184,7 @@ def energy(positions, ctx):
 
 ```bash
 mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
-  --simulation-time-ns 0.1 --temperature-kelvin 300 \
+  --simulation-time-ns 0.1 \
   --custom-force-script ml_potential.py \
   --custom-force-parameters '{"model_path": "model.pt"}'
 ```

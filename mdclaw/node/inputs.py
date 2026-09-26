@@ -538,6 +538,44 @@ def _resolve_prod_distance_restraints(job_dir: str, node_id: str) -> dict:
     return {}
 
 
+def _resolve_restart_temperature(job_dir: str, restart_node_id: Optional[str]) -> dict:
+    """Temperature of the node whose state a run restarts from.
+
+    A production or equilibration that omits ``--temperature-kelvin`` runs at
+    this temperature: the eq node on a fresh eq -> prod, the prod parent on a
+    continuation (rounds segments get the temperature setup_rounds pinned,
+    passed explicitly by the driver; run_equilibration only uses it to refuse
+    an omitted temperature after a non-300 K eq). It is read from that
+    node's ``integrator_signature`` (what the restart check compares, so an
+    inherited value can never trip it), else ``metadata.temperature_kelvin``
+    (run_sst2 records only its reference temperature). Never a further
+    ancestor, never parsed from state.xml. Empty when there is nothing to
+    inherit.
+
+    The nearest eq ancestor is the wrong source: after an eq at 310 K and a
+    production run explicitly at 300 K, a continuation must keep 300 K.
+    MDDataBench glm-5.3-flash 3cond 010_membrane_6kux r3 (2026-09-26): eq at
+    310 K as asked, production without the flag ran at the 300 K default.
+    """
+    if not restart_node_id:
+        return {}
+    signature = _read_metadata_field(job_dir, restart_node_id, "integrator_signature")
+    value = signature.get("temperature_kelvin") if isinstance(signature, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        value = _read_metadata_field(job_dir, restart_node_id, "temperature_kelvin")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return {}
+    try:
+        node = read_node(job_dir, restart_node_id)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        node = {}
+    return {
+        "restart_temperature_kelvin": float(value),
+        "restart_temperature_node_id": restart_node_id,
+        "restart_temperature_node_type": node.get("node_type"),
+    }
+
+
 def _resolve_eq_ensemble_metadata(job_dir: str, node_id: str) -> dict:
     result: dict = {}
     eq_anc = _find_ancestor_node_id(job_dir, node_id, "eq")
@@ -850,6 +888,7 @@ def resolve_node_inputs(
         # equilibration. A legacy first eq node from topo has no restart
         # ancestor and runs directly from the topo state.xml.
         result.update(_resolve_md_restart(job_dir, node_id))
+        result.update(_resolve_restart_temperature(job_dir, result.get("restart_from_node_id")))
 
     elif node_type == "prod":
         result.update(_resolve_topology_files(job_dir, node_id))
@@ -877,6 +916,7 @@ def resolve_node_inputs(
                 code = "hybrid_topology_production_blocked"
                 result["input_resolution_code"] = code
         result.update(_resolve_md_restart(job_dir, node_id))
+        result.update(_resolve_restart_temperature(job_dir, result.get("restart_from_node_id")))
         result.update(_resolve_prod_custom_force(job_dir, node_id))
         result.update(_resolve_prod_distance_restraints(job_dir, node_id))
         continued_from = _read_continued_from(job_dir, node_id)

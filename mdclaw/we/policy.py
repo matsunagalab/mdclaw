@@ -47,7 +47,7 @@ from mdclaw.analyze.inputs import _rel_to_node_root
 from mdclaw.node.graph import find_ancestor_artifact
 from mdclaw.node.io import _read_artifact_from_node, _read_node_json
 from mdclaw.rounds.plan import NEXT_ROUND_ARTIFACT, NEXT_ROUND_FILENAME
-from mdclaw.rounds.scheme import RoundsError, _validate_start_nodes, read_scheme
+from mdclaw.rounds.scheme import RoundsError, _validate_start_nodes, check_basis_temperatures, read_scheme
 from mdclaw.we.resample import ResampleError, in_target, normalize_edges, normalize_target, resample
 
 logger = setup_logger(__name__)
@@ -124,7 +124,8 @@ def _collect_walkers(job_dir: str, node: dict) -> list[dict]:
         trajectory = _read_artifact_from_node(job_dir, pid, "trajectory")
         if not trajectory or not Path(trajectory).is_file():
             raise WEError(code="we_inputs_missing", message=f"parent {pid} has no trajectory artifact")
-        scheme_meta = (pnode.get("metadata") or {}).get("scheme") or {}
+        pmeta = pnode.get("metadata") or {}
+        scheme_meta = pmeta.get("scheme") or {}
         weight = scheme_meta.get("weight")
         if weight is None:
             raise WEError(code="we_weights_invalid",
@@ -135,8 +136,21 @@ def _collect_walkers(job_dir: str, node: dict) -> list[dict]:
             "replica": scheme_meta.get("replica", index + 1),
             "weight": float(weight),
             "trajectory": trajectory,
+            "temperature_kelvin": _recorded_temperature(pmeta),
         })
     return walkers
+
+
+def _recorded_temperature(metadata: dict) -> Optional[float]:
+    """The temperature a segment ran at (its integrator signature, else
+    ``metadata.temperature_kelvin``), or None."""
+    signature = metadata.get("integrator_signature")
+    candidates = (signature.get("temperature_kelvin") if isinstance(signature, dict) else None,
+                  metadata.get("temperature_kelvin"))
+    for value in candidates:
+        if not isinstance(value, bool) and isinstance(value, (int, float)) and value > 0:
+            return float(value)
+    return None
 
 
 def _half_box_guard(args: dict, compiled: list, trajectory: str) -> None:
@@ -277,7 +291,9 @@ def we_resample(
     round's flux), and every occupied bin is brought to ``walkers_per_bin``
     walkers by merging the lightest pair (survivor drawn by weight) and
     splitting the heaviest evenly. Arguments default to the scheme's
-    ``policy_args``.
+    ``policy_args``. A basis node at another temperature than the scheme's
+    segments (``segment_temperature_kelvin``) is refused
+    (``rounds_start_temperature_mismatch``, the node stays pending).
 
     Writes ``next_round.json`` (consumed by ``run_rounds``), ``we_round.json``
     (walkers with weight, pcoord, bin and fate; bin ledger; flux) and
@@ -296,6 +312,7 @@ def we_resample(
     start_node_ids: Optional[list[str]] = None
     seed_base = 0
     warnings: list[str] = []
+    scheme: Optional[dict] = None
     try:
         if scheme_id:
             scheme = read_scheme(job_dir, scheme_id)
@@ -307,6 +324,11 @@ def we_resample(
         args = resolve_policy_args(explicit, defaults, start_node_ids=start_node_ids)
         if args["recycle"]:
             _validate_start_nodes(job_dir, args["basis_node_ids"])
+            if scheme is not None:
+                # A recycled walker restarts from its basis node: a basis at
+                # another temperature than the scheme's would put part of the
+                # ensemble's weight in another ensemble (the node stays pending).
+                check_basis_temperatures(job_dir, scheme, args["basis_node_ids"])
         walkers = _collect_walkers(job_dir, node)
         topology_file = find_ancestor_artifact(job_dir, node_id, "topo", "topology_pdb")
         if not topology_file:
@@ -367,6 +389,10 @@ def we_resample(
                 "extend_bins": args["extend_bins"],
             },
             "seed": seed,
+            # What the round's segments ran at: analyze_we takes kT for
+            # -kT ln P from here without reading every segment's node.json.
+            "segment_temperatures_kelvin": sorted({w["temperature_kelvin"] for w in walkers
+                                                   if w["temperature_kelvin"] is not None}),
             **{k: step[k] for k in ("walkers", "bins", "bin_shape", "n_in", "n_out", "target_weight",
                                     "flux", "weight_sum_in", "weight_sum_out", "weight_residual",
                                     "weight_min", "weight_max")},

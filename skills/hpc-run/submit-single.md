@@ -39,3 +39,7 @@ the scheduler cancels the jobs behind it (`submit_job` adds
 `--kill-on-invalid-dep=yes` to dependent jobs) and their nodes are recorded
 failed; fix the upstream stage on a new node and chain new downstream nodes
 from it.
+
+The chained prod command carries no `--temperature-kelvin`: it takes the eq
+node's temperature when it runs, although that eq is still queued at
+submission (rule: `skills/md-production/SKILL.md` Prerequisites).

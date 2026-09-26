@@ -39,3 +39,9 @@ The first `eq` node auto-resumes from the `min` node's `state` artifact and
 therefore skips coordinate minimization but still runs low-temperature warmup.
 Each downstream `eq` node auto-resumes from its parent's `state` artifact; no
 `--restart-from` flag is needed in node mode.
+
+Run every stage with `run_equilibration --temperature-kelvin <T>`, the value
+its conditions declare; the last stage's temperature is what production
+inherits. An eq stage does not carry its parent's temperature over: one that
+restarts from an eq at a temperature other than 300 K and omits the flag is
+refused before it runs (`eq_restart_temperature_unstated`).

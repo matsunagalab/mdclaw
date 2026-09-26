@@ -79,7 +79,9 @@ identical to the explicit commands above.
 - `equilibrated.xml` is the portable cross-node restart artifact (preferred);
   `equilibrated.chk` is a binary checkpoint kept for same-GPU bit-exact replay.
   Both record `currentStep=0` so `run_production --simulation-time-ns` is the
-  full production length. Production auto-resolves the state via the DAG.
+  full production length. Production auto-resolves the state, temperature
+  and pressure via the DAG: the `--temperature-kelvin` given here is the
+  production temperature.
 - Energy should drop during the `min` node minimization (good sign).
 - Use the optional `multi-stage-eq.md` chain only for an explicit final
   unrestrained NPT request; do not add that stage to the default protocol.

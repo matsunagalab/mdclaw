@@ -36,12 +36,13 @@ from mdclaw.analyze.inputs import _rel_to_node_root
 from mdclaw.node.io import _read_artifact_from_node, _read_node_json
 from mdclaw.rounds.scheme import RoundsError, read_scheme
 from mdclaw.we.kinetics import DRIFT_TOLERANCE_KT, steady_state_rate, two_state_fit
-from mdclaw.we.policy import WEError
+from mdclaw.we.policy import WEError, _recorded_temperature
 
 logger = setup_logger(__name__)
 
 GAS_CONSTANT_KJ_MOL_K = 8.314462618e-3
 AVOGADRO = 6.02214076e23
+DEFAULT_TEMPERATURE_K = 300.0
 
 
 def _chain_of_policy_nodes(job_dir: str, leaf_id: str) -> list[dict]:
@@ -105,6 +106,59 @@ def _tau_ns(job_dir: str, scheme_id: str, tau_ns: Optional[float]) -> float:
     raise WEError(code="we_inputs_missing",
                   message="the segment length is unknown; pass --tau-ns (the scheme's stage_args has no "
                           "simulation_time_ns)")
+
+
+def _segment_temperatures(job_dir: str, rounds: list[dict]) -> set[float]:
+    """Temperatures a scheme's segments ran at: from each round's ledger
+    (``segment_temperatures_kelvin``, written by we_resample), or — for a
+    ledger written before it recorded them — from the segments' node.json."""
+    found: set[float] = set()
+    for entry in rounds:
+        ledger = entry["ledger"]
+        recorded = ledger.get("segment_temperatures_kelvin")
+        if isinstance(recorded, list):
+            found.update(round(float(t), 6) for t in recorded
+                         if not isinstance(t, bool) and isinstance(t, (int, float)) and t > 0)
+            continue
+        for walker in ledger.get("walkers") or []:
+            if not isinstance(walker.get("id"), str):
+                continue
+            meta = (_read_node_json(job_dir, walker["id"]) or {}).get("metadata") or {}
+            value = _recorded_temperature(meta)
+            if value is not None:
+                found.add(round(value, 6))
+    return found
+
+
+def _resolve_temperature(job_dir: str, schemes: dict[str, list[dict]],
+                         explicit: Optional[float]) -> tuple[float, str, list[str]]:
+    """kT's temperature for ``-kT ln P``: the one the segments ran at, so a
+    WE at 340 K analysed with the defaults is not weighed at 300 K."""
+    per_scheme = {key: sorted(_segment_temperatures(job_dir, rounds)) for key, rounds in schemes.items()}
+    distinct = sorted({t for temps in per_scheme.values() for t in temps})
+    listing = "; ".join(f"{key}: {', '.join(f'{t:g} K' for t in temps) or 'none recorded'}"
+                        for key, temps in per_scheme.items())
+    # A mix is refused whatever --temperature-kelvin says: the flag only sets
+    # kT, and a rate from two ensembles is not a rate at either temperature.
+    if distinct and distinct[-1] - distinct[0] > 1e-6:
+        raise WEError(
+            code="rounds_start_temperature_mismatch",
+            message=(f"the segments ran at different temperatures ({listing}): their weights and flux mix "
+                     "ensembles, and no single kT describes the bin populations. Analyse only policy nodes of "
+                     "schemes whose segments ran at one temperature, or rerun the scheme from start and basis "
+                     "nodes at one temperature; --temperature-kelvin only sets kT and does not repair the mix."),
+        )
+    if explicit is not None:
+        warnings = []
+        if any(abs(t - float(explicit)) > 1e-6 for t in distinct):
+            warnings.append(f"temperature_kelvin={float(explicit):g} given, but the segments ran at {listing}; "
+                            f"-kT ln P uses {float(explicit):g} K")
+        return float(explicit), "explicit", warnings
+    if distinct:
+        return distinct[0], "segments", []
+    return DEFAULT_TEMPERATURE_K, "default", [
+        f"the segments record no temperature; -kT ln P uses {DEFAULT_TEMPERATURE_K:g} K "
+        "(pass --temperature-kelvin if they ran elsewhere)"]
 
 
 def _box_volume_nm3(job_dir: str, ledger: dict) -> Optional[float]:
@@ -493,7 +547,7 @@ def analyze_we(
     node_id: str,
     tau_ns: Optional[float] = None,
     burn_in_rounds: Optional[int] = None,
-    temperature_kelvin: float = 300.0,
+    temperature_kelvin: Optional[float] = None,
     n_bootstrap: int = 200,
     min_events: int = 10,
     drift_tolerance_kt: float = DRIFT_TOLERANCE_KT,
@@ -509,7 +563,11 @@ def analyze_we(
             ``stage_args.simulation_time_ns``.
         burn_in_rounds: Rounds dropped before averaging bin populations;
             default 2 x the fitted flux relaxation time (at most half the rounds).
-        temperature_kelvin: For ``-kT ln P`` (default 300 K).
+        temperature_kelvin: For ``-kT ln P``. Omitted: the temperature the
+            segments ran at (recorded per round by we_resample); refused when
+            they ran at different temperatures
+            (``rounds_start_temperature_mismatch``); 300 K when they record
+            none. The rate does not depend on it.
         n_bootstrap: Moving-block bootstrap samples for the rate interval.
         min_events: Recycling events the averaging window must hold for
             ``flux_steady`` (default 10).
@@ -527,6 +585,8 @@ def analyze_we(
     try:
         schemes = _collect_schemes(job_dir, node)
         taus = {key: _tau_ns(job_dir, key, tau_ns) for key in schemes}
+        temperature_kelvin, temperature_source, temperature_warnings = _resolve_temperature(
+            job_dir, schemes, temperature_kelvin)
     except WEError as exc:
         return _fail(job_dir, node_id, exc, pending=True)
 
@@ -541,7 +601,7 @@ def analyze_we(
                                  min_events=min_events, drift_tolerance_kt=drift_tolerance_kt)
             for key, rounds in schemes.items()
         }
-        warnings: list[str] = []
+        warnings: list[str] = list(temperature_warnings)
         rates = [a["kinetics"].get("rate") for a in analyses.values()
                  if a["recycle"] and a["kinetics"].get("rate") is not None]
         pooled: Optional[dict] = None
@@ -588,6 +648,7 @@ def analyze_we(
             convergence_plot = None
             warnings.append(f"convergence plot skipped: {type(exc).__name__}: {exc}")
         summary = {"schemes": analyses, "pooled": pooled, "temperature_kelvin": temperature_kelvin,
+                   "temperature_kelvin_source": temperature_source,
                    "parent_node_ids": node.get("parent_node_ids") or []}
         kinetics_json = out_dir / "we_kinetics.json"
         kinetics_json.write_text(json.dumps(summary, indent=2))
@@ -645,6 +706,8 @@ def analyze_we(
         "next_rounds_suggested": lead["kinetics"].get("next_rounds_suggested"),
         "pooled": pooled,
         "burn_in_rounds": first["burn_in_rounds"],
+        "temperature_kelvin": temperature_kelvin,
+        "temperature_kelvin_source": temperature_source,
     }
     complete_node(job_dir, node_id, artifacts=artifacts, metadata=metadata)
     return {
@@ -665,6 +728,8 @@ def analyze_we(
         "verdict": node_verdict,
         "verdict_reasons": lead["kinetics"].get("verdict_reasons"),
         "convergence": convergence_summary,
+        "temperature_kelvin": temperature_kelvin,
+        "temperature_kelvin_source": temperature_source,
         "artifacts": artifacts,
         "warnings": warnings,
     }

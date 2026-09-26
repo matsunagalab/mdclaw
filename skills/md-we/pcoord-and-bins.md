@@ -94,6 +94,10 @@ mdclaw --job-dir "$JOB" --node-id eq_003 run_equilibration --temperature-kelvin 
   --nvt-time-ns 0.2 --npt-time-ns 2 --restraint-force-constant 0 --platform CUDA
 ```
 
+The basis node's temperature is the scheme's temperature: start the scheme
+from `eq_003` (340 K), never from the 500 K `eq_002`; `setup_rounds` reports
+it as `segments_run_at_kelvin` (`skills/md-production/rounds.md`).
+
 `setup_rounds` then reports the basis pcoord (`scheme.start_pcoords`): for
 a folding scheme it must be far from the target (e.g. `q` below 0.2); if it
 is not, run the hot stage longer. The basis *defines* the initial state of

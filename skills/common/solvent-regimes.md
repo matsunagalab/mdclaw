@@ -26,7 +26,7 @@ membrane. It controls prep-time component disposition, including retained ions; 
 | Water model | `opc` | "tip3p", "spce", "tip4p-ew" |
 | Buffer distance | `15 Å` | "buffer 20", "20A" |
 | Box | cubic | "octahedral", "truncated octahedron" |
-| Temperature | `300 K` | user value |
+| Temperature | `300 K` | user value (give it to `run_equilibration`; production inherits it) |
 | Pressure | `1 bar` | user value |
 | Ensemble | NPT for prod, NVT/NPT for eq | |
 | Electrostatics | PME (cutoff 1.0 nm) | |

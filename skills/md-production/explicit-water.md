@@ -2,9 +2,10 @@
 
 Force field / water / integrator / HMR / PME constant defaults and the
 local-run platform preflight live in `skills/common/solvent-regimes.md`.
-Production runs NPT (300 K, 1 bar) with a `MonteCarloBarostat` whose temperature
-must match the integrator. HMR is baked into `system.xml` at build time; a
-run-side mismatch raises `modern_system_hmr_mismatch` (use `--no-hmr
+Production runs NPT at the eq node's temperature and pressure (300 K and 1 bar
+unless the eq ran otherwise); the tool builds the `MonteCarloBarostat` and the
+integrator from that one temperature. HMR is baked into `system.xml` at build
+time; a run-side mismatch raises `modern_system_hmr_mismatch` (use `--no-hmr
 --timestep-fs 2.0` only when the system was built without HMR).
 
 ---
@@ -20,13 +21,13 @@ system should go to `/hpc-run` or an explicit short smoke test.
 ```bash
 mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
   --simulation-time-ns <ns> \
-  --temperature-kelvin <T> \
   --output-frequency-ps 10.0
 ```
 
 Choose the run length with the Default Decision Rule in `SKILL.md`.
-`system_xml_file`, `topology_pdb_file`, `state_xml_file`, `restart_from`, and
-`pressure_bar` are auto-resolved from DAG ancestors. Ensemble is inherited from
+`system_xml_file`, `topology_pdb_file`, `state_xml_file`, `restart_from`,
+`temperature_kelvin` and `pressure_bar` are auto-resolved from DAG ancestors
+(temperature rule: `SKILL.md` Prerequisites). Ensemble is inherited from
 the `eq` ancestor, so NPT eq states load with a matching barostat by default.
 For extension (`--continue-from`) and retry details, read
 `skills/md-production/restart.md`.
@@ -75,7 +76,6 @@ To bias production with a custom force / CV, read and follow
 | SHAKE constraint failure | Bad geometry | Reduce to 2 fs, or re-prepare |
 | NaN energies | Clashes | Re-equilibrate or re-prepare |
 | Slow performance | GPU not detected, or explicit-water PME running on CPU | Check `inspect_openmm_platforms`; omit `--platform`, use `--platform CUDA` / `--platform OpenCL` when available, or hand off to `/hpc-run` |
-| Barostat instability | Temperature mismatch | Match barostat and integrator T |
 | `Ensemble switch:` warning in `result["warnings"]` | NPT-saved eq state used in an NVT prod context, or vice versa | Safe to ignore — the loader transfers only positions/velocities/box, so barostat parameters are dropped (NPT → NVT) or the new barostat starts in its default state and re-equilibrates volume over the first few ps (NVT → NPT). Set `--pressure-bar 0` (NVT) or `--pressure-bar 1.0` (NPT) on prod; no eq re-run needed. |
 
 ---
@@ -85,4 +85,5 @@ To bias production with a custom force / CV, read and follow
 Read `nodes/<prod_node_id>/node.json`:
 - `status`: `"completed"`
 - `artifacts`: trajectory, final_structure, checkpoint, energy
-- `metadata`: simulation_time_ns, platform, hmr, steps
+- `metadata`: simulation_time_ns, temperature_kelvin (the eq's unless changed
+  on purpose), platform, hmr, steps

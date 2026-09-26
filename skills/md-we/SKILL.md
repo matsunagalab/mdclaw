@@ -95,6 +95,9 @@ request; otherwise ask for the coordinate and the two ranges.
    `--scheme` is one JSON string. `initial_weights` defaults to `uniform`
    for a weighted policy. Codes: `rounds_scheme_invalid`,
    `rounds_tool_invalid`, `rounds_start_node_invalid` name the field to fix.
+   The walkers run at the basis node's temperature
+   (`segments_run_at_kelvin` in the result); `stage_args` carries no
+   temperature (`skills/md-production/rounds.md`).
 
 3. Run rounds. On a GPU cluster, submit one job that runs the whole scheme
    until its wall time; on a workstation run it in the foreground:
@@ -176,6 +179,7 @@ request; otherwise ask for the coordinate and the two ranges.
 | Code | Fix |
 |---|---|
 | `rounds_policy_failed` with `we_policy_args_invalid` | the message names the `policy_args` field; fix it with `setup_rounds --overwrite true` before the first round, or pass the argument to `we_resample` by hand on the pending policy node |
+| `rounds_start_temperature_mismatch` | the start or `basis_node_ids` nodes (at `analyze_we`: the parent schemes' segments) ran at different temperatures: use basis nodes equilibrated at one temperature (`pcoord-and-bins.md`, "An unfolded (or unbound) basis"); pool only schemes run at one temperature (`--temperature-kelvin` does not lift this) |
 | `we_pcoord_out_of_bins` | widen `bins.edges` or keep `extend_bins` true |
 | `we_target_exceeds_half_box` | an intermolecular distance is a minimum-image distance: keep the target and edges below half the box, or solvate in a larger box |
 | `cv_selection_invalid` | the selection matches no atoms, solvent, or a different atom count in the reference structure |

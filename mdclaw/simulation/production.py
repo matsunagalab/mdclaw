@@ -83,7 +83,7 @@ def run_production(
     topology_pdb_file: Optional[str] = None,
     state_xml_file: Optional[str] = None,
     simulation_time_ns: float = 1.0,
-    temperature_kelvin: float = 300.0,
+    temperature_kelvin: Optional[float] = None,
     pressure_bar: Optional[float] = None,
     timestep_fs: Optional[float] = None,
     output_frequency_ps: float = 10.0,
@@ -129,8 +129,16 @@ def run_production(
                      ``currentStep=0`` by design, so the eq→prod case is
                      unchanged: ``simulation_time_ns`` there is the full
                      production duration.)
-        temperature_kelvin: Temperature in Kelvin (default: 300.0)
-        pressure_bar: Pressure in bar. Set for NPT, None for NVT (default: None)
+        temperature_kelvin: Temperature in Kelvin. Omitted: the temperature of
+                     the node this run restarts from (the eq node on eq ->
+                     prod, the prod parent on --continue-from), recorded as
+                     temperature_kelvin_source="inherited"; 300 K when there is
+                     none. Pass it only to change the temperature on purpose:
+                     different from an eq state is a warning, different from a
+                     prod parent is refused before anything runs
+                     (production_restart_integrator_mismatch).
+        pressure_bar: Pressure in bar. Set for NPT, None for NVT. Omitted in
+                     node mode: the eq ancestor's pressure when it ran NPT.
         timestep_fs: Integration timestep in femtoseconds. When omitted, uses
                      4 fs for HMR topologies and 2 fs otherwise.
         output_frequency_ps: Output frequency in picoseconds (default: 10.0)
@@ -247,6 +255,9 @@ def run_production(
     _eq_final_ensemble: Optional[str] = None
     _eq_pressure_bar: Optional[float] = None
     _pressure_bar_inherited = False
+    _temperature_source = "explicit" if temperature_kelvin is not None else "default"
+    _temperature_inherited_from: Optional[str] = None
+    _temperature_note: Optional[str] = None
     if job_dir and node_id:
         from mdclaw._node import resolve_node_inputs, validate_node_execution_context
         _inputs = resolve_node_inputs(job_dir, node_id, "prod")
@@ -342,6 +353,48 @@ def run_production(
             begin_node(job_dir, node_id)
             fail_node(job_dir, node_id, errors=[err], code=code)
             return error
+        # The node this run restarts from decides both the step counter and,
+        # when --temperature-kelvin is omitted, the temperature. See
+        # run_equilibration for the rationale: explicit ``--restart-from``
+        # wins over the resolver's auto-pick, and we trust the resolver's
+        # ``restart_from_node_id`` only when we actually used the resolver's
+        # path. An explicit path is matched back to a DAG ancestor by
+        # absolute-path equality so the step counter cannot drift from the
+        # artifact we load. Resolved before the declared-condition check so a
+        # node declaring temperature_kelvin compares the value that will run.
+        _explicit_restart_from = bool(restart_from)
+        if not _explicit_restart_from and "restart_from" in _inputs:
+            restart_from = _inputs["restart_from"]
+        _restart_from_node_id = _resolve_restart_node_id_for_run(
+            job_dir=job_dir, node_id=node_id,
+            restart_from=restart_from,
+            explicit_restart_from=_explicit_restart_from,
+            inputs=_inputs,
+        )
+        from mdclaw.node.inputs import _resolve_restart_temperature
+        _restart_temperature = _resolve_restart_temperature(job_dir, _restart_from_node_id)
+        if temperature_kelvin is None:
+            if _restart_temperature:
+                temperature_kelvin = _restart_temperature["restart_temperature_kelvin"]
+                _temperature_source = "inherited"
+                _temperature_inherited_from = _restart_from_node_id
+                _temperature_note = (
+                    f"temperature_kelvin={temperature_kelvin} inherited from "
+                    f"{_restart_temperature.get('restart_temperature_node_type') or 'node'} "
+                    f"'{_restart_from_node_id}', the node this run restarts from."
+                )
+            else:
+                temperature_kelvin = 300.0
+                if restart_from and _restart_from_node_id is None:
+                    _temperature_note = (
+                        "temperature_kelvin=300.0 (default): the restart file matches no DAG "
+                        "ancestor, so there is no recorded temperature to inherit."
+                    )
+                elif _restart_from_node_id is not None:
+                    _temperature_note = (
+                        f"temperature_kelvin=300.0 (default): restart node "
+                        f"'{_restart_from_node_id}' records no temperature to inherit."
+                    )
         _ctx = validate_node_execution_context(
             job_dir,
             node_id,
@@ -376,27 +429,47 @@ def run_production(
         )
         if not _ctx["success"]:
             return {"success": False, "error_type": "ValidationError", **_ctx}
+        # A prod -> prod continuation must keep its parent's integrator; a
+        # different temperature or timestep used to fail only after the node
+        # had started, with no code. Refuse before anything runs.
+        if (_restart_temperature.get("restart_temperature_node_type") == "prod"
+                and _restart_from_node_id):
+            from mdclaw.node.io import _read_metadata_field as _read_field
+            _parent_signature = _read_field(job_dir, _restart_from_node_id,
+                                            "integrator_signature")
+            if isinstance(_parent_signature, dict):
+                _drift = []
+                _parent_t = _parent_signature.get("temperature_kelvin")
+                if isinstance(_parent_t, (int, float)) and abs(float(_parent_t) - float(temperature_kelvin)) > 1e-6:
+                    _drift.append(f"temperature_kelvin: parent={float(_parent_t)}, "
+                                  f"this run={float(temperature_kelvin)}")
+                _parent_dt = _parent_signature.get("timestep_fs")
+                if (timestep_fs is not None and isinstance(_parent_dt, (int, float))
+                        and abs(float(_parent_dt) - float(timestep_fs)) > 1e-6):
+                    _drift.append(f"timestep_fs: parent={float(_parent_dt)}, "
+                                  f"this run={float(timestep_fs)}")
+                if _drift:
+                    from mdclaw._node import fail_node_from_result
+                    _msg = (f"a prod -> prod continuation from '{_restart_from_node_id}' must keep "
+                            "its integrator settings; " + "; ".join(_drift) + ".")
+                    return fail_node_from_result(job_dir, node_id, create_validation_error(
+                        "temperature_kelvin / timestep_fs",
+                        _msg,
+                        expected="the prod parent's temperature and timestep",
+                        actual="; ".join(_drift),
+                        hints=[
+                            "Omit --temperature-kelvin: a continuation inherits its parent's "
+                            "temperature. Pass --timestep-fs equal to the parent's.",
+                            "To run at another temperature, branch a new prod node from the eq node.",
+                        ],
+                        code="production_restart_integrator_mismatch",
+                    ), default_error=_msg)
         if not system_xml_file and "system_xml_file" in _inputs:
             system_xml_file = _inputs["system_xml_file"]
         if not topology_pdb_file and "topology_pdb_file" in _inputs:
             topology_pdb_file = _inputs["topology_pdb_file"]
         if not state_xml_file and "state_xml_file" in _inputs:
             state_xml_file = _inputs["state_xml_file"]
-        # See run_equilibration for the rationale: explicit
-        # ``--restart-from`` wins over the resolver's auto-pick, and we
-        # trust the resolver's ``restart_from_node_id`` only when we
-        # actually used the resolver's path. An explicit path is matched
-        # back to a DAG ancestor by absolute-path equality so the step
-        # counter cannot drift from the artifact we load.
-        _explicit_restart_from = bool(restart_from)
-        if not _explicit_restart_from and "restart_from" in _inputs:
-            restart_from = _inputs["restart_from"]
-        _restart_from_node_id = _resolve_restart_node_id_for_run(
-            job_dir=job_dir, node_id=node_id,
-            restart_from=restart_from,
-            explicit_restart_from=_explicit_restart_from,
-            inputs=_inputs,
-        )
         # Two unbiased segments that restart from one ancestor with one
         # random_seed integrate the same noise (the effective seed is derived
         # from the seed and the ancestor's step count) and are the same
@@ -462,6 +535,8 @@ def run_production(
             return err
 
     if not (job_dir and node_id):
+        if temperature_kelvin is None:
+            temperature_kelvin = 300.0
         hmr, implicit_solvent, timestep_fs = _resolve_topology_run_settings(
             hmr=hmr,
             implicit_solvent=implicit_solvent,
@@ -528,6 +603,8 @@ def run_production(
         "ensemble": None,
         "simulation_time_ns": simulation_time_ns,
         "temperature_kelvin": temperature_kelvin,
+        "temperature_kelvin_source": _temperature_source,
+        "temperature_kelvin_inherited_from": _temperature_inherited_from,
         "pressure_bar": pressure_bar,
         "timestep_fs": timestep_fs,
         "trajectory_file": None,
@@ -552,6 +629,8 @@ def run_production(
         "errors": [],
         "warnings": []
     }
+    if _temperature_note:
+        result["warnings"].append(_temperature_note)
 
     # Setup output directory.
     _node_mode = job_dir and node_id

@@ -428,6 +428,15 @@ signature, update the relevant section here and the matching skill examples.
   is then auto-resolved and coordinate minimization is skipped while low-
   temperature warmup remains in eq. Eq-chain restarts resolve from eq/prod
   ancestors.
+  `temperature_kelvin` omitted runs at 300 K and is never inherited from a
+  parent eq: an eq that restarts from an eq node which ran at another
+  temperature must state it, and omitting it is refused before anything runs
+  (`eq_restart_temperature_unstated`; pass the parent's
+  temperature to keep it, or the new target). Inheriting would be the wrong
+  rule here: after a deliberate hot stage (md-we's 500 K unfolding eq before
+  the 340 K basis) a forgotten flag would silently stay hot. This is the
+  temperature production inherits (see `run_production`), so a requested
+  temperature is given here, once.
   Agents should prefer `nvt_time_ns` / `npt_time_ns` (CLI:
   `--nvt-time-ns` / `--npt-time-ns`) for user-facing duration requests;
   explicit `nvt_steps` / `npt_steps` remain available for low-level
@@ -478,7 +487,17 @@ signature, update the relevant section here and the matching skill examples.
   (`F = -(T+dT)/dT V(s)`), `runtime_system.xml`, `integrator.xml`. Metadata
   carries `sampling_method: metadynamics` and a `metadynamics` summary.
   `--continue-from` a completed node rejoins a shared `bias_dir` or, without
-  one, starts from the parent's total bias (`restart_bias_file`). Stable
+  one, starts from the parent's total bias (`restart_bias_file`).
+  `temperature_kelvin` omitted in node mode is inherited as in
+  `run_production`: the temperature of the node the walker starts from (the
+  eq node, or the parent walker on `--continue-from`), 300 K when that node
+  records none, when an explicit state file is not that node's state, and
+  outside node mode; `temperature_kelvin_source` /
+  `temperature_kelvin_inherited_from` are in the result and the metadata.
+  The temperature is part of the walker manifest, so a continuation or a
+  walker joining a shared `bias_dir` keeps it (before this, a no-flag
+  continuation of a 310 K walker failed with `metadynamics_restart_mismatch`).
+  `bias_height_kj_mol` is not rescaled with the temperature. Stable
   codes: `metadynamics_cv_invalid`, `metadynamics_grid_invalid`,
   `metadynamics_parameters_invalid`, `metadynamics_shared_bias_mismatch`,
   `metadynamics_restart_missing`, `metadynamics_restart_mismatch`,
@@ -488,8 +507,39 @@ signature, update the relevant section here and the matching skill examples.
   DAG restart resolution, and timeline metadata (including `md_seconds`,
   `wall_seconds` and `ns_per_day`: integration time, whole tool call, rate). Refuses a hybrid (alchemical)
   topology ancestor (`hybrid_topology_production_blocked`, node left pending;
-  `run_sst2` too) — lambda windows are the `fep` stage. An unbiased run
-  refuses a `random_seed` a completed unbiased sibling already ran from the
+  `run_sst2` too) — lambda windows are the `fep` stage.
+  `temperature_kelvin` omitted in node mode is the temperature of the node
+  the state restarts from: the eq node on a fresh eq -> prod, the prod parent
+  on `continue_from` (rounds segments get their scheme's pinned temperature,
+  `segments_run_at_kelvin`, from the driver instead; see `setup_rounds`).
+  `_resolve_restart_temperature` (`mdclaw/node/inputs.py`) reads it from that
+  node's `integrator_signature` — what the restart check compares, so an
+  inherited value never trips it — else `metadata.temperature_kelvin` (SST2
+  nodes record only their reference temperature), and never from a further
+  ancestor: after a 310 K eq and a production explicitly at 300 K, the
+  continuation keeps 300 K. With nothing to inherit (a node that records no
+  temperature, an explicit `restart_from` matching no DAG ancestor) the run
+  uses 300 K and says why in `warnings`; standalone runs use 300 K. The value
+  is resolved before the declared-condition check, so a declared
+  `temperature_kelvin` is compared with what will run, and `explain_node`
+  shows it in `resolved_inputs` (`restart_temperature_kelvin`,
+  `restart_temperature_node_id`, `restart_temperature_node_type`; the eq
+  resolver fills the same keys). The result and the node metadata record
+  `temperature_kelvin_source` (`inherited`, `explicit` or `default`) and
+  `temperature_kelvin_inherited_from`. An explicit value different from an eq
+  source still runs, reported in `warnings` and `restart_integrator_changes`;
+  an explicit temperature or timestep different from a prod source's
+  `integrator_signature` is refused before the node starts
+  (`production_restart_integrator_mismatch`; it runs after the node-context
+  check, so a node run directly stays pending while one that was submitted
+  and marked queued is recorded failed and must be replaced; it used to
+  fail the node after it had begun, with no code, and `run_rounds` retried
+  it into `rounds_replica_unstable`). Why inheritance rather than a warning:
+  in MDDataBench glm-5.3-flash 3cond `010_membrane_6kux` r3 the eq ran at
+  310 K as asked, the production sbatch chained behind it with `afterok`
+  omitted the flag and ran at the old 300 K default, and the soft warning sat
+  in a `result.json` no agent was left to read (`docs/memo.md`, 2026-09-26).
+  An unbiased run refuses a `random_seed` a completed unbiased sibling already ran from the
   same restart ancestor (`production_sibling_seed_collision`, node left
   pending): the effective seed derives from the seed and the ancestor's step
   count, so the run would repeat that trajectory exactly;
@@ -896,7 +946,11 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
   For a linked node and a literal `mdclaw ... run_production` (or
   `python -m mdclaw._cli ...`) command, `condition_preflight` reports the
   declaration/argument check before sbatch, using CLI defaults and the runtime
-  comparator. Inherited conditions are deferred; shell scripts/wrappers on a
+  comparator. Inherited conditions are deferred: with `--temperature-kelvin`
+  omitted, a declared `temperature_kelvin` is listed under
+  `deferred_conditions` and not compared before submission (the run takes
+  it from the node it restarts from, which may still be queued when a chain
+  is submitted), while an explicit one is compared; shell scripts/wrappers on a
   `prod` node that cannot be checked are explicitly marked `skipped` (a
   warning), not validated; a node of another type, or a literal command that
   runs another tool, is `not_applicable` (no warning). The runtime guard
@@ -1089,9 +1143,35 @@ unchanged. Design notes: `docs/research/weighted-ensemble-plan.md`.
   compile on the scheme's topology, each start structure's pcoord is
   evaluated (`scheme.start_pcoords`) and must lie outside the target
   (`we_start_in_target`), and an intermolecular target stays below half the
-  box. Codes: `rounds_scheme_invalid`, `rounds_scheme_exists`,
-  `rounds_tool_invalid`, `rounds_start_node_invalid`, plus the `we_*` / `cv_*`
-  codes of the policy check.
+  box. The segment temperature is pinned here as well, when the stage tool
+  takes `temperature_kelvin` (`run_production`; `run_sst2` takes a ladder and
+  gets `segment_temperature_source: not_applicable`):
+  `stage_args.temperature_kelvin` when given (the scheme runs there on
+  purpose), else the temperature every start node and every explicit
+  `policy_args.basis_node_ids` entry ran at (read as `run_production` reads a
+  restart source), which must agree; nodes that record none take the others'
+  value, and with none recorded the segments run at 300 K. Disagreement, or a
+  `segment_conditions.temperature_kelvin` that differs from the pinned value,
+  is `rounds_start_temperature_mismatch`, and so is a
+  `stage_args.temperature_kelvin` / `timestep_fs` that a prod start or basis
+  node could not be continued with (a segment from a prod node is a prod ->
+  prod continuation, refused by `run_production`; eq start nodes may change
+  the temperature). The result reports `segments_run_at_kelvin`, the value
+  every segment is run with. The scheme records
+  `segment_temperature_kelvin`, `segment_temperature_source` (`stage_args`,
+  `start_nodes`, `default`, `not_applicable`) and
+  `start_temperatures_kelvin`, and the driver passes that temperature to
+  every segment explicitly; a scheme recorded before this runs its segments
+  at 300 K, the temperature they already used. Pinned rather than inherited
+  per segment: round-1 and recycled walkers restart from start / basis nodes
+  and continued ones from their parent segment, so start nodes at different
+  temperatures — or a running scheme whose continued walkers would inherit
+  300 K from their parents and recycled ones the basis's temperature — would
+  mix temperatures in one ensemble (the 2026-09-26 `run_production`
+  inheritance change; `docs/memo.md`). Codes: `rounds_scheme_invalid`,
+  `rounds_scheme_exists`, `rounds_tool_invalid`, `rounds_start_node_invalid`,
+  `rounds_start_temperature_mismatch`, plus the `we_*` / `cv_*` codes of the
+  policy check.
 - `run_rounds(job_dir, scheme_id, max_rounds=None, max_aggregate_ns=None,
   max_wall_hours=None, executor="local", platform=None, device_index=None,
   mps_tasks_per_gpu=8, mps_gpus=1, mps_segments_per_task=None,
@@ -1101,7 +1181,10 @@ unchanged. Design notes: `docs/research/weighted-ensemble-plan.md`.
   one after another in this process; `executor=mps`: submitted as
   `submit_mps_job` tasks, `mps_tasks_per_gpu x mps_gpus` segments per job,
   each task `mdclaw --job-dir .. --node-id .. <stage_tool> <stage_args as
-  flags> --random-seed .. --platform CUDA`, waited for with `check_job`;
+  flags> --temperature-kelvin <segment temperature> --random-seed ..
+  --platform CUDA` (the temperature flag only for a stage tool that takes
+  one; it lets the Slurm condition preflight check it), waited for with
+  `check_job`;
   a failed replica is retried as a `_t000N` sibling with a
   new seed, `rounds_replica_unstable` after three), plan the next round
   (`replicas`, or the policy tool on `analyze_<scheme>_r<round>` whose parents
@@ -1182,8 +1265,9 @@ unchanged. Design notes: `docs/research/weighted-ensemble-plan.md`.
   stage_args=None, platform=None, device_index=None)`: the MPS task command
   behind `mps_segments_per_task`: runs the listed pending (or queued: the
   task's tracked node) segments one after another in this process with the
-  scheme's stage tool, each with its recorded seed and an owner record +
-  heartbeat; a failed or refused segment does not stop the batch (the driver
+  scheme's stage tool, each with its recorded seed, the scheme's segment
+  temperature (unless `stage_args` names one; see `setup_rounds`) and an
+  owner record + heartbeat; a failed or refused segment does not stop the batch (the driver
   retries / resubmits). Returns per-segment `results` and `completed` /
   `failed` / `refused` / `skipped` counts; `rounds_batch_invalid` for a
   non-segment or missing node, `rounds_tool_invalid` for an unknown stage
@@ -1227,18 +1311,34 @@ terminal analyze node turns the recycled flux into a rate. Design notes:
   merges the lightest pair and splits the heaviest walker until every bin
   holds `walkers_per_bin` (default 5). Artifacts: `next_round` (the `rounds`
   contract), `we_round` (walkers with weight, pcoord, bin, fate; bin ledger;
-  flux; `target_weight`), `we_pcoords` (every frame). Merged-away and
+  flux; `target_weight`; `segment_temperatures_kelvin`, what the round's
+  segments ran at), `we_pcoords` (every frame). Merged-away and
   recycled walkers get `we_merged` / `we_recycled` events. Codes:
   `we_policy_args_invalid`, `we_weights_invalid`, `we_pcoord_out_of_bins`,
   `we_target_exceeds_half_box` (an intermolecular distance is a minimum-image
-  distance), `we_inputs_missing`, `we_scope_unsupported`, and the CV codes
-  `cv_spec_invalid`, `cv_selection_invalid`, `cv_box_missing`,
+  distance), `we_inputs_missing`, `we_scope_unsupported`,
+  `rounds_start_temperature_mismatch` (an explicit `basis_node_ids` entry ran
+  at another temperature than the one `setup_rounds` pinned from the scheme's
+  nodes: a recycled walker would restart in another ensemble), and the CV
+  codes `cv_spec_invalid`, `cv_selection_invalid`, `cv_box_missing`,
   `cv_trajectory_empty`. Argument errors leave the node pending.
 - `analyze_we(job_dir, node_id, tau_ns=None, burn_in_rounds=None,
-  temperature_kelvin=300.0, n_bootstrap=200, min_events=10,
+  temperature_kelvin=None, n_bootstrap=200, min_events=10,
   drift_tolerance_kt=1.0)`: terminal analysis over
   `we_resample` policy nodes (the latest round is enough; the chain is
-  followed back through `metadata.scheme.previous_policy_node_id`). With
+  followed back through `metadata.scheme.previous_policy_node_id`).
+  `temperature_kelvin` omitted is the temperature the segments ran at (each
+  round's `we_round.segment_temperatures_kelvin`, else the segments'
+  node.json for older ledgers), refused when they ran at different
+  temperatures whether or not `--temperature-kelvin` is given
+  (`rounds_start_temperature_mismatch`: the weights mix ensembles, and kT
+  does not repair that), 300 K with a warning when they record none; an
+  explicit value that differs from theirs (all at one temperature) is used
+  with a warning. The result carries
+  `temperature_kelvin_source` (`segments`, `explicit`, `default`). It sets
+  the kT of `-kT ln P` in `we_bins` and does not enter the rate; since
+  segments now run at their start node's temperature, a fixed 300 K default
+  would mis-scale a 340 K scheme's distribution. With
   recycling: the per-round flux `F(t)` is fitted with `F_ss (1 - exp(-t/tau))`,
   the rate is the mean over the rounds after a burn-in of two relaxation
   times (never less than the last quarter; `window` in the result; Hill
