@@ -210,8 +210,9 @@ cholesterol mixtures (e.g. `POPC:POPE:CHL1 2:1:1`, MDPrepBench P18).
 
 - Cold build cost (packmol pack + OpenMM min/eq) is paid once per composition;
   `scripts/warmup_membrane_cache.py` pre-builds representative compositions into
-  a read-only bundled cache (`MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR`, populated in
-  the container build) so runtime hits without equilibration.
+  a read-only bundled cache (the packaged `mdclaw/data/membrane_patches`, which
+  the image also names through `MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR`) so runtime
+  hits without equilibration.
 - Bundled cache hits require fingerprint agreement on composition + defaults
   (patch size, salt, water model, equilibration params, force field). The
   fingerprint deliberately excludes the packmol-memgen version (schema v2), so a

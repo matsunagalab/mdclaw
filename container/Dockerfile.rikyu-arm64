@@ -346,7 +346,7 @@ ENV PATH="/opt/mdclaw/bin:$PATH" \
     LD_LIBRARY_PATH="/opt/mdclaw/lib:/opt/mdclaw/lib/modeller-10.8/lib/armv8-gnu:/opt/mdclaw/lib/python3.12/site-packages/torch/lib:${LD_LIBRARY_PATH}" \
     NVIDIA_VISIBLE_DEVICES="all" \
     NVIDIA_DRIVER_CAPABILITIES="compute,utility" \
-    MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR="/opt/mdclaw/share/membrane_patches"
+    MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR="/opt/mdclaw/lib/python3.12/site-packages/mdclaw/data/membrane_patches"
 
 # Confirm that the final image contains and loads the shim.  GPU acceptance is
 # performed from the resulting SIF because a normal Docker filesystem does not
@@ -407,13 +407,18 @@ print(
 )
 PY
 
+# The bundled patches ship in the package (mdclaw/data/membrane_patches) and
+# the variable names that directory. Until 2026-09-26 it named an empty
+# /opt/mdclaw/share/membrane_patches whenever the warm-up was skipped; agents
+# that inspected the image concluded there was no cache and chose the slow
+# full-box packing (MDDataBench glm-5.3-flash 001_membrane_5yc8 cli_sif r1).
 COPY scripts/warmup_membrane_cache.py /opt/mdclaw/share/warmup_membrane_cache.py
 RUN if [ "${WARM_MEMBRANE_CACHE}" = "1" ]; then \
       /opt/mdclaw/bin/python /opt/mdclaw/share/warmup_membrane_cache.py \
         --out "${MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR}"; \
     else \
-      mkdir -p "${MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR}" && \
-      echo "Skipping membrane patch cache validation for this development image."; \
+      test -n "$(ls -A "${MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR}")" && \
+      echo "Using the packaged membrane patch cache without rebuilding it."; \
     fi
 
 COPY container/scripts/entrypoint.sh /opt/mdclaw/bin/entrypoint.sh

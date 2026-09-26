@@ -2040,11 +2040,14 @@ def embed_in_membrane(
     disulfide_bonds: Optional[list[dict]] = None,
     ligand_chemistry: Optional[list[dict]] = None,
 ) -> dict:
-    """Embed a protein in a lipid bilayer membrane using packmol-memgen.
-    
+    """Embed a protein in a lipid bilayer tiled from a cached, pre-equilibrated patch.
+
     This tool creates a membrane-embedded system by:
     1. Orienting the protein in the membrane (or using pre-oriented input)
-    2. Building a lipid bilayer around the protein
+    2. Building the bilayer around the protein: by default (``patch-tile``)
+       by tiling a small equilibrated patch of the composition over the box;
+       MDClaw ships such patches for common compositions at the default
+       settings, so this step usually needs no packing or equilibration
     3. Solvating with water above and below the membrane
     4. Optionally adding salt ions
     
@@ -2121,19 +2124,29 @@ def embed_in_membrane(
                      parallel (default: 4). Set to 1 for the previous
                      sequential retry behavior on CPU-constrained hosts.
         membrane_backend: Membrane construction backend (default:
-                     ``patch-tile``). ``patch-tile`` builds a small
-                     composition-keyed membrane patch once, equilibrates it under
-                     PBC, caches it, and tiles it to cover the protein.
-                     ``packmol-memgen`` runs the full-box packing path.
-                     ``auto`` tries patch-tile first and falls back to
-                     full packmol-memgen.
+                     ``patch-tile``). ``patch-tile`` tiles a small
+                     composition-keyed, PBC-equilibrated membrane patch over
+                     the box. Patches for common compositions (DPPC, POPC, POPE
+                     and cholesterol mixtures, TIP3P or OPC) at the default
+                     ``dist_wat``, salt and patch size ship with MDClaw in
+                     ``mdclaw/data/membrane_patches`` and are used as they are;
+                     other values of those settings change the cache key and
+                     build a new patch once (Packmol plus an OpenMM
+                     equilibration: minutes to tens of minutes on a CPU host).
+                     ``packmol-memgen`` runs the legacy full-box packing path,
+                     which packs the whole box around the protein on the CPU
+                     (tens of minutes for a receptor-sized box); use it only
+                     when patch-tile cannot build the composition. ``auto``
+                     tries patch-tile first and falls back to full
+                     packmol-memgen.
         membrane_cache_mode: Patch cache policy: ``off``, ``read-only``,
                      ``auto`` (build on miss), or ``refresh`` (rebuild).
         membrane_cache_dir: Optional patch cache root. Defaults to
                      ``MDCLAW_MEMBRANE_CACHE_DIR`` or
                      ``MDCLAW_CACHE_DIR/membrane_patches``, then the XDG (or
                      ``~/.cache``) user cache. Read-only bundled caches use
-                     ``MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR``.
+                     ``MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR`` and the packaged
+                     ``mdclaw/data/membrane_patches``.
         membrane_carve_padding: Protein-membrane contact cutoff in Angstroms used
                      to remove overlapping tiled lipid/water/ion residues.
         membrane_patch_side: Square patch side length in Angstroms for the
