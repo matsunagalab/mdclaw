@@ -44,6 +44,20 @@ def _normalize_reason(value) -> Optional[str]:
     return None if text in ("", "None", "none") else text
 
 
+def _normalize_state(state) -> Optional[str]:
+    """Slurm's state word, as every comparison in MDClaw expects it.
+
+    Text ``sacct`` writes who cancelled a job and a ``+`` for a state it
+    truncated: on 2026-09-26 a job the owner cancelled came back as
+    ``CANCELLED by 100160``, no terminal set matched it, and its DAG node stayed
+    ``running``. The raw text is kept as ``state_detail``.
+    """
+    if state is None:
+        return None
+    words = str(state).strip().split()
+    return words[0].rstrip("+").upper() if words else ""
+
+
 def _controller_job(stdout: str, job_id: str) -> dict:
     """Read only the requested allocation, including Slurm's array-task identity."""
     for line in stdout.splitlines():
@@ -384,6 +398,10 @@ def check_job(
                 result["errors"].append(f"sacct failed: {e}")
                 return _status_unavailable(result, str(job_id), clients=clients, job_dir=job_dir, output_dir=output_dir)
 
+    raw_state = observation.get("state")
+    observation["state"] = _normalize_state(raw_state)
+    if raw_state is not None and str(raw_state).strip() != observation["state"]:
+        observation["state_detail"] = str(raw_state).strip()
     result.update(observation, success=True)
     _check_job_finalize(result, str(job_id), job_dir=job_dir, output_dir=output_dir)
     return result

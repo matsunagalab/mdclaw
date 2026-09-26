@@ -214,7 +214,7 @@ export SINGULARITY_CACHEDIR=/path/with/room/cache
 singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest
 ```
 
-### Never Run Singularity Inside A User Namespace
+### Singularity Inside A User Namespace
 
 Do not wrap `singularity` in `unshare -Ur`, `unshare -U`, or any other user
 namespace. Singularity mounts a SIF through its setuid starter, and the kernel
@@ -229,6 +229,22 @@ temporary sandbox on *every* invocation. Measured on floyd with a 5.1 GB SIF:
 | `singularity exec mdclaw.sif …` | 0.80 s |
 | `singularity exec --no-home --bind "$PWD:/work" --pwd /work …` | 0.36 s |
 | `unshare -Ur singularity exec …` | 65.7 s, plus 5.1 GB of scratch churn |
+
+This is host-dependent. Apptainer 1.4.5 on RIKYU runs the SIF unprivileged
+through squashfuse inside a user namespace (the `fuseapps` image driver, no
+temporary sandbox), measured 2026-09-26 with the 7.4 GB shared image:
+
+| invocation (RIKYU login node) | `mdclaw --version` |
+| --- | --- |
+| `apptainer exec …` (setuid) | 4.2 s |
+| `apptainer exec --userns …` | 3.7 s |
+| `setpriv --no-new-privs apptainer exec …` | 3.7 s |
+| `unshare --user --map-current-user --mount apptainer exec …` | 3.8 s |
+
+`unshare -r apptainer exec … /bin/true` took 136 ms, and MDDataBench's agent
+sandbox (user, mount and PID namespaces) depends on this path. Before relying on
+it elsewhere, check that `apptainer -d exec` reports the `fuseapps` driver
+rather than a conversion to a temporary sandbox.
 
 The trap is that a `unknown userid` / `Could not lookup the current user's
 information: user: lookup userid <uid>: bad address` warning invites exactly this

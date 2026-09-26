@@ -498,7 +498,9 @@ def _sync_slurm_state_to_node(
     except Exception as e:
         return f"could not read node {node_id}: {e}"
 
-    state = (slurm_state or "").upper()
+    # "CANCELLED by 100160" (text sacct) and "CANCELLED+" are CANCELLED.
+    words = (slurm_state or "").strip().split()
+    state = words[0].rstrip("+").upper() if words else ""
 
     if state == "RUNNING":
         # Only advance from pending/queued states; never demote completed.

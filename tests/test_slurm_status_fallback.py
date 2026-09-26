@@ -118,3 +118,39 @@ def test_expired_controller_uses_text_accounting(tmp_path, monkeypatch):
         result = check_job("123")
     assert result["success"] and result["state"] == "COMPLETED"
     assert result["state_source"] == "sacct" and result["exit_code"] == "0:0"
+
+
+@pytest.mark.parametrize("raw", ["CANCELLED by 100160", "CANCELLED+"])
+def test_text_accounting_state_is_reduced_to_the_state_word(tmp_path, monkeypatch, raw):
+    """sacct's text State reads "CANCELLED by <uid>" for a job its owner cancelled
+    (2026-09-26: the tracker never saw it as terminal and the node stayed running)."""
+    monkeypatch.chdir(tmp_path)
+    _append_job_record({"job_id": "140893", "status": "RUNNING", "job_dir": str(tmp_path),
+                        "node_id": "prod_001"})
+    def run(cmd, **kwargs):
+        if cmd[0] == "squeue":
+            return subprocess.CompletedProcess(cmd, 0, '{"jobs": []}')
+        if cmd[0] == "scontrol" or "--json" in cmd:
+            raise subprocess.CalledProcessError(1, cmd)
+        return subprocess.CompletedProcess(cmd, 0, f"{raw}|03:05:59|c154|0:0\n")
+    with patch("mdclaw.slurm._base.check_external_tool", return_value=True), \
+         patch("mdclaw.slurm._base.run_command", side_effect=run), \
+         patch("mdclaw.slurm.monitor._sync_slurm_state_to_node", return_value=None) as sync:
+        result = check_job("140893", job_dir=str(tmp_path))
+    assert result["success"] and result["state"] == "CANCELLED"
+    assert result["state_detail"] == raw
+    assert _find_record_by_job_id("140893")["status"] == "CANCELLED"
+    assert sync.call_args.args == (str(tmp_path), "prod_001", "CANCELLED")
+
+
+def test_node_sync_reads_a_cancelled_by_state_as_cancelled(tmp_path):
+    from mdclaw.slurm.node_sync import _sync_slurm_state_to_node
+    from mdclaw.node.lifecycle import read_node
+    from tests.test_slurm_server import _make_job_with_nodes
+    job = _make_job_with_nodes(tmp_path, "job", ["prod_001"])
+    node = job / "nodes" / "prod_001" / "node.json"
+    data = json.loads(node.read_text())
+    data["status"] = "running"
+    node.write_text(json.dumps(data))
+    _sync_slurm_state_to_node(str(job), "prod_001", "CANCELLED by 100160")
+    assert read_node(str(job), "prod_001")["status"] == "failed"

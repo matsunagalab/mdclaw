@@ -100,9 +100,11 @@ scoring tests do not need it.
 
 If Singularity warns `unknown userid` (hosts whose accounts come from NIS or
 LDAP), keep the plain `singularity exec` above and add `--no-home` plus a
-neutral bind path. Never wrap Singularity in `unshare` or any other user
-namespace: that silently disables the setuid starter, so every call re-extracts
-the whole SIF. See `docs/developer/container.md`.
+neutral bind path; a user namespace (`unshare`) is not the fix. Inside one the
+setuid starter is ignored: Singularity on floyd then re-extracted the whole SIF
+on every call, while Apptainer 1.4.5 on RIKYU mounts it unprivileged through
+squashfuse at full speed (MDDataBench's agent sandbox relies on that). See
+`docs/developer/container.md`.
 
 ```bash
 singularity exec --no-home --bind "$PWD:/work" --pwd /work \
