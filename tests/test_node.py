@@ -38,6 +38,7 @@ from mdclaw._node import (
 from mdclaw._node import complete_node as _real_complete_node
 from mdclaw._node import _sync_progress_node_entry
 from tests.pipeline_helpers import complete_node_with_placeholders as complete_node
+from tests.pipeline_helpers import rewire_parents
 
 ANALYSIS_PRODUCTION_CHAIN_CONDITIONS = {"analysis_data_scope": "production_chain"}
 
@@ -244,7 +245,7 @@ class TestCreateNode:
 
     def test_with_label_and_conditions(self, job_with_prep):
         job_dir, prep_id = job_with_prep
-        result = create_node(str(job_dir), "eq",
+        result = create_node(str(job_dir), "solv",
                              parent_node_ids=[prep_id],
                              label="300K",
                              conditions={"temperature_kelvin": 300.0})
@@ -613,6 +614,95 @@ class TestCreateNode:
         assert result["success"] is False
         assert "comparison_mapping" in result["error"]
 
+    def test_rejects_parent_of_a_stage_the_type_cannot_hang_from(self, job_dir):
+        """004_membrane_5zkb r3 (campaign v4): min, eq and prod were all
+        created under topo_001 and the prod was refused only inside its Slurm
+        job, after the agent had left. The run-time table applies at creation."""
+        create_node(str(job_dir), "topo")
+        complete_node(str(job_dir), "topo_001",
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb",
+                                 "state_xml": "artifacts/state.xml"})
+        create_node(str(job_dir), "min", parent_node_ids=["topo_001"])
+        create_node(str(job_dir), "eq", parent_node_ids=["min_001"])
+
+        result = create_node(str(job_dir), "prod", parent_node_ids=["topo_001"])
+
+        assert result["success"] is False
+        assert result["code"] == "parent_type_invalid"
+        assert result["invalid_parent_node_id"] == "topo_001"
+        assert result["allowed_parent_types"] == ["eq", "prod"]
+        assert "still needs min, eq before a prod" in result["message"]
+        assert result["next_action"].endswith("--node-type prod --parent-node-ids eq_001")
+        assert result["candidate_parent_node_ids"] == ["eq_001"]
+        assert not (job_dir / "nodes" / "prod_001").exists()
+        # a later stage as parent is refused the same way
+        later = create_node(str(job_dir), "min", parent_node_ids=["eq_001"])
+        assert later["code"] == "parent_type_invalid"
+        assert "still needs" not in later["message"]
+        assert later["next_action"].endswith("--node-type min --parent-node-ids topo_001")
+
+    def test_parent_type_error_without_a_candidate_names_the_missing_stage(self, job_dir):
+        create_node(str(job_dir), "topo")
+        result = create_node(str(job_dir), "prod", parent_node_ids=["topo_001"])
+        assert result["code"] == "parent_type_invalid"
+        assert result["candidate_parent_node_ids"] == []
+        assert "--node-type eq" in result["next_action"]
+
+    def test_allowed_parent_edges_still_pass(self, job_dir):
+        create_node(str(job_dir), "topo")
+        create_node(str(job_dir), "min", parent_node_ids=["topo_001"])
+        create_node(str(job_dir), "eq", parent_node_ids=["min_001"])
+        create_node(str(job_dir), "eq", parent_node_ids=["eq_001"])
+        create_node(str(job_dir), "prod", parent_node_ids=["eq_002"])
+        for node_type, parents in (("prod", ["prod_001"]), ("fep", ["eq_002"]),
+                                   ("topo", ["eq_002"]), ("min", ["min_001"])):
+            made = create_node(str(job_dir), node_type, parent_node_ids=parents)
+            assert made["success"], (node_type, parents, made)
+
+    def test_eq_under_a_topo_that_has_a_min_is_refused(self, job_dir):
+        create_node(str(job_dir), "topo")
+        create_node(str(job_dir), "min", parent_node_ids=["topo_001"])
+
+        result = create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+
+        assert result["success"] is False
+        assert result["code"] == "eq_parent_should_be_min"
+        assert result["next_action"].endswith("--node-type eq --parent-node-ids min_001")
+        assert not (job_dir / "nodes" / "eq_001").exists()
+        # a min chain: the eq hangs from its live tip
+        create_node(str(job_dir), "min", parent_node_ids=["min_001"])
+        result = create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+        assert result["candidate_parent_node_ids"] == ["min_002"]
+        # a failed re-minimization falls back to the min before it ...
+        record_node_failure(str(job_dir), "min_002",
+                            {"success": False, "code": "nan_detected", "errors": ["NaN"]})
+        result = create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+        assert result["candidate_parent_node_ids"] == ["min_001"]
+        # ... and when every min failed the stage is redone, not skipped
+        record_node_failure(str(job_dir), "min_001",
+                            {"success": False, "code": "nan_detected", "errors": ["NaN"]})
+        result = create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+        assert result["code"] == "eq_parent_should_be_min"
+        assert result["candidate_parent_node_ids"] == []
+        assert "--node-type min --parent-node-ids topo_001" in result["next_action"]
+
+    def test_eq_under_topo_without_min_stays_legal(self, job_dir):
+        """Older DAGs have no min stage; a bare job directory gets no warning."""
+        create_node(str(job_dir), "topo")
+        result = create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+        assert result["success"] is True
+        assert "warnings" not in result
+
+    def test_eq_under_topo_in_a_study_job_warns(self, job_dir):
+        create_node(str(job_dir), "topo")
+        update_job_params(str(job_dir), {"study_dir": str(job_dir.parent)})
+        result = create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+        assert result["success"] is True
+        assert any(w.startswith("eq_parent_is_topo") for w in result["warnings"])
+        assert any(w.startswith("eq_parent_is_topo")
+                   for w in read_node(str(job_dir), "eq_001")["warnings"])
+
     def test_invalid_type(self, job_dir):
         result = create_node(str(job_dir), "invalid_type")
         assert result["success"] is False
@@ -677,10 +767,14 @@ class TestValidateNodeExecutionContext:
         assert any("must be completed" in e for e in ctx["errors"])
 
     def test_rejects_wrong_parent_type(self, job_dir):
+        """create_node refuses the edge; a hand-edited DAG that carries it is
+        still refused at run time."""
         create_node(str(job_dir), "prep")
         complete_node(str(job_dir), "prep_001",
                       artifacts={"merged_pdb": "artifacts/merged.pdb"})
-        create_node(str(job_dir), "eq", parent_node_ids=["prep_001"])
+        create_node(str(job_dir), "topo")
+        create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+        rewire_parents(job_dir, "eq_001", ["prep_001"])
 
         ctx = validate_node_execution_context(str(job_dir), "eq_001", "eq")
 
@@ -690,6 +784,8 @@ class TestValidateNodeExecutionContext:
         # all as the allowed set.
         assert any("expected one of ['eq', 'min', 'topo']" in e
                    for e in ctx["errors"])
+        assert "--node-type eq --parent-node-ids topo_001" in ctx["next_action"]
+        assert any("--abandon" in hint for hint in ctx["hints"])
 
     def test_accepts_min_parent_for_eq(self, job_dir):
         create_node(str(job_dir), "topo")
@@ -711,7 +807,10 @@ class TestValidateNodeExecutionContext:
         create_node(str(job_dir), "prep")
         complete_node(str(job_dir), "prep_001",
                       artifacts={"merged_pdb": "artifacts/merged.pdb"})
-        create_node(str(job_dir), "min", parent_node_ids=["prep_001"])
+        assert create_node(str(job_dir), "min", parent_node_ids=["prep_001"])["code"] == "parent_type_invalid"
+        create_node(str(job_dir), "topo")
+        create_node(str(job_dir), "min", parent_node_ids=["topo_001"])
+        rewire_parents(job_dir, "min_001", ["prep_001"])
 
         ctx = validate_node_execution_context(str(job_dir), "min_001", "min")
 
@@ -3474,8 +3573,11 @@ class TestDAGAutoResolve:
             },
         )
 
-        # topo_002 carries ONLY system_xml.
-        create_node(jd, "topo", parent_node_ids=["topo_001"])
+        # topo_002 carries ONLY system_xml. A topo under a topo is not an edge
+        # create_node makes; a hand-built chain is what the resolver must not
+        # walk through.
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        rewire_parents(job_dir, "topo_002", ["topo_001"])
         complete_node(
             jd, "topo_002",
             artifacts={"system_xml": "artifacts/system.xml"},
@@ -3525,7 +3627,8 @@ class TestDAGAutoResolve:
             },
         )
 
-        create_node(jd, "topo", parent_node_ids=["topo_001"])
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        rewire_parents(job_dir, "topo_002", ["topo_001"])  # a hand-built topo chain
         complete_node(
             jd, "topo_002",
             artifacts={"topology_pdb": "artifacts/topology.pdb"},

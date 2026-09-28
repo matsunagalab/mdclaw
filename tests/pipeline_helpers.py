@@ -120,6 +120,21 @@ def node_artifact(job_dir: Path, node_id: str, artifact_key: str) -> Path:
     return path
 
 
+def rewire_parents(job_dir, node_id, parents):
+    """Hand-edit a node's parents into an edge ``create_node`` refuses, the
+    way a repaired or hand-built DAG can carry one, so the run-time and
+    submission checks of that edge can be exercised."""
+    import json
+
+    from mdclaw._node import rebuild_progress_index
+
+    node_json = Path(job_dir) / "nodes" / node_id / "node.json"
+    data = json.loads(node_json.read_text())
+    data["parent_node_ids"] = list(parents)
+    node_json.write_text(json.dumps(data))
+    rebuild_progress_index(str(job_dir))
+
+
 def complete_node_with_placeholders(job_dir, node_id, artifacts, **kwargs):
     """Complete a node after creating placeholder files for string artifacts.
 

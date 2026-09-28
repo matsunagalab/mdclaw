@@ -232,10 +232,11 @@ class TestNextStep:
 class TestFixCarryingErrors:
     def test_node_missing_lists_existing_ids_of_that_type(self, job_dir):
         source = _complete(job_dir, "source", {"source_bundle": "artifacts/sb.json"})
-        solv = create_node(str(job_dir), "solv", parent_node_ids=[source])["node_id"]
+        prep = _complete(job_dir, "prep", {"merged_pdb": "artifacts/m.pdb"}, parent_node_ids=[source])
+        solv = create_node(str(job_dir), "solv", parent_node_ids=[prep])["node_id"]
         err = node_missing_error(str(job_dir), "membrane_001", expected_type="solv")
         assert err["code"] == "node_missing"
-        assert err["existing_node_ids"] == [source, solv]
+        assert err["existing_node_ids"] == [source, prep, solv]
         assert any(solv in h for h in err["hints"])
         assert f"--node-id {solv}" in err["next_action"]
 

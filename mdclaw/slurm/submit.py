@@ -35,7 +35,7 @@ from mdclaw.slurm import _base
 from mdclaw.slurm.config import validate_container_flags
 from mdclaw.slurm._base import _SUBMITTED_BATCH_JOB_RE
 from mdclaw.slurm.config import resolve_container_runtime, resolve_container_source, uncontained_mdclaw_warning, _command_requests_gpu, _get_container_config, _get_policy, _is_partition_allowed, _load_cluster_config, _resolve_job_command, _validate_against_policy, _validate_sbatch_directive_values
-from mdclaw.slurm.node_sync import _clear_slurm_submission_intent, _reserve_slurm_submission_on_node, _rollback_slurm_stamp_on_node, _stamp_slurm_on_node, _try_scancel_submitted_job, _validate_node_ready_for_slurm_submit
+from mdclaw.slurm.node_sync import _clear_slurm_submission_intent, _mark_slurm_submission_uncertain, _reserve_slurm_submission_on_node, _rollback_slurm_stamp_on_node, _stamp_slurm_on_node, _try_scancel_submitted_job, _validate_node_ready_for_slurm_submit, find_marked_job, sbatch_outcome_uncertain, submission_marker
 from mdclaw.slurm.sbatch import _generate_array_sbatch_script, _generate_sbatch_script
 from mdclaw.slurm.tracker import _append_job_record
 
@@ -154,10 +154,14 @@ def submit_job(
 
     Args:
         script: Path to a script file, or a command string to execute.
-            Literal run_production commands linked to a DAG node receive a
-            read-only condition preflight before sbatch. Unsupported shell
-            forms are reported as skipped; inherited conditions remain runtime
-            checks. See condition_preflight in the result.
+            A submission linked to a DAG node is refused before sbatch when
+            the node's parents are of a type its stage cannot hang from, a
+            parent has failed, or the literal command's tool runs on another
+            stage (``node_execution_context_invalid``; pending parents pass).
+            Literal run_production commands also receive a read-only
+            condition preflight. Unsupported shell forms are reported as
+            skipped; inherited conditions remain runtime checks. See
+            condition_preflight in the result.
             If the path exists as a file, it is wrapped with SBATCH headers.
             Otherwise, a complete script is generated from the command string.
         job_name: Job name (default: mdclaw_<random>).
@@ -245,9 +249,12 @@ def submit_job(
 
     command = _resolve_job_command(script)
     if job_dir and node_id:
-        from mdclaw.slurm.preflight import production_preflight
+        from mdclaw.slurm.preflight import node_structure_preflight, production_preflight
 
-        preflight = production_preflight(command, job_dir, node_id)
+        structure_error = node_structure_preflight(command, job_dir, node_id)
+        if structure_error:
+            return {**result, **structure_error}
+        preflight = production_preflight(command, job_dir, node_id, time_limit=time_limit)
         result["condition_preflight"] = preflight
         if preflight["status"] == "failed":
             return {**result, **preflight}
@@ -397,6 +404,14 @@ def submit_job(
     if uncontained:
         result.setdefault("warnings", []).append(uncontained)
 
+    # The marker written into the job's --comment: when sbatch's answer is
+    # lost, the queue says whether the job exists.
+    submission_intent_id: Optional[str] = None
+    marker: Optional[str] = None
+    if job_dir and node_id:
+        submission_intent_id = uuid.uuid4().hex
+        marker = submission_marker(submission_intent_id)
+
     sbatch_content = _generate_sbatch_script(
         command=command,
         job_name=job_name,
@@ -418,6 +433,7 @@ def submit_job(
         stdout_log=stdout_log,
         stderr_log=stderr_log,
         container=container,
+        comment=marker,
     )
 
     # Write the sbatch script
@@ -426,120 +442,170 @@ def submit_job(
     script_file.chmod(0o755)
     result["script_file"] = str(script_file)
 
-    submission_intent_id: Optional[str] = None
     if job_dir and node_id:
-        submission_intent_id = uuid.uuid4().hex
         reserve_error, _prior_status = _reserve_slurm_submission_on_node(
             str(Path(job_dir).resolve()),
             node_id,
             submission_intent_id,
             kind="single",
+            details={
+                "slurm_submission_job_name": job_name,
+                "slurm_submission_script_file": str(script_file),
+                "slurm_submission_stdout_log": stdout_log,
+                "slurm_submission_stderr_log": stderr_log,
+            },
         )
         if reserve_error:
             return {**result, **reserve_error}
 
     # Submit
     timeout = get_timeout("slurm")
+    slurm_job_id: Optional[str] = None
+    uncertain = False
     try:
         proc = _base.run_command(["sbatch", str(script_file)], timeout=timeout)
         # Parse "Submitted batch job 12345"
         m = _SUBMITTED_BATCH_JOB_RE.match(proc.stdout)
         if m:
             slurm_job_id = m.group(1)
-            result["slurm_job_id"] = slurm_job_id
-
-            # Resolve %j in log paths
-            result["stdout_log"] = stdout_log.replace("%j", slurm_job_id)
-            result["stderr_log"] = stderr_log.replace("%j", slurm_job_id)
-
-            # Save metadata
-            metadata = {
-                "slurm_job_id": slurm_job_id,
-                "job_name": job_name,
-                "script_file": str(script_file),
-                "stdout_log": result["stdout_log"],
-                "stderr_log": result["stderr_log"],
-                "output_dir": str(out_dir),
-                "partition": partition,
-                "gpus": gpus,
-                "time_limit": time_limit,
-            }
-            meta_path = out_dir / "job_metadata.json"
-            try:
-                meta_path.write_text(json.dumps(metadata, indent=2))
-            except OSError as e:
-                result["warnings"].append(f"Could not save metadata: {e}")
-
-            # Stamp the DAG node (optional; best-effort).
-            # For a single submit_job, parent = child = slurm_job_id, so a
-            # downstream caller can still read a stable `slurm_parent_job_id`
-            # off the node and build an `afterok:<id>` dependency against it.
-            if job_dir and node_id:
-                stamp_err = _stamp_slurm_on_node(
-                    str(Path(job_dir).resolve()),
-                    node_id,
-                    slurm_job_id,
-                    script_file=str(script_file),
-                    stdout_log=result["stdout_log"],
-                    stderr_log=result["stderr_log"],
-                    parent_job_id=slurm_job_id,
-                    submission_intent_id=submission_intent_id,
-                )
-                if stamp_err:
-                    result["errors"].append(stamp_err)
-                    rollback_warning = _try_scancel_submitted_job(
-                        slurm_job_id, timeout
-                    )
-                    if rollback_warning:
-                        result["warnings"].append(rollback_warning)
-                    if submission_intent_id:
-                        _clear_slurm_submission_intent(
-                            str(Path(job_dir).resolve()),
-                            node_id,
-                            submission_intent_id,
-                        )
-                    return result
-
-            # Track in JSONL (includes node linkage when provided)
-            tracker_record = {
-                "job_id": slurm_job_id,
-                "job_name": job_name,
-                "submitted_at": datetime.now(timezone.utc).isoformat(),
-                "status": "SUBMITTED",
-                "partition": partition,
-                "gpus": gpus,
-                "time_limit": time_limit,
-                "script": script,
-                "script_file": str(script_file),
-                "output_dir": str(out_dir),
-                "stdout_log": result["stdout_log"],
-                "stderr_log": result["stderr_log"],
-            }
-            if job_dir:
-                tracker_record["job_dir"] = str(Path(job_dir).resolve())
-            if node_id:
-                tracker_record["node_id"] = node_id
-            _append_job_record(tracker_record)
-
-            result["success"] = True
         else:
+            result["code"] = "slurm_submit_failed"
             result["errors"].append(f"Could not parse sbatch output: {proc.stdout}")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        detail = _sbatch_error_detail(exc, timeout)
+        if marker and sbatch_outcome_uncertain(detail):
+            # The request may have reached the controller although its
+            # answer did not come back: 010_membrane_6kux r3 of campaign v4
+            # got this error, the job existed, the agent submitted again on
+            # the generic "fix and retry" advice, and two jobs ran the node.
+            found, answered = find_marked_job(marker)
+            if found:
+                slurm_job_id = found
+                result["warnings"].append(
+                    f"sbatch answered '{detail}', but the queue holds job {found} with this "
+                    "submission's marker: that is the submission."
+                )
+            else:
+                uncertain = True
+                _mark_slurm_submission_uncertain(
+                    str(Path(job_dir).resolve()), node_id, submission_intent_id, detail,
+                )
+                check = f"mdclaw check_job --job-dir {job_dir} --node-id {node_id}"
+                message = (
+                    f"sbatch answered '{detail}' and the queue "
+                    + ("holds no job with this submission's marker yet"
+                       if answered else "could not be listed")
+                    + "; Slurm may still hold the job. The node keeps its reservation, so "
+                    f"it cannot be submitted twice: settle it with {check}."
+                )
+                result["errors"].append(message)
+                result.update(
+                    code="slurm_submit_uncertain",
+                    message=message,
+                    next_action=check,
+                    submission_intent_id=submission_intent_id,
+                    hints=[f"{check} adopts the job when the queue shows the marker, and "
+                           "frees the node when the queue was listed and holds none."],
+                )
+        else:
+            result["code"] = "slurm_submit_failed"
+            result["errors"].append(f"sbatch failed: {detail}")
 
-    except subprocess.CalledProcessError as e:
-        result["errors"].append(
-            f"sbatch failed: {tail_for_agent(e.stderr or e.stdout or str(e))}"
-        )
-    except subprocess.TimeoutExpired:
-        result["errors"].append(f"sbatch timed out after {timeout}s")
-    finally:
-        if job_dir and node_id and submission_intent_id and not result["success"]:
-            _clear_slurm_submission_intent(
+    if slurm_job_id:
+        result["slurm_job_id"] = slurm_job_id
+
+        # Resolve %j in log paths
+        result["stdout_log"] = stdout_log.replace("%j", slurm_job_id)
+        result["stderr_log"] = stderr_log.replace("%j", slurm_job_id)
+
+        # Save metadata
+        metadata = {
+            "slurm_job_id": slurm_job_id,
+            "job_name": job_name,
+            "script_file": str(script_file),
+            "stdout_log": result["stdout_log"],
+            "stderr_log": result["stderr_log"],
+            "output_dir": str(out_dir),
+            "partition": partition,
+            "gpus": gpus,
+            "time_limit": time_limit,
+        }
+        meta_path = out_dir / "job_metadata.json"
+        try:
+            meta_path.write_text(json.dumps(metadata, indent=2))
+        except OSError as e:
+            result["warnings"].append(f"Could not save metadata: {e}")
+
+        # Stamp the DAG node (optional; best-effort).
+        # For a single submit_job, parent = child = slurm_job_id, so a
+        # downstream caller can still read a stable `slurm_parent_job_id`
+        # off the node and build an `afterok:<id>` dependency against it.
+        if job_dir and node_id:
+            stamp_err = _stamp_slurm_on_node(
                 str(Path(job_dir).resolve()),
                 node_id,
-                submission_intent_id,
+                slurm_job_id,
+                script_file=str(script_file),
+                stdout_log=result["stdout_log"],
+                stderr_log=result["stderr_log"],
+                parent_job_id=slurm_job_id,
+                submission_intent_id=submission_intent_id,
             )
+            if stamp_err:
+                result["errors"].append(stamp_err)
+                rollback_warning = _try_scancel_submitted_job(
+                    slurm_job_id, timeout
+                )
+                if rollback_warning:
+                    result["warnings"].append(rollback_warning)
+                if submission_intent_id:
+                    _clear_slurm_submission_intent(
+                        str(Path(job_dir).resolve()),
+                        node_id,
+                        submission_intent_id,
+                    )
+                return result
+
+        # Track in JSONL (includes node linkage when provided)
+        tracker_record = {
+            "job_id": slurm_job_id,
+            "job_name": job_name,
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+            "status": "SUBMITTED",
+            "partition": partition,
+            "gpus": gpus,
+            "time_limit": time_limit,
+            "script": script,
+            "script_file": str(script_file),
+            "output_dir": str(out_dir),
+            "stdout_log": result["stdout_log"],
+            "stderr_log": result["stderr_log"],
+        }
+        if job_dir:
+            tracker_record["job_dir"] = str(Path(job_dir).resolve())
+        if node_id:
+            tracker_record["node_id"] = node_id
+        _append_job_record(tracker_record)
+
+        result["success"] = True
+
+    # A lost answer keeps its reservation (check_job settles it); every other
+    # failure frees the node for a corrected submission.
+    if job_dir and node_id and submission_intent_id and not result["success"] and not uncertain:
+        _clear_slurm_submission_intent(
+            str(Path(job_dir).resolve()),
+            node_id,
+            submission_intent_id,
+        )
 
     return result
+
+
+def _sbatch_error_detail(exc: Exception, timeout) -> str:
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return f"sbatch timed out after {timeout}s"
+    text = getattr(exc, "stderr", None) or getattr(exc, "stdout", None) or str(exc)
+    return tail_for_agent(str(text)).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -691,12 +757,18 @@ def submit_array_job(
         if node_error:
             node_error["message"] = f"tasks[{idx}]: {node_error.get('message', '')}"
             return {**result, **node_error}
-        from mdclaw.slurm.preflight import production_preflight
+        from mdclaw.slurm.preflight import node_structure_preflight, production_preflight
 
-        preflight = production_preflight(str(task["command"]), str(jd), nid)
+        structure_error = node_structure_preflight(str(task["command"]), str(jd), nid)
+        if structure_error:
+            structure_error["message"] = f"tasks[{idx}]: {structure_error['message']}"
+            return {**result, **structure_error}
+        preflight = production_preflight(str(task["command"]), str(jd), nid, time_limit=time_limit)
         result.setdefault("condition_preflight", []).append({"task_index": idx, **preflight})
         if preflight["status"] == "failed":
-            return {**result, "code": preflight["code"], "errors": preflight["errors"]}
+            return {**result, "code": preflight["code"], "errors": preflight["errors"],
+                    **{k: preflight[k] for k in ("message", "hints", "next_action", "time_budget")
+                       if k in preflight}}
         if preflight["status"] == "skipped":
             result["warnings"].append(f"tasks[{idx}]: production condition preflight skipped; runtime validation required.")
         normalized_tasks.append({

@@ -1112,6 +1112,10 @@ def split_molecules(
             "resolved_groups": [],
             "component_sizes": [],
         },
+        # One line per written polymer component: the residues it really
+        # holds (first, last, count, gaps, insertion codes), whether or not
+        # a range was asked for, so the caller can hold it against the task.
+        "delivered_chain_ranges": [],
         "errors": [],
         "warnings": []
     }
@@ -2046,6 +2050,7 @@ def split_molecules(
                 key: gemmi.Chain(pdb_chain_name) for key in component_keys
             }
             component_residue_counts = dict.fromkeys(component_keys, 0)
+            kept_residues_by_component: dict = {key: [] for key in component_keys}
             unit_residues = list(subchain)
             for member_id in info.get("covalent_members") or []:
                 member_span = model.get_subchain(member_id)
@@ -2119,6 +2124,9 @@ def split_molecules(
                     )
                     component_chains[component_key].add_residue(new_residue)
                     component_residue_counts[component_key] += 1
+                    kept_residues_by_component[component_key].append((
+                        residue.seqid.num, str(residue.seqid.icode or "").strip(), res_name,
+                    ))
 
             if waters_skipped > 0:
                 logger.info(f"Skipped {waters_skipped} water residue(s) in chain {chain_id}")
@@ -2243,6 +2251,21 @@ def split_molecules(
                     "merged_from": info.get("merged_from") or None,
                 }
                 delivered_ranges = component_ranges[component_key]
+                if chain_type in {"protein", "nucleic", "glycan"}:
+                    delivered_entry = {
+                        "chain_id": chain_id,
+                        "author_chain": info.get("author_chain", chain_id),
+                        "chain_type": chain_type,
+                        "requested": list(delivered_ranges) or None,
+                        "file": str(out_file),
+                        **rr.compact_numbering(rr.residue_numbering_summary(
+                            kept_residues_by_component.get(component_key, []))),
+                    }
+                    file_info["delivered_range"] = {
+                        key: delivered_entry[key]
+                        for key in ("first", "last", "count", "span", "gaps", "insertion_codes")
+                    }
+                    result["delivered_chain_ranges"].append(delivered_entry)
                 if chain_type == "protein" and chain_ranges:
                     from .residue_identity import selection_identity
 

@@ -44,6 +44,7 @@ PROTECTED_KEYS = frozenset({
     "confirmation_needed", "preflight", "validation", "resolved_inputs", "missing_inputs",
     "candidate_parent_node_ids", "candidate_parents", "candidate_commands",
     "existing_node_id", "existing_node_status", "auto_resolved_parent", "next_command",
+    "chain_ranges", "kept_residue_ranges",
     "node_dir", "artifacts_dir", "artifact_keys", "parent_node_ids", "parents",
     "job_dir", "study_dir", "plan_file", "progress_file", "slurm_job_id",
     "summary", "required_action",
@@ -53,7 +54,10 @@ _SOLV_PREFERENCE = {"membrane": "embed_in_membrane"}
 # The normal-path tool of each stage; the others are variants (mutation, PTM,
 # membrane, OpenMM force fields) that a skill selects deliberately.
 _STAGE_PREFERENCE = {"source": "fetch_structure", "prep": "prepare_complex",
-                     "solv": "solvate_structure", "topo": "build_amber_system"}
+                     "solv": "solvate_structure", "topo": "build_amber_system",
+                     # run_metadynamics sorts before run_production; without
+                     # this entry the next block recommended it for every prod.
+                     "prod": "run_production"}
 # A branch whose topo is a hybrid topology (build_hybrid_system) samples
 # lambda windows instead of production and analyses them with MBAR.
 _ALCHEMICAL_FORWARD = {"eq": "fep"}
@@ -398,6 +402,34 @@ def _batch_command(job_dir: str, node_id: str, run_command: str) -> str:
             f"--script {shlex.quote(run_command)} --gpus 1 [--dependency afterok:<job>]")
 
 
+def _extension_next(job_dir: str, node_id: str, node: dict, nodes: dict, tools: dict,
+                    params: dict, remaining: float, _depth: int) -> Optional[dict]:
+    """A prod that stopped before its job's time limit: the next step is the
+    continuation that runs the rest (or the open continuation already made),
+    not the analysis of a shorter run than was asked for."""
+    open_children = [
+        child for child, info in nodes.items()
+        if node_id in (info.get("parents") or []) and info.get("type") == "prod"
+        and info.get("status") in _OPEN
+    ]
+    if len(open_children) == 1 and _depth < 32:
+        step = next_step(job_dir, open_children[0], tools, nodes, params, _depth=_depth + 1)
+        if step:
+            return step
+    meta = node.get("metadata") or {}
+    run = (f"mdclaw --job-dir {shlex.quote(job_dir)} --node-id <new> run_production "
+           f"--simulation-time-ns {remaining:g} ...")
+    create = (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} --node-type prod "
+              f"--continue-from {node_id}")
+    reason = (f"{node_id} stopped at its job's time limit after {meta.get('simulation_time_ns')} of "
+              f"{meta.get('requested_simulation_time_ns')} ns; {remaining:g} ns remain")
+    if meta.get("ns_per_day"):
+        reason += f" (measured {meta['ns_per_day']} ns/day)"
+    return {"action": "create", "node_type": "prod", "create_command": create,
+            "stage_tools": ["run_production"], "run_command": run, "inputs": "auto_resolved",
+            "reason": reason, "batch_command": _batch_command(job_dir, "<new>", run)}
+
+
 def blocking_ancestor(node: dict, nodes: dict) -> Optional[tuple[str, str]]:
     """First parent or dependency that is not completed, with its status."""
     refs = list(node.get("parent_node_ids") or []) + list(node.get("dependency_node_ids") or [])
@@ -480,6 +512,11 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
                 job_dir, node_id, node, nodes, tools, params, _depth)
             if step:
                 return step
+        remaining = (node.get("metadata") or {}).get("remaining_simulation_time_ns")
+        if node_type == "prod" and isinstance(remaining, (int, float)) and remaining > 0:
+            step = _extension_next(job_dir, node_id, node, nodes, tools, params, remaining, _depth)
+            if step:
+                return step
         forward = CANONICAL_FORWARD_NODE_TYPE.get(node_type)
         alchemical = _is_alchemical(job_dir, node_id, nodes)
         if alchemical:
@@ -508,6 +545,15 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
                 "optional": forward == "analyze"}
         if forward in _BATCH_STAGES:
             step["batch_command"] = _batch_command(job_dir, "<new>", run)
+        if node_type == "source":
+            # The prep's chains and residue ranges are chosen from the
+            # inspection; its short form travels with the source node.
+            step["inspect_command"] = (
+                f"mdclaw --job-dir {shlex.quote(job_dir)} --node-id {shlex.quote(node_id)} "
+                "inspect_molecules  (first: chain ids, residue ranges, gaps, ligands)")
+            chain_ranges = (node.get("metadata") or {}).get("chain_ranges")
+            if chain_ranges:
+                step["chain_ranges"] = chain_ranges
         return step
     if status == "failed":
         parents = node.get("parent_node_ids") or []

@@ -12,7 +12,7 @@ from mdclaw._lock import file_lock
 
 logger = logging.getLogger(__name__)
 
-from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPE_ORDER, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, STRUCTURED_NODE_ID_RE, TERMINAL_NODE_STATUSES, _ALLOWED_PARENT_TYPES, _AUTO_PARENT_PREFERENCE, normalize_node_type, suggest_node_type  # noqa: E402
+from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPE_ORDER, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, STAGE_CHAIN_TEXT, STRUCTURED_NODE_ID_RE, TERMINAL_NODE_STATUSES, _ALLOWED_PARENT_TYPES, _AUTO_PARENT_PREFERENCE, normalize_node_type, suggest_node_type  # noqa: E402
 from mdclaw.node.condition_hints import describe_condition_key, resolve_condition_key  # noqa: E402
 from mdclaw.node.io import _atomic_write_json, _values_match, normalize_artifact_paths  # noqa: E402
 from mdclaw.node.progress import _load_progress_v3, _next_node_id, _node_progress_summary  # noqa: E402
@@ -22,6 +22,15 @@ from mdclaw.node.validation import _node_is_terminal, _normalize_node_status, _t
 
 class NodeSealedError(ValueError):
     """Raised when a write targets a terminal (sealed) node.json record."""
+
+
+class NodeAlreadyRunningError(RuntimeError):
+    """Raised by ``begin_node`` when a live process already runs the node."""
+
+
+# This process's owner heartbeats, by (job_dir, node_id); stopped when the
+# node reaches a terminal status.
+_HEARTBEATS: dict = {}
 
 
 def _sealed_node_error(data: dict) -> "NodeSealedError":
@@ -196,6 +205,137 @@ def _parent_required_error(node_type: str, nodes_index: dict, jd) -> dict:
         "candidate_commands": candidate_commands,
         "next_action": next_action,
         "dag": dag_snapshot(nodes_index),
+    }
+
+
+def _stages_between(parent_type: Optional[str], node_type: str) -> list[str]:
+    """Stages a parent of an earlier type still has to pass through before
+    it can carry a ``node_type`` child (topo before prod: min, eq)."""
+    if parent_type not in NODE_TYPE_ORDER or node_type not in NODE_TYPE_ORDER:
+        return []
+    start, end = NODE_TYPE_ORDER.index(parent_type), NODE_TYPE_ORDER.index(node_type)
+    # prod and fep are alternatives, not stages to pass through.
+    alternatives = {"prod": {"fep"}, "fep": {"prod"}}.get(node_type, set())
+    return [stage for stage in NODE_TYPE_ORDER[start + 1:end] if stage not in alternatives]
+
+
+def _parent_type_error(node_type: str, parents: list[str], nodes_index: dict, jd) -> Optional[dict]:
+    """Refuse a parent of a type the stage cannot consume.
+
+    Until 2026-09-28 only the run-time context check applied
+    ``_ALLOWED_PARENT_TYPES``, and it ran inside the Slurm job after the
+    agent had left the session: 004_membrane_5zkb r3 of campaign v4 created
+    ``prod`` under ``topo``, submitted it, and learnt nothing until the job
+    failed (027 and 039 likewise). The same table is applied here, where the
+    refusal reaches an agent that still has time to fix it.
+    """
+    allowed = _ALLOWED_PARENT_TYPES.get(node_type, frozenset())
+    for pid in parents:
+        ptype = nodes_index.get(pid, {}).get("type")
+        if ptype in allowed:
+            continue
+        message = (
+            f"A {node_type} node cannot hang from {pid} ({ptype}): its parent must be "
+            f"a {' or '.join(sorted(allowed)) or 'root'} node. Stages run in order "
+            f"{STAGE_CHAIN_TEXT}."
+        )
+        missing = _stages_between(ptype, node_type)
+        if missing:
+            message += f" {pid} still needs {', '.join(missing)} before a {node_type}."
+        resolved = _auto_resolve_parent(node_type, nodes_index)
+        if resolved is not None:
+            next_action = (f"mdclaw create_node --job-dir {jd} --node-type {node_type} "
+                           f"--parent-node-ids {resolved}")
+            hints = [f"Omit --parent-node-ids and create_node picks {resolved} itself "
+                     f"(the open {nodes_index[resolved].get('type')} leaf)."]
+            candidates = [resolved]
+        else:
+            fallback = _parent_required_error(node_type, nodes_index, jd)
+            next_action = fallback["next_action"]
+            hints = fallback["hints"]
+            candidates = fallback["candidate_parent_node_ids"]
+        return {
+            "success": False,
+            "code": "parent_type_invalid",
+            "error": message,
+            "message": message,
+            "errors": [message],
+            "warnings": [],
+            "hints": hints,
+            "invalid_parent_node_id": pid,
+            "invalid_parent_type": ptype,
+            "allowed_parent_types": sorted(allowed),
+            "candidate_parent_node_ids": candidates,
+            "next_action": next_action,
+            "dag": dag_snapshot(nodes_index),
+            "recoverable": True,
+        }
+    return None
+
+
+_EQ_UNDER_TOPO_WARNING = (
+    "eq_parent_is_topo: {topo_id} has no min node, so this eq starts from the "
+    "unminimized topology state. The canonical chain is topo > min > eq: "
+    "mdclaw create_node --job-dir {jd} --node-type min --parent-node-ids {topo_id}, "
+    "then the eq under that min (retire this one with update_workflow_state --abandon)."
+)
+
+
+def _eq_under_topo_error(topo_id: str, nodes_index: dict, jd) -> Optional[dict]:
+    """Refuse ``eq`` directly under a ``topo`` that already has a ``min``.
+
+    ``topo -> eq`` is kept for DAGs made before the min stage existed. A job
+    whose topo carries a min node is not one of them: 004_membrane_5zkb r3
+    created min, eq and prod all under topo_001, so the eq equilibrated the
+    unminimized state and min_001 completed unused.
+    """
+    chain = {nid for nid, info in nodes_index.items()
+             if info.get("type") == "min" and topo_id in (info.get("parents") or [])}
+    if not chain:
+        return None
+    # min -> min chains under the topo: the eq hangs from a live tip (a min
+    # no live min continues), as _auto_resolve_parent would pick it.
+    queue = list(chain)
+    while queue:
+        nid = queue.pop()
+        for cid, info in nodes_index.items():
+            if (info.get("type") == "min" and nid in (info.get("parents") or [])
+                    and cid not in chain):
+                chain.add(cid)
+                queue.append(cid)
+    live_chain = [nid for nid in sorted(chain)
+                  if nodes_index[nid].get("status") in _ELIGIBLE_PARENT_STATUSES]
+    continued = {pid for nid in live_chain for pid in (nodes_index[nid].get("parents") or [])}
+    live = [nid for nid in live_chain if nid not in continued]
+    tips = sorted(chain)
+    prefix = f"mdclaw create_node --job-dir {jd} --node-type eq --parent-node-ids"
+    if len(live) == 1:
+        next_action = f"{prefix} {live[0]}"
+    elif live:
+        next_action = f"{prefix} <one of {', '.join(live)}>"
+    else:
+        next_action = (
+            f"mdclaw create_node --job-dir {jd} --node-type min --parent-node-ids {topo_id}"
+            f"  (the min under {topo_id} failed; run the new min, then create the eq under it)"
+        )
+    message = (
+        f"An eq node under {topo_id} would skip its min node "
+        f"({describe_nodes(nodes_index, tips)}) and equilibrate the unminimized topology "
+        "state; equilibration hangs from the min node (topo > min > eq). topo > eq is "
+        "only for older DAGs that have no min."
+    )
+    return {
+        "success": False,
+        "code": "eq_parent_should_be_min",
+        "error": message,
+        "message": message,
+        "errors": [message],
+        "warnings": [],
+        "hints": ["Omit --parent-node-ids and create_node picks the open min leaf itself."],
+        "candidate_parent_node_ids": live,
+        "next_action": next_action,
+        "dag": dag_snapshot(nodes_index),
+        "recoverable": True,
     }
 
 
@@ -563,6 +703,23 @@ def _create_node_in_progress(
                 ),
             }
 
+    # A parent the stage cannot consume is refused now, not only when the
+    # tool runs (analyze keeps its own check, with the layer advice, below).
+    if node_type != "analyze":
+        type_error = _parent_type_error(node_type, parents, nodes_index, jd)
+        if type_error is not None:
+            return type_error
+    creation_warnings: list[str] = []
+    if node_type == "eq":
+        for pid in parents:
+            if nodes_index[pid].get("type") != "topo":
+                continue
+            legacy_error = _eq_under_topo_error(pid, nodes_index, jd)
+            if legacy_error is not None:
+                return legacy_error
+            if _job_has_study_context(jd, progress.get("params", {}) or {}):
+                creation_warnings.append(_EQ_UNDER_TOPO_WARNING.format(topo_id=pid, jd=jd))
+
     existing_source_nodes = [
         nid for nid, info in nodes_index.items()
         if info.get("type") == "source"
@@ -808,7 +965,7 @@ def _create_node_in_progress(
         "conditions": conditions or {},
         "artifacts": {},
         "metadata": node_metadata,
-        "warnings": [_STUDY_CONTEXT_WARNING] if study_context_missing else [],
+        "warnings": ([_STUDY_CONTEXT_WARNING] if study_context_missing else []) + creation_warnings,
     }
     _atomic_write_json(node_dir / "node.json", node_data)
 
@@ -817,7 +974,8 @@ def _create_node_in_progress(
     progress["nodes"] = nodes_index
     return {"success": True, "_created": True, "node_id": node_id, "node_dir": node_dir,
             "artifacts_dir": artifacts_dir, "parents": parents, "label": label, "node_type": node_type,
-            "auto_parent_node_id": auto_parent_node_id, "study_context_missing": study_context_missing}
+            "auto_parent_node_id": auto_parent_node_id, "study_context_missing": study_context_missing,
+            "warnings": creation_warnings}
 
 
 def _create_node_finish(job_dir: str, jd: Path, outcome: dict, *, preflight: bool = True) -> dict:
@@ -861,8 +1019,10 @@ def _create_node_finish(job_dir: str, jd: Path, outcome: dict, *, preflight: boo
         result["preflight"] = explain_node(str(jd), node_id)
     if auto_parent_node_id is not None:
         result["auto_resolved_parent"] = auto_parent_node_id
+    if outcome.get("warnings"):
+        result["warnings"] = list(outcome["warnings"])
     if study_context_missing:
-        result["warnings"] = [_STUDY_CONTEXT_WARNING]
+        result["warnings"] = [_STUDY_CONTEXT_WARNING, *result.get("warnings", [])]
         result["study_context"] = {
             "code": "study_context_missing",
             "linked": False,
@@ -953,6 +1113,8 @@ def _apply_status(
             nodes = progress.setdefault("nodes", {})
             nodes[node_id] = _node_progress_summary(data)
             _atomic_write_json(pj, progress)
+    if canonical_status in TERMINAL_NODE_STATUSES:
+        _release_owner(job_dir, node_id)
 
 
 def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
@@ -1184,10 +1346,58 @@ def _abandon_node(job_dir: str, node_id: str, reason: Optional[str]) -> dict:
     return {"success": True, "node_id": node_id, "status": "failed", "code": "node_abandoned"}
 
 
+def _release_owner(job_dir: str, node_id: str) -> None:
+    """Stop this process's heartbeat on the node and drop the owner record
+    (the node reached a terminal status)."""
+    from mdclaw.node.owner import clear_owner
+
+    beat = _HEARTBEATS.pop((str(Path(job_dir).resolve()), node_id), None)
+    if beat is not None:
+        beat.stop()
+    clear_owner(job_dir, node_id)
+
+
 def begin_node(job_dir: str, node_id: str) -> None:
-    """Mark a mutable node as ``running`` at the start of execution."""
+    """Mark a mutable node as ``running`` at the start of execution, after
+    claiming it: a node that another live process is running is refused.
+
+    010_membrane_6kux r3 of campaign v4: sbatch lost its answer, the agent
+    submitted the prod node again, and two Slurm jobs computed prod_001 side
+    by side for three minutes; the second to finish died on the sealed node.
+    The claim is the owner record of ``mdclaw/node/owner.py`` (host, pid,
+    Slurm job, heartbeat), written under ``node.lock`` and kept fresh by a
+    daemon thread until the node completes or fails. A record whose owner is
+    gone (process dead, Slurm job ended, heartbeat stale) is taken over; this
+    process's own record (an in-process rounds driver) is kept as it is.
+    """
+    from mdclaw.node.owner import OwnerHeartbeat, owner_is_this_process, owner_liveness, read_owner, write_owner
+
+    node_dir = Path(job_dir) / "nodes" / node_id
+    with file_lock(node_dir / "node.lock"):
+        data = json.loads((node_dir / "node.json").read_text())
+        if _node_is_terminal(data):
+            raise _sealed_node_error(data)
+        record = read_owner(job_dir, node_id)
+        ours = owner_is_this_process(record)
+        if record is not None and not ours:
+            liveness = owner_liveness(job_dir, node_id)
+            if liveness.get("alive"):
+                started = record.get("started_at")
+                raise NodeAlreadyRunningError(
+                    f"Node '{node_id}' is already running: {liveness.get('reason')}"
+                    + (f" (started {started})" if started else "")
+                    + ". This run stops here; the other run completes the node."
+                )
+        if not ours:
+            write_owner(job_dir, node_id, executor="stage_tool", scheme_id=None, role="stage")
     _apply_status(job_dir, node_id, "running")
     write_event(job_dir, node_id, "tool_started")
+    if not ours:
+        key = (str(Path(job_dir).resolve()), node_id)
+        old = _HEARTBEATS.pop(key, None)
+        if old is not None:
+            old.stop()
+        _HEARTBEATS[key] = OwnerHeartbeat(job_dir, node_id).start()
 
 
 def complete_node(
@@ -1565,6 +1775,16 @@ def _context_fix(job_dir, node_id, node, expected_node_type, blocking_codes, blo
             return f"Run it on --node-id {open_same[0]}", hints
         return (f"mdclaw create_node --job-dir {job_dir} --node-type {expected_node_type} "
                 "(parent auto-resolved), then run the tool on the returned node_id"), hints
+    if "parent_type_invalid" in blocking_codes:
+        # A node keeps its parents: this one is retired and a new one made
+        # under the stage the table allows (create_node names the leaf).
+        hints.append(f"Retire the wrongly parented node once nothing runs on it: "
+                     f"mdclaw update_workflow_state --job-dir {job_dir} --node-id {node_id} "
+                     "--abandon --reason 'wrong parent type'")
+        resolved = _auto_resolve_parent(node_type, index)
+        target = f"--parent-node-ids {resolved}" if resolved else "(parent auto-resolved)"
+        return (f"mdclaw create_node --job-dir {job_dir} --node-type {node_type} {target}, "
+                "then run the tool on the returned node_id"), hints
     if blockers:
         role, bid, status, btype = blockers[0]
         if status in ("pending", "queued", None):

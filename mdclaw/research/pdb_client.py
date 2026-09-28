@@ -335,7 +335,7 @@ async def _fetch_pdb_structure(
                 extras["assembly_generation"] = result["assembly_generation"]
             if last_modified:
                 extras["last_modified"] = last_modified
-            _complete_source_node(
+            info = _complete_source_node(
                 job_dir,
                 node_id,
                 Path(result["file_path"]),
@@ -346,6 +346,7 @@ async def _fetch_pdb_structure(
                 source_structures=source_structures,
                 source_candidate_metadata=source_candidate_metadata,
             )
+            result["chain_ranges"] = info.get("chain_ranges") or []
         else:
             fail_node(job_dir, node_id, errors=result["errors"])
 

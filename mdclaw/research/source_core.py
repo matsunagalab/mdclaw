@@ -105,6 +105,9 @@ def _complete_source_node(
     )
     rel_bundle = write_source_bundle(source_node_dir, bundle)
     primary_candidate = bundle["structures"][0]["candidate_file"]
+    chain_ranges = source_chain_ranges(source_node_dir / primary_candidate)
+    if chain_ranges:
+        metadata["chain_ranges"] = chain_ranges
 
     complete_node(
         job_dir,
@@ -120,7 +123,23 @@ def _complete_source_node(
         "primary_candidate": primary_candidate,
         "source_bundle": rel_bundle,
         "metadata": metadata,
+        "chain_ranges": chain_ranges,
     }
+
+
+def source_chain_ranges(structure_file: Path) -> list[dict]:
+    """The per-chain numbering summary (``inspect_molecules.chain_ranges``)
+    of the primary candidate, recorded on the source node so the prep's
+    chains and residue ranges can be chosen without another inspection.
+    Best effort: an unreadable file leaves the list empty."""
+    try:
+        from mdclaw.research.inspection import inspect_molecules
+
+        inspected = inspect_molecules(structure_file=str(structure_file))
+    except Exception as exc:  # noqa: BLE001 - a summary never blocks the fetch
+        logger.warning("chain_ranges of %s not recorded: %s", structure_file, exc)
+        return []
+    return list(inspected.get("chain_ranges") or []) if inspected.get("success") else []
 
 
 def _source_bundle_inputs_with_assemblies(

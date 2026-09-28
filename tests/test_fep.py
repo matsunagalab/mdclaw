@@ -524,12 +524,11 @@ class TestDag:
         not_fep = create_node(str(jd), "analyze", parent_node_ids=[prod],
                               conditions={"analysis_data_scope": "alchemical"})
         assert not_fep["success"] is False and not_fep["code"] == "analyze_conditions_invalid"
-        # fep cannot run off a prod parent (parent types are checked at execution)
+        # fep cannot hang from a prod parent (create_node refuses the edge)
         complete(str(jd), prod, {"state": "artifacts/final.xml"})
-        bad = create_node(str(jd), "fep", parent_node_ids=[prod])["node_id"]
-        ctx = validate_node_execution_context(str(jd), bad, "fep")
-        assert ctx["success"] is False
-        assert "parent_type_invalid" in ctx["blocking_codes"]
+        bad = create_node(str(jd), "fep", parent_node_ids=[prod])
+        assert bad["success"] is False and bad["code"] == "parent_type_invalid"
+        assert bad["allowed_parent_types"] == ["eq", "fep", "topo"]
         ok = validate_node_execution_context(str(jd), fep2["node_id"], "fep")
         assert ok["success"], ok
 

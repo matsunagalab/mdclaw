@@ -120,3 +120,107 @@ def test_array_mismatch_also_rejects_before_sbatch(job):
     assert not result["success"]
     assert "declared 1.0, actual 2.0" in result["errors"][0]
     run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Structural preflight: the parent table and the tool's stage, before sbatch
+# ---------------------------------------------------------------------------
+
+
+def _dag(tmp_path):
+    """A real DAG (create_node) so the structural preflight sees an index."""
+    from mdclaw._node import create_node
+    from tests.pipeline_helpers import complete_node_with_placeholders as complete
+
+    jd = tmp_path / "job"
+    jd.mkdir()
+    create_node(str(jd), "topo")
+    complete(str(jd), "topo_001", {"system_xml": "artifacts/system.xml",
+                                  "topology_pdb": "artifacts/topology.pdb",
+                                  "state_xml": "artifacts/state.xml"})
+    create_node(str(jd), "min", parent_node_ids=["topo_001"])
+    create_node(str(jd), "eq", parent_node_ids=["min_001"])
+    return jd
+
+
+def _run(jd, node_id, tool="run_production", flags="--simulation-time-ns 1"):
+    return f"mdclaw --job-dir {shlex.quote(str(jd))} --node-id {node_id} {tool} {flags}"
+
+
+def test_004_prod_under_topo_is_refused_before_sbatch(tmp_path):
+    """004_membrane_5zkb r3: the prod hung from topo_001, submit_job let it
+    through, and run_production refused it inside the job after the agent
+    had left. create_node now refuses the edge; a hand-edited DAG that
+    carries it is refused here."""
+    from mdclaw._node import create_node
+    from tests.pipeline_helpers import rewire_parents
+
+    jd = _dag(tmp_path)
+    create_node(str(jd), "prod", parent_node_ids=["eq_001"])
+    rewire_parents(jd, "prod_001", ["topo_001"])
+    with patch("mdclaw.slurm._base.run_command") as run:
+        result = submit_job(_run(jd, "prod_001"), job_dir=str(jd), node_id="prod_001", gpus=1)
+    assert not result["success"]
+    assert result["code"] == "node_execution_context_invalid"
+    assert "parent_type_invalid" in result["blocking_codes"]
+    assert "--node-type prod --parent-node-ids eq_001" in result["next_action"]
+    run.assert_not_called()
+    assert not list(jd.glob("*.sbatch"))
+    assert json.loads((jd / "nodes/prod_001/node.json").read_text())["status"] == "pending"
+
+
+def test_pending_parent_chain_passes_the_structural_preflight(tmp_path):
+    from mdclaw._node import create_node
+
+    jd = _dag(tmp_path)
+    create_node(str(jd), "prod", parent_node_ids=["eq_001"])  # eq_001 is pending
+    with patch("mdclaw.slurm._base.check_external_tool", return_value=False) as check:
+        result = submit_job(_run(jd, "prod_001"), job_dir=str(jd), node_id="prod_001")
+    check.assert_called_once_with("sbatch")  # nothing structural blocked
+    assert result["condition_preflight"]["status"] == "checked"
+
+
+def test_tool_of_another_stage_is_refused(tmp_path):
+    jd = _dag(tmp_path)
+    with patch("mdclaw.slurm._base.run_command") as run:
+        result = submit_job(_run(jd, "eq_001"), job_dir=str(jd), node_id="eq_001")
+    assert result["code"] == "node_execution_context_invalid"
+    assert result["blocking_codes"] == ["node_type_mismatch"]
+    assert "run_production runs on prod nodes" in result["message"]
+    run.assert_not_called()
+
+
+def test_failed_parent_is_refused_even_under_an_opaque_script(tmp_path):
+    from mdclaw._node import create_node, record_node_failure
+
+    jd = _dag(tmp_path)
+    create_node(str(jd), "prod", parent_node_ids=["eq_001"])
+    record_node_failure(str(jd), "eq_001", {"success": False, "code": "nan_detected", "errors": ["NaN"]})
+    with patch("mdclaw.slurm._base.run_command") as run:
+        result = submit_job("bash run.sh", job_dir=str(jd), node_id="prod_001")
+    assert result["code"] == "node_execution_context_invalid"
+    assert result["blocking_codes"] == ["parent_not_completed"]
+    assert "trace_failure" in result["next_action"]
+    run.assert_not_called()
+
+
+def test_array_and_mps_refuse_the_same_edge(tmp_path):
+    from mdclaw._node import create_node
+    from mdclaw.slurm.mps import submit_mps_job
+    from tests.pipeline_helpers import rewire_parents
+
+    jd = _dag(tmp_path)
+    create_node(str(jd), "prod", parent_node_ids=["eq_001"])
+    rewire_parents(jd, "prod_001", ["topo_001"])
+    task = {"job_dir": str(jd), "node_id": "prod_001",
+            "command": _run(jd, "prod_001", flags="--simulation-time-ns 1 --platform CUDA")}
+    with patch("mdclaw.slurm._base.check_external_tool", return_value=True), \
+            patch("mdclaw.slurm._base.run_command") as run:
+        array = submit_array_job([task])
+        mps = submit_mps_job([task, task])
+    for result in (array, mps):
+        assert not result["success"]
+        assert result["code"] == "node_execution_context_invalid"
+        assert "parent_type_invalid" in result["blocking_codes"]
+        assert result["message"].startswith("tasks[0]: ")
+    run.assert_not_called()

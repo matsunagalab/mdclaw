@@ -33,7 +33,7 @@ from mdclaw._tool_meta import tool_node_type
 from mdclaw.node.constants import ID_LIST_CAP
 from mdclaw.node.io import _atomic_write_json, _read_artifact_from_node, _read_node_json
 from mdclaw.node.progress import _load_progress_v3
-from mdclaw.rounds.owner import owner_liveness
+from mdclaw.node.owner import owner_liveness
 
 logger = setup_logger(__name__)
 

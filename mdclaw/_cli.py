@@ -1970,7 +1970,7 @@ def main(argv: list[str] | None = None) -> None:
             exit_code=1,
             started_at=started_at,
         )
-        from mdclaw.node.lifecycle import NodeSealedError
+        from mdclaw.node.lifecycle import NodeAlreadyRunningError, NodeSealedError
 
         if isinstance(e, NodeSealedError):
             # Not an internal error: the caller re-ran a stage on a node that
@@ -1985,6 +1985,24 @@ def main(argv: list[str] | None = None) -> None:
                     "(mdclaw create_node --parent-node-ids <parent>) and run the "
                     "stage there; a sealed node is never rewritten.",
                 ],
+            }
+        elif isinstance(e, NodeAlreadyRunningError):
+            # Another live process owns the node (a duplicate Slurm job):
+            # this run did nothing and must not fail the node under it.
+            error_payload = {
+                "message": f"{tool_name}: {e}",
+                "error_type": type(e).__name__,
+                "code": "node_already_running",
+                "errors": [str(e)],
+                "hints": [
+                    "Wait for the run that owns the node; cancel a duplicate Slurm job of "
+                    "this node instead of resubmitting it.",
+                    "A dead owner's record goes stale within 5 minutes (at once when its "
+                    "Slurm job has ended), after which the node can be run again.",
+                ],
+                "next_action": (
+                    f"mdclaw wait_node --job-dir {effective_job_dir} --node-id {effective_node_id}"
+                ),
             }
         else:
             error_payload = {
@@ -2005,9 +2023,13 @@ def main(argv: list[str] | None = None) -> None:
             else _json_stdout_tail(error_out)
         )
         # Whatever the tool's node contract, a node this invocation began and
-        # abandoned is failed before the process exits.
-        sealed_here = _fail_node_if_running(
-            effective_job_dir, effective_node_id, error_out.get("errors") or [str(e)]
+        # abandoned is failed before the process exits — unless another live
+        # run owns it, in which case this invocation never began it.
+        sealed_here = (
+            False if isinstance(e, NodeAlreadyRunningError)
+            else _fail_node_if_running(
+                effective_job_dir, effective_node_id, error_out.get("errors") or [str(e)]
+            )
         )
         if sealed_here:
             error_out.setdefault("context", {})["node_failed_by_cli"] = True

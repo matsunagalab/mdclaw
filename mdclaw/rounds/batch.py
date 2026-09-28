@@ -19,7 +19,7 @@ from typing import Any, Optional
 
 from mdclaw._common import setup_logger
 from mdclaw.node.io import _read_node_json
-from mdclaw.rounds.owner import OwnerHeartbeat, clear_owner, write_owner
+from mdclaw.node.owner import OwnerHeartbeat, clear_owner, write_owner
 from mdclaw.rounds.scheme import (
     RoundsError,
     _error,

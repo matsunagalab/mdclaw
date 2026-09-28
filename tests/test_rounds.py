@@ -521,6 +521,10 @@ def _round_one_running(jd, eq, n_replicas=2):
                                    mps_poll_seconds=30, slurm_output_dir=None)
     created = driver.create_segments(1, first_round_plan(scheme), None)
     begin_node(str(jd), created[0])
+    # begin_node now claims the node for this process; these tests model a
+    # node an older tool left running without any owner record.
+    from mdclaw.node.owner import clear_owner
+    clear_owner(str(jd), created[0])
     return driver, created
 
 
@@ -723,7 +727,7 @@ class TestOwnerSlurmProbe:
     def test_slurm_probe_decides_before_the_heartbeat(self, tmp_path, periodic_triple, monkeypatch):
         import subprocess
 
-        from mdclaw.rounds import owner as owner_module
+        from mdclaw.node import owner as owner_module
 
         jd, eq = _job_with_eq(tmp_path, periodic_triple)
         _, created = _round_one_running(jd, eq)

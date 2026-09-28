@@ -11,6 +11,8 @@ these tools only handle the SLURM layer.
 from __future__ import annotations
 
 import json
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -100,6 +102,22 @@ def _validate_node_ready_for_slurm_submit(job_dir: str, node_id: str) -> Optiona
         )
     intent = (node.get("metadata") or {}).get("slurm_submission_intent_id")
     if intent:
+        uncertain_at = (node.get("metadata") or {}).get("slurm_submission_uncertain_at")
+        if uncertain_at:
+            check = f"mdclaw check_job --job-dir {job_dir} --node-id {node_id}"
+            error = create_validation_error(
+                "node_id",
+                f"Node {node_id!r} has a submission whose sbatch answer was lost "
+                f"({(node.get('metadata') or {}).get('slurm_submission_error')}); "
+                "Slurm may hold that job.",
+                expected="a node whose last submission is settled",
+                actual=f"slurm_submission_intent_id={intent!r}, uncertain since {uncertain_at}",
+                hints=[f"Settle it first: {check} (adopts the job when the queue shows it, "
+                       "else frees the node)."],
+                code="slurm_submit_uncertain",
+            )
+            error["next_action"] = check
+            return error
         return create_validation_error(
             "node_id",
             f"Node {node_id!r} already has an in-flight SLURM submission.",
@@ -119,12 +137,15 @@ def _reserve_slurm_submission_on_node(
     kind: str,
     array_task_id: Optional[int] = None,
     mps_slot: Optional[int] = None,
+    details: Optional[dict] = None,
 ) -> tuple[Optional[dict], Optional[str]]:
     """Atomically reserve a DAG node before calling sbatch.
 
     The reservation lives in ``node.json`` and is written under
     ``node.lock`` so two concurrent submitters cannot both pass the
     pre-submission check and reach ``sbatch`` for the same node.
+    ``details`` (job name, script and log paths; intent keys only) let
+    ``check_job`` stamp the job later when sbatch's answer was lost.
     """
     node_dir = Path(job_dir).resolve() / "nodes" / node_id
     node_json = node_dir / "node.json"
@@ -176,6 +197,9 @@ def _reserve_slurm_submission_on_node(
                 metadata["slurm_array_task_id"] = array_task_id
             if mps_slot is not None:
                 metadata["slurm_mps_slot"] = mps_slot
+            for key, value in (details or {}).items():
+                if key in _SLURM_SUBMISSION_INTENT_KEYS and value is not None:
+                    metadata[key] = value
             data["updated_at"] = datetime.now(timezone.utc).isoformat()
             _atomic_write_json(node_json, data)
     except Exception as exc:  # noqa: BLE001
@@ -406,6 +430,166 @@ def _slurm_job_in_queue(job_id: str) -> Optional[bool]:
     return False
 
 
+def submission_marker(submission_intent_id: str) -> str:
+    """The ``--comment`` submit_job writes into the job for this submission."""
+    return f"mdclaw:{submission_intent_id}"
+
+
+# sbatch answers that leave the request's fate unknown: the controller may
+# have created the job although its reply never came back (the client side of
+# "Socket timed out on send/recv operation").
+_SBATCH_UNCERTAIN_PATTERNS = (
+    "socket timed out", "timed out", "unable to contact slurm controller",
+    "zero bytes were transmitted", "connection refused", "connection reset",
+)
+
+
+def sbatch_outcome_uncertain(detail: str) -> bool:
+    text = (detail or "").lower()
+    return any(pattern in text for pattern in _SBATCH_UNCERTAIN_PATTERNS)
+
+
+def _squeue_markers() -> Optional[list[tuple[str, str]]]:
+    """``(job_id, comment)`` of the user's queued jobs, or None when squeue
+    cannot answer."""
+    try:
+        if not _base.check_external_tool("squeue"):
+            return None
+        proc = _base.run_command(["squeue", "--me", "-h", "-o", "%i|%k"],
+                                 timeout=get_timeout("slurm"))
+    except Exception:  # noqa: BLE001
+        return None
+    rows = []
+    for line in (proc.stdout or "").splitlines():
+        job_id, _, comment = line.partition("|")
+        if job_id.strip():
+            rows.append((job_id.strip(), comment.strip()))
+    return rows
+
+
+def find_marked_job(marker: str, *, wait_seconds: Optional[float] = None,
+                    poll_seconds: float = 5.0) -> tuple[Optional[str], bool]:
+    """``(job_id, answered)``: the queued job whose ``--comment`` is
+    ``marker`` (None when there is none) and whether squeue answered at all.
+
+    A job whose sbatch reply was lost is in the queue as soon as the
+    controller has processed the request; the queue is polled for up to
+    ``wait_seconds`` (``MDCLAW_SLURM_CONFIRM_SECONDS``, default 30) in case
+    the controller is still catching up.
+    """
+    if wait_seconds is None:
+        try:
+            wait_seconds = float(os.environ.get("MDCLAW_SLURM_CONFIRM_SECONDS") or 30.0)
+        except ValueError:
+            wait_seconds = 30.0
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    answered = False
+    while True:
+        rows = _squeue_markers()
+        if rows is not None:
+            answered = True
+            for job_id, comment in rows:
+                if comment == marker:
+                    return job_id, True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None, answered
+        time.sleep(min(poll_seconds, remaining))
+
+
+def _mark_slurm_submission_uncertain(job_dir: str, node_id: str, submission_intent_id: str,
+                                     detail: str) -> None:
+    """Keep the reservation and say why: the node must not be submitted
+    again until check_job has looked for the job."""
+    node_dir = Path(job_dir).resolve() / "nodes" / node_id
+    node_json = node_dir / "node.json"
+    with file_lock(node_dir / "node.lock"):
+        data = json.loads(node_json.read_text())
+        metadata = data.setdefault("metadata", {})
+        if metadata.get("slurm_submission_intent_id") != submission_intent_id:
+            return
+        metadata["slurm_submission_uncertain_at"] = datetime.now(timezone.utc).isoformat()
+        metadata["slurm_submission_error"] = detail
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _atomic_write_json(node_json, data)
+    try:
+        write_event(job_dir, node_id, "slurm_submission_uncertain", success=False,
+                    details={"submission_intent_id": submission_intent_id, "error": detail})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not write slurm_submission_uncertain event: %s", exc)
+
+
+def settle_uncertain_submission(job_dir: str, node_id: str, *,
+                                wait_seconds: Optional[float] = None) -> dict:
+    """Settle a node whose sbatch answer was lost.
+
+    ``outcome``: ``settled`` (the node already carries a job id),
+    ``adopted`` (the queue shows the submission's marker: the job is
+    stamped on the node and tracked like any submission), ``not_submitted``
+    (the queue was listed and holds none: the reservation is cleared and
+    the node is free), ``unknown`` (squeue could not answer: nothing
+    changes) or ``none`` (no lost submission on this node).
+    """
+    from mdclaw.slurm.tracker import _append_job_record
+
+    jd = str(Path(job_dir).resolve())
+    metadata = read_node(jd, node_id).get("metadata") or {}
+    if metadata.get("slurm_job_id"):
+        return {"outcome": "settled", "slurm_job_id": str(metadata["slurm_job_id"])}
+    intent = metadata.get("slurm_submission_intent_id")
+    if not intent or not metadata.get("slurm_submission_uncertain_at"):
+        return {"outcome": "none", "slurm_job_id": None}
+    found, answered = find_marked_job(submission_marker(intent), wait_seconds=wait_seconds)
+    if found:
+        stdout_log = str(metadata.get("slurm_submission_stdout_log") or "").replace("%j", found)
+        stderr_log = str(metadata.get("slurm_submission_stderr_log") or "").replace("%j", found)
+        script_file = str(metadata.get("slurm_submission_script_file") or "")
+        stamp_err = _stamp_slurm_on_node(
+            jd, node_id, found, script_file=script_file, stdout_log=stdout_log,
+            stderr_log=stderr_log, parent_job_id=found, submission_intent_id=intent,
+        )
+        if stamp_err:
+            return {"outcome": "unknown", "slurm_job_id": found, "error": stamp_err}
+        _append_job_record({
+            "job_id": found,
+            "job_name": metadata.get("slurm_submission_job_name"),
+            "submitted_at": metadata.get("slurm_submission_intent_at"),
+            "status": "SUBMITTED",
+            "script_file": script_file,
+            "output_dir": str(Path(script_file).parent) if script_file else None,
+            "stdout_log": stdout_log,
+            "stderr_log": stderr_log,
+            "job_dir": jd,
+            "node_id": node_id,
+            "adopted": True,
+        })
+        return {"outcome": "adopted", "slurm_job_id": found}
+    if answered:
+        _clear_slurm_submission_intent(jd, node_id, intent)
+        return {"outcome": "not_submitted", "slurm_job_id": None}
+    return {"outcome": "unknown", "slurm_job_id": None}
+
+
+def _live_owner_elsewhere(job_dir: str, node_id: str, slurm_job_id: Optional[str]) -> Optional[str]:
+    """A message when a live process other than Slurm job ``slurm_job_id``
+    owns the running node: that job's end is recorded as an event, not as
+    the node's failure (the refused duplicate of 010_membrane_6kux r3 ended
+    while the other job was computing the node)."""
+    from mdclaw.node.owner import owner_liveness
+
+    try:
+        liveness = owner_liveness(str(job_dir), node_id)
+    except Exception:  # noqa: BLE001 - a liveness check never breaks a sync
+        return None
+    if not liveness.get("alive"):
+        return None
+    owner_job = str((liveness.get("owner") or {}).get("slurm_job_id") or "")
+    if slurm_job_id and owner_job == str(slurm_job_id):
+        return None
+    return (f"node {node_id} is running under a live owner ({liveness.get('reason')}); "
+            f"the end of Slurm job {slurm_job_id or '?'} is recorded as an event only")
+
+
 def clear_slurm_submission_on_node(job_dir: str, node_id: str) -> dict:
     """Free a non-terminal node from a dead SLURM submission so it can be
     submitted again.
@@ -477,6 +661,7 @@ def _sync_slurm_state_to_node(
     stderr_tail: Optional[str] = None,
     elapsed: Optional[str] = None,
     exit_code: Optional[str] = None,
+    slurm_job_id: Optional[str] = None,
 ) -> Optional[str]:
     """Reflect a SLURM state transition onto a node.
 
@@ -537,6 +722,10 @@ def _sync_slurm_state_to_node(
                 f"node {node_id} already completed but SLURM reports {state}; "
                 f"not demoting node status"
             )
+        if current == "running":
+            keeper = _live_owner_elsewhere(str(job_dir), node_id, slurm_job_id)
+            if keeper:
+                return keeper
         try:
             errors = [f"SLURM state: {state}"]
             if exit_code:
@@ -582,6 +771,10 @@ def _sync_slurm_state_to_node(
             return None
         if current == "failed":
             return None
+        if current == "running":
+            keeper = _live_owner_elsewhere(str(job_dir), node_id, slurm_job_id)
+            if keeper:
+                return keeper
 
         try:
             errors = [

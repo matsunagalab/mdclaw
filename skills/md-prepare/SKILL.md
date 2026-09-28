@@ -141,7 +141,11 @@ use the HPacker-based `create_mutated_structure` branch in
    `--pdb-id <id>` to `bootstrap_md_workflow` performs that fetch in the same
    call. Read `acquisition.md` only for a remote/generated source, biological
    assembly, or multi-candidate bundle.
-4. Run `inspect_molecules` and confirm Step 0b. Before creating `prep`, read
+4. Run `inspect_molecules` and confirm Step 0b. Its `chain_ranges` (also on
+   the source result and `next`) gives each chain's first and last residue,
+   gaps and insertion codes: check the task's chains and residue numbers
+   against it; never parse the structure file yourself. After `prep`,
+   `kept_residue_ranges` says what each chain really kept. Before creating `prep`, read
    `prep-chemistry.md` for the protonation baseline, and for caps, disulfides
    or a mutation/PTM branch where those apply; `branches.md` covers branching.
    A request for standard or fixed ionisation states ("charged Asp/Glu/Lys/Arg,

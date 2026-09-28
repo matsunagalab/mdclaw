@@ -33,7 +33,7 @@ from typing import Any, Optional
 from mdclaw._common import setup_logger
 from mdclaw._event import write_event
 from mdclaw.node.io import _read_artifact_from_node, _read_node_json
-from mdclaw.rounds.owner import STALE_SECONDS, OwnerHeartbeat, clear_owner, write_owner
+from mdclaw.node.owner import STALE_SECONDS, OwnerHeartbeat, clear_owner, write_owner
 from mdclaw.rounds.plan import (
     NEXT_ROUND_ARTIFACT,
     first_round_plan,

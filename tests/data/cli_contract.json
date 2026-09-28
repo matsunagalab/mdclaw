@@ -182,9 +182,7 @@
   "check_job": {
     "job_dir_is_data": false,
     "node_type": null,
-    "required_params": [
-      "job_id"
-    ],
+    "required_params": [],
     "requires_node": false,
     "server": "slurm"
   },

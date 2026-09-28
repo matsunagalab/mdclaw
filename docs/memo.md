@@ -7,6 +7,27 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-09-29 — MDDataBench v4 の cli_skill_sif 失敗 4 件を CLI で塞いだ（作成時・投入時の親の型検査、投入結果不明時の印、二重実行の拒否、時間制限の手前での停止、chain_ranges）
+
+計画は `docs/developer/cli-skill-sif-v4-fix-plan.md`（04 / 010 / 015 r1 / 015 r2 の経緯と証拠の場所、末尾に実装状況）。原則は「実行時にしか行われない検査はエージェントに見えない」（004 r3 は 1800 秒中 462 秒で終了していた）ので、同じ検査を `create_node` と `submit_job` にも置いた。MDDataBench 側セッションも独立に同じ結論（screenshot 2026-09-28）。
+
+- **§1 親の型**: `create_node` が `_ALLOWED_PARENT_TYPES` を作成時に適用（`parent_type_invalid`、`next_action` は開いている正しい親）。min を持つ topo の下の eq は `eq_parent_should_be_min`。`submit_job` / array / MPS は `node_structure_preflight`（親の型、失敗した親、ツールと段の対応）で sbatch 前に `node_execution_context_invalid`。同時に見つけた既存バグ: `run_metadynamics` 追加（6941312、9/22）以降、`_STAGE_PREFERENCE` に prod がなく、完了した eq の `next.run_command` が `run_metadynamics` を勧めていた（キャンペーン v4 のイメージ 0528df5 も同じ）。`test_envelope.py::test_alchemical_routing_is_decided_per_branch` は main で落ちていた。
+- **§2 投入結果不明・二重実行**: `#SBATCH --comment=mdclaw:<intent>`。sbatch の応答が失われた失敗（Socket timed out 等）は squeue で印を探し（`find_marked_job`、最大 30 秒）、あれば採用、なければ `slurm_submit_uncertain` で予約を残す（再投入は拒否）。`check_job --job-dir J --node-id N` が解決（採用 / `slurm_submit_not_found` で解放 / 不明なら保留）。その他の sbatch 失敗は `slurm_submit_failed`。`begin_node` は rounds の owner record（`mdclaw/node/owner.py` へ移動）でノードを claim し、生きた別の実行者がいれば `node_already_running`（CLI はノードを失敗にしない）。同期側も、別の生きた job が持つ running ノードを FAILED/COMPLETED で封印しない（010 r3 の負けた側の job が勝った側を壊す経路）。
+- **§3 chain_ranges**: `inspect_molecules.chain_ranges`（鎖ごとに first / last / count / gaps / insertion_codes、`--output brief` でも残る）、source 完了時に metadata と結果へ載せ `next.inspect_command` を示す。`prepare_complex.kept_residue_ranges` と、範囲が構造の外に及ぶ / 欠損をまたぐ警告。
+- **§4 時間制限**: `run_production` は `SLURM_JOB_END_TIME`（または `MDCLAW_JOB_END_TIME`）の 120 秒（か出力 1 区間分）手前でフレーム境界で止め、実際の長さで completed（`requested_simulation_time_ns` / `remaining_simulation_time_ns` / `stopped_reason`）、`next` は `--continue-from` の延長。eq が `ns_per_day` を記録し、`submit_job` は `production_time_budget` で収まらない本計算を `production_exceeds_time_limit` で拒否（015 r2 の 3 ns / 20 分は 2 本 × 1.5 ns と提案）。
+- テスト: `test_node.py`（作成時検査）、`test_slurm_condition_preflight.py`（構造検査）、`test_slurm_submit_uncertain.py`（印・採用・解放・claim・同期の保護）、`test_production_deadline.py`（Reference プラットフォームで実際に締め切り停止と延長）、`test_chain_ranges.py`。既存テストで「eq を prep の下に作る」などの略記は正しい形に直した。SIF（membranecache-3dd0abe30156）に PYTHONPATH で載せて実行。
+- 対象外のまま: 配列 / MPS 投入の印、`slurm_time_limit` の読み替え、ハーネス側（採点ジョブの再試行）。
+
+## 2026-09-26 — Shared RIKYU image switched to membranecache-3dd0abe30156 (main 0528df5): the bundled membrane cache is named correctly, "CANCELLED by <uid>" is CANCELLED; CLAUDE.md on user namespaces
+
+The shared path `/data1/rkp00079/mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-6f171d2f0fa5.sif` links to `…-membranecache-3dd0abe30156.sif` since 21:22:25 JST (sha256 `c08333d9b169646e001fbc54cf3420ca14dced5f44731adec0b68ad77f5768b2`, 7,439,298,560 bytes, label `org.mdclaw.source.commit 0528df5…`); rollback link `…fusefix-6f171d2f0fa5.pre-membranecache-20260926.sif` → the tempinherit image (`51bb13ca…`, main `87050da`). Source overlay of three packaged files on the tempinherit image (`solvation/membrane.py`, `slurm/monitor.py`, `slurm/node_sync.py`), all 224 packaged files equal `0528df5`; recipe in `.validation/membranecache-20260926/`. Accepted on a GB200 node (job 141367, c165): CUDA; a default DPPC/TIP3P embedding of the 5YC8 receptor from the bundled cache (`cache_source: bundled`, 161 s); fast suite 2,600 passed, 2 skipped (the three deselections of 09-26). A first candidate built from `be9ca49` alone passed its suite (2,597) and was discarded unused when the Slurm fix arrived. The pi skill checkout stays at `87050da`: no skill file changed between it and `0528df5`. RIKYU.md updated in both copies. The owner's queued t1r `_s5b` jobs start on the new image; none of the changes can alter production MD.
+
+- `be9ca49`, membrane: the image's `MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR` named an empty `/opt/mdclaw/share/membrane_patches` (the Dockerfile only creates it when the warm-up is skipped), while the 13 bundled patches (DPPC, POPC, POPE, DOPC and three cholesterol mixtures; TIP3P and OPC; `dist_wat` 17.5 Å, 0.15 M, 40 Å) sit in the package. MDDataBench glm-5.3-flash v2 `001_membrane_5yc8 cli_sif r1` looked at the empty directory, concluded patch-tile would cold-build, chose `--membrane-backend packmol-memgen` (which `--list-json` still summarised the tool as using) and timed out in full-box packing. The variable now names the packaged cache (the old path is a link to it in the image; the Dockerfile checks the cache is not empty instead of creating an empty directory), and the summary and `membrane_backend` help say that default settings use a bundled patch, other `dist_wat`/salt/patch settings build one once (minutes to tens of minutes on CPU), and packmol-memgen packs the whole box on the CPU. No behaviour change.
+- `0528df5`, Slurm: after a benchmark agent cancelled every job of the owner (MDDataBench memo of the same day), the SST2 session found its cancelled nodes still `running`: `check_job` fell back to text `sacct`, whose State reads `CANCELLED by 100160`, and no terminal set matched. `check_job` now reports the state word (keeping the raw text as `state_detail`) and node sync reduces a state the same way; `tests/test_slurm_status_fallback.py` covers both forms (`CANCELLED by <uid>`, `CANCELLED+`) and the node becoming failed.
+- `0528df5`, CLAUDE.md/AGENTS.md and `docs/developer/container.md`: the rule "never wrap Singularity in a user namespace, every call re-extracts the SIF" was measured on floyd. Apptainer 1.4.5 on RIKYU mounts the SIF unprivileged through squashfuse (`fuseapps` driver): `mdclaw --version` 4.2 s setuid, 3.7 s `--userns`, 3.7 s under `setpriv --no-new-privs`, 3.8 s under `unshare --user --map-current-user --mount`; `unshare -r … /bin/true` 136 ms. MDDataBench's agent sandbox relies on it. The unknown-userid advice (`--no-home`, not `unshare`) stands.
+
+`be9ca49` and `0528df5` are local commits on main, not yet pushed.
+
 ## 2026-09-26 — ABFE 論文デモ: T4 リゾチーム L99A / L99A/M102Q の 25 リガンドを実験値つきで選定し、両 leg のトポロジーまで準備
 
 ユーザー依頼: 論文に載せられる ABFE デモ（横軸実験値・縦軸 ABFE の散布図）を、リガンド数の多いリゾチーム系で。作業場所 `/data1/rkp00079/rku00161/abfe-t4l`（study `study/`、データ `t4l_abfe_dataset.csv`、手順 `prep_ligand2.sh` / `pilot.sh` / `plot_exp_vs_calc.py`）。9/20 に中断した T4L ベンゼン検証（物理検証が未実施のまま）の続きを兼ねる。
@@ -33,16 +54,132 @@ add the correction and say what it overturns.
     - **文献の GAFF/AM1-BCC 計算値との比較**: Mobley 2007（L99A 13 件、同じ AM1-BCC）と R = 0.76、MUE 1.02（実験に対しては本計算 MUE 1.14 / R 0.60、Mobley MUE 1.38 / R 0.65）。二環式（benzofuran / indene / indole −3.66 / −1.63 / −1.37）の過小評価と isobutylbenzene の過大評価は同じ向き。Bradford 2021（YANK、ff14SB/GAFF2、6 件）と R 0.71、MUE 0.95（toluene −4.10 vs 本計算 −4.16、両者とも実験 −5.52 より 1.4 弱い; Bradford は第 2 の pose を報告）。Boyce 2009（M102Q 8 件）と R 0.54、MUE 1.09、5-chloro-2-methylphenol の結合しすぎ（−7.54 vs −8.19）と thienothiophene（−6.8 vs −6.07）は同じ向きで、2-nitrothiophene（−5.73 vs −9.18）は本計算のほうが 3.5 強い（2RBO は 2 pose、altloc A のみ使用）。総じて力場（GAFF2/AM1-BCC/ff19SB/OPC）の既知の傾向を再現しており、パイプライン固有の系統誤差は見えない。
     - 費用: 本計算 146.3 GPU-h + パイロット約 3 GPU-h。
   - **ベンゼンの本計算（9/27、ユーザー承認、`benzene_run.py`、143060–143062、3 ジョブ計 6.3 GPU-h）**: 3 レプリカ × 5 ns/窓、新しい拘束（topo_004、reorients）、σ = 1。complex leg 41.34 / 40.55 / 41.57 kJ/mol（overlap 最小 0.077–0.090）、solvent −8.08 / −8.19 / −8.14 → **ΔG_bind = −4.56 / −4.40 / −4.63、平均 −4.53 ± 0.07 kcal/mol（実験 −5.19）**。パイロット（2 ns）の −4.59 と一致し、Mobley 2007 の −3.95 より実験に近い。**最終統計（25 リガンド）**: MUE 1.29 [0.87, 1.76]、RMSE 1.72 [1.10, 2.27]、MSE −0.20、R 0.30 [0.05, 0.57]、τ 0.28 [0.05, 0.51]。L99A（14）MUE 1.10 / R 0.60 / MSE +0.65、M102Q（11）MUE 1.52 / R 0.41 / MSE −1.27。σ なし: MUE 1.27 / R 0.28。`main_analysis.json` にベンゼンを含めたので `plot_exp_vs_calc.py` は引数なしで 25 点を描く。
+  - **Methods 草稿（9/27、ユーザー指示 2）**: `generate_md_report --targets`（ベンゼンの binding ノード r1–r3、`--grouping replicas`）で `report/bnz/report.json` と検証済み BibTeX 12 件を取得（study 全体は `report_selection_required`、82 候補）。記録から書いた草稿は `report/METHODS.md`、bib は `report/references.bib`。記録で確認した事実: リガンド電荷は **NAGL**（`openff-gnn-am1bcc-1.0.0.pt`、AM1-BCC そのものではない）、GAFF 2.11、ff19SB/OPC、PME 1.0 nm、HBonds、HMR 4 amu/4 fs、altloc A、C 末端 2 残基は未モデル、propka 各実験 pH で His31 は HIP、min 5,000 反復、eq1 = 拘束 100 kJ/mol/nm² で 0.2 T 暖機 1,000 步 → NVT 1 ns → NPT 1 ns、eq2 = 拘束なし NPT 2 / 1 ns、窓ごとに 200 反復の最小化 + 0.2 ns + 5 ns、1 ps 間隔で 5,000 サンプル、MBAR は 10 % 破棄 + 自動サブサンプリング。バージョンは DAG に記録されずイメージから（OpenMM 8.5.1、pymbar 4.2.0、openmmforcefields 0.16.0、PDBFixer 1.12、PDB2PQR 3.7.1 / PROPKA 3.5.1、packmol-memgen 2025.1.29、AmberTools 24）。未引用の参照（GAFF、NAGL、OpenMM 8、ITC 原典、Mobley 2006 など）は草稿末尾のチェックリスト。
 
-## 2026-09-26 — Shared RIKYU image switched to membranecache-3dd0abe30156 (main 0528df5): the bundled membrane cache is named correctly, "CANCELLED by <uid>" is CANCELLED; CLAUDE.md on user namespaces
+## 2026-09-28 — SST2 は今のところ通常 MD より効率的に見えない（ユーザー指摘）→ holo 出発の通常 MD 対照を先に
 
-The shared path `/data1/rkp00079/mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-6f171d2f0fa5.sif` links to `…-membranecache-3dd0abe30156.sif` since 21:22:25 JST (sha256 `c08333d9b169646e001fbc54cf3420ca14dced5f44731adec0b68ad77f5768b2`, 7,439,298,560 bytes, label `org.mdclaw.source.commit 0528df5…`); rollback link `…fusefix-6f171d2f0fa5.pre-membranecache-20260926.sif` → the tempinherit image (`51bb13ca…`, main `87050da`). Source overlay of three packaged files on the tempinherit image (`solvation/membrane.py`, `slurm/monitor.py`, `slurm/node_sync.py`), all 224 packaged files equal `0528df5`; recipe in `.validation/membranecache-20260926/`. Accepted on a GB200 node (job 141367, c165): CUDA; a default DPPC/TIP3P embedding of the 5YC8 receptor from the bundled cache (`cache_source: bundled`, 161 s); fast suite 2,600 passed, 2 skipped (the three deselections of 09-26). A first candidate built from `be9ca49` alone passed its suite (2,597) and was discarded unused when the Slurm fix arrived. The pi skill checkout stays at `87050da`: no skill file changed between it and `0528df5`. RIKYU.md updated in both copies. The owner's queued t1r `_s5b` jobs start on the new image; none of the changes can alter production MD.
+ユーザー「Plain MD に比べてサンプリングが効率化してるように見えない」。同意した。apo → holo（この論文の問い）では、通常 MD（apo 出発 300 ns）が TPP-3077 で holo 最接近 1.92 Å、P(holo < 2 Å) 0.1–0.17 %、SST2 block 1 は 1.64 Å / 0.15 %、Level 2（100 ns）は 1.78 Å / 0 % で、差がない。Nb.X0 は通常 MD だけで apo A → apo B → holo から 12 Å まで SST2 と同じ範囲を動く（1KXV では通常 MD 200 ns が H3 の basin を渡れず SST2 が 48–105 回渡ったのと対照的: このナノボディのループはもともとよく動く）。SST2 が明らかに優れるのは温度の巡りと重みの収束。SST2 の holo 出発 → apo 側への横断（TPP-3077 0.8 %、Nb.X0 0.3 %）は効果かもしれないが、holo 出発の通常 MD が無いので比べられない。
 
-- `be9ca49`, membrane: the image's `MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR` named an empty `/opt/mdclaw/share/membrane_patches` (the Dockerfile only creates it when the warm-up is skipped), while the 13 bundled patches (DPPC, POPC, POPE, DOPC and three cholesterol mixtures; TIP3P and OPC; `dist_wat` 17.5 Å, 0.15 M, 40 Å) sit in the package. MDDataBench glm-5.3-flash v2 `001_membrane_5yc8 cli_sif r1` looked at the empty directory, concluded patch-tile would cold-build, chose `--membrane-backend packmol-memgen` (which `--list-json` still summarised the tool as using) and timed out in full-box packing. The variable now names the packaged cache (the old path is a link to it in the image; the Dockerfile checks the cache is not empty instead of creating an empty directory), and the summary and `membrane_backend` help say that default settings use a bundled patch, other `dist_wat`/salt/patch settings build one once (minutes to tens of minutes on CPU), and packmol-memgen packs the whole box on the CPU. No behaviour change.
-- `0528df5`, Slurm: after a benchmark agent cancelled every job of the owner (MDDataBench memo of the same day), the SST2 session found its cancelled nodes still `running`: `check_job` fell back to text `sacct`, whose State reads `CANCELLED by 100160`, and no terminal set matched. `check_job` now reports the state word (keeping the raw text as `state_detail`) and node sync reduces a state the same way; `tests/test_slurm_status_fallback.py` covers both forms (`CANCELLED by <uid>`, `CANCELLED+`) and the node becoming failed.
-- `0528df5`, CLAUDE.md/AGENTS.md and `docs/developer/container.md`: the rule "never wrap Singularity in a user namespace, every call re-extracts the SIF" was measured on floyd. Apptainer 1.4.5 on RIKYU mounts the SIF unprivileged through squashfuse (`fuseapps` driver): `mdclaw --version` 4.2 s setuid, 3.7 s `--userns`, 3.7 s under `setpriv --no-new-privs`, 3.8 s under `unshare --user --map-current-user --mount`; `unshare -r … /bin/true` 136 ms. MDDataBench's agent sandbox relies on it. The unknown-userid advice (`--no-home`, not `unshare`) stands.
+仮説: (1) 遅い自由度が焼き戻している項ではない（TPP-3077 は H3 の形より位置がずれる。支点は H3 の根元やフレームワーク側で solute の外）、(2) holo が溶液中で本当に稀（induced fit なら正しい手法でもほぼ出ない。判定は 2 出発の分布一致だけ）、(3) 時間が短い（Liedl らは metaD + 数十 µs）。
 
-`be9ca49` and `0528df5` are local commits on main, not yet pushed.
+ユーザー判断: まず対照（案 1）。Level 2 の +200 ns 延長（148060/148061）は 17 分で cancel、8 ノード（tpp3077_apo prod_022–023, tpp3077_holo prod_013–014, nbx0_apo prod_022–023, nbx0_holo prod_013–014）を `--abandon`。holo 出発の通常 MD を投入: tpp3077_holo と nbx0_holo の eq_001 から seed 1–3 × 300 ns（prod_015–017、50 ps 出力）、MPS 148084（6 task/1 GPU、image）。`inputs/submit_md_holo.sh`。次は「2 出発の 300 K 分布が GPU 時間あたりどれだけ速く一致するか」を SST2 と通常 MD で並べる（案 2）。
+
+---
+
+## 2026-09-28 — Level 2 パイロットの結果（100 ns × 2 seed × 4 出発）: 温度の巡りと重みが最良、Nb.X0 で初めて 2 出発間の横断
+
+MPS 147131/147132 が 20:07 までに完了。`inputs/run_analyze_set.sh level2`（analyze_007 = apo 参照、analyze_008 = holo 参照）、`inputs/join_frames.py … level2`、`inputs/cpca_landscape.py … level2 analyze_007 … block1`（図 `inputs/level2_cpca_landscape.png`）。
+
+同じ 100 ns の比較:
+
+| | block 1 | Level 1 | Level 2 |
+|---|---|---|---|
+| 往復 / run | 3–33 | 28–67 | 47–109 |
+| rung 交換 | 0.31–0.39 | 0.38–0.46 | 0.44–0.47 |
+| `weights_converged` | 0/4 | 3/4 | 2/4（残りも seed 間差 4.3 / 5.3 kJ/mol、block 1 は 9–10） |
+| TPP-3077 apo 出発 → holo（全次元 RMSD < 2 Å、300 K） | 0.14 % | 0.06 % | 0 %（最接近 1.78 Å） |
+| TPP-3077 holo 出発 → apo | 0 % | 0 % | 0.8 % |
+| Nb.X0 apo 出発 → holo | 0 % | 0 % | 0 %（最接近 3.36 Å） |
+| Nb.X0 holo 出発 → apo（apo 結晶のどれかのコピー） | 0 % | 0 % | 0.3 % |
+
+（P(< 2 Å) は Cartesian PCA 図のパネルと同じ、結晶コピーの最小 RMSD で数えた値。参照 1 つ（apo は鎖 A）で数える RMSD 地図 `inputs/level2_rmsd_map.png`（`inputs/rmsd_map.py`）では Nb.X0 holo 出発 → apo は 0 %。apo B 近傍への薄い裾だけで、RMSD で見ると 2 出発の分布はまだほぼ重ならない。Nb.X0 の apo 出発と通常 MD はどちらも apo A → apo B → holo から 12 Å の対角線上に広がるので、この「両結晶から遠い」領域は 300 K の実在の状態。）
+
+延長（ユーザー依頼、同日 21 時）: 8 run を continue_from で +200 ns（seed 61/62、solute・電荷非スケール集合・ladder 同じ、overlay 経由）。MPS 148060（TPP-3077: tpp3077_apo prod_022–023, tpp3077_holo prod_013–014）、148061（Nb.X0: nbx0_apo prod_022–023, nbx0_holo prod_013–014）。親の state と tempering.json から rung・平均を引き継ぐことをドライバログで確認。投入 `inputs/level2/submit_level2_ext1.sh`。計算ノードが checkout（~/mdclaw, ~/SST2）を読むので、走行中は両 checkout のコードを変更しない。Nb.X0 の holo 出発は holo 近傍に 70 % 留まりつつ apo B 側へ伸び、2 出発間の横断が初めて起きた（holo → apo 方向のみ）。TPP-3077 の holo 出発も apo 側に 0.8 % 来る（block 2 の 300 ns と同程度を 100 ns で）。apo → holo 方向はどちらの対象でもまだ起きていない。
+
+---
+
+## 2026-09-28 — 二面角 PCA をやめて Cartesian PCA に（dPCA と RMSD の不整合、ユーザー指摘）
+
+ユーザー指摘「dPCA と RMSD のプロットが整合的でない」。block 1 の apo 出発フレームで確かめると、TPP-3077 は H3 の apo への RMSD と全二面角距離の相関が 0.03、2D dPCA 距離とは −0.15。2D dPCA で apo 結晶上に乗るフレームも全二面角では平均 43° 違い、RMSD 中央値 4.3 Å。全二面角が 30° 以内でも RMSD は中央値 3.3 Å（0.7–6.7）。原因は (1) dPCA の 2 軸が分散の 39 % しか持たず射影で重なる、(2) TPP-3077 の H3 は形をあまり変えずにフレームワークに対して位置がずれ、二面角ではそれが見えない。Nb.X0 は相関 0.70 でましだった。apo / holo の問い（フレームワークに対する H3 の位置を含む）には dPCA は不向き。これまで送った dPCA 図（Level 2 途中比較の「TPP-3077 holo 出発が apo 領域まで来た」を含む）の読みは強すぎたので撤回する。
+
+置き換え: `inputs/cpca_landscape.py`（H3 主鎖 N/CA/C/O 座標をフレームワーク CA で apo 参照に重ねて PCA、軸は block 1 の SST2 2 出発を 300 K 重み付きで、各セットを射影、結晶全コピーも射影、Å 単位で RMSD と同じ尺度）。2 軸の分散は TPP-3077 72 %、Nb.X0 77 %。プロット上の距離と RMSD の相関は 0.59–0.97（大半 ≥ 0.86、apo–holo 方向を軸にしても同程度なので素の PCA を採用）。2D は必ず距離を過小評価するので（TPP-3077 は apo 出発が holo 星の上に重なって見えても RMSD は 1.64 Å 以上）、各パネルに全次元 RMSD で数えた P(apo < 2 Å)、P(holo < 2 Å) を書き込む。図 `inputs/{block1,b2,pilotsc}_cpca_landscape.png`。
+
+300 K 存在確率（全次元 RMSD < 2 Å）: TPP-3077 apo 出発の holo は block 1 0.14 %、block 2 0.15 %、Level 1 0.06 %、通常 MD 0.13 %（block 1 の 3 × 100 ns）/ 0.17 %（300 ns 版）。holo 出発の apo は block 2 だけ 0.8 %。Nb.X0 はどれも 2 出発間で交差なし（apo 出発の holo 0 %、holo 出発の apo 0 %）。
+
+同日、Level 1 の +100 ns 延長を投入（MPS 147376/147377、prod_020–021 / prod_011–012）したが、ユーザーが Level 2 を採ると決めたので直後に cancel し、8 ノードを `--abandon`（理由記録）で退役させた。
+
+---
+
+## 2026-09-28 — CDR-H3 向け SST2 Level 2: 殻の側鎖は電荷を焼き戻さない（fork ba48461 + run_sst2 `--charge-unscaled-indices-file`）、パイロット投入
+
+ユーザー依頼で Level 2 を実装して実行。solute は Level 1 と同じ（H3 全原子 + 殻の側鎖）で、殻の側鎖だけ電荷を非スケールにする（LJ ε と torsion はスケール）。電荷が焼き戻されるのは H3 だけになり、solute の正味電荷は H3 の −1 e（Level 1 の +2.53 / +0.66 e の非整数電荷が消える）。
+
+SST2 fork（`~/SST2` branch mdclaw、ローカル commit ba48461、未 push）: `REST2(charge_unscaled_index=...)`。原子ごとの係数は電荷 √λ（電荷スケール原子）/ 1（それ以外）、ε は solute 全体で λ。対の依存は Coulomb: 電荷スケール同士 λ、電荷スケール–その他 √λ、LJ: solute 同士 λ、solute–solvent √λ で、SST2 の 2 つの箱（λ と √λ）にそのまま収まる。非結合の分解は、元のパラメータの Coulomb のみ / LJ のみの System コピー 6 つ（all, C, not-C / all, S, O）を交換ごとに評価して引き算で作る（λ によって更新不要）。例外（1-4）は係数の積で自動的に正しい箱に入る。CHARMM の NBFIX/LJ14、RF、copy 以外の subsystem は NotImplemented。driver に `--charge-unscaled-indices`、sidecar に `charge_unscaled_atoms`。
+
+検証: 新テスト `test_rest2_charge_unscaled.py`（2HPL、λ = 1, 0.7, 0.5, 0.35, 1）で粒子パラメータ、非スケール成分の λ 不変性、閉包（context の ΔE と分解から組み立てた ΔE の差 ≤ 0.003 kJ/mol）、往復が通る。fork の全テストは 21 pass、2 fail は変更前から落ちる既知の 2 本（stash で確認）。実系（Nb.X0、56k 原子、OPC 仮想サイト込み）で λ 不変性 0.0002 kJ/mol、閉包誤差 0.07 kJ/mol（ΔE ~1500 kJ/mol に対して、主計算の single precision 由来）。分解 1 回 17 ms（500 step 169 ms に対して、2 ps ごとで約 10 %）。
+
+MDClaw（未 commit）: `run_sst2(charge_unscaled_indices_file=...)`、solute の部分集合でなければ / nonbonded スケールなしなら / 親 walker と数が違う continuation なら `sst2_charge_unscaled_invalid`。artifact `charge_unscaled_indices.json`、`tempering.charge_unscaled_atoms`。skill `md-production/sst2.md` に「ループ + 相手の側鎖のみ、殻の主鎖は入れない」と新オプションを追記、tool-reference 更新、golden codes 再生成。テスト: test_tempering 12 pass（新 2 本）、guardrail/registry/cli 含め 164 pass。途中、ヘルパーを `run_sst2` の直前に挿入して `@node_tool` デコレータを奪い `test_registered_as_prod_tool` が落ちた（修正済み）。
+
+パイロット: Level 1 と同じ設計（eq_001 から 2 seed 41/42 × 4 出発 × 100 ns、9 段）。index は `inputs/level2/{tpp3077,nbx0}_charge_unscaled.json`（245 / 209 原子 = solute − H3）。image にはまだこの機能が無いので、`level2/.mdclaw_cluster.json` を `source_mode: overlay`（checkout の MDClaw を PYTHONPATH に）+ bind `~/SST2` にし、`run_sst2 --sst2-home ~/SST2` で fork を使う。投入は SIF ラッパーに `MDCLAW_EXTRA_BINDS`（checkout, fork, study）と `APPTAINERENV_PYTHONPATH=~/mdclaw` を与えて checkout のコードで行う（`inputs/level2/submit_pilot_level2.sh`）。MPS job 147131（TPP-3077: tpp3077_apo prod_018–019, tpp3077_holo prod_009–010）、147132（Nb.X0: nbx0_apo prod_018–019, nbx0_holo prod_009–010）。計算ノードのドライバログで Level 2 モード（TPP-3077 192 原子を完全スケール / 245 原子は電荷非スケール、Nb.X0 207 / 209）を確認。
+
+---
+
+## 2026-09-28 — Level 1 パイロット（H3 全原子 + 殻は側鎖のみ、100 ns × 2 seed × 4 出発）と block 2（現行 solute、300 ns）の比較
+
+解析: `inputs/run_analyze_set.sh {pilotsc,b2}`（analyze_003/004 = パイロット、analyze_005/006 = block 1+2 の chain、apo 参照 / holo 参照）、`inputs/join_frames.py` → `{pilotsc,b2}_populations.json` と `_2d_maps.png`、dPCA は `inputs/dpca_landscape_set.py`（`BASIS=block1` で block 1 の PCA 軸に射影）、殻 β は `inputs/dssp_trap_check.py <S> pilotsc`。
+
+Level 1 パイロット（同じ 100 ns の block 1 と比較）:
+- 温度の巡り: 往復 28–67 回/run（block 1: 3–33）、rung 交換 0.38–0.46（0.31–0.39）、rung 占有がほぼ均一。重みは 4 出発中 3 つで `weights_converged`（block 1 は 0）。
+- 殻の β は Nb.X0 で 0.58–0.60 と rung によらず保たれた（block 1 のトラップ run は 0.59 → 0.46）。TPP-3077 は時間とともに 0.53 → 0.48 に下がるが rung 0 でも同じで、solute 外の framework もわずかに下がるので高温の融解ではない。
+- 構造の横断は 100 ns ではまだ: TPP-3077 apo 出発の holo 最接近 1.95 Å（block 1: 1.64 Å）、Nb.X0 apo 出発 3.63 Å。ただし二面角 PCA では Nb.X0 の apo 出発が apo A から apo B（apo 結晶のもう一つのコピー）まで連続に広がり、holo 出発も holo から apo B 側へ広がって、2 出発が apo B 付近で重なり始めた（block 1 では完全に分離）。
+
+block 2（現行 solute、300 ns chain）:
+- TPP-3077: holo 出発が apo 結晶型に 0.78 Å まで到達（300 K で P(apo < 2 Å) = 0.4 %）。2 出発の 300 K population が近づく（holo から 2.5 Å 以内 8.9 % vs 16.7 %、apo から 2.5 Å 以内 3.4 % vs 2.4 %）。apo 出発の holo 最接近は 1.64 Å のまま。重みは seed 間 16–17 kJ/mol で drifting。
+- Nb.X0: 悪化。300 K 再重み付けの平均 RMSD が 10–11 Å に達する run があり H3 が崩れている。holo 出発は seed 間の f_k 差が 1394 kJ/mol で、低温に戻らない run がある。block 1 で見た殻 β の融解によるトラップと整合。
+
+block 2 の二面角 PCA（`inputs/b2_dpca_landscape.png`、block 1 の軸、通常 MD 300 ns を含む）: TPP-3077 は holo 出発が apo 結晶の領域まで広がるが、apo 出発は holo に届かない。Nb.X0 は apo 出発が apo A → apo B → holo 側（dPC1 ≈ 1.3）まで、holo 出発も apo B 側へ広がり、二面角空間では 2 出発が apo B 付近で重なり始めた。ただし同じ run の直交座標 RMSD では H3 が崩れていて（300 K 平均 10–11 Å の run あり）、二面角はつながってもフレームワークに対するループの位置は壊れている。通常 MD（Nb.X0）も 300 ns で apo A から (−0.5, −1) まで動く。
+
+結論: 現行の H3 + 殻全原子は Nb.X0 で高温トラップを起こし、延長すると悪化する。Level 1 は温度の巡りと重みの収束を大きく改善し、殻を壊さない。次は Level 1 を主系列にして延長するのが筋（ユーザー判断待ち）。
+
+---
+
+## 2026-09-27 — SST2 の高温トラップの原因調べと、CDR-H3 向け solute（Level 1: H3 全原子 + 殻は側鎖のみ）のパイロット投入
+
+ユーザー相談「CDR-H3 ループ向きの SST2 は作れないか」への準備。block 1 のデータで Nb.X0 の高温トラップの原因を調べた。
+
+- cis/trans ではない: 12 run × 5,000 フレーム、全 rung で solute 内の cis ペプチド結合は 0（`inputs/cis_scan_block1.py` → `block1_cis_scan.json`）。
+- 殻に含めた framework 主鎖の β シートが高温で融ける: トラップした nbx0_apo prod_003 の殻残基の β 含量は最初 10 ns 0.59 → 最後 20 ns 0.46、rung 0–3 で 0.59、rung 5–8 で 0.51。solute 外の framework は 0.49 → 0.45 とほぼ不変。トラップしていない prod_001 は殻も 0.59 → 0.57（`inputs/dssp_trap_check.py` → `block1_dssp_trap.json`）。
+- 解釈: H3 の組み替えの障壁は殻の側鎖パッキングで、framework 主鎖を焼き戻す必要はない。H3 のみでは 300 K で形が変わらない（1KXV）ので殻は要る。
+
+提案した 3 段階: Level 1 = solute を H3 全原子 + 殻は側鎖のみ（主鎖 N/H/CA/HA/C/O は非スケール）、コード変更なし。Level 2 = 領域別に項を選ぶ（H3 は全項、殻側鎖は LJ と側鎖ねじれのみで電荷は非スケール、gREST 流）を fork に入れ、IMGT 番号から決める `--solute-preset vhh_cdrh3` として道具化。Level 3 = fold-over の CV に弱い WT-metaD。
+
+Level 1 を投入（ユーザー承認）: solute は TPP-3077 437 原子（正味 +2.53 e）、Nb.X0 416 原子（+0.66 e）。主鎖で切るので solute の正味電荷が非整数になり、rung によって系全体の電荷が変わる（現行の +2 e でも同じく起きている REST2 共通の問題、要確認）。CMAP は H3 の分だけスケールされる（ドライバログ: 殻の CMAP は 1/8 バケット）。eq_001 から 2 seed（31, 32）× 4 出発 × 100 ns、ladder は block 1 と同じ 9 段、MPS 4 task/GPU: 146233（TPP-3077: tpp3077_apo prod_016–017, tpp3077_holo prod_007–008）、146234（Nb.X0: nbx0_apo prod_016–017, nbx0_holo prod_007–008）。index `inputs/{tpp3077,nbx0}_solute_h3_shellsc.json`、投入 `inputs/submit_pilot_shellsc.sh`。比較は block 1 と同じ時間で: 殻 β の保持、高温トラップ、300 K での形の遷移、2 出発の分布の近づき方。
+
+---
+
+## 2026-09-27 — SST2 nanobody デモ block 1（100 ns × 3 seed × 4 出発）の解析: 未収束、TPP-3077 は両出発が中間 basin に寄り始め、Nb.X0 は両出発が分離したまま
+
+study `/data1/rkp00079/rku00161/sst2-trials/nb-apo-holo`。再投入分（141341/43/45/46）が 09-27 07:25 までに全完了。`analyze_tempering` を出発ごとに apo 参照（analyze_001）と holo 参照（analyze_002）で 2 回（`--rmsd-selection` = H3 主鎖のみ、`--state-a 0 0.15 --state-b 0.25 1.5`）。スクリプト `inputs/run_analyze_block1.sh`、2 表の結合と 2 次元地図 `inputs/join_frames_block1.py` → `inputs/block1_populations.json`, `inputs/block1_2d_maps.png`。通常 MD 対照は `inputs/md_control_rmsd.py` → `inputs/md_control_h3rmsd_block1.json`。
+
+- 温度の巡り: rung 交換率 0.31–0.39（9 段で十分）、往復 3–33 回/100 ns。8 解析とも `weights_drifting`（seed 間の f_k 差 8.5–9.6 kJ/mol、許容 2.5）、`sampling_verdict` は全て `not_converged`。
+- **apo 結晶の H3 は溶液中の basin ではない**: 通常 MD（300 K、3 × 100 ns）でも apo から 1.5 Å 以内にいるのは 0.4–1.8 % の時間、平均 3.2–5.1 Å。SST2 の 300 K 再重み付けでも P(apo < 1.5 Å) は TPP-3077 0.8 %、Nb.X0 2.2 %。スクリーニングで見た「apo の H3 は結晶接触に入っている」と整合。
+- TPP-3077: apo 出発の 300 K 主 basin は (RMSD_apo ≈ 3.5, RMSD_holo ≈ 2.7 Å)、holo への最接近 1.64 Å（通常 MD は 1.92 Å）、P(holo < 2 Å) = 0.04 %。holo 出発は seed 3 が holo 近傍に留まり（P(holo < 2 Å) = 0.90）、seed 1, 2 は apo 出発と同じ中間領域へ移る。両出発の分布は中間領域で重なり始めたが未一致。
+- Nb.X0: apo 出発は holo に 3.0 Å より近づかず、holo 出発は apo に 3.3 Å より近づかない。2 出発の 300 K 分布は分離したまま。apo 出発の seed 2 は 12 ns 以降 505–600 K に、seed 3 は 42 ns 以降高温で大きく崩れた H3（holo 参照 RMSD ~1.2 nm）に留まり、300 K に戻らない（adaptive 重みの高温トラップ + 高温での H3 変性）。
+- 通常 MD は両系とも holo に 1.5 Å 以内に入らない（TPP-3077 最接近 1.9 Å、Nb.X0 3.8 Å）。
+
+判断材料（ユーザー確認待ち）: 手順どおりなら全 12 run を `continue_from` で adaptive 延長。Nb.X0 は高温トラップへの対処（上限 600 K を下げる、trapped run を新 seed に置き換える）を合わせて検討。
+
+---
+
+## 2026-09-26 — SST2 論文デモの対象選定: SAbDab から nanobody の apo/holo 対を抽出し、TPP-3077 と Nb.X0 を eq まで準備
+
+ユーザー依頼: 同じ nanobody の単量体・複合体構造があり CDR-H3 が変わるものを SAbDab から選び、apo だけから SST2 で両構造がアンサンブルに出ること（population shift）を示すデモの調査と準備。詳細は `docs/research/sst2-nanobody-demo-plan.md`、study は `/data1/rkp00079/rku00161/sst2-trials/nb-apo-holo`。
+
+SAbDab は React 版（SAbDab2）に移っており、旧 `…/nano/summary/all/` は HTML しか返さない。`/api/download/all-single-domain-summary`（4,804 instance、VH 配列・IMGT CDR・同一配列クラスタ `HEAVY_ID` 付き）を使った。VH 配列一致で apo と bound の両方を持つのは 80 群（+ CDR 一致で 15 群）。フレームワーク Cα で重ねた H3 主鎖 RMSD の apo–bound 中央値が 2 Å 以上は 21 群（人工物込み）。apo 結晶の H3 はほぼ全例で結晶接触に入っている。
+
+選定: 主対象 TPP-3077（8Q78 apo 1.225 Å 8 コピー / 8Q6R 1.9 Å、H3 13 残基、4.1 Å、変化は Gly104–Gly105 ヒンジと Glu101 に局在）、第 2 対象 Nb.X0（8F8V apo 2 コピーが互いに 4.8 Å 違う / 8F8W・8F8X の 2 結晶形 6 コピーで揃う、5.6 Å、著者は induced fit と記述）。修論（東田 2023、gREST）の 5 対のうち 4 対はこのスクリーニングでも拾えた。修論が 5E7B–5E7F の失敗理由とした Pro108 の cis は、登録座標（altloc 含む）では確認できず全結合 trans。
+
+準備: 各対象で apo 出発と holo 出発（複合体から Nb 鎖だけ）の 2 job。残基範囲・プロトン化（`no-prediction` + His を HIE に固定）を揃え、両出発の prep 原子リストが diff 0 であることを確認。solute は H3 + 両結晶の 5 Å 殻の和集合を残基番号で固定（TPP-3077 564 原子、Nb.X0 538 原子）。ff19SB/OPC 15 Å、TPP-3077 apo は H3 が突き出ていて 102,592 原子（holo 63,212）、Nb.X0 は 56,113 / 61,053。4 系とも min/eq 完了（102k 原子で eq 2 ns が 4.5 分）。eq 後の H3 は各出発の結晶構造から 0.3–0.5 Å、相手側から 4.1–5.8 Å。つまずき: SIF ラッパーは `--no-home` なので `build_amber_system` が `~/.cache` に書けず `openmmforcefields_build_failed`。`XDG_CACHE_HOME` を study 内に向けて topo_002 で通した。
+
+同日ユーザー決定: 対象はこの 2 つ、解析は `analyze_tempering` を参照（apo / holo）ごとに 2 回走らせてフレーム表を結合する（ツール拡張はしない）。
+
+adaptive block 1 を投入（各 100 ns、ladder 300 327 357 389 424 463 505 550 600 K、solute = H3 + 殻、交換 2 ps、SST2 は 20 ps 出力、通常 MD は 50 ps 出力。ディスクは 1 µs まで延ばして study 全体で約 0.8 TB の見込み）。MPS job 140893（tpp3077_apo SST2 prod_001–003）、140894（tpp3077_holo + nbx0_holo SST2 各 prod_001–003）、140895（nbx0_apo SST2 prod_001–003）、140900（通常 MD: 両 apo の prod_007–009）。投入スクリプト `inputs/submit_block1.sh`。起動直後の 1 本あたり速度（6 task/GPU 時）: SST2 で tpp3077_apo ~245、tpp3077_holo ~280、nbx0_apo ~400、nbx0_holo ~300 ns/day。
+
+つまずき: 通常 MD ノードに `--conditions '{"sampling_method":"md",...}'` を宣言したら、`run_production` はその値を報告しないため起動時に `node_execution_context_invalid` で 6 本とも落ちた（prod_004–006、failed のまま残す）。ツールの照合が意図どおり働いた例。条件を `random_seed` だけにして prod_007–009 で作り直した。
+
+同日 19:53、別セッションのエージェントが block 1 の 4 ジョブ（140893–95, 140900）を誤って `scancel`（sacct: `CANCELLED by 100160`、約 3 時間走行後）。`run_sst2` は完了ノード（`tempering.json`）からしか継続できないので、途中出力を各ノードの `cancelled_<jobid>/` に退避し、`update_workflow_state --clear-slurm-metadata` で pending に戻して同じノードを再投入（141341, 141343, 141345, 141346）。**ツールの穴**: `check_job` / `list_tracked_jobs --sync` は sacct の状態文字列 `CANCELLED by <uid>` を CANCELLED と認識せず、ノードが running のまま残った（未修正）。
+
+---
 
 ## 2026-09-26 — Shared RIKYU image switched to tempinherit-20e916d447b9 (main 87050da); pi skill checkout moved to 87050da
 

@@ -3,6 +3,7 @@
 # Configure logging early to suppress noisy third-party logs
 import os
 import sys
+import time
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import new_simulation, setup_logger  # noqa: E402
@@ -434,6 +435,7 @@ def run_equilibration(
 
     logger.info(f"Starting equilibration at {temperature_kelvin}K")
 
+    _started_monotonic = time.monotonic()
     job_id = generate_job_id()
     result = {
         "success": False,
@@ -617,6 +619,18 @@ def run_equilibration(
                 logger.info("NVT production planned: NVT equilibration only")
 
         # --- Stage 1: NVT heating ---
+        # Integration alone (every step() call of both stages, retries
+        # included): the throughput a later production of this system is
+        # sized from before it runs. Minimization and Simulation builds are
+        # left out.
+        _md_clock = {"seconds": 0.0, "fs": 0.0}
+
+        def _timed_step(sim, n: int, dt_fs: float) -> None:
+            t0 = time.monotonic()
+            sim.step(n)
+            _md_clock["seconds"] += time.monotonic() - t0
+            _md_clock["fs"] += n * dt_fs
+
         logger.info(
             f"Stage 1: NVT heating ({nvt_steps} steps, {timestep_fs} fs, "
             f"restraints on {restraint_atoms})"
@@ -844,7 +858,7 @@ def run_equilibration(
                 integrator_nvt.setStepSize(dt_fs * femtoseconds)
                 integrator_nvt.setTemperature(low_temperature * kelvin)
                 sim_nvt.context.setVelocitiesToTemperature(low_temperature * kelvin)
-                sim_nvt.step(warmup_steps)
+                _timed_step(sim_nvt, warmup_steps, dt_fs)
                 checks.append(_finite_energy_check("low_temperature_warmup"))
 
             logger.info(
@@ -966,7 +980,7 @@ def run_equilibration(
                 sim_nvt.reporters.clear()
                 sim_nvt.reporters.append(_nvt_reporter(steps))
             nvt_steps_run = steps
-            sim_nvt.step(steps)
+            _timed_step(sim_nvt, steps, dt_fs)
             _finite_energy_check("normal_nvt_complete")
 
         if nvt_steps > 0:
@@ -1101,7 +1115,7 @@ def run_equilibration(
             elif is_periodic and xml_inputs.box_vectors is not None:
                 sim_npt.context.setPeriodicBoxVectors(*xml_inputs.box_vectors)
 
-            sim_npt.step(npt_steps)
+            _timed_step(sim_npt, npt_steps, timestep_fs)
             for reporter in sim_npt.reporters:
                 _close_reporter_stream(reporter)
             result["npt_steps"] = npt_steps
@@ -1122,6 +1136,11 @@ def run_equilibration(
 
         result["state_file"] = str(out_dir / "equilibration.xml")
         result["stages_completed"] = ["NVT"] if npt_steps == 0 else ["NVT", "NPT"]
+        result["md_seconds"] = round(_md_clock["seconds"], 3)
+        result["ns_per_day"] = (
+            round(_md_clock["fs"] * 1e-6 / _md_clock["seconds"] * 86400.0, 1)
+            if _md_clock["seconds"] > 0 and _md_clock["fs"] > 0 else None
+        )
 
         # Save final structure as PDB
         pref = f"{name}_" if name else ""
@@ -1320,6 +1339,9 @@ def run_equilibration(
                 artifacts=artifacts,
                 metadata={
                     "platform": result.get("platform"),
+                    "md_seconds": result.get("md_seconds"),
+                    "wall_seconds": round(time.monotonic() - _started_monotonic, 3),
+                    "ns_per_day": result.get("ns_per_day"),
                     "nvt_steps": nvt_steps,
                     "npt_steps": npt_steps,
                     "requested_nvt_time_ns": requested_nvt_time_ns,

@@ -96,6 +96,11 @@ see `docs/developer/tool-reference.md` for the supported submission forms. An
 omitted `--temperature-kelvin` is not compared before submission: a declared
 `temperature_kelvin` is then listed under `deferred_conditions`, and the run
 compares it with the inherited value.
+A production longer than one job's `--time-limit` is split into
+`--continue-from` prods, one per job: `submit_job` refuses a run that does
+not fit at the parent's measured `ns_per_day` (`production_exceeds_time_limit`
+sizes the pieces), and `run_production` stops before the job's deadline on its
+own, completes the node with what ran, and names the continuation in `next`.
 
 **Branching** (multiple prod from same eq):
 ```bash

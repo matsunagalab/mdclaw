@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 from mdclaw._common import (
     create_tool_not_available_error,
+    create_validation_error,
     get_timeout,
 )
 
@@ -250,9 +251,10 @@ def _find_log_tail(
 
 
 def check_job(
-    job_id: str,
+    job_id: Optional[str] = None,
     job_dir: Optional[str] = None,
     output_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
 ) -> dict:
     """Check the status of a SLURM job.
 
@@ -263,11 +265,19 @@ def check_job(
     the tracker, metadata, or standard SLURM log names reveal the files.
 
     Args:
-        job_id: SLURM job ID to check.
+        job_id: SLURM job ID to check. Omitted with ``job_dir`` and
+            ``node_id``: the node's own submission is checked. A node whose
+            sbatch answer was lost (``slurm_submit_uncertain``) is settled
+            first: the job the queue shows with the submission's marker is
+            adopted (stamped and tracked) and checked, or, when the queue was
+            listed and holds none, the node is freed for a new submission
+            (``slurm_submit_not_found``).
         job_dir: Optional schema-v3 job directory used to find a tracker file
             even when the current working directory is different.
         output_dir: Optional SLURM output directory used to find tracker and
             metadata files independent of the current working directory.
+        node_id: With ``job_dir`` and no ``job_id``: the node whose
+            submission to check.
 
     Returns:
         dict with:
@@ -300,6 +310,41 @@ def check_job(
         "errors": [],
         "warnings": [],
     }
+    if not job_id:
+        if not (job_dir and node_id):
+            return {**result, **create_validation_error(
+                "job_id", "Pass --job-id, or --job-dir with --node-id for a node's submission.",
+                expected="a Slurm job id, or a job_dir and node_id", actual="neither",
+                code="missing_required_arguments")}
+        from mdclaw.slurm.node_sync import settle_uncertain_submission
+
+        settled = settle_uncertain_submission(job_dir, node_id)
+        result["checked_at"] = datetime.now(timezone.utc).isoformat()
+        if settled["outcome"] == "adopted":
+            result["warnings"].append(
+                f"Adopted Slurm job {settled['slurm_job_id']}: it carries the marker of the "
+                f"submission of {node_id} whose sbatch answer was lost.")
+            result["adopted_slurm_job_id"] = settled["slurm_job_id"]
+        elif settled["outcome"] == "not_submitted":
+            message = (f"The queue holds no job of the lost submission of {node_id}; the node is "
+                       "free again (its reservation was cleared).")
+            return {**result, "success": True, "state": "NOT_SUBMITTED",
+                    "code": "slurm_submit_not_found", "message": message,
+                    "next_action": (f"mdclaw submit_job --job-dir {job_dir} --node-id {node_id} "
+                                    "--script ... (the same submission once more)")}
+        elif settled["outcome"] == "unknown":
+            message = (f"Could not tell whether the lost submission of {node_id} exists: "
+                       f"{settled.get('error') or 'squeue did not answer'}; the reservation stays.")
+            return {**result, "code": "slurm_status_unavailable", "message": message,
+                    "errors": [message],
+                    "next_action": f"Retry: mdclaw check_job --job-dir {job_dir} --node-id {node_id}"}
+        elif settled["outcome"] == "none":
+            return {**result, **create_validation_error(
+                "node_id", f"Node {node_id!r} has no Slurm submission to check.",
+                expected="a node submitted with submit_job", actual="no slurm_job_id on the node",
+                code="slurm_node_not_submitted")}
+        job_id = settled["slurm_job_id"]
+        result["job_id"] = str(job_id)
     job_id_error = _validate_slurm_job_id(str(job_id))
     if job_id_error:
         return {**result, **job_id_error}
@@ -514,6 +559,7 @@ def _check_job_finalize(
             stderr_tail=stderr_tail,
             elapsed=result.get("elapsed"),
             exit_code=result.get("exit_code"),
+            slurm_job_id=job_id,
         )
         if sync_err:
             result.setdefault("warnings", []).append(sync_err)

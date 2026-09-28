@@ -29,7 +29,7 @@ from mdclaw.selection_utils import (  # noqa: E402
     associated_ligands_by_author_chain,
     likely_additive_ligands,
 )
-from mdclaw.structure.residue_range import residue_numbering_summary  # noqa: E402
+from mdclaw.structure.residue_range import compact_numbering, residue_numbering_summary  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -239,6 +239,13 @@ def inspect_molecules(
             - num_models: int
             - chains: list[dict] — per chain, includes ``chain_id``
               (label_asym_id) and ``author_chain`` (auth_asym_id)
+            - chain_ranges: list[dict] — one line per polymer chain, always
+              in the default output: ``chain_id``, ``author_chain``,
+              ``chain_type``, first and last residue (author number,
+              insertion code, name), ``count``, ``span``, ``gaps`` (author
+              numbers missing between deposited neighbours) and
+              ``insertion_codes``. Check a task's chain and residue numbers
+              against this rather than parsing the file.
             - summary: dict — chain-level lists in BOTH systems:
                 - ``protein_label_ids`` / ``ligand_label_ids`` = label IDs
                   (use these for ``select_chains``)
@@ -293,6 +300,7 @@ def inspect_molecules(
         "preparation_guidance": {},
         "entities": [],
         "chains": [],
+        "chain_ranges": [],
         "errors": [],
         "warnings": [],
     }
@@ -594,6 +602,18 @@ def inspect_molecules(
             chains_info.append(chain_info)
 
         result["chains"] = chains_info
+        # The short per-chain numbering that survives --output brief (chains
+        # itself is cut from a multi-chain entry's default output).
+        result["chain_ranges"] = [
+            {
+                "chain_id": chain["chain_id"],
+                "author_chain": chain["author_chain"],
+                "chain_type": chain["chain_type"],
+                **compact_numbering(chain["residue_numbering"]),
+            }
+            for chain in chains_info
+            if chain.get("residue_numbering")
+        ]
         ion_residue_names = sorted({
             name
             for chain in chains_info

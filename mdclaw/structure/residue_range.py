@@ -249,6 +249,36 @@ def residue_numbering_summary(
     }
 
 
+def compact_numbering(numbering: dict) -> dict:
+    """The one-line view of a chain's author numbering: first and last
+    residue, count, the gaps in the numbering (residues missing between
+    deposited neighbours) and the residues that carry insertion codes.
+
+    015_antibody_1ahw r1 of campaign v4 wanted exactly this (chain C is
+    4-211 with eight residues missing) and, finding ``chains`` omitted from
+    the default output, wrote its own parser, which looped for ever.
+    """
+    ordered = numbering.get("ordered_residues") or []
+    gaps: list[str] = []
+    missing = 0
+    for prev, nxt in zip(ordered, ordered[1:]):
+        step = nxt["resnum"] - prev["resnum"]
+        if step > 1:
+            first_missing, last_missing = prev["resnum"] + 1, nxt["resnum"] - 1
+            gaps.append(str(first_missing) if step == 2 else f"{first_missing}-{last_missing}")
+            missing += step - 1
+    first, last = numbering.get("first"), numbering.get("last")
+    return {
+        "first": f"{first['residue_id']} {first['resname']}" if first else None,
+        "last": f"{last['residue_id']} {last['resname']}" if last else None,
+        "count": int(numbering.get("count") or 0),
+        "span": numbering.get("suggested_full_span"),
+        "gaps": gaps,
+        "missing_count": missing,
+        "insertion_codes": [r["residue_id"] for r in numbering.get("insertion_code_residues") or []],
+    }
+
+
 def spelled(ranges: Iterable) -> str:
     """``18-214 and 383-458`` -- a chain's ranges as an error message says them."""
     written = [entry.spelled() for entry in ranges]

@@ -158,7 +158,7 @@ async def _fetch_alphafold_structure(
             }
             if last_modified:
                 extras["last_modified"] = last_modified
-            _complete_source_node(
+            info = _complete_source_node(
                 job_dir,
                 node_id,
                 Path(result["file_path"]),
@@ -167,6 +167,7 @@ async def _fetch_alphafold_structure(
                 file_format=ext,
                 extra_metadata=extras,
             )
+            result["chain_ranges"] = info.get("chain_ranges") or []
         else:
             fail_node(job_dir, node_id, errors=result["errors"])
 
@@ -294,6 +295,7 @@ def _fetch_local_structure(
         result["file_path"] = str(dst)
         result["source_id"] = src.name
         result["sha256"] = info["metadata"]["sha256"]
+        result["chain_ranges"] = info.get("chain_ranges") or []
         logger.info(f"Registered local structure {src} -> {dst}")
     except Exception as e:
         msg = f"Failed to register local structure: {type(e).__name__}: {e}"

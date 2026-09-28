@@ -128,6 +128,9 @@ class TestPipelineEqChainDag:
         assert result.get("restarted_from") is None
         eq1 = read_node(str(job_dir), self.eq1_id)
         assert eq1["artifacts"]["state"].endswith("equilibrated.xml")
+        # The eq measures its throughput so a later production can be sized.
+        assert eq1["metadata"]["ns_per_day"] > 0
+        assert eq1["metadata"]["wall_seconds"] >= eq1["metadata"]["md_seconds"] > 0
 
     def test_step6_eq_nvt_thermalize(self, job_dir):
         """Stage 2: NVT with weaker CA restraints (thermalization).

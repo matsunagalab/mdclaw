@@ -257,8 +257,12 @@ def submit_mps_job(
         if node_error:
             node_error["message"] = f"tasks[{idx}]: {node_error.get('message', '')}"
             return {**result, **node_error}
-        from mdclaw.slurm.preflight import production_preflight
+        from mdclaw.slurm.preflight import node_structure_preflight, production_preflight
 
+        structure_error = node_structure_preflight(str(task["command"]), str(jd), nid)
+        if structure_error:
+            structure_error["message"] = f"tasks[{idx}]: {structure_error['message']}"
+            return {**result, **structure_error}
         preflight = production_preflight(str(task["command"]), str(jd), nid)
         result.setdefault("condition_preflight", []).append({"task_index": idx, **preflight})
         if preflight["status"] == "failed":

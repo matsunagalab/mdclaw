@@ -3,6 +3,7 @@
 # Configure logging early to suppress noisy third-party logs
 import os
 import sys
+import time
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import setup_logger  # noqa: E402
@@ -199,6 +200,7 @@ def run_minimization(
             code="missing_xml_topology_inputs",
         )
 
+    _started_monotonic = time.monotonic()
     job_id = generate_job_id()
     result: Dict[str, Any] = {
         "success": False,
@@ -583,6 +585,7 @@ def run_minimization(
                 },
                 metadata={
                     "platform": result.get("platform"),
+                    "wall_seconds": round(time.monotonic() - _started_monotonic, 3),
                     "max_iterations": max_iterations,
                     "restraint_atoms": restraint_atoms,
                     "restraint_force_constant": restraint_force_constant,

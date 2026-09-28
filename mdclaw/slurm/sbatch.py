@@ -52,6 +52,7 @@ def _generate_sbatch_script(
     stdout_log: str,
     stderr_log: str,
     container: Optional[dict] = None,
+    comment: Optional[str] = None,
 ) -> str:
     """Generate a complete sbatch script string.
 
@@ -60,6 +61,9 @@ def _generate_sbatch_script(
             wrapped with ``singularity exec``.  When ``environment`` is
             explicitly set, module-load based setup takes precedence over
             container execution.
+        comment: The job's ``--comment`` (submit_job writes the submission's
+            marker there, so the queue can be searched for a job whose
+            sbatch answer was lost).
     """
     lines = ["#!/bin/bash"]
 
@@ -91,6 +95,8 @@ def _generate_sbatch_script(
         lines.append(f"#SBATCH --account={account}")
     if qos:
         lines.append(f"#SBATCH --qos={qos}")
+    if comment:
+        lines.append(f"#SBATCH --comment={comment}")
 
     if extra_sbatch:
         for line in extra_sbatch.strip().splitlines():

@@ -25,6 +25,7 @@ WORKING_DIR = Path("outputs").resolve()
 
 from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fail_node_if_running, _resolve_implicit_solvent_model, _resolve_topology_run_settings  # noqa: E402
 from mdclaw.simulation.custom_forces import CUSTOM_FORCE_GROUP, CustomForceError, CustomForceReporter, custom_force_signature, load_custom_forces, write_cv_metadata  # noqa: E402
+from mdclaw.simulation.deadline import DeadlineStepper, job_deadline_epoch  # noqa: E402
 from mdclaw.simulation.integrator_plan import _compute_step_plan, _record_production_node_result  # noqa: E402
 from mdclaw.simulation.restraints import DistanceRestraintError, load_distance_restraints, normalize_distance_restraints  # noqa: E402
 from mdclaw.simulation.steering import PROTOCOL_PARAMETER, DistanceSteering, TorchSteering, check_steering_handoff, prepare_torch_steering, validate_steering  # noqa: E402
@@ -634,11 +635,17 @@ def run_production(
 
     # Setup output directory.
     _node_mode = job_dir and node_id
+    # A segment of a rounds scheme keeps its length (the scheme's tau) and
+    # its driver owns the time budget; every other run stops before the
+    # batch job's deadline and completes with what it has.
+    _scheme_segment = False
     if _node_mode:
         from mdclaw._node import begin_node
+        from mdclaw._node import read_node as _read_node
         out_dir = Path(job_dir) / "nodes" / node_id / "artifacts"
         out_dir.mkdir(parents=True, exist_ok=True)
         begin_node(job_dir, node_id)
+        _scheme_segment = bool((_read_node(job_dir, node_id).get("metadata") or {}).get("scheme"))
     else:
         base_dir = Path(output_dir) if output_dir else WORKING_DIR
         out_dir = create_unique_subdir(base_dir, "production")
@@ -1337,29 +1344,63 @@ def run_production(
         )
 
         _md_started = time.monotonic()
-        if steps_to_run > 0:
-            if steering:
-                steering.step(steps_to_run)
-                result["steering"] = steering.summary()
-                # Per-bond centers have changed since Context construction.
-                if _distance_restraint_loaded is not None:
-                    runtime_system_file.write_text(XmlSerializer.serialize(system))
-                if not steering.fixed:
-                    result["warnings"].append(
-                        "Steered trajectories are non-equilibrium initialization, not umbrella samples. "
-                        "Check actual CV target attainment and equilibrate at the fixed target before analysis."
-                    )
-            else:
-                simulation.step(steps_to_run)
+        _deadline = None if _scheme_segment else job_deadline_epoch()
+        stepper = DeadlineStepper(_deadline, report_interval,
+                                  steering.step if steering else simulation.step)
+        steps_run = stepper.run(steps_to_run)
+        if steering:
+            result["steering"] = steering.summary()
+            # Per-bond centers have changed since Context construction.
+            if _distance_restraint_loaded is not None:
+                runtime_system_file.write_text(XmlSerializer.serialize(system))
+            if not steering.fixed:
+                result["warnings"].append(
+                    "Steered trajectories are non-equilibrium initialization, not umbrella samples. "
+                    "Check actual CV target attainment and equilibrate at the fixed target before analysis."
+                )
         # Integration time alone (reporters included, Simulation build and
         # state I/O excluded) so a scheme of short segments can separate the
         # MD from the per-segment overhead.
         _md_seconds = time.monotonic() - _md_started
         result["md_seconds"] = round(_md_seconds, 3)
         result["ns_per_day"] = (
-            round(steps_to_run * timestep_fs * 1e-6 / _md_seconds * 86400.0, 1)
-            if _md_seconds > 0 and steps_to_run > 0 else None
+            round(steps_run * timestep_fs * 1e-6 / _md_seconds * 86400.0, 1)
+            if _md_seconds > 0 and steps_run > 0 else None
         )
+        if stepper.stopped:
+            # The job ends before the requested length would: keep what ran
+            # (a frame boundary), complete the node with it, and say how the
+            # rest continues. The requested length stays in the record.
+            _left = stepper.seconds_left_at_stop or 0.0
+            if steps_run == 0:
+                result["code"] = "production_time_limit"
+                result["errors"].append(
+                    f"The batch job ends in {_left:.0f} s: no production step was run. "
+                    "Submit this node again in a job with a longer --time-limit."
+                )
+                raise ValueError(result["errors"][-1])
+            _actual_ns = steps_run * timestep_fs * 1e-6
+            _remaining_ns = max(0.0, simulation_time_ns - _actual_ns)
+            result["requested_simulation_time_ns"] = simulation_time_ns
+            result["simulation_time_ns"] = round(_actual_ns, 6)
+            result["remaining_simulation_time_ns"] = round(_remaining_ns, 6)
+            result["stopped_reason"] = "time_limit"
+            _needed_min = (_remaining_ns / result["ns_per_day"] * 1440.0 + 5.0
+                           if result["ns_per_day"] else None)
+            _continue = (
+                f"mdclaw create_node --job-dir {job_dir} --node-type prod --continue-from {node_id}"
+                if _node_mode else "a run that restarts from this state.xml"
+            )
+            result["warnings"].append(
+                f"Stopped {_left:.0f} s before the job's time limit: {_actual_ns:.3f} of the "
+                f"requested {simulation_time_ns} ns ran at {result['ns_per_day']} ns/day. The node "
+                f"completes with that; the remaining {_remaining_ns:.3f} ns is a continuation: "
+                f"{_continue}, then run_production --simulation-time-ns {_remaining_ns:.3f}"
+                + (f" in a job of at least {_needed_min:.0f} min." if _needed_min else ".")
+            )
+            steps_to_run = steps_run
+            simulation_steps = start_step + steps_run
+            result["num_steps"] = simulation_steps
 
         # Save final checkpoint + state (periodic reporter may not have
         # fired for short runs). Both formats so downstream can choose.
@@ -1484,7 +1525,8 @@ def run_production(
             result=result,
             job_dir=job_dir,
             node_id=node_id,
-            simulation_time_ns=simulation_time_ns,
+            # The length that ran: shorter than requested after a time-limit stop.
+            simulation_time_ns=result.get("simulation_time_ns", simulation_time_ns),
             temperature_kelvin=temperature_kelvin,
             pressure_bar=pressure_bar,
             platform=platform,

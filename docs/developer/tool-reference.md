@@ -11,6 +11,11 @@ signature, update the relevant section here and the matching skill examples.
   AlphaFold, and local files. In node mode it records `source_bundle.json`.
   For PDB/local PDB or mmCIF sources, explicit `assembly_ids` or
   `assembly_mode` requests generate Gemmi biological assembly candidates.
+  Completion also records `chain_ranges` (the `inspect_molecules` summary of
+  the primary candidate: per polymer chain first/last residue, count, gaps,
+  insertion codes) on the result and in the node metadata, and the `next`
+  block of a completed source carries it with an `inspect_command` ahead of
+  the prep (015_antibody_1ahw r1 of campaign v4 parsed the file itself).
 - `get_structure_info(...)`: PDB entry metadata.
 - `register_local_structure(...)`: copy or symlink a local source structure.
 - `list_source_candidates(...)`: list normalized source-bundle candidates,
@@ -18,7 +23,11 @@ signature, update the relevant section here and the matching skill examples.
 - `inspect_molecules(...)`: chain, nucleic acid, glycan, ligand, ion, and PTM
   inspection. In node mode, defaults to the primary source candidate and accepts
   the same source candidate selectors as prep. Writes `inspection.json` and
-  emits an event without changing node status.
+  emits an event without changing node status. `chain_ranges` (one line per
+  polymer chain: `first`, `last`, `count`, `span`, `gaps` in the author
+  numbering, `missing_count`, `insertion_codes`; `compact_numbering` in
+  `mdclaw/structure/residue_range.py`) is protected from `--output brief`,
+  where the full `chains` list of a multi-chain entry is cut.
 - `detect_ptm_sites(...)`: internal helper (not a registered CLI tool)
   that scans a PDB/CIF for SEP/TPO/PTR sites. Used by `prepare_complex`; not
   in any server `TOOLS` dict, so it is not callable as `mdclaw detect_ptm_sites`.
@@ -32,7 +41,15 @@ signature, update the relevant section here and the matching skill examples.
   candidate via `source_structure_id` / `source_candidate_id` /
   `source_model_index` when needed, and records `source_selection.json`.
   Protein `residue_ranges` select deposited polymer positions, not every integer
-  between author endpoints. Prep audits ordered residue identity against the
+  between author endpoints. The result's `kept_residue_ranges` (protected from
+  `--output brief`; also `preparation_summary.kept_residue_ranges` and each
+  `chain_file_info[].delivered_range`) says what every polymer component
+  really kept — requested ranges, first/last residue, count, gaps, insertion
+  codes (`split_molecules.delivered_chain_ranges`) — and a warning names a
+  range that reaches beyond the deposited residues or spans missing ones
+  (036_ligand_1ceb, 028_complex_1dfj, 024_antibody_5cba of campaign v4 each
+  delivered a chain one residue off the task and nothing said so).
+  Prep audits ordered residue identity against the
   source sequence scheme (or SEQRES alignment), recording source/prepared
   correspondence in `chain_identity_map.json`. Without sequence evidence,
   completeness is unknown. Explicit coordinate-file overrides retain the source
@@ -410,7 +427,8 @@ signature, update the relevant section here and the matching skill examples.
   and MDPrepBench `minimized_structure.pdb` submissions.
 - `run_minimization(...)`: standalone post-topology minimization. In node mode
   topology inputs resolve from the `topo` ancestor, and the `min` node records
-  `state`, `minimized_structure`, and `minimization_report` artifacts for
+  `state`, `minimized_structure`, and `minimization_report` artifacts (and
+  `wall_seconds`) for
   downstream `eq` nodes. Its `solute_heavy` default uses prep provenance to
   include structural solute components while excluding added solvent, ions,
   and membrane lipids.
@@ -427,7 +445,10 @@ signature, update the relevant section here and the matching skill examples.
   parent `eq` from `min`; the minimized state
   is then auto-resolved and coordinate minimization is skipped while low-
   temperature warmup remains in eq. Eq-chain restarts resolve from eq/prod
-  ancestors.
+  ancestors. The node metadata records `md_seconds` (every `step()` call of
+  both stages, retries included; minimization and Simulation builds left
+  out), `wall_seconds` and `ns_per_day`: the throughput `submit_job` sizes a
+  later production from.
   `temperature_kelvin` omitted runs at 300 K and is never inherited from a
   parent eq: an eq that restarts from an eq node which ran at another
   temperature must state it, and omitting it is refused before anything runs
@@ -508,6 +529,21 @@ signature, update the relevant section here and the matching skill examples.
   `wall_seconds` and `ns_per_day`: integration time, whole tool call, rate). Refuses a hybrid (alchemical)
   topology ancestor (`hybrid_topology_production_blocked`, node left pending;
   `run_sst2` too) — lambda windows are the `fep` stage.
+  Inside a batch job it stops before the job's deadline
+  (`mdclaw/simulation/deadline.py`: `MDCLAW_JOB_END_TIME`, else Slurm's
+  `SLURM_JOB_END_TIME`, else `scontrol show job`; the MD runs in
+  report-interval chunks and stops when the next chunk would end within
+  `MARGIN_SECONDS` = 120 s, or one chunk, of the deadline;
+  `MDCLAW_DEADLINE_MARGIN_SECONDS` overrides). The node then completes with
+  what ran at a frame boundary: `metadata.simulation_time_ns` is the length
+  that ran, `requested_simulation_time_ns` the request,
+  `remaining_simulation_time_ns` the rest, `stopped_reason` `time_limit`,
+  and the `next` block of the node is the continuation
+  (`create_node --continue-from`, `run_production --simulation-time-ns
+  <remaining>`) rather than the analysis. A job that ends before a single
+  step ran fails the node (`production_time_limit`). A rounds segment keeps
+  its length (its driver owns the time budget). 015_antibody_1ahw r2 of
+  campaign v4 put 3 ns into a 20-minute job and lost 1.9 ns to TIMEOUT.
   `temperature_kelvin` omitted in node mode is the temperature of the node
   the state restarts from: the eq node on a fresh eq -> prod, the prod parent
   on `continue_from` (rounds segments get their scheme's pinned temperature,
@@ -945,6 +981,34 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
   `nodes_with_free_gpus` / `free_node_list` so "where is something free" stays
   answerable without a per-node table. A 3000-node site returns < 6 kB.
 - `submit_job(...)`: submit one SLURM job and link it to an optional DAG node.
+  A linked node first receives the structural half of the run-time
+  execution-context check (`node_structure_preflight`): every declared parent
+  must be of a type the node's stage accepts and must not have failed, and a
+  literal command's tool must run on the node's stage (`run_production` on an
+  `eq` node is `node_type_mismatch`). Pending, queued and running parents
+  pass, so dependency chains still submit; a job directory without
+  `progress.json` is not judged. A violation is refused before sbatch as
+  `node_execution_context_invalid` with the same `blocking_codes` and
+  `next_action` the run-time guard gives (until 2026-09-28 a prod under a
+  topo passed submission and failed only inside the job, after the agent had
+  left). `submit_array_job` and `submit_mps_job` apply it per task.
+  A literal `run_production` command is also sized against the job's
+  `--time-limit` (`production_time_budget`): the parent eq/prod's measured
+  `ns_per_day` on the same platform family, plus its setup overhead (at least
+  120 s) and the deadline margin, give an estimate; one that does not fit is
+  refused as `production_exceeds_time_limit` with `time_budget` (segments and
+  `segment_ns` for a `--continue-from` chain, or a `--time-limit` that fits);
+  a pending parent or another platform family gives no estimate.
+  A node-linked submission writes `#SBATCH --comment=mdclaw:<intent>`. When
+  sbatch's answer is lost (`Socket timed out on send/recv operation`, an
+  unreachable controller, a client timeout) the queue is searched for that
+  marker for up to `MDCLAW_SLURM_CONFIRM_SECONDS` (30 s): a job found is the
+  submission (adopted with a warning); none found answers
+  `slurm_submit_uncertain` and keeps the node's reservation, so a second
+  `submit_job` is refused until `check_job --job-dir J --node-id N` settles
+  it (010_membrane_6kux r3 of campaign v4 resubmitted on the generic
+  `unhandled_error` advice and two jobs computed the node). Every other
+  sbatch failure is `slurm_submit_failed` and frees the node.
   For a linked node and a literal `mdclaw ... run_production` (or
   `python -m mdclaw._cli ...`) command, `condition_preflight` reports the
   declaration/argument check before sbatch, using CLI defaults and the runtime
@@ -1004,6 +1068,16 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
   Rationale and GB200 measurements: `docs/memo.md` (2026-09-16).
 - `check_job(...)`: query squeue → scontrol → sacct, sync SLURM state and
   reflect failures into linked nodes. Returns `state_source` and `checked_at`.
+  `--job-dir J --node-id N` without `--job-id` checks the node's own
+  submission and first settles a lost sbatch answer (`slurm_submit_uncertain`):
+  the queued job carrying the submission's marker (`--comment
+  mdclaw:<intent>`) is adopted — stamped on the node, tracked, then checked
+  (`adopted_slurm_job_id`) — or, when the queue was listed and holds none,
+  the reservation is cleared and the node is free again
+  (`slurm_submit_not_found`, state `NOT_SUBMITTED`); an unanswered queue
+  leaves the reservation (`slurm_status_unavailable`). A terminal Slurm state
+  never fails a `running` node whose owner record names another live job or
+  process (`_live_owner_elsewhere`): the duplicate's end is an event only.
   Missing/expired records return `slurm_status_unavailable`, never inferred
   completion; `last_observation`, when present, is historical, not current.
   For a `RUNNING` job linked to a `fep` node it adds `time_budget`
@@ -1056,6 +1130,16 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
   `auto_resolved_parent`. In canonical study jobs, ambiguous or empty frontiers
   return `node_context_required` plus candidate parents without creating a
   node; bare repair job directories keep the legacy parent-less behavior.
+  Every explicit parent is checked against the parent-type table
+  (`_ALLOWED_PARENT_TYPES`) at creation, not only when the stage tool runs:
+  a `prod` under a `topo` answers `parent_type_invalid` with the allowed
+  types, the stages the parent still needs, and a `next_action` naming the
+  open leaf of the right stage (004_membrane_5zkb r3 of campaign v4 created
+  min, eq and prod all under `topo_001` and learnt of it only inside the Slurm
+  job). An `eq` under a `topo` that already carries a `min` answers
+  `eq_parent_should_be_min` (the live tip of the min chain is the candidate);
+  `topo -> eq` stays legal for DAGs without a min, with an `eq_parent_is_topo`
+  warning in study jobs. `analyze` keeps `analyze_parent_invalid_type`.
   Failure returns carry a stable `code` (e.g. `invalid_node_type`,
   `source_already_exists`, `analyze_parents_mixed`, `referenced_node_missing`).
   Successful creation returns a `next_command`
@@ -1079,6 +1163,16 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
   diagnosis. Reads `metadata.errors`, the latest failure artifact, recent
   events, and parent/dependency status, then returns `recovery_options` and
   `next_commands` for explicit branch creation.
+- `begin_node` (every stage tool's first write): claims the node with the
+  owner record `nodes/<id>/owner.json` (`mdclaw/node/owner.py`: host, pid,
+  Slurm job, heartbeat kept fresh by a daemon thread until the node completes
+  or fails). A node whose record names another live process — a duplicate
+  Slurm job, 010_membrane_6kux r3 of campaign v4 — is refused with
+  `node_already_running` (the CLI maps `NodeAlreadyRunningError` to it and
+  does not fail the node); a dead owner's node is taken over; a record this
+  process or one of its ancestors wrote (an in-process rounds driver, also
+  when it runs the tool through the launcher) is kept. Slurm's terminal
+  report of a job other than the owner's never seals a `running` node.
 - `update_workflow_state(...)`: unified writer for node status (`--node-id` +
   `--status`) and/or job-level params (`--params`, e.g. `execution_mode`). Merges
   the former `update_node_status` and `update_job_params` tools; the underlying
@@ -1211,7 +1305,10 @@ unchanged. Design notes: `docs/research/weighted-ensemble-plan.md`.
   driver runs in-process (local segments, in-process policy runs) carries an
   owner record while it runs (`nodes/<id>/owner.json`: host, pid, the
   driver's `SLURM_JOB_ID`, a heartbeat touched every 30 s;
-  `mdclaw/rounds/owner.py`). A `running` node whose owner is gone — its
+  `mdclaw/node/owner.py`, the record every stage tool's `begin_node` also
+  writes: a second live run of a node is refused with `node_already_running`,
+  a dead owner's node is taken over, and the record is dropped when the node
+  completes or fails). A `running` node whose owner is gone — its
   process dead on this host, or its heartbeat older than 5 min from another
   host — is stale: `run_rounds` seals it `rounds_owner_lost`, retries it
   and lists it under `recovered`; a live owner answers

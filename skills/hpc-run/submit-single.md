@@ -1,6 +1,11 @@
 # Single SLURM Job Submission
 
-Use `submit_job` when one DAG node maps to one SLURM job.
+Use `submit_job` when one DAG node maps to one SLURM job. A production that
+does not fit one job's `--time-limit` is refused before sbatch
+(`production_exceeds_time_limit`, sized from the parent's measured
+`ns_per_day`): split it into `--continue-from` prods, one per job.
+`run_production` also stops before the job's deadline and completes the node
+with what ran; its `next` is then the continuation.
 
 ```bash
 JD=$(realpath job_4m3j_B)

@@ -59,6 +59,27 @@ calls `mdclaw` with no container in this directory's `.mdclaw_cluster.json`;
 such jobs die with `mdclaw: command not found`. Cancel, run
 `configure_container` here, clear the nodes as above, resubmit.
 
+## Lost sbatch answer (`slurm_submit_uncertain`)
+
+`submit_job` answered `slurm_submit_uncertain`: sbatch's reply was lost and
+Slurm may hold the job. Do not submit the node again (it is refused while the
+reservation stands). Settle it:
+
+```bash
+mdclaw check_job --job-dir <job_dir> --node-id <node_id>
+```
+
+It adopts the queued job that carries the submission's marker and reports its
+state, or frees the node (`slurm_submit_not_found`) when the queue holds none;
+then submit once more.
+
+## Node already running (`node_already_running`)
+
+A stage tool answered `node_already_running`: another live run (a duplicate
+Slurm job) owns the node, and this run did nothing. Wait for it
+(`mdclaw wait_node`) and cancel the duplicate job; never resubmit. A dead
+owner's node is taken over on the next run.
+
 ## Retire a node that will never run
 
 ```bash

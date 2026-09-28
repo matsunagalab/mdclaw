@@ -193,6 +193,13 @@ _SLURM_SUBMISSION_INTENT_KEYS = (
     "slurm_submission_kind",
     "slurm_submission_intent_at",
     "slurm_submission_prior_status",
+    # What check_job needs to adopt a job whose sbatch answer was lost.
+    "slurm_submission_job_name",
+    "slurm_submission_script_file",
+    "slurm_submission_stdout_log",
+    "slurm_submission_stderr_log",
+    "slurm_submission_uncertain_at",
+    "slurm_submission_error",
 )
 
 

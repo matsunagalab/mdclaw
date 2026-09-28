@@ -1230,6 +1230,36 @@ def _node_relative_artifact(path, artifacts_dir, fallback_rel: str) -> str:
 
 
 
+def _range_delivery_warnings(split_result: dict) -> list[str]:
+    """Say when a chain did not come out as its range asked: an endpoint
+    beyond the deposited residues, or residues missing inside the range."""
+    warnings: list[str] = []
+    resolved = ((split_result.get("residue_ranges") or {}).get("resolved") or {})
+    for entry in split_result.get("delivered_chain_ranges") or []:
+        requested = entry.get("requested") or []
+        if not requested:
+            continue
+        label = f"chain {entry.get('author_chain')} ({entry.get('chain_id')})"
+        pieces = (resolved.get(entry.get("chain_id")) or {}).get("pieces") or []
+        unobserved = [
+            piece["range"] for piece in pieces
+            if piece.get("range") in requested
+            and (piece.get("start_observed") is False or piece.get("end_observed") is False)
+        ]
+        if unobserved:
+            warnings.append(
+                f"Residue range {', '.join(unobserved)} on {label} reaches beyond the deposited "
+                f"residues: kept {entry.get('span')} ({entry.get('count')} residues)."
+            )
+        if entry.get("gaps"):
+            warnings.append(
+                f"Residue range {', '.join(requested)} on {label} spans residues absent from the "
+                f"deposited structure ({', '.join(entry['gaps'])}; {entry.get('missing_count')} "
+                f"missing); kept {entry.get('span')}, {entry.get('count')} residues."
+            )
+    return warnings
+
+
 @node_tool(node_type="prep")
 @tool_parameter_examples(
     ligand_smiles=[{"LIG": "CCO"}],
@@ -2061,7 +2091,13 @@ def prepare_complex(
             if key in split_result:
                 result["split"][key] = split_result[key]
                 result[key] = split_result[key]
-        
+        # What each polymer chain really kept, at the top of the result and
+        # protected from --output brief: 036_ligand_1ceb, 028_complex_1dfj
+        # and 024_antibody_5cba (campaign v4) each delivered a chain one
+        # residue off the task's range, and nothing in the result said so.
+        result["kept_residue_ranges"] = list(split_result.get("delivered_chain_ranges") or [])
+        result["warnings"].extend(_range_delivery_warnings(split_result))
+
         if not split_result["success"]:
             result["errors"].append(f"Split failed: {split_result['errors']}")
             result["warnings"].extend(split_result.get("warnings", []))
@@ -3350,6 +3386,12 @@ def prepare_complex(
             preparation_summary["residue_range_component_sizes"] = range_result.get(
                 "component_sizes", []
             )
+        preparation_summary["kept_residue_ranges"] = [
+            {key: entry.get(key) for key in ("chain_id", "author_chain", "chain_type",
+                                             "requested", "first", "last", "count",
+                                             "span", "gaps", "insertion_codes")}
+            for entry in result.get("kept_residue_ranges") or []
+        ]
         preparation_summary["disulfide_pairs"] = result.get("disulfide_bonds", [])
         # Surface the caps the input arrived with on the node itself, not only
         # inside the per-chain records, so `inspect_job` shows them.

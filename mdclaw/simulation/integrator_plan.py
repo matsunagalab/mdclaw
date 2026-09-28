@@ -152,6 +152,11 @@ def _record_production_node_result(
             "wall_seconds": result.get("wall_seconds"),
             "ns_per_day": result.get("ns_per_day"),
         }
+        # A run that stopped before its job's time limit: what was asked,
+        # what is left, and why (the next block reads remaining_simulation_time_ns).
+        for key in ("requested_simulation_time_ns", "remaining_simulation_time_ns", "stopped_reason"):
+            if result.get(key) is not None:
+                metadata[key] = result[key]
         custom_force = result.get("custom_force")
         if result.get("plumed"):
             metadata["plumed"] = result["plumed"]
