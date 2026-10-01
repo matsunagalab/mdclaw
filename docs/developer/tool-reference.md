@@ -369,7 +369,13 @@ signature, update the relevant section here and the matching skill examples.
   `ligand_chemistry`; ligand formal charge comes from the
   charged SMILES/SDF molecule graph, topology assigns small-molecule partial
   charges with OpenFF NAGL first, and falls back to
-  `GAFFTemplateGenerator` AM1-BCC when NAGL is unavailable or fails. For
+  `GAFFTemplateGenerator` AM1-BCC when NAGL is unavailable or fails.
+  `--ligand-charge-method am1bcc` skips NAGL and fits AM1-BCC for every ligand
+  (AmberTools sqm unless OpenEye is licensed; default `nagl`, anything else
+  `invalid_parameter_value` with the node still pending). Each ligand's outcome
+  (`nagl`, `am1bcc_fallback` or `am1bcc`, with `charge_engine`) is in
+  `forcefield_provenance.ligand_charge_assignment`, the request in
+  `forcefield_provenance.ligand_charge_method`. For
   glycoproteins,
   `cpptraj prepareforleap` is scoped to Amber/GLYCAM residue conversion and
   bond-plan generation; `build_amber_system` records
@@ -882,7 +888,12 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
 `docs/research/abfe-references.md`) reuses `run_fep` / `analyze_fep` unchanged:
 
 - `build_decoupled_system(ligand, ...)` (`topo` node): one
-  `build_amber_system` build, then `decouple_ligand` rewrites the ligand's
+  `build_amber_system` build (`--ligand-charge-method nagl|am1bcc` passed on;
+  the charge model the ligand actually got is recorded as
+  `hybrid_manifest.ligand_charges.model`, `nagl:<model file>` or `am1bcc` for
+  a requested fit and NAGL's fallback alike, and `estimate_binding_dg` refuses
+  legs whose models differ with `abfe_legs_incompatible`), then
+  `decouple_ligand` rewrites the ligand's
   nonbonded terms under two of the five hybrid parameters — charges and the
   charge product of its 1-4 exceptions scale with `fep_elec_old`
   (electrostatics annihilated), ligand x environment LJ moves to a Beutler soft

@@ -563,6 +563,10 @@ def test_preparation_solvation_and_ligand_parameters_are_cited_from_what_each_st
         ("openmmforcefields", "0.16.0")]
     keys, _ = topo(tmp_path / "am1bcc", benzene, [{"method": "am1bcc_fallback", "status": "fallback"}])
     assert keys == gaff | {"Jakalian2000AM1BCC", "Jakalian2002AM1BCC"}
+    keys, citations = topo(tmp_path / "am1bcc_requested", benzene,
+                           [{"method": "am1bcc", "charge_engine": "ambertools_sqm", "status": "success"}])
+    assert keys == gaff | {"Jakalian2000AM1BCC", "Jakalian2002AM1BCC"}
+    assert not any(u["method"] == "ligand_charge_method" for u in citations["unresolved"])
     keys, citations = topo(tmp_path / "other_model", benzene,
                            [{"method": "nagl", "nagl_model": "openff-gnn-am1bcc-0.1.0-rc.3.pt", "status": "success"}])
     assert keys == gaff

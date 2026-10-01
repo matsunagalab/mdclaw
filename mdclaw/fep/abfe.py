@@ -350,6 +350,25 @@ def extract_ligand(
 # build_decoupled_system: topo node of either leg                               #
 # --------------------------------------------------------------------------- #
 
+def _ligand_charges(built: dict, record: dict, requested: str) -> dict:
+    """What the build did to the decoupled ligand's charges. ``model`` is what
+    the two legs must share: NAGL with its model file, or AM1-BCC whether it was
+    asked for or reached as NAGL's fallback (the same fit either way)."""
+    assignments = (built.get("forcefield_provenance") or {}).get("ligand_charge_assignment") or []
+    instance = record.get("ligand_instance_id")
+    match = next((a for a in assignments if instance and a.get("ligand_instance_id") == instance), None) or next(
+        (a for a in assignments if a.get("residue_name") == record.get("residue_name")), {})
+    assigned = match.get("method")
+    if assigned in ("am1bcc", "am1bcc_fallback"):
+        model = "am1bcc"
+    elif assigned == "nagl":
+        model = f"nagl:{match.get('nagl_model')}"
+    else:
+        model = assigned
+    return {"requested": requested, "assigned": assigned, "model": model, "nagl_model": match.get("nagl_model"),
+            "charge_engine": match.get("charge_engine"), "fallback_reason": match.get("fallback_reason")}
+
+
 @node_tool(node_type="topo")
 def build_decoupled_system(
     ligand: Optional[str] = None,
@@ -361,6 +380,7 @@ def build_decoupled_system(
     is_membrane: Optional[bool] = None,
     ligand_chemistry: Optional[List[Dict[str, Any]]] = None,
     disulfide_bonds: Optional[List[Dict[str, Any]]] = None,
+    ligand_charge_method: str = "nagl",
     elec_lambdas: Optional[str] = None,
     sterics_lambdas: Optional[str] = None,
     softcore_alpha: float = DEFAULT_SOFTCORE_ALPHA,
@@ -393,6 +413,11 @@ def build_decoupled_system(
         pdb_file / box_dimensions / forcefield / water_model / hmr /
             is_membrane / ligand_chemistry / disulfide_bonds: as
             ``build_amber_system``; resolved from the DAG in node mode.
+        ligand_charge_method: ``"nagl"`` (default) or ``"am1bcc"``, as
+            ``build_amber_system``. Use the same method on both legs: the
+            charge model actually assigned is recorded in the manifest
+            (``ligand_charges``) and ``estimate_binding_dg`` refuses legs
+            whose models differ.
         elec_lambdas: Charge scaling from 1 to 0 (default ``1,0.75,0.5,0.25,0``).
         sterics_lambdas: Soft-core scaling from 1 to 0 (default 14 values,
             denser near 0). Use the same schedules on both legs.
@@ -426,6 +451,14 @@ def build_decoupled_system(
     def _fail(code: str, message: str, extra: Optional[dict] = None) -> dict:
         return fail_tool(result, code, message, job_dir=job_dir, node_id=node_id, extra=extra)
 
+    from mdclaw.amber.openmm_build import LIGAND_CHARGE_METHODS
+
+    method = str(ligand_charge_method or "").strip().lower()
+    if method not in LIGAND_CHARGE_METHODS:
+        return _fail(code="invalid_parameter_value",
+                     message=f"ligand_charge_method {ligand_charge_method!r} is not one of {', '.join(LIGAND_CHARGE_METHODS)}",
+                     extra={"context": {"field": "ligand_charge_method", "accepted_values": list(LIGAND_CHARGE_METHODS)}})
+    ligand_charge_method = method
     try:
         elec = _parse_lambdas(elec_lambdas, DEFAULT_ELEC_LAMBDAS, "elec_lambdas", start=1.0, end=0.0)
         sterics = _parse_lambdas(sterics_lambdas, DEFAULT_STERICS_LAMBDAS, "sterics_lambdas", start=1.0, end=0.0)
@@ -442,6 +475,7 @@ def build_decoupled_system(
             lambda_schedule=None, softcore_alpha=softcore_alpha, output_name=output_name, platform=platform,
             conditions={"ligand": ligand, "hmr": hmr, "is_membrane": is_membrane, "elec_lambdas": elec_lambdas,
                         "sterics_lambdas": sterics_lambdas, "softcore_alpha": softcore_alpha,
+                        "ligand_charge_method": ligand_charge_method,
                         "output_name": output_name, "platform": platform})
         record = select_ligand_record(inputs.ligand_chemistry, ligand)
         _refuse_charged(record, record.get("net_charge"))   # before the build, so the node stays pending
@@ -471,7 +505,7 @@ def build_decoupled_system(
             pdb_file=str(inputs.pdb_file), output_dir=str(endstate_dir), output_name="coupled",
             box_dimensions=inputs.box_dimensions, forcefield=inputs.forcefield, water_model=inputs.water_model,
             is_membrane=inputs.is_membrane, hmr=hmr, ligand_chemistry=inputs.ligand_chemistry,
-            disulfide_bonds=inputs.disulfide_bonds)
+            disulfide_bonds=inputs.disulfide_bonds, ligand_charge_method=ligand_charge_method)
         if not built.get("success"):
             raise AbfeError(code="fep_endstate_build_failed",
                             message=f"coupled-state build failed ({built.get('code')}): "
@@ -515,6 +549,7 @@ def build_decoupled_system(
         "decoupling_report": report, "endpoint_validation": validation, "schedules": schedules,
         "forcefield": inputs.forcefield, "water_model": inputs.water_model if inputs.box_dimensions else None,
         "hmr": bool(hmr), "softcore_alpha": float(softcore_alpha), "charge_correction": "none",
+        "ligand_charges": _ligand_charges(built, record, ligand_charge_method),
         "restraint_required": leg == LEG_COMPLEX,
         "endstates": {"coupled": {k: built.get(k) for k in ("system_xml", "topology_pdb", "state_xml", "system_net_charge_e")}},
         "statistics": {"num_atoms": alchemical.getNumParticles(), "num_residues": n_residues},
@@ -568,7 +603,7 @@ def build_decoupled_system(
                 "forcefield_provenance": built.get("forcefield_provenance"),
                 "fep": {"kind": ABFE_KIND, "leg": leg, "mutation": f"decouple:{ligand_info['residue_name']}",
                         "ligand": ligand_info, "n_windows": n_windows, "restraint_required": leg == LEG_COMPLEX,
-                        "endpoint_validation_passed": True},
+                        "ligand_charges": manifest["ligand_charges"], "endpoint_validation_passed": True},
             },
             warnings=result["warnings"],
         )
@@ -974,6 +1009,8 @@ def estimate_binding_dg(
         mismatches = []
         for key, a, b in [("ligand", (man_c.get("ligand") or {}).get("residue_name"), (man_s.get("ligand") or {}).get("residue_name")),
                           ("ligand smiles", (man_c.get("ligand") or {}).get("smiles"), (man_s.get("ligand") or {}).get("smiles")),
+                          ("ligand charge model", (man_c.get("ligand_charges") or {}).get("model"),
+                           (man_s.get("ligand_charges") or {}).get("model")),
                           *[(k, man_c.get(k), man_s.get(k)) for k in ("forcefield", "water_model", "hmr", "softcore_alpha")],
                           ("temperature_kelvin", leg_c.get("temperature_kelvin"), leg_s.get("temperature_kelvin")),
                           ("elec_lambdas", man_c["schedules"].get("elec_lambdas"), man_s["schedules"].get("elec_lambdas")),
