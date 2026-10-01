@@ -230,6 +230,18 @@ T4L ABFE の Methods 草稿（9/27）で、記録に使用が残っているの�
 
 ---
 
+## 2026-09-29 — floyd の共有 amd64 SIF を main `87e1bd1` に更新（増分ビルド）
+
+`661a80c` のイメージから main が 40 コミット進んだ（FEP / ABFE、round 駆動サンプリングと WE、metadynamics、`analyze_tempering` の収束判定作り直しほか、179 ファイル +31,258 行）ので、共有 SIF を作り直した。今回ビルド入力で変わったのは `container/Dockerfile.rikyu-arm64` だけで、amd64 側の `container/Dockerfile` / `environment.yml` / `pyproject.toml` は `661a80c` から不変。よって 9/10 の e299aee と同じ増分ルート（`FROM ghcr.io/matsunagalab/mdclaw:661a80cedc05` にパッケージだけ `pip install --no-deps --force-reinstall`）を使った。9/18 のフルビルドと違い、ここは依存が動いていないので増分が正当。作業ディレクトリは `../container_build_20260929_87e1bd1`、ソースは `87e1bd1` のクリーンなクローン。
+
+成果物: `/data/mdclaw/mdclaw-amd64-87e1bd1e7cf1.sif`、5,976,502,272 バイト、sha256 `1d916442…`（image `sha256:95c899d3…`）。9/30 00:24 JST に例の atomic relink（`/data/.mdclaw.sif.87e1bd1-next` を作って `os.replace`）で切り替え、旧 `mdclaw-amd64-661a80cedc05.sif` は manifest ごとロールバック用に残した。切り替え時点で共有 SIF を掴んでいるプロセスは無し。
+
+受け入れ: イメージ・SIF とも `test-container.sh` が 26 passed / 0 failed（イメージは `--gpus all`、SIF は `--nv`）。焼き込みパッケージの `.py` 179 個が `87e1bd1` と SHA 一致（切り替え後に共有パス経由でも再確認）。増分ビルドで依存を足していないため、新機能が未宣言の依存を要求していないことを `mdclaw` 全 178 モジュールの import 掃引で確認（0 failed）。共有パス経由の `mdclaw --list` に `run_fep` / `analyze_fep` / `estimate_ddg` / `estimate_binding_dg` / `run_metadynamics` / `analyze_metadynamics` / `analyze_we` / `we_resample` と `[rounds]` サーバが載る。
+
+SIF 内のインストール済みスイートは 2,632 passed / 3 failed / 148 deselected。3 件とも**このビルドが原因ではない**: 旧イメージ `661a80cedc05` に同じ checkout を `PYTHONPATH` で被せると同じ 3 件が同じように落ちる（両イメージの依存は同一）。内訳は (1) 既知の古いピン `test_pdb_writefile_inventory_is_pinned`（SST2 コミット以来）、(2) `test_run_metadynamics_standalone_fills_the_bond_well` — `free_energy_range_kj_mol`（13.62274711745013）をファイルに 6 桁で書かれた FES の最大値（13.622747）と 1e-9 の許容で比べているので、丸めの分だけ必ず超える、(3) `test_direct_distance_restraint_reporter_matches_custom_cv_reference` — mdtraj の `Cannot identify molecules because this Topology does not include bonds`。(2)(3) は main の側の問題で、amd64 の依存スタック特有かどうかまでは floyd からは判断できない。作者側で決着させるべき。
+
+GHCR への push は未実施（`:latest` は `661a80cedc05` のまま）。`pyproject` は 0.6.8 のままで `/data/.mdclaw-version` も変更なし。
+
 ## 2026-09-29 — 共有 RIKYU イメージを v4fix-cf121bd8b3f6（main b82e7db）へ切替、MDDataBench glm-5.3-flash 3 条件キャンペーン v5 を起動
 
 - **コミット `b82e7db`**（push 済み）: 下の項の 4 節の修正。作業ツリーにあった別セッションの SST2 変更（`simulation/tempering.py`、`tests/test_tempering.py`、`skills/md-production/sst2.md`、`guardrail_codes.py` と `tool-reference.md` の該当ハンク）は、`test_run_sst2_charge_unscaled_subset` が失敗するので含めず、未コミットのまま残した。`tests/data/guardrail_codes.json` と `cli_contract.json` はその状態で再生成したので、SST2 側を進めるときは両 golden の再生成が要る。全体スイート（チェックアウト、SIF 内、2 時間）: 2,774 passed / 6 skipped、失敗 3 = 既知の 2 件（PDB writer inventory pin、restraint reporter reference）+ SST2 の 1 件。
@@ -817,6 +829,18 @@ FEP 以外への干渉を調べたレビューで、`tests/test_pdb_export_resna
 **追記（同日 12:30）— unfolded leg を流して ddG まで到達。** 同じ study に `jobs/unfolded` を追加（`record_study_plan --overwrite` で plan に job を足してから `bootstrap_md_workflow --job-id unfolded`；plan に無い job_id は bootstrap が拒否する）。`extract_tripeptide` の出力（GLN5–TRP6–LEU7）を `fetch_structure --source local` → `prepare_complex --cap-termini true --ph 7.4`（ACE4–…–NME8、72 原子、残基番号保持）→ `solvate_structure --dist 8 --water-model opc`（3,076 原子、29.4 Å 立方、Na⁺/Cl⁻ 2/2）→ `build_hybrid_system --mutation A:W6A --forcefield ff19SB --water-model opc`（64 s、端点差 0.040 / 0.038 kJ/mol）→ min → eq（NVT 0.02 + NPT 0.02 ns）→ `run_fep` 21 窓 × (0.02 + 0.2 ns) → `analyze_fep`: **dG_unfolded = −7.37 ± 1.47 kJ/mol**（独立サンプル 1,035、隣接 overlap 最小 0.099）。folded 側は fep_003 に子 `fep_005`（0.2 ns/窓、`--equilibration-time-ns 0`）を継ぎ、`analyze_fep` が 2 segment（50 + 200 サンプル/窓）を連結して **dG_folded = +12.18 ± 1.43 kJ/mol**（独立サンプル 1,364、overlap 最小 0.071）。`estimate_ddg --study-dir` → **ddG(W6A) = +19.6 ± 2.1 kJ/mol = +4.67 ± 0.49 kcal/mol（不安定化）**、`evidence/ddg_W6A.json` と `decisions.jsonl` に記録。符号・大きさは Trp-cage の W6 がコア残基で W6A が実質アンフォールド（実験の折り畳み ΔG は −1 kcal/mol 程度）という事実と整合するが、窓あたり 0.2–0.25 ns の流路確認であり、折り畳み側は変換中に構造が緩む可能性を制御していない（拘束なし）。位相分解: folded は decharge −15.0 / sterics +22.8 / recharge +4.4、unfolded は −19.4 / +9.0 / +3.0 kJ/mol で、差はほぼ立体 swap 由来。GPU は他ジョブと共有で 84–105 ns/day（専有時 718）。運用メモ: `singularity --no-home` で走らせると openmmforcefields が `~/.cache` に書けず `fep_endstate_build_failed`（`Read-only file system: '/home/yasu/.cache'`）になる。`--env XDG_CACHE_HOME=/tmp/... HOME=/tmp/...` を渡すこと（`container.md` の既知事項）。
 
 未着手 / v1 の範囲外: 実験値との定量比較に足る長さのサンプリング（窓 ≥ 5 ns、複数 replica）、非平衡スイッチング、REST 併用、多重変異、電荷変化の有限サイズ補正、結合 ddG（complex / apo）の skill 化。SIF は pymbar 4.2 / HPacker 同梱の現行イメージのままで動く（依存追加なし）。
+
+## 2026-09-18 — floyd の共有 amd64 SIF を main `661a80c` でフルリビルドして `/data/mdclaw.sif` を差し替え
+
+`/data/mdclaw.sif` は 2026-09-10 の `e299aee1bdde` のままで、main はそこから 22 コミット進んでいた（b648068 のキャンペーン v2 追従から、run_sst2 の同梱・submit_mps_job・protonation の "no-prediction" 改名・Pablo の水 HOH 修正・analyze_tempering・MODELLER の幾何検査まで）。前回の e299aee は前イメージを FROM にしてパッケージだけ差し替える増分ビルドだったが、今回は `environment.yml` と `container/Dockerfile` が変わっている（SST2 fork `5590f4f` の同梱と `MDCLAW_SST2_REVISION`）ので増分は使えず、`container/Dockerfile` の 3 段フルビルドをやり直した。作業ディレクトリは `../container_build_20260918_661a80c`、ソースは `661a80c` のクリーンなローカルクローン（未追跡ファイルは持ち込まず、未コミットの変更もなし）。
+
+成果物: `/data/mdclaw/mdclaw-amd64-661a80cedc05.sif`、5,975,285,760 バイト、sha256 `c0d0a672…`（image `sha256:086792cf…`、16.2 GB）。17:31 JST に `/data/.mdclaw.sif.661a80c-next` を作って `os.replace` する例の atomic relink で共有パスを切り替え、旧 `mdclaw-amd64-e299aee1bdde.sif` とその manifest はロールバック用にそのまま残した（切り替え時点で共有 SIF を掴んでいるプロセスは無し。掴んでいても inode は生きるので影響しない）。manifest は SIF の隣に 444 で置いた。
+
+受け入れ: イメージ側 `test-container.sh --gpus all` 26 passed / 0 failed、SIF 側 `--nv` でも 26 passed / 0 failed（cuFFT と FUSE shim の 2 件は arm64 専用の宣言変数が無いため想定どおり SKIP）。焼き込みパッケージの `.py` 150 個がすべて `661a80c` と SHA 一致（`verify-package.py`、切り替え後に `/data/mdclaw.sif` 経由でも再確認）。SIF 内のインストール済みスイートは 2,281 passed / 1 failed / 131 deselected。失敗は `tests/test_pdb_export_resname_guard.py::test_pdb_writefile_inventory_is_pinned` で、SST2 コミットが `simulation/tempering.py` に足した `PDBFile.writeFile` が `EXPECTED` に載っていないという既知の古いピン（9/17 の RIKYU の記録と同じもの）。コンテナ由来ではなくソース側の問題で、イメージ無しでも同じように落ちる。誰かが直すまで残る。
+
+新規依存の確認: SST2 が `/opt/mdclaw/lib/python3.12/site-packages/SST2`（`sst2-0.0.1+mdclaw.1`、`pdb_numpy` 同梱）、`MDCLAW_SST2_REVISION=5590f4f`、pymbar 4.2.0、共有パス経由の `mdclaw --list` に `run_sst2` と `analyze_tempering` が載る。pymbar は import 時に JAX のバナーを stdout に出すが、CLI はツール実行中 `sys.stdout` を `_TailCaptureStream(tee=False)` に差し替えるので JSON は壊れない（mdtraj の dcdplugin と違って C 層ではなく Python の print）。
+
+GHCR: 受け入れ後にユーザー依頼で push した。`ghcr.io/matsunagalab/mdclaw:661a80cedc05` と `:latest` の両方が digest `sha256:ab98b196…`、その config digest はローカル image id `sha256:086792cf…` と一致（`docker manifest inspect --verbose` で両タグとも確認）。匿名トークンで manifest を引いて 200 が返るので、パッケージは公開のままで認証なしの `singularity pull` も通る。SIF の隣の manifest にも `ghcr_published` / `digest_ref` を書き戻した。GHCR から自分で pull している人（当日 `/home/enmt/mdclaw` で `latest` を pull 中の例あり）はこれで新しいイメージを取れるが、すでに引き終えた古い `latest` を持っている人は引き直しが要る。`pyproject` は 0.6.8 のまま、`/data/.mdclaw-version` も 0.6.8 で変更なし。ライブの Slurm ジョブ投入検証（前回の check_job 回帰のようなもの）は今回の依頼の範囲外なので実施していない。
 
 ## 2026-09-18 — MODELLER のループモデルに芳香環の潰れ: 検査を入れて選択から外す（b6b7721、push 済み）、共有イメージは `modgeom-28f5e4a4f461`
 
