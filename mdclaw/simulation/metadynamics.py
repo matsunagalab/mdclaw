@@ -764,11 +764,15 @@ def run_metadynamics(
         side["ns_per_day"] = steps_to_run * timestep_fs * 1e-6 / elapsed * 86400 if elapsed else None
         sidecar_file.write_text(json.dumps(side, indent=2))
 
-        from openmm.app import PDBFile
+        from mdclaw.structure.pdb_utils import render_simulation_pdb_preserving_resnames
+
         final_state = simulation.context.getState(getPositions=True, enforcePeriodicBox=False)
         final_pdb = out_dir / f"{pref}final_structure.pdb"
-        with open(final_pdb, "w") as fh:
-            PDBFile.writeFile(simulation.topology, final_state.getPositions(), fh, keepIds=True)
+        final_pdb.write_text(render_simulation_pdb_preserving_resnames(
+            simulation.topology, final_state.getPositions(), topology_pdb_file,
+            box_vectors=final_state.getPeriodicBoxVectors() if is_periodic else None,
+            image=is_periodic, warnings=result["warnings"],
+        ))
 
         F = np.loadtxt(out_dir / f"{pref}free_energy.csv", delimiter=",", skiprows=1)
         result.update({

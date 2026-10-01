@@ -260,6 +260,8 @@ def groups_share_molecule(topology, group1, group2) -> bool:
     import mdtraj as md
 
     mdtop = md.Topology.from_openmm(topology)
+    if mdtop.n_bonds == 0:
+        return False  # no bonds: every atom is its own molecule (mdtraj refuses to guess)
     wanted = set(int(i) for i in group1) | set(int(i) for i in group2)
     for molecule in mdtop.find_molecules():
         members = {atom.index for atom in molecule}
