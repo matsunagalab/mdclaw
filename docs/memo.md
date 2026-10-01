@@ -71,6 +71,27 @@ add the correction and say what it overturns.
   - いずれも力場側の誤差で、ABFE のプロトコル（拘束、λ、サンプリング）が原因の兆候はない。
   - 単一変数の確認実験（インドールを sqm の AM1-BCC 電荷で、ニトロチオフェンを GAFF1 で計算）には、`build_decoupled_system` に電荷法と GAFF 版の選択肢を足す必要がある（いまは NAGL 優先と gaff-2.11 が固定）。
 
+## 2026-10-01 — 共有 amd64 SIF を main `a70d16b` に更新、ついでに SST2 ピンを `ba48461` へ（mdclaw 側だけ進んでいた）
+
+`87e1bd1` から main が 3 コミット進んだ（`fbb2496` レポート引用を各ステージの記録から生成、`b011b80` SST2 で指定 solute 原子の電荷を非スケール、残りは docs）。ビルド入力は一切動いていないので `87e1bd1e7cf1` を土台に増分ビルドし、照合を `.py` のみから `__pycache__` 以外の全 226 ファイルに広げた（今回 `evidence/references.bib` が +157 行しているので `.py` だけでは足りない）。
+
+その候補のスイートで新規の失敗 1 件: `test_run_sst2_charge_unscaled_subset` が `SST2 driver exited with 2`。原因は mdclaw 側だけ進んでいたこと — `run_sst2` は `SST2.driver` に `--charge-unscaled-indices` を渡すが、焼かれた SST2 は `5590f4f` で `driver.py` に `charge` の文字列すら無く、argparse が未知引数で exit 2 する。fork の `mdclaw` ブランチには必要なコミット `ba48461`「rest2: charge_unscaled_index」(9/28) が push 済みで、`environment.yml` と 2 つの Dockerfile のピン（+ `MDCLAW_SST2_REVISION`）だけが据え置かれていた。repo のコメント自身が「3 箇所まとめて上げる」と言っている箇所。
+
+ユーザー判断でピンを上げて作り直した。ソース 3 ファイル（`environment.yml`、`container/Dockerfile`、`container/Dockerfile.rikyu-arm64`）を `5590f4f` → `ba48461` に変更（**未コミット**）。fork の `requirements.txt` は両リビジョンで同一なので `--no-deps` で安全。イメージ内の conda git は https remote helper を持たないため、ホストで `ba48461` を clone してローカルパスから pip install し、`ENV MDCLAW_SST2_REVISION=ba48461` を重ねた。ゼロからのビルドでは Dockerfile の git URL 経由で同じリビジョンが入る。
+
+成果物: `/data/mdclaw/mdclaw-amd64-a70d16b8a183-sst2ba48461.sif`、5,977,489,408 バイト、sha256 `d1e9352b…`（image `sha256:6821b4eb…`）。10/1 18:32 JST に例の atomic relink で切り替え、`mdclaw-amd64-87e1bd1e7cf1.sif` はロールバック用に残した。切り替え時点で共有 SIF を掴んでいるプロセスは無し。
+
+受け入れ: イメージ・SIF とも `test-container.sh` 26 passed / 0 failed。パッケージ 226 ファイルが `a70d16b` と一致（切り替え後に共有パス経由でも再確認）。`python -m SST2.driver --help` に `--charge-unscaled-indices` が出て `MDCLAW_SST2_REVISION=ba48461`。スイートは 2,637 passed / 3 failed。残る 3 件はいずれも旧イメージ + 同じ checkout のオーバーレイでも同じように落ちるのでこのビルドの産物ではないが、3 件とも main 側の要修正案件（下記「要修正 3 件」）。
+
+**訂正** — 直前の 9/29 のエントリと、`/data/mdclaw/mdclaw-amd64-87e1bd1e7cf1.manifest.json` の `known_failures` で、`test_pdb_writefile_inventory_is_pinned` の不一致を「EXPECTED に `simulation/tempering.py` が無い」と書いたのは誤り。それが正しかったのは 9/18（661a80c）のビルドまでで、`87e1bd1` 以降は tempering.py の生書きが `render_simulation_pdb_preserving_resnames` 経由に直されて EXPECTED も更新済み、不一致しているのは **`simulation/metadynamics.py`**。修正すべき場所が別なので上書きではなくここで訂正する。両イメージの manifest も直した。
+
+要修正 3 件（いずれもソース側、イメージとは無関係）:
+1. **`simulation/metadynamics.py:771` の生 `PDBFile.writeFile`** — ピンの更新漏れではなく実害のあるバグ。`run_metadynamics` の `final_structure.pdb` を `simulation.topology` から直接書いているので、run 段が `topology.pdb` を OpenMM で読んだ時点で正規化された Amber/PTM/水の残基名（HIE/HID→HIS、GLH→GLU、CYX→CYS、WAT→HOH）が落ちる。`production.py` / `equilibrate.py` / `minimize.py` / `platform.py` / `tempering.py` は全て `render_simulation_pdb_preserving_resnames` 経由で、metadynamics だけが例外。ガード試験は正しく機能している。直し方は同ヘルパ経由にして EXPECTED に `"simulation/metadynamics.py": (1, "restore")` を足す（あるいは生書きを削る）。
+2. **`tests/test_metadynamics.py:136` の許容値** — こちらはテスト側の問題。`free_energy_range_kj_mol` は倍精度の `F` から計算される（`metadynamics.py:709`）が、`free_energy.csv` は `f"{f:.6f}"` で書かれる（同 715）。テストは `f_range <= F_csv[:,1].max() + 1e-9` を要求するので、最大値が下に丸まるたびに必ず落ちる（実測 13.62274711745013 vs 13.622747、差 1.17e-7）。許容値をファイルの精度（1e-6）に合わせるか、`.npy` の total bias から F を復元して比べる。
+3. **`mdclaw/simulation/restraints.py:264` の `mdtraj.Topology.find_molecules()` が無防備** — `6d7cdcc` で入った周期性判定の経路 `load_distance_restraints` → `distance_cv_periodicity` → `groups_share_molecule` が、結合を持たない topology に対して mdtraj の生の `ValueError: Cannot identify molecules because this Topology does not include bonds` を素通しさせる。CLAUDE.md の設計原則（tool は安定した `code` で拒否する）に反する。発火条件は「topology 全体に結合が 1 本も無く、2 原子以上の残基がある」なので実運用の射程は狭い（溶媒ありの系では必ず結合がある）が、結合無しなら `False` にフォールバックするか構造化エラーで拒否するべき。
+
+GHCR への push は未実施（`:latest` は `661a80cedc05` のまま）。
+
 ## 2026-10-01 — `generate_md_report` の引用: 調製・溶媒和・リガンドパラメータを記録から選び、OpenMM のバージョンを State/System XML から読む
 
 T4L ABFE の Methods 草稿（9/27）で、記録に使用が残っているのに引用が出なかった手法と、min/eq node ごとの「OpenMM のバージョン未記録」の原因を調べ、ユーザー承認（対処案 1・2）で直した。
