@@ -73,6 +73,8 @@ dependencies:
     - openff-pablo @ git+https://github.com/openforcefield/openff-pablo.git@v0.2.2
     # SST2 (simulated solute tempering) from the matsunagalab fork, pinned to a
     # commit of the mdclaw branch (GPL-2.0; run_sst2 calls it as a subprocess).
-    # Pulls pdb_numpy from PyPI. Bump the pin together with MDCLAW_SST2_REVISION
-    # in both Dockerfiles.
-    - "SST2 @ git+https://github.com/matsunagalab/SST2.git@5590f4f"
+    # Pulls pdb_numpy from PyPI. A bump changes five sites: this one, and the
+    # pip install line plus MDCLAW_SST2_REVISION in each of the two Dockerfiles
+    # (docs/developer/container.md). ba48461 is the floor for charge-unscaled
+    # solutes; run_sst2 refuses them on an older driver.
+    - "SST2 @ git+https://github.com/matsunagalab/SST2.git@ba48461"

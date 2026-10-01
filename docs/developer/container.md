@@ -358,10 +358,30 @@ SIF as well as the container build; import-only tests are insufficient.
 ## SST2 (solute tempering)
 
 `run_sst2` runs the SST2 package as a separate process. Both images install
-the matsunagalab/SST2 fork (branch `mdclaw`) with pip, pinned to a commit
-(`environment.yml` pip section and the `pip install` line of each Dockerfile;
-the revision is also declared as `MDCLAW_SST2_REVISION`). Bump the three
-places together. The install pulls `pdb_numpy` from PyPI.
+the matsunagalab/SST2 fork (branch `mdclaw`) with pip, pinned to a commit. The
+pin is declared in **five** places, and a bump changes all five:
+
+| file | what |
+| --- | --- |
+| `environment.yml` | pip section |
+| `container/Dockerfile` | the `pip install` line, and `ENV MDCLAW_SST2_REVISION` |
+| `container/Dockerfile.rikyu-arm64` | the `pip install` line, and `MDCLAW_SST2_REVISION` |
+
+The install pulls `pdb_numpy` from PyPI. "Bump the three places" used to be the
+wording here and it undercounted the two `MDCLAW_SST2_REVISION` declarations;
+the pin drifted once because of it — mdclaw gained
+`run_sst2 --charge-unscaled-indices-file` while all five sites stayed at
+`5590f4f`, so the option reached a driver that had never heard of it and died
+with argparse's exit 2. `run_sst2` now reads the installed driver's source and
+refuses with `sst2_charge_unscaled_unsupported` when it predates the option, so
+a stale pin is legible rather than cryptic — but the refusal is a diagnosis, not
+a substitute for the bump.
+
+Bumping the pin does **not** rebuild any image. The amd64 image and the shared
+RIKYU arm64 image are rebuilt and switched separately, each on its own
+approval, so a repository whose pin reads `ba48461` can still be facing an
+image that carries `5590f4f`. Check `MDCLAW_SST2_REVISION` inside the image
+rather than inferring the revision from the checkout.
 
 SST2 is GPL-2.0 and MDClaw is MIT. Shipping both in one image is aggregation,
 not combination: MDClaw never imports SST2, it execs `python -m SST2.driver`.
