@@ -489,14 +489,15 @@ signature, update the relevant section here and the matching skill examples.
   stage; `scale_nonbonded=false` is the gREST dihedral-only mode;
   `charge_unscaled_indices_file` (JSON list, a subset of the solute) keeps
   those atoms' charges unscaled while their LJ epsilon and torsions are
-  scaled (fork >= ba48461; the nonbonded decomposition then comes from
-  unscaled Coulomb-only / LJ-only copies of the System; artifact
+  scaled (fork >= ba48461, an older driver is refused before it starts;
+  the nonbonded decomposition then comes from unscaled Coulomb-only /
+  LJ-only copies of the System; artifact
   `charge_unscaled_indices.json`, `tempering.charge_unscaled_atoms`);
   `pressure_bar` unset runs NVT. Stable codes: `sst2_not_installed`,
   `sst2_solute_required`, `sst2_solute_selection_invalid`,
   `sst2_solute_selection_empty`, `sst2_ladder_invalid`,
   `sst2_restart_missing`, `sst2_requires_pme`, `sst2_driver_failed`,
-  `sst2_charge_unscaled_invalid`.
+  `sst2_charge_unscaled_invalid`, `sst2_charge_unscaled_unsupported`.
 - `run_metadynamics(...)`: one walker of well-tempered metadynamics on a
   centre-of-mass distance as a `prod` node
   (`mdclaw/simulation/metadynamics.py`, OpenMM's built-in

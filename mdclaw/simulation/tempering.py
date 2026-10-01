@@ -87,6 +87,18 @@ def _sst2_environment(sst2_home: Optional[str]) -> tuple[dict, Optional[str]]:
     return env, None
 
 
+def _driver_source(env: dict, home: Optional[str]) -> Optional[Path]:
+    """The SST2 driver source the driver process will import."""
+    if home:
+        return Path(home) / "src" / "SST2" / "driver.py"
+    probe = subprocess.run(
+        [sys.executable, "-c", f"import importlib.util as u; print(u.find_spec({DRIVER_MODULE!r}).origin)"],
+        capture_output=True, text=True, env=env,
+    )
+    origin = probe.stdout.strip()
+    return Path(origin) if probe.returncode == 0 and origin else None
+
+
 def _resolve_solute_indices(
     topology_pdb_file: str,
     *,
@@ -499,6 +511,14 @@ def run_sst2(
                 message=f"restart_state_file {restart_state_file!r} does not exist.",
             )
         env, home = _sst2_environment(sst2_home)
+        if charge_unscaled_file is not None:
+            driver_src = _driver_source(env, home)
+            if driver_src is None or "--charge-unscaled-indices" not in driver_src.read_text():
+                raise SST2ToolError(
+                    code="sst2_charge_unscaled_unsupported",
+                    message=f"the SST2 driver in use ({driver_src}) has no --charge-unscaled-indices; "
+                    "charge-unscaled solutes need the SST2 fork at commit ba48461 or later.",
+                )
         if device_index is not None and platform.lower() in ("cuda", "auto"):
             env["CUDA_VISIBLE_DEVICES"] = str(device_index)
         driver_platform = {"auto": "auto", "cuda": "CUDA", "opencl": "OpenCL",

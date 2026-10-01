@@ -428,6 +428,7 @@
   "source_cannot_have_dependencies",
   "source_cannot_have_parents",
   "sst2_charge_unscaled_invalid",
+  "sst2_charge_unscaled_unsupported",
   "sst2_driver_failed",
   "sst2_ladder_invalid",
   "sst2_not_installed",
