@@ -356,7 +356,7 @@ def test_packaged_bibliography_matches_verified_audit():
     source = audit.read_text()
     packaged = Path(citations.__file__).with_name("references.bib").read_text()
     entries = list(re.finditer(r"@\w+\{([^,]+),\n.*?^\}", packaged, re.M | re.S))
-    assert len(entries) == len({m[1] for m in entries}) == 24
+    assert len(entries) == len({m[1] for m in entries}) == 37
     assert all(m[0] in source for m in entries)
 
 
@@ -450,3 +450,124 @@ def test_alchemical_legs_are_separate_not_replicas(tmp_path):
     nested = [target(tmp_path, "ddg", "ddg"), target(tmp_path, "an_f", "folded")]
     assert not generate_md_report(targets=nested, grouping="replicas")["success"]
     assert generate_md_report(targets=nested, grouping="separate")["success"]
+
+
+def _artifacts(path, **artifacts):
+    data = json.loads(path.read_text())
+    data["artifacts"] = artifacts
+    path.write_text(json.dumps(data))
+    return path
+
+
+def _keys(job):
+    citations = generate_md_report(job_dir=str(job))["report"]["citations"]
+    return {entry["key"] for entry in citations["selected"]}, citations
+
+
+def test_openmm_version_is_read_from_the_state_and_system_a_node_wrote(tmp_path):
+    """min / eq keep a State XML and topo a System XML, not a runtime System copy;
+    their root element names the OpenMM that wrote them (T4L ABFE report, 2026-09-27:
+    every eq node was reported as having no recorded OpenMM version)."""
+    from mdclaw._common import sha256_file
+
+    topo = _artifacts(node(tmp_path, "topo", "topo"), system_xml="artifacts/system.xml")
+    (topo.parent / "artifacts").mkdir()
+    (topo.parent / "artifacts" / "system.xml").write_text(
+        '<?xml version="1.0" ?>\n<System openmmVersion="8.5.1" type="System" version="1">\n\t<Particles/>\n</System>\n')
+    eq = _artifacts(node(tmp_path, "eq", "eq", ["topo"],
+                         metadata={"integrator_signature": {"integrator": "LangevinMiddleIntegrator"}}),
+                    state="artifacts/equilibrated.xml", checkpoint="artifacts/equilibrated.chk")
+    (eq.parent / "artifacts").mkdir()
+    state = eq.parent / "artifacts" / "equilibrated.xml"
+    state.write_text('<?xml version="1.0" ?>\n<State openmmVersion="8.5.1" stepCount="250000" time="1000.0" '
+                     'type="State" version="1">\n\t<Positions/>\n</State>\n')
+    old = _artifacts(node(tmp_path, "old", "eq", ["eq"],
+                          metadata={"integrator_signature": {"integrator": "LangevinMiddleIntegrator"}}),
+                     state="artifacts/equilibrated.xml")
+    (old.parent / "artifacts").mkdir()
+    (old.parent / "artifacts" / "equilibrated.xml").write_text('<State openmmVersion="7.7.0" type="State"/>')
+    node(tmp_path, "bare", "eq", ["old"], metadata={"integrator_signature": {"integrator": "LangevinMiddleIntegrator"}})
+
+    report = generate_md_report(targets=[target(tmp_path, "bare", "r1")])["report"]
+    citations = report["citations"]
+    openmm = next(entry for entry in citations["selected"] if entry["key"] == "Eastman2024OpenMM8")
+    reasons = {reason["node_id"]: reason for reason in openmm["reasons"]}
+    assert set(reasons) == {"topo", "eq"}
+    assert reasons["topo"]["evidence_field"] == "/System/@openmmVersion"
+    assert reasons["eq"]["evidence_field"] == "/State/@openmmVersion"
+    assert reasons["eq"]["evidence_file"] == str(state)
+    assert reasons["eq"]["evidence_sha256"] == sha256_file(state)
+    versions = {u["node_id"]: u for u in citations["unresolved"] if u["method"] == "OpenMM_version"}
+    assert set(versions) == {"old", "bare"}
+    assert versions["old"]["value"] == "7.7.0"           # recorded, but no paper mapped for 7.x
+    assert "value" not in versions["bare"]               # nothing written by OpenMM is listed
+    assert report["comparison"]["common_recorded_settings"]["eq/1/runtime/openmm_serialization/openmm_version"] == "8.5.1"
+
+
+def test_preparation_solvation_and_ligand_parameters_are_cited_from_what_each_stage_recorded(tmp_path):
+    # protonation: PDB2PQR always, PROPKA unless no-prediction; PDBFixer has no paper
+    prep = tmp_path / "prep"
+    node(prep, "p", "prep", metadata={"protonation_baseline_method": "pdb2pqr+propka", "pdbfixer_version": "1.12.0"})
+    keys, citations = _keys(prep)
+    assert keys == {"Dolinsky2004PDB2PQR", "Dolinsky2007PDB2PQR", "Jurrus2018APBSPDB2PQR",
+                    "Olsson2011PROPKA3", "Sondergaard2011PROPKA"}
+    assert [(d["method"], d["version"], d["dedicated_paper"]) for d in citations["documentation"]] == [
+        ("PDBFixer", "1.12.0", None)]
+    assert "@article{Dolinsky2007PDB2PQR" in citations["bibtex"]
+    fixed = tmp_path / "fixed"
+    node(fixed, "p", "prep", metadata={"protonation_baseline_method": "pdb2pqr_no_prediction"})
+    assert _keys(fixed)[0] == {"Dolinsky2004PDB2PQR", "Dolinsky2007PDB2PQR", "Jurrus2018APBSPDB2PQR"}
+    off = tmp_path / "off"
+    node(off, "p", "prep", metadata={"protonation_baseline_method": "disabled"})
+    assert _keys(off)[0] == set()
+
+    # solvation: packmol-memgen (and the PACKMOL it runs) only when that is what built the box
+    packmol = {"SchottVerdugo2019PackmolMemgen", "Martinez2009Packmol"}
+    for name, metadata, expected in (
+            ("named", {"backend": "packmol-memgen", "backend_version": "2025.1.29"}, packmol),
+            ("fallback", {"backend": "openmm_fallback"}, set()),
+            ("membrane", {"membrane_backend": "packmol-memgen"}, packmol),
+            ("patch", {"membrane_backend": "patch-tile"}, set())):
+        job = tmp_path / name
+        node(job, "s", "solv", metadata=metadata)
+        assert _keys(job)[0] == expected, name
+    # recorded before solvate_structure named its backend: the REMARK packmol-memgen wrote decides
+    for name, first_line, expected in (
+            ("legacy", "REMARK   Packmol generated pdb file, Packmol Memgen estimated parameters", packmol),
+            ("legacy_other", "REMARK   1 CREATED WITH OPENMM 8.5.1", set())):
+        job = tmp_path / name
+        path = _artifacts(node(job, "s", "solv", metadata={"box_shape": "cubic"}), solvated_pdb="artifacts/solvated.pdb")
+        (path.parent / "artifacts").mkdir()
+        (path.parent / "artifacts" / "solvated.pdb").write_text(first_line + "\nATOM      1  O   HOH W   1\nEND\n")
+        keys, citations = _keys(job)
+        assert keys == expected, name
+        if expected:
+            reason = citations["selected"][0]["reasons"][0]
+            assert reason["evidence_file"] == str(path.parent / "artifacts" / "solvated.pdb")
+
+    # ligands: GAFF via the template generator (antechamber typing), NAGL Ash 1.0 or AM1-BCC charges
+    def topo(job, ligands, charges):
+        node(job, "t", "topo", metadata={"forcefield_provenance": {
+            "kind": "amber_via_openmmforcefields", "openmmforcefields_version": "0.16.0",
+            "small_molecule_forcefield": "gaff-2.11", "ligand_molecules": ligands,
+            "ligand_charge_assignment": charges}})
+        return _keys(job)
+
+    benzene = [{"residue_name": "BNZ", "topology_parameter_source": "topology_gaff_template_generator"}]
+    gaff = {"Wang2004GAFF", "Wang2006Antechamber", "Case2023AmberTools"}
+    keys, citations = topo(tmp_path / "nagl", benzene,
+                           [{"method": "nagl", "nagl_model": "openff-gnn-am1bcc-1.0.0.pt", "status": "success"}])
+    assert keys == gaff | {"Wang2025AshGCWorkingPaper"}
+    assert sorted((d["method"], d["version"]) for d in citations["documentation"]) == [
+        ("GAFF2 parameter set", "gaff-2.11"), ("OpenFF NAGL model", "openff-gnn-am1bcc-1.0.0.pt"),
+        ("openmmforcefields", "0.16.0")]
+    keys, _ = topo(tmp_path / "am1bcc", benzene, [{"method": "am1bcc_fallback", "status": "fallback"}])
+    assert keys == gaff | {"Jakalian2000AM1BCC", "Jakalian2002AM1BCC"}
+    keys, citations = topo(tmp_path / "other_model", benzene,
+                           [{"method": "nagl", "nagl_model": "openff-gnn-am1bcc-0.1.0-rc.3.pt", "status": "success"}])
+    assert keys == gaff
+    assert any(u["method"] == "nagl_model" for u in citations["unresolved"])
+    # a protein-only build still names gaff-2.11 in its provenance; no ligand went through it
+    keys, citations = topo(tmp_path / "protein_only", [], [])
+    assert keys == set()
+    assert [d["method"] for d in citations["documentation"]] == ["openmmforcefields"]

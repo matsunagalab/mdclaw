@@ -327,6 +327,9 @@ def test_input_state_does_not_override_baseline_unless_requested(
     )
 
     assert result["success"], result["errors"]
+    # PDBFixer loaded and wrote the structure; the record says which one
+    from mdclaw._common import installed_version
+    assert result["provenance"]["pdbfixer_version"] == installed_version("pdbfixer") is not None
     assert result["input_protonation_states_promoted"] == []
     assert not [state for state in result["protonation_states"]
                 if state.get("override_origin") == "input_structure"]

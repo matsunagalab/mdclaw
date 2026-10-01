@@ -17,7 +17,7 @@ import shutil
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from mdclaw._common import create_choice_error, setup_logger  # noqa: E402
+from mdclaw._common import create_choice_error, installed_version, setup_logger  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -4329,7 +4329,9 @@ def clean_protein(
         # Build structured provenance summary at top level
         # (operations[] is kept for full detail, summary for quick access)
         operations = result.get("operations", [])
-        provenance = {}
+        # The structure was loaded, completed and written through PDBFixer
+        # above; a report cites the software it can see recorded here.
+        provenance = {"pdbfixer_version": installed_version("pdbfixer")}
         for op in operations:
             step = op.get("step", "")
             if step == "missing_residues" and op.get("status") == "will_model":

@@ -104,7 +104,7 @@ or a warning mentioning a package does not establish its use.
 | MEMEMBED orientation | `Nugent2013Memembed` | Amber 13.8, [442]; original BMC Bioinformatics article |
 | OpenFF Toolkit | `Mobley2018OpenFF` + actual software release | Official OpenFF software citation instruction; does not imply using Sage/SMIRNOFF parameters |
 | NAGL Ash 1.0 charges | `Wang2025AshGCWorkingPaper` + model/software record | Exact model card links this working paper; see unresolved 2026-paper mapping below |
-| PDB2PQR | `Dolinsky2004PDB2PQR`, `Jurrus2018APBSPDB2PQR` | PDB2PQR official citation page; citing APBS-suite paper does not mean APBS was executed |
+| PDB2PQR | `Dolinsky2004PDB2PQR`, `Dolinsky2007PDB2PQR`, `Jurrus2018APBSPDB2PQR` | PDB2PQR official citation page (2007 paper added 2026-10-01, see addendum); citing APBS-suite paper does not mean APBS was executed |
 | PROPKA | `Olsson2011PROPKA3`, `Sondergaard2011PROPKA` | Both recommended in official PROPKA README |
 | Dimorphite-DL ligand protonation | `Ropp2019DimorphiteDL` | Original Journal of Cheminformatics article, DOI 10.1186/s13321-019-0336-9 |
 | Gemmi structure parsing | `Wojdyr2022Gemmi` | JOSS primary record, DOI 10.21105/joss.04200 |
@@ -431,6 +431,44 @@ restraint and its analytic standard-state term; topo with
 correction; only when `ligand_symmetry_number > 1`).
 
 Deliverable checks after the addenda: 119 unique BibTeX keys, 118 unique DOIs.
+
+## Addendum 2026-10-01: preparation, solvation and ligand parameterisation
+
+`generate_md_report` on the T4L ABFE benchmark left GAFF, NAGL, PDB2PQR/PROPKA,
+PACKMOL(-Memgen), PDBFixer and openmmforcefields uncited although their use was on
+record, and reported every min/eq node as having no OpenMM version. The selector
+(`mdclaw/evidence/citations.py`) now maps, each keyed on what the stage recorded:
+
+| Recorded evidence | Selected | Role |
+| --- | --- | --- |
+| prep `protonation_baseline_method` = `pdb2pqr+propka` / `pdb2pqr_no_prediction` | `Dolinsky2004PDB2PQR`, `Dolinsky2007PDB2PQR`, `Jurrus2018APBSPDB2PQR` | software |
+| … = `pdb2pqr+propka` only | `Olsson2011PROPKA3`, `Sondergaard2011PROPKA` | official method |
+| prep `pdbfixer_version` (recorded from this date by `clean_protein`) | documentation entry, no paper | software identity |
+| solv `backend` (from this date) or `membrane_backend` = `packmol-memgen`; for older solv nodes the `Packmol Memgen` REMARK packmol-memgen writes at the top of `solvated_pdb` | `SchottVerdugo2019PackmolMemgen` + `Martinez2009Packmol` | software / base method |
+| topo `forcefield_provenance`: a ligand with `topology_parameter_source = topology_gaff_template_generator` and `small_molecule_forcefield = gaff-*` | `Wang2004GAFF`, `Wang2006Antechamber` (the generator types atoms with antechamber and parmchk2, no charging), `Case2023AmberTools`; documentation entry for the exact `gaff-2.x` release | parameters / software |
+| … `ligand_charge_assignment` method `nagl`, model `openff-gnn-am1bcc-1.0.0.pt` | `Wang2025AshGCWorkingPaper` (the model card's white paper; Ash 1.0 is trained to reproduce ELF10-style AM1-BCC); documentation entry for the model | official method |
+| … method `am1bcc_fallback` | `Jakalian2000AM1BCC`, `Jakalian2002AM1BCC` | official method |
+| topo `forcefield_provenance.kind = amber_via_openmmforcefields` | documentation entry with `openmmforcefields_version`, no paper | software identity |
+
+A protein-only build still writes `small_molecule_forcefield = gaff-2.11`, so GAFF
+is selected only when a ligand went through the generator. Other NAGL models,
+other charge methods and other baselines are listed as unresolved. The OpenMM
+version for `Eastman2024OpenMM8` is now also read from the root `openmmVersion`
+of the State XML a min/eq node wrote and the System XML of a topo node, not
+only from a production node's runtime System.
+
+New record: `Dolinsky2007PDB2PQR`, checked against Crossref
+(`10.1093/nar/gkm276`: Nucleic Acids Research 35, Web Server issue, W522–W525,
+2007; authors Dolinsky, Czodrowski, Li, Nielsen, Jensen, Klebe, Baker). PDB2PQR
+3.7.1 asks for Jurrus 2018 and Dolinsky 2007 in its own run banner, and its
+official citation page lists those two with Dolinsky 2004 and Unni 2011 (web
+servers, not applicable to local runs; not added). The twelve other records
+moved into the packaged library were re-checked against Crossref the same day
+(title with publisher markup removed, first author, year, volume, pages: all
+agree) and the AshGC working paper against DataCite (`10.5281/zenodo.15770227`).
+
+Deliverable checks after this addendum: 120 unique BibTeX keys, 119 unique DOIs;
+the packaged `mdclaw/evidence/references.bib` holds 37 of them verbatim.
 
 ## Deliverable checks
 

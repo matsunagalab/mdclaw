@@ -1535,7 +1535,21 @@ terminal analyze node turns the recycled flux into a rate. Design notes:
   Citation selection currently covers explicit OpenMM 8, LF-middle/BAOAB,
   MC barostats, HMR, ff14SB/ff19SB and selected water-model records. It distinguishes
   official method, related/base method and documentation-only evidence.
-  Other force fields, preparation/analysis/custom methods and constraint-solver
+  The OpenMM version comes from the runtime System of a production node, or
+  else from the root `openmmVersion` of the State (`state`, min/eq) or System
+  (`system_xml`, topo) XML the node wrote (`runtime.openmm_serialization`).
+  Preparation and ligand parameterisation are selected from what the stages
+  recorded: `protonation_baseline_method` (PDB2PQR: Dolinsky 2004/2007, Jurrus
+  2018; plus PROPKA: Olsson 2011, Søndergaard 2011, unless `pdb2pqr_no_prediction`),
+  the solv node's `backend` / `membrane_backend` = `packmol-memgen`
+  (PACKMOL-Memgen and PACKMOL; a solv node recorded before the backend was named
+  is judged by the `Packmol Memgen` REMARK in its `solvated_pdb`), and the topo
+  node's `forcefield_provenance` (GAFF, Antechamber and AmberTools when a ligand
+  went through the GAFF template generator; the NAGL Ash 1.0 working paper or
+  AM1-BCC per `ligand_charge_assignment`). PDBFixer (`pdbfixer_version` on the
+  prep node), openmmforcefields, the exact GAFF2 release and the NAGL model are
+  documentation entries with their versions: none has a dedicated paper.
+  Other force fields, analysis/custom methods and constraint-solver
   identity remain explicit unresolved items, not fabricated references.
 - `export_mddb(output_dir, ...)`: create an **offline** MDDB-workflow bundle with
   the same target/grouping contract. Each project has `inputs.yaml`; each MD has

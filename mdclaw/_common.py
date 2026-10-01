@@ -219,6 +219,19 @@ def sha256_file(path: Union[str, Path], chunk_size: int = 1024 * 1024) -> str:
     return h.hexdigest()
 
 
+def installed_version(distribution: str) -> Optional[str]:
+    """Version of an installed Python distribution, or None when it is not installed.
+
+    Recorded on a node next to the name of the software a stage ran, so a report
+    can cite it (``mdclaw/evidence/citations.py``)."""
+    from importlib import metadata
+
+    try:
+        return metadata.version(distribution)
+    except metadata.PackageNotFoundError:
+        return None
+
+
 def guess_pdb_element(atom_name: str, element_field: str = "") -> str:
     """Best-effort element parsing for PDB/MOL2 round-trip checks."""
     element = (element_field or "").strip()

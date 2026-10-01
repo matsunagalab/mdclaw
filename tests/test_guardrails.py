@@ -759,6 +759,33 @@ def test_solvate_structure_node_mode_openmm_fallback_writes_artifacts_directly(t
     assert node_data["artifacts"]["box_dimensions"] == "artifacts/box_dimensions.json"
 
 
+def test_solvate_structure_node_mode_records_the_packmol_memgen_backend(tmp_path):
+    """The solv node names the program that built its box, so a report can cite
+    packmol-memgen and PACKMOL from the record; the OpenMM fallback above names
+    itself ``openmm_fallback``."""
+    from mdclaw._common import installed_version
+
+    pdb_file = tmp_path / "input.pdb"
+    _write_minimal_pdb(pdb_file)
+    job_dir = tmp_path / "job"
+    merged_pdb = _create_completed_prep(job_dir, pdb_file)
+    create_node(str(job_dir), "solv", parent_node_ids=["prep_001"])
+
+    def _fake_packmol_memgen(args, cwd=None, timeout=None):
+        _write_minimal_box_pdb(Path(args[args.index("-o") + 1]))
+        return SimpleNamespace(stdout="", stderr="")
+
+    with patch("mdclaw.solvation._base.packmol_memgen_wrapper.is_available", return_value=True), \
+         patch("mdclaw.solvation._base.packmol_memgen_wrapper.run", side_effect=_fake_packmol_memgen):
+        result = solvate_structure(pdb_file=merged_pdb, water_model="opc",
+                                   job_dir=str(job_dir), node_id="solv_001")
+
+    assert result["success"] is True, result.get("errors")
+    metadata = read_node(str(job_dir), "solv_001")["metadata"]
+    assert metadata["backend"] == "packmol-memgen"
+    assert metadata["backend_version"] == installed_version("packmol_memgen")
+
+
 def test_embed_in_membrane_node_mode_autoresolves_prep_merged_pdb(tmp_path):
     job_dir = tmp_path / "job_membrane"
     create_node(str(job_dir), "prep")

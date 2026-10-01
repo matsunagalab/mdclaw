@@ -7,6 +7,28 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-01 — `generate_md_report` の引用: 調製・溶媒和・リガンドパラメータを記録から選び、OpenMM のバージョンを State/System XML から読む
+
+T4L ABFE の Methods 草稿（9/27）で、記録に使用が残っているのに引用が出なかった手法と、min/eq node ごとの「OpenMM のバージョン未記録」の原因を調べ、ユーザー承認（対処案 1・2）で直した。
+
+- **原因 1（登録表の穴）**: 選択器（`mdclaw/evidence/citations.py`）と同梱 bib（24 件）が、OpenMM 側の手法と FEP 理論までしか対応しておらず、GAFF・NAGL・PDB2PQR/PROPKA・packmol-memgen が記録にあっても選べなかった。監査文書（`docs/research/citation-audit-2026-09-06.md`）には対応表と Crossref 照合済みの記録が既にあった。
+- **原因 2（読む場所の不備）**: OpenMM 8 の引用は production node の `runtime_system`（System XML）の `openmmVersion` でしか選ばれず、min/eq（State XML）と topo（System XML）は `openmmVersion` を持っているのに読まれていなかった。
+- **変更**:
+  - レポーター（`reporting.py`）は `runtime_system` が無い node の `state` / `system_xml` のルート開始タグだけを読み、`runtime.openmm_serialization` に記録する。ハッシュはファイル全体で取り、サイズと mtime で 1 回にキャッシュする。
+  - 選択器が新たに対応したもの:
+    - `protonation_baseline_method`（`pdb2pqr+propka` → PDB2PQR 3 件 + PROPKA 2 件、`pdb2pqr_no_prediction` → PDB2PQR のみ）
+    - solv の `backend` / `membrane_backend` = `packmol-memgen` → SchottVerdugo 2019 + Martinez 2009（PACKMOL）。この記録が無い旧 node では `solvated_pdb` 先頭の `Packmol Memgen` REMARK で判定する。
+    - topo の `forcefield_provenance`: GAFF テンプレート生成器を通ったリガンドがある場合に Wang 2004 GAFF・Wang 2006 Antechamber・Case 2023 AmberTools を選ぶ。電荷が NAGL の `openff-gnn-am1bcc-1.0.0.pt` なら AshGC working paper、`am1bcc_fallback` なら Jakalian 2000/2002。生成器は電荷なしで antechamber と parmchk2 を走らせることを openmmforcefields 0.16 のソースで確認した。蛋白質だけの系でも `small_molecule_forcefield = gaff-2.11` が固定値で書かれるので、リガンドの有無で判定している。
+    - PDBFixer・openmmforcefields・GAFF2 の版・NAGL モデルは、専用論文が無いのでバージョンつきの documentation 項目にした。
+  - 記録する側も直した。`clean_protein` は成功時の provenance に `pdbfixer_version` を、`solvate_structure` の通常経路は `backend: packmol-memgen` と `backend_version` を記録する（どちらも `_common.installed_version`）。既存の DAG では PDBFixer は記録されないまま（documentation 項目なので BibTeX には影響しない）。
+- **書誌**: 監査 bib の 12 件を同梱 bib に写し、同梱は 37 件になった。Crossref でタイトル（出版社のマークアップを除去）・筆頭著者・年・巻・頁を照合し直して全件一致した。AshGC は DataCite で照合した。PDB2PQR 3.7.1 自身が実行時に Jurrus 2018 と Dolinsky 2007 の引用を求めており、公式ページも同じ 2 件と 2004、Unni 2011（Web サーバー、対象外）を挙げるので、Dolinsky 2007 を Crossref で照合して監査 bib に追加した（120 キー・119 DOI）。監査文書に 2026-10-01 の addendum を追加。
+- **テスト**:
+  - `tests/test_evidence_server.py` に 2 本を追加した: State/System XML からの OpenMM 版（7.x は値つきで未解決）と、調製・溶媒和・リガンドの対応（旧 solv の REMARK と、蛋白質だけの topo を含む）。同梱件数は 37 に更新。
+  - `test_guardrails.py` に、solv node が `backend: packmol-memgen` を記録することのテスト（偽の packmol-memgen を使用）を追加。`test_protonation_states.py` には `pdbfixer_version` の記録を足した。
+  - 広めの高速スイート 677 passed。1 件の失敗は、別セッションの未コミット `sst2_charge_unscaled_invalid`（ゴールデンファイル未更新）によるもの。
+  - 実 CLI でも確認した（181L の prep → solv で両方の記録が残り、レポートが metadata を証拠に選んだ）。
+- **T4L の結果**: ベンゼン 3 レプリカのレポートで選ばれる引用は 12 → 24 件、`OpenMM_version` の未解決は 0 件になった。25 リガンド（各 replica 1、`report/study_r1`）では 25 件で、σ > 1 の 14 リガンドから Mobley 2007 も入る。残る未解決は node ごとの一律の注記 `remaining_stage_methods` だけ。`report/METHODS.md` の本文に 25 キーを入れ、`references.bib` と過不足なく一致させた。手で引く残りは、データの原典（benchmarksets と ITC 原典 4 件）、Mobley 2006、MDClaw、専用論文の無いソフトウェア（版と URL で引用）。OpenFF Toolkit（Mobley 2018）は監査 bib にあるが、まだ自動選択していない。
+
 ## 2026-09-29 — 共有 RIKYU イメージを v4fix-cf121bd8b3f6（main b82e7db）へ切替、MDDataBench glm-5.3-flash 3 条件キャンペーン v5 を起動
 
 - **コミット `b82e7db`**（push 済み）: 下の項の 4 節の修正。作業ツリーにあった別セッションの SST2 変更（`simulation/tempering.py`、`tests/test_tempering.py`、`skills/md-production/sst2.md`、`guardrail_codes.py` と `tool-reference.md` の該当ハンク）は、`test_run_sst2_charge_unscaled_subset` が失敗するので含めず、未コミットのまま残した。`tests/data/guardrail_codes.json` と `cli_contract.json` はその状態で再生成したので、SST2 側を進めるときは両 golden の再生成が要る。全体スイート（チェックアウト、SIF 内、2 時間）: 2,774 passed / 6 skipped、失敗 3 = 既知の 2 件（PDB writer inventory pin、restraint reporter reference）+ SST2 の 1 件。

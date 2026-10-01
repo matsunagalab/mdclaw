@@ -1,5 +1,6 @@
 """Deterministic target-scoped DAG reports; no trajectory pooling or inferred methods."""
 
+import functools
 import hashlib
 import json
 from pathlib import Path
@@ -77,6 +78,35 @@ def _force_settings(force):
     return {**force.attrib, "definition_sha256": hashlib.sha256(definition.encode()).hexdigest()}
 
 
+# OpenMM writes its own version into the root element of every System, State
+# and Integrator it serialises. Only production keeps a runtime System copy;
+# min / eq nodes keep their final State and topo nodes their System, which name
+# the OpenMM that wrote them just as well.
+_SERIALIZED_ARTIFACTS = ("state", "system_xml")
+_SERIALIZED_ROOTS = ("State", "System", "Integrator")
+
+
+@functools.lru_cache(maxsize=4096)
+def _serialized_root(path, size, mtime_ns):
+    """``(root tag, openmmVersion, sha256)`` of an XML file. Only the root start
+    tag is parsed; the digest covers the whole file. Keyed on size and mtime so a
+    file shared by many subjects of one report is read once."""
+    parser = ET.XMLPullParser(events=("start",))
+    digest = hashlib.sha256()
+    root = None
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+            if root is None:
+                try:
+                    parser.feed(chunk[:1 << 16])
+                    element = next((e for _, e in parser.read_events()), None)
+                except ET.ParseError:
+                    element = None
+                root = (element.tag, element.get("openmmVersion")) if element is not None else ("", None)
+    return (root or ("", None)) + (digest.hexdigest(),)
+
+
 def _runtime(node_dir, artifacts):
     facts, sources, warnings = {}, {}, []
     for key in ("integrator", "runtime_system"):
@@ -106,6 +136,20 @@ def _runtime(node_dir, artifacts):
                 "constraint_count": len(root.findall("./Constraints/Constraint")),
                 "forces": [_force_settings(force) for force in root.findall("./Forces/Force")],
             }
+    if "runtime_system" not in facts:
+        for key in _SERIALIZED_ARTIFACTS:
+            value = artifacts.get(key)
+            if not isinstance(value, str) or not value.endswith(".xml"):
+                continue
+            path = (node_dir / value).resolve()
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            tag, version, digest = _serialized_root(str(path), stat.st_size, stat.st_mtime_ns)
+            if tag in _SERIALIZED_ROOTS and version:
+                facts["openmm_serialization"] = {"root": tag, "openmm_version": version}
+                sources["openmm_serialization"] = {"file": str(path), "sha256": digest}
+                break
     return facts, sources, warnings
 
 

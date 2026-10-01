@@ -16,7 +16,7 @@ from mdclaw._common import (
     guardrail_messages,
     split_guardrail_results,
 )
-from mdclaw._common import get_timeout
+from mdclaw._common import get_timeout, installed_version
 from mdclaw.chemistry_constants import (  # noqa: E402
     CANONICAL_WATER_MODELS,
 )
@@ -871,6 +871,9 @@ def solvate_structure(
                 },
                 metadata={
                     "water_model": water_model,
+                    # The OpenMM fallback above records its own backend.
+                    "backend": "packmol-memgen",
+                    "backend_version": installed_version("packmol_memgen"),
                     "neutralization_expected": bool(salt),
                     "box_shape": "cubic" if _box.get("is_cubic") else "rectangular",
                     "buffer_distance_angstrom": dist,
