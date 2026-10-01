@@ -200,6 +200,13 @@ def test_normalize_distance_restraints_rejects_invalid_schema(value):
 
 def test_direct_distance_restraint_reporter_matches_custom_cv_reference(tmp_path):
     topology, system, restraints = _distance_restraint_fixture()
+    # the box is known at load time and an intermolecular target must fit in half of it
+    system.setDefaultPeriodicBoxVectors(
+        Vec3(4.0, 0.0, 0.0) * nanometer,
+        Vec3(0.0, 4.0, 0.0) * nanometer,
+        Vec3(0.0, 0.0, 4.0) * nanometer,
+    )
+    restraints[0]["target_distance_nm"] = 1.0
     loaded = load_distance_restraints(
         system=system,
         topology=topology,
@@ -223,11 +230,6 @@ def test_direct_distance_restraint_reporter_matches_custom_cv_reference(tmp_path
     reference_cv.setForceGroup(30)
     system.addForce(reference_cv)
 
-    system.setDefaultPeriodicBoxVectors(
-        Vec3(4.0, 0.0, 0.0) * nanometer,
-        Vec3(0.0, 4.0, 0.0) * nanometer,
-        Vec3(0.0, 0.0, 4.0) * nanometer,
-    )
     integrator = VerletIntegrator(0.001 * picosecond)
     simulation = Simulation(topology, system, integrator)
     simulation.context.setPositions([
@@ -260,7 +262,7 @@ def test_direct_distance_restraint_reporter_matches_custom_cv_reference(tmp_path
         getEnergy=True, groups={31}
     ).getPotentialEnergy()
     assert energy.value_in_unit(kilojoule_per_mole) == pytest.approx(
-        (expected - 3.0) ** 2
+        (expected - 1.0) ** 2
     )
 
 

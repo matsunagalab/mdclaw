@@ -133,7 +133,7 @@ def test_run_metadynamics_standalone_fills_the_bond_well(xml_triple, tmp_path):
     # the bias (and so the free-energy minimum) lies where the walker actually went
     x_min = F[np.argmin(F[:, 1]), 0]
     assert m["cv_visited_min_nm"] - 0.05 <= x_min <= m["cv_visited_max_nm"] + 0.05
-    assert 0 < m["free_energy_range_kj_mol"] <= F[:, 1].max() + 1e-9
+    assert 0 < m["free_energy_range_kj_mol"] <= F[:, 1].max() + 1e-6   # the CSV holds 6 decimals
     cv_rows = _rows(out / "collective_variables.csv")
     assert len(cv_rows) == 40 and "d" in cv_rows[0]
     assert float(cv_rows[-1]["bias_energy_kj_mol"]) > 0
