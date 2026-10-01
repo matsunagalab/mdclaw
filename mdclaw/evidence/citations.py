@@ -160,8 +160,9 @@ def select_citations(subjects):
                     add("SchottVerdugo2019PackmolMemgen", subject, record, field, "software", _AMBER, evidence)
                     add("Martinez2009Packmol", subject, record, field, "base_method", _PACKMOL, evidence)
             # Ligand parameterisation: GAFF atom types from antechamber (GAFF
-            # template generator), partial charges from NAGL or AM1-BCC. GAFF2
-            # has no standalone paper; its exact version stays on record.
+            # template generator), partial charges from NAGL or AM1-BCC (requested
+            # or as NAGL's fallback). GAFF2 has no standalone paper; its exact
+            # version stays on record.
             provenance = metadata.get("forcefield_provenance")
             if record["node_type"] == "topo" and isinstance(provenance, dict):
                 field = "/metadata/forcefield_provenance"
@@ -193,10 +194,10 @@ def select_citations(subjects):
                     else:
                         unresolved.append({**ident, "method": "nagl_model", "value": model,
                                            "reason": "Model-to-paper mapping not verified"})
-                if any(c.get("method") == "am1bcc_fallback" for c in charges):
+                if any(c.get("method") in ("am1bcc", "am1bcc_fallback") for c in charges):
                     for key in ("Jakalian2000AM1BCC", "Jakalian2002AM1BCC"):
                         add(key, subject, record, field + "/ligand_charge_assignment", "official_method", _AMBER)
-                for method in sorted({str(c.get("method")) for c in charges} - {"nagl", "am1bcc_fallback"}):
+                for method in sorted({str(c.get("method")) for c in charges} - {"nagl", "am1bcc", "am1bcc_fallback"}):
                     unresolved.append({**ident, "method": "ligand_charge_method", "value": method,
                                        "reason": "Charge-method mapping not automated"})
             # Alchemical stages: the hybrid topology (single-residue hybrid

@@ -424,6 +424,13 @@ def test_binding_free_energy_closes_the_cycle(tmp_path):
     twice = estimate_binding_dg(complex=turning_leg, solvent=solvent_leg, ligand_symmetry_number=12, output_file=str(out))
     assert twice["success"] is False and twice["code"] == "abfe_symmetry_already_sampled", twice
     once = estimate_binding_dg(complex=turning_leg, solvent=solvent_leg, ligand_symmetry_number=1, output_file=str(out))
+    # the same AM1-BCC model on both legs (one asked for, one NAGL's fallback) closes the cycle
+    bcc = estimate_binding_dg(complex=_leg_file(tmp_path, "c_bcc", "complex", 60.0, boresch=restraint.to_json(),
+                                                ligand_charges={"model": "am1bcc", "assigned": "am1bcc"}),
+                              solvent=_leg_file(tmp_path, "s_fb", "solvent", 5.0,
+                                                ligand_charges={"model": "am1bcc", "assigned": "am1bcc_fallback"}),
+                              output_file=str(out))
+    assert bcc["success"], bcc
     assert once["success"] and once["ligand_reorients_in_site"] is True
     assert any("no symmetry correction" in w for w in once["warnings"])
 
@@ -431,6 +438,10 @@ def test_binding_free_energy_closes_the_cycle(tmp_path):
         (dict(complex=solvent_leg, solvent=complex_leg), "abfe_legs_invalid"),                      # swapped
         (dict(complex=_leg_file(tmp_path, "bare", "complex", 60.0), solvent=solvent_leg), "abfe_legs_invalid"),
         (dict(complex=complex_leg, solvent=_leg_file(tmp_path, "tip3p", "solvent", 5.0, water_model="tip3p")),
+         "abfe_legs_incompatible"),
+        (dict(complex=_leg_file(tmp_path, "c_nagl", "complex", 60.0, boresch=restraint.to_json(),
+                                ligand_charges={"model": "nagl:openff-gnn-am1bcc-1.0.0.pt"}),
+              solvent=_leg_file(tmp_path, "s_bcc", "solvent", 5.0, ligand_charges={"model": "am1bcc"})),
          "abfe_legs_incompatible"),
         (dict(complex=complex_leg, solvent=_leg_file(tmp_path, "mut", "solvent", 5.0, kind="hybrid")), "abfe_legs_invalid"),
     ):

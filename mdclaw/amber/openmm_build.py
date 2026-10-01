@@ -177,6 +177,11 @@ def _charge_fit_timeout_guard(seconds: int):
 
 
 _NAGL_PARTIAL_CHARGE_METHOD = "openff-gnn-am1bcc-1.0.0.pt"
+# ``ligand_charge_method`` of build_amber_system / build_decoupled_system:
+# "nagl" (default) predicts AM1-BCC-like charges with the NAGL model above and
+# falls back to AM1-BCC only where NAGL fails; "am1bcc" skips NAGL and lets the
+# GAFF template generator fit AM1-BCC charges for every ligand.
+LIGAND_CHARGE_METHODS = ("nagl", "am1bcc")
 
 
 def _quantity_to_elementary_charge(value: Any) -> float:
@@ -403,6 +408,42 @@ def _assign_nagl_partial_charges(
                 record["fallback_reason"],
             )
         records.append(record)
+    return records
+
+
+def _am1bcc_charge_engine() -> str:
+    """The program OpenFF hands an ``am1bcc`` request to: OpenEye when it is
+    licensed, otherwise AmberTools' sqm."""
+    try:
+        from openff.toolkit.utils.toolkits import OpenEyeToolkitWrapper
+
+        if OpenEyeToolkitWrapper.is_available():
+            return "openeye"
+    except Exception:  # noqa: BLE001
+        pass
+    return "ambertools_sqm"
+
+
+def _request_am1bcc_partial_charges(
+    ligands: list[Dict[str, Any]],
+    molecules: list[Any],
+) -> list[Dict[str, Any]]:
+    """``ligand_charge_method="am1bcc"``: no NAGL. Any charges the molecule
+    arrived with (an SDF can carry them) are cleared, so the GAFF template
+    generator fits AM1-BCC itself. The records say what was asked for; the
+    build marks them ``success`` once the System exists."""
+    engine = _am1bcc_charge_engine()
+    records: list[Dict[str, Any]] = []
+    for lig, molecule in zip(ligands, molecules):
+        _clear_partial_charges(molecule)
+        records.append({
+            "residue_name": str(lig.get("residue_name") or lig.get("ligand_id") or "LIG"),
+            "ligand_instance_id": lig.get("ligand_instance_id"),
+            "formal_charge_e": _molecule_total_charge_e(molecule),
+            "method": "am1bcc",
+            "charge_engine": engine,
+            "status": "requested",
+        })
     return records
 
 # Initialize tool wrappers.
@@ -741,6 +782,7 @@ def _run_openmmforcefields_build(
     stage_callback: Optional[Callable[[str], None]] = None,
     minimization_report_file: Optional[Path] = None,
     minimize_max_iterations: int = 10,
+    ligand_charge_method: str = "nagl",
 ) -> Dict[str, Any]:
     """Build an OpenMM ``System`` for the given prepared PDB.
 
@@ -970,10 +1012,16 @@ def _run_openmmforcefields_build(
         return result
 
     _stage("assign_ligand_partial_charges")
-    ligand_charge_assignment = _assign_nagl_partial_charges(
-        list(valid_ligands or []),
-        ligand_molecules,
-    )
+    if ligand_charge_method == "am1bcc":
+        ligand_charge_assignment = _request_am1bcc_partial_charges(
+            list(valid_ligands or []),
+            ligand_molecules,
+        )
+    else:
+        ligand_charge_assignment = _assign_nagl_partial_charges(
+            list(valid_ligands or []),
+            ligand_molecules,
+        )
     result["ligand_charge_assignment"] = ligand_charge_assignment
     if any(rec.get("status") == "fallback" for rec in ligand_charge_assignment):
         result["warnings"].append(
@@ -1957,11 +2005,18 @@ def _run_openmmforcefields_build(
     else:
         provenance_solvent_type = "vacuum"
 
+    # The System exists, so the template generator has fitted the AM1-BCC
+    # charges that ligand_charge_method="am1bcc" asked for.
+    for record in ligand_charge_assignment:
+        if record.get("status") == "requested":
+            record["status"] = "success"
+
     provenance: Dict[str, Any] = {
         "kind": "amber_via_openmmforcefields",
         "openmm_xml": list(xml_bundle),
         "extra_xml": list(extra_xml),
         "small_molecule_forcefield": "gaff-2.11",
+        "ligand_charge_method": ligand_charge_method,
         "ligand_molecules": [
             {
                 "sdf": str(lig.get("sdf") or lig.get("sdf_file") or "")

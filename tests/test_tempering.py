@@ -42,6 +42,30 @@ needs_sst2 = pytest.mark.skipif(
 )
 
 
+def _sst2_supports_charge_unscaled():
+    """True when the SST2 driver the tests would run knows --charge-unscaled-indices."""
+    home = _sst2_home()
+    if home is not None:
+        src = home / "src" / "SST2" / "driver.py"
+    else:
+        try:
+            import importlib.util  # noqa: PLC0415
+
+            spec = importlib.util.find_spec("SST2.driver")
+        except Exception:  # noqa: BLE001
+            return False
+        if spec is None or spec.origin is None:
+            return False
+        src = Path(spec.origin)
+    return "--charge-unscaled-indices" in src.read_text()
+
+
+needs_charge_unscaled = pytest.mark.skipif(
+    not _sst2_supports_charge_unscaled(),
+    reason="the SST2 fork in use predates charge_unscaled_index (ba48461); set MDCLAW_SST2_HOME to a newer checkout",
+)
+
+
 class TestValidation:
     def test_registered_as_prod_tool(self):
         from mdclaw.simulation import TOOLS
@@ -244,7 +268,7 @@ def test_run_sst2_node_mode_and_continuation(xml_triple, tmp_path):
     assert read_node(str(jd), prod3)["status"] == "failed"
 
 
-@needs_sst2
+@needs_charge_unscaled
 def test_run_sst2_charge_unscaled_subset(xml_triple, tmp_path):
     """Level-2 solute: side-chain atoms of the solute keep their charges."""
     import mdtraj as md
@@ -301,3 +325,27 @@ def test_run_sst2_charge_unscaled_outside_solute_refused(xml_triple, tmp_path):
     )
     assert res["success"] is False
     assert res["code"] == "sst2_charge_unscaled_invalid"
+
+
+def test_run_sst2_charge_unscaled_old_driver_refused(xml_triple, tmp_path):
+    """An SST2 checkout from before charge_unscaled_index is refused before its driver starts."""
+    old = tmp_path / "old_sst2"
+    (old / "src" / "SST2").mkdir(parents=True)
+    (old / "src" / "SST2" / "driver.py").write_text("# SST2 driver without charge-unscaled solutes\n")
+    solute, _ = _resolve_solute_indices(
+        str(xml_triple / "topology.pdb"), solute_selection=SHORT["solute_selection"], solute_indices_file=None,
+    )
+    cu = tmp_path / "cu.json"
+    cu.write_text(json.dumps(solute[:3]))
+    res = run_sst2(
+        system_xml_file=str(xml_triple / "system.xml"),
+        topology_pdb_file=str(xml_triple / "topology.pdb"),
+        state_xml_file=str(xml_triple / "state.xml"),
+        output_dir=str(tmp_path / "run"),
+        charge_unscaled_indices_file=str(cu),
+        sst2_home=str(old),
+        **SHORT,
+    )
+    assert res["success"] is False
+    assert res["code"] == "sst2_charge_unscaled_unsupported"
+    assert not list((tmp_path / "run").rglob("sst2_driver.log"))

@@ -87,6 +87,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "sst2_solute_selection_empty": "The solute selection matched no atoms; check chain ids and residue numbers against topology.pdb.",
     "sst2_ladder_invalid": "Pass --temperatures-kelvin as an increasing list that contains the reference temperature.",
     "sst2_charge_unscaled_invalid": "The charge-unscaled atoms must be a JSON list of indices inside the solute, with nonbonded scaling on; a continued walker must use the same set as its parent.",
+    "sst2_charge_unscaled_unsupported": "The SST2 driver in use predates charge-unscaled solutes; point --sst2-home or MDCLAW_SST2_HOME at a matsunagalab/SST2 checkout (branch mdclaw) at commit ba48461 or later, or drop --charge-unscaled-indices-file.",
     "sst2_restart_missing": "The tempering sidecar of the parent node is missing; continue from a completed run_sst2 node or drop --restart-state-file.",
     "sst2_requires_pme": "Solute tempering needs explicit solvent with PME; build the topology without implicit solvent.",
     "sst2_driver_failed": "Read artifacts/sst2_driver.log in the node, fix the cause (platform, memory, selection), then branch and rerun.",

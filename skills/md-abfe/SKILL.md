@@ -154,6 +154,7 @@ Options that change the physics, identical on both legs unless stated:
 | Option | Tool | When |
 |---|---|---|
 | `--elec-lambdas`, `--sterics-lambdas` | `build_decoupled_system` | a phase shows `min_neighbour_overlap < 0.03`; add values there, on both legs |
+| `--ligand-charge-method am1bcc` | `build_decoupled_system` | the request names AM1-BCC charges, or compares them with the default NAGL charges; pass it on both legs (`estimate_binding_dg` refuses legs with different charge models) |
 | `--restraint-lambdas` | `add_boresch_restraint` | low overlap inside the `restrain` phase (complex leg only) |
 | `--sampling-time-ps` | `add_boresch_restraint` | a flexible ligand whose pose needs longer to characterise |
 | `--ligand-symmetry-number N` | `estimate_binding_dg` | the restraint confines the ligand to one of N indistinguishable orientations that it never visited during the selection run; refused (`abfe_symmetry_already_sampled`) when the ligand turned there |

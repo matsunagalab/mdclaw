@@ -39,7 +39,7 @@ from pathlib import Path  # noqa: E402
 from typing import List, Optional, Dict, Any  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
-    create_unique_subdir, generate_job_id,
+    create_choice_error, create_unique_subdir, generate_job_id,
     BaseToolWrapper, create_file_not_found_error, create_tool_not_available_error,
     create_validation_error,
     create_validation_error_from_guardrails, guardrail_messages,
@@ -72,7 +72,7 @@ from mdclaw.amber.content_detection import _gemmi_available, _scan_pdb_ion_resid
 from mdclaw.amber.forcefield_constants import CANONICAL_PROTEIN_FORCEFIELDS, GLYCAN_FORCEFIELDS, NUCLEIC_FORCEFIELDS, PHOSAA_LIBRARY_FOR_FF, is_glycam_template_residue  # noqa: E402
 from mdclaw.amber.glycam_topology import _prepare_glycam_pdb_with_cpptraj  # noqa: E402
 from mdclaw.amber.ligand_validation import implicit_ligand_diagnostics, validate_initial_ligand_contacts, validate_ligand_chemistry, validate_ligand_template_coverage, validate_modxna_params  # noqa: E402
-from mdclaw.amber.openmm_build import _record_topology_build_stage, _run_openmmforcefields_build  # noqa: E402
+from mdclaw.amber.openmm_build import LIGAND_CHARGE_METHODS, _record_topology_build_stage, _run_openmmforcefields_build  # noqa: E402
 from mdclaw.amber.topology_bonds import _plan_glycan_topology_bonds  # noqa: E402
 from mdclaw.amber.water_utils import _canonical_forcefield_name, _canonical_water_model_name, _evaluate_forcefield_water_guardrails, fix_histidine_protonation_consistency, fix_ligand_residue_names, resolve_water_and_forcefield, strip_crystal_waters  # noqa: E402
 
@@ -181,6 +181,7 @@ def build_amber_system(
     is_membrane: Optional[bool] = None,
     hmr: bool = True,
     implicit_solvent: Optional[str] = None,
+    ligand_charge_method: str = "nagl",
     pablo_auto_download: bool = True,
     output_name: str = "system",
     output_dir: Optional[str] = None,
@@ -270,6 +271,15 @@ def build_amber_system(
                           ``forcefield="ff14SB"`` is auto-substituted to
                           ``"ff14SBonlysc"`` (the GBneck2-tuned variant)
                           when ``implicit_solvent`` is set.
+        ligand_charge_method: How ligand partial charges are assigned
+                     (GAFF parameters either way). ``"nagl"`` (default):
+                     the OpenFF NAGL model ``openff-gnn-am1bcc-1.0.0``
+                     predicts AM1-BCC-like charges, with AM1-BCC fitted only
+                     where NAGL fails (``am1bcc_fallback``). ``"am1bcc"``:
+                     AM1-BCC fitted for every ligand by the GAFF template
+                     generator (AmberTools sqm unless OpenEye is licensed).
+                     The outcome per ligand is in
+                     ``forcefield_provenance.ligand_charge_assignment``.
         pablo_auto_download: Allow OpenFF Pablo to auto-download missing CCD
                      residue definitions while loading the topology. Keep the
                      default ``True`` for general prepared structures; known
@@ -342,6 +352,20 @@ def build_amber_system(
         ...     # vacuum is not a recommended ensemble for default workflows.
         ... )
     """
+    requested_charge_method = ligand_charge_method
+    ligand_charge_method = str(ligand_charge_method or "").strip().lower()
+    if ligand_charge_method not in LIGAND_CHARGE_METHODS:
+        # An argument error: refused before the node begins, so the same
+        # pending node can be run again with a valid method.
+        blocked = create_choice_error(
+            "ligand_charge_method", requested_charge_method, LIGAND_CHARGE_METHODS,
+            hints=["Omit it for the default (nagl), or pass --ligand-charge-method am1bcc to fit AM1-BCC charges."],
+        )
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(job_dir, node_id, blocked,
+                                         default_error="build_amber_system unknown ligand_charge_method")
+        return blocked
     solvation_water_model = None
     solvation_node_id = None
     neutralization_expected = False
@@ -397,6 +421,7 @@ def build_amber_system(
                 "is_membrane": is_membrane,
                 "hmr": hmr,
                 "implicit_solvent": implicit_solvent,
+                "ligand_charge_method": ligand_charge_method,
                 "pablo_auto_download": pablo_auto_download,
                 "output_name": output_name,
             },
@@ -660,6 +685,7 @@ def build_amber_system(
             "water_model_source": _ff_water["water_model_source"],
             "forcefield_source": _ff_water["forcefield_source"],
             "ligand_count": len(ligand_chemistry) if ligand_chemistry else 0,
+            "ligand_charge_method": ligand_charge_method,
             "modxna_param_count": len(modxna_params) if modxna_params else 0,
             "glycan_count": len((glycan_metadata or {}).get("glycans", [])) if isinstance(glycan_metadata, dict) else 0,
             "glycan_linkage_count": len(glycan_linkages) if glycan_linkages else 0,
@@ -1473,6 +1499,7 @@ def build_amber_system(
             implicit_solvent=canonical_implicit_solvent,
             pablo_auto_download=bool(pablo_auto_download),
             minimize_max_iterations=minimize_max_iterations,
+            ligand_charge_method=ligand_charge_method,
             stage_callback=(
                 (lambda stage: _record_topology_build_stage(job_dir, node_id, stage))
                 if _node_mode else None
