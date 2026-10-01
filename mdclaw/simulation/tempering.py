@@ -238,6 +238,60 @@ def _summarize_report(report_csv: Path, ladder: list[float]) -> dict:
     }
 
 
+def _resolve_charge_unscaled(
+    charge_unscaled_indices_file: Optional[str],
+    solute: list[int],
+    scale_nonbonded: bool,
+    out_dir: Path,
+    restart_state_file: Optional[str],
+) -> tuple[list[int], Optional[Path]]:
+    """Validate the charge-unscaled subset of the solute and copy it into the
+    node's artifacts.  A continued walker must keep the parent's set size."""
+    charge_unscaled: list[int] = []
+    if charge_unscaled_indices_file:
+        try:
+            with open(charge_unscaled_indices_file) as fh:
+                raw = json.load(fh)
+            charge_unscaled = sorted({int(i) for i in raw})
+        except (OSError, ValueError, TypeError) as exc:
+            raise SST2ToolError(
+                code="sst2_charge_unscaled_invalid",
+                message=f"charge_unscaled_indices_file {charge_unscaled_indices_file!r} is not a JSON list "
+                f"of atom indices: {exc}",
+            ) from exc
+    if charge_unscaled:
+        if not scale_nonbonded:
+            raise SST2ToolError(
+                code="sst2_charge_unscaled_invalid",
+                message="charge_unscaled_indices_file needs scale_nonbonded=True (it chooses which "
+                "solute charges are scaled).",
+            )
+        outside = sorted(set(charge_unscaled) - set(solute))
+        if outside:
+            raise SST2ToolError(
+                code="sst2_charge_unscaled_invalid",
+                message=f"{len(outside)} charge-unscaled atoms are not in the solute (first: {outside[:5]}); "
+                "the charge-unscaled set must be a subset of the solute.",
+            )
+    if restart_state_file and Path(restart_state_file).is_file():
+        try:
+            parent_n = json.loads(Path(restart_state_file).read_text()).get("charge_unscaled_atoms", 0) or 0
+        except (OSError, ValueError):
+            parent_n = None
+        if parent_n is not None and int(parent_n) != len(charge_unscaled):
+            raise SST2ToolError(
+                code="sst2_charge_unscaled_invalid",
+                message=f"the parent walker ran with {parent_n} charge-unscaled atoms, this call has "
+                f"{len(charge_unscaled)}; a continued walker keeps the same Hamiltonian.",
+            )
+    if not charge_unscaled:
+        return [], None
+    path = out_dir / "charge_unscaled_indices.json"
+    with open(path, "w") as fh:
+        json.dump(charge_unscaled, fh)
+    return charge_unscaled, path
+
+
 @node_tool(node_type="prod")
 def run_sst2(
     system_xml_file: Optional[str] = None,
@@ -245,6 +299,7 @@ def run_sst2(
     state_xml_file: Optional[str] = None,
     solute_selection: Optional[str] = None,
     solute_indices_file: Optional[str] = None,
+    charge_unscaled_indices_file: Optional[str] = None,
     temperatures_kelvin: Optional[list[str]] = None,
     reference_temperature_kelvin: Optional[float] = None,
     simulation_time_ns: float = 1.0,
@@ -286,6 +341,11 @@ def run_sst2(
             ``"chainid 0 and resid 97 to 109"``.  Cut at residue
             boundaries.  Alternative: ``solute_indices_file``.
         solute_indices_file: JSON list of 0-based solute atom indices.
+        charge_unscaled_indices_file: JSON list of solute atoms whose charges
+            stay unscaled while their Lennard-Jones epsilon and torsions are
+            scaled (e.g. the side chains a CDR-H3 loop packs against, with
+            the loop itself fully scaled).  Must be a subset of the solute;
+            a continued walker must use the same set.
         temperatures_kelvin: Rung temperatures in K, increasing (CLI:
             ``--temperatures-kelvin 300 357 424 505 600``); the solute
             scaling is ``lambda = T_ref / T``.
@@ -427,6 +487,12 @@ def run_sst2(
         solute_file = out_dir / "solute_indices.json"
         with open(solute_file, "w") as fh:
             json.dump(solute, fh)
+        charge_unscaled, charge_unscaled_file = _resolve_charge_unscaled(
+            charge_unscaled_indices_file, solute, scale_nonbonded, out_dir, restart_state_file,
+        )
+        if charge_unscaled:
+            provenance["charge_unscaled_atoms"] = len(charge_unscaled)
+            provenance["charge_unscaled_indices_file"] = str(Path(charge_unscaled_indices_file).resolve())
         if restart_state_file and not Path(restart_state_file).is_file():
             raise SST2ToolError(
                 code="sst2_restart_missing",
@@ -467,6 +533,8 @@ def run_sst2(
             cmd += ["--weights-json", str(Path(weights_file).resolve())]
         if restart_state_file:
             cmd += ["--restart-json", str(Path(restart_state_file).resolve())]
+        if charge_unscaled_file is not None:
+            cmd += ["--charge-unscaled-indices", str(charge_unscaled_file.resolve())]
 
         log_path = out_dir / "sst2_driver.log"
         logger.info("Running SST2 driver: %s", " ".join(cmd))
@@ -545,6 +613,7 @@ def run_sst2(
             "tempering_report_file": str(out_dir / "tempering.csv"),
             "tempering_state_file": str(out_dir / "tempering.json"),
             "solute_indices_file": str(solute_file),
+            "charge_unscaled_indices_file": str(charge_unscaled_file) if charge_unscaled_file else None,
             "driver_log": str(log_path),
             "steps_completed": steps,
             "tempering": {
@@ -552,6 +621,7 @@ def run_sst2(
                 "reference_temperature_kelvin": ref_temp,
                 "lambdas": sidecar.get("lambdas"),
                 "solute_atoms": sidecar.get("solute_atoms", len(solute)),
+                "charge_unscaled_atoms": len(charge_unscaled),
                 "boundary_exceptions": sidecar.get("boundary_exceptions"),
                 "torsion_buckets": sidecar.get("torsion_buckets"),
                 "weights_kJ_per_mol": sidecar.get("weights_kJ_per_mol"),
@@ -587,6 +657,8 @@ def run_sst2(
                 "tempering_report": _node_artifact_path(result["tempering_report_file"]),
                 "tempering_state": _node_artifact_path(result["tempering_state_file"]),
                 "solute_indices": _node_artifact_path(result["solute_indices_file"]),
+                **({"charge_unscaled_indices": _node_artifact_path(result["charge_unscaled_indices_file"])}
+                   if result.get("charge_unscaled_indices_file") else {}),
                 "driver_log": _node_artifact_path(result["driver_log"]),
             }
             metadata = {

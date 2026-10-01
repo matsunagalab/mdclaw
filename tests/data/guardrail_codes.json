@@ -427,6 +427,7 @@
   "source_candidate_selection_required",
   "source_cannot_have_dependencies",
   "source_cannot_have_parents",
+  "sst2_charge_unscaled_invalid",
   "sst2_driver_failed",
   "sst2_ladder_invalid",
   "sst2_not_installed",

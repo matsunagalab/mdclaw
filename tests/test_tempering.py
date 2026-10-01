@@ -242,3 +242,62 @@ def test_run_sst2_node_mode_and_continuation(xml_triple, tmp_path):
     res3 = run_sst2(job_dir=str(jd), node_id=prod3, **{**SHORT, "temperatures_kelvin": [330.0, 300.0]})
     assert res3["success"] is False and res3["code"] == "sst2_ladder_invalid"
     assert read_node(str(jd), prod3)["status"] == "failed"
+
+
+@needs_sst2
+def test_run_sst2_charge_unscaled_subset(xml_triple, tmp_path):
+    """Level-2 solute: side-chain atoms of the solute keep their charges."""
+    import mdtraj as md
+
+    top = md.load(str(xml_triple / "topology.pdb")).topology
+    solute, _ = _resolve_solute_indices(
+        str(xml_triple / "topology.pdb"), solute_selection=SHORT["solute_selection"], solute_indices_file=None,
+    )
+    backbone = {"N", "H", "CA", "HA", "C", "O"}
+    side = [i for i in solute if top.atom(i).name not in backbone]
+    cu = tmp_path / "cu.json"
+    cu.write_text(json.dumps(side))
+
+    res = run_sst2(
+        system_xml_file=str(xml_triple / "system.xml"),
+        topology_pdb_file=str(xml_triple / "topology.pdb"),
+        state_xml_file=str(xml_triple / "state.xml"),
+        output_dir=str(tmp_path / "run"),
+        charge_unscaled_indices_file=str(cu),
+        **SHORT,
+    )
+    assert res["success"], res
+    out = Path(res["output_dir"])
+    assert json.loads((out / "charge_unscaled_indices.json").read_text()) == sorted(side)
+    assert res["tempering"]["charge_unscaled_atoms"] == len(side)
+    side_json = json.loads((out / "tempering.json").read_text())
+    assert side_json["charge_unscaled_atoms"] == len(side)
+    assert "--charge-unscaled-indices" in (out / "sst2_driver.log").read_text().splitlines()[0]
+
+    # a continuation must keep the same set
+    res2 = run_sst2(
+        system_xml_file=str(xml_triple / "system.xml"),
+        topology_pdb_file=str(xml_triple / "topology.pdb"),
+        state_xml_file=str(out / "state.xml"),
+        restart_state_file=str(out / "tempering.json"),
+        output_dir=str(tmp_path / "run2"),
+        **SHORT,
+    )
+    assert res2["success"] is False
+    assert res2["code"] == "sst2_charge_unscaled_invalid"
+
+
+@needs_sst2
+def test_run_sst2_charge_unscaled_outside_solute_refused(xml_triple, tmp_path):
+    cu = tmp_path / "cu.json"
+    cu.write_text(json.dumps([0, 1, 2]))          # chain A atoms, not in the chain B solute
+    res = run_sst2(
+        system_xml_file=str(xml_triple / "system.xml"),
+        topology_pdb_file=str(xml_triple / "topology.pdb"),
+        state_xml_file=str(xml_triple / "state.xml"),
+        output_dir=str(tmp_path / "run"),
+        charge_unscaled_indices_file=str(cu),
+        **SHORT,
+    )
+    assert res["success"] is False
+    assert res["code"] == "sst2_charge_unscaled_invalid"

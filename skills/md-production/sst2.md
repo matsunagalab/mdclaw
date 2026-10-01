@@ -37,6 +37,17 @@ thousands of atoms need more rungs. `--scale-nonbonded false` scales only the
 solute torsions (the gREST dihedral-only mode); it leaves loop packing
 untouched and is a control, not a default.
 
+A loop and what it packs against: the loop alone gets hot but keeps its
+shape at the reference rung (1KXV CDR-H3), so add the residues it packs
+against, but only their **side chains**. Their backbone belongs to the
+framework beta-sheet; scaling it melts the sheet at the hot rungs and the
+walker stays hot (nanobody runs, 2026-09-27). Solute = every atom of the
+loop + the side-chain atoms of its neighbours. To soften only the packing,
+also pass those side chains as `--charge-unscaled-indices-file` (a subset of
+the solute): their Lennard-Jones and torsions are scaled, their charges are
+not, so the solute's net charge is the loop's. A continued walker must keep
+the same set (`sst2_charge_unscaled_invalid` otherwise).
+
 ## Ladder
 
 `--temperatures-kelvin` is increasing and contains the reference temperature
