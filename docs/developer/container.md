@@ -65,6 +65,12 @@ docker run --rm --gpus all -v "$(pwd)/container/scripts/test-container.sh:/work/
 
 ## Publish To GHCR
 
+Publishing is normally automated: a `vX.Y.Z` tag triggers
+`.github/workflows/container.yml`, which builds from the lock, runs the CPU
+smoke test, and pushes the versioned and `latest` tags (GPU smoke stays a
+manual gate, `docs/developer/release.md`). The commands below are the manual
+fallback when Actions is unavailable.
+
 ```bash
 gh auth refresh --hostname github.com --scopes write:packages
 gh auth token | docker login ghcr.io -u <github-username> --password-stdin

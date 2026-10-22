@@ -225,12 +225,6 @@ cholesterol mixtures (e.g. `POPC:POPE:CHL1 2:1:1`, MDPrepBench P18).
   moved to `mdclaw/solvation/patch_membrane.py`; `mdclaw/membrane_cache.py` was
   deleted.
 
-### Benchmark Integrity Rollout
-
-Moved with the benchmark suites to
-[matsunagalab/MDPrepBench](https://github.com/matsunagalab/MDPrepBench) and
-[matsunagalab/MDStudyBench](https://github.com/matsunagalab/MDStudyBench).
-
 ### Ligand Chemistry Handoff
 
 The public ligand contract is `ligand_chemistry`: prep records

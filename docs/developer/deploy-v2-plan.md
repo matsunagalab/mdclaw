@@ -31,8 +31,8 @@ those pieces, so they stay source-built regardless of the package manager.
   8.2, but that does not carry the rest of the stack.
 - Skills distribution had a parallel standard: the
   [skills CLI](https://github.com/vercel-labs/skills) (`npx skills add`)
-  installs Agent Skills into the same mirror directories
-  `scripts/install-agent-skills.sh` manages by hand, for ~17 harnesses.
+  installs Agent Skills into the same mirror directories the repo-local
+  installer script used to manage by hand, for ~17 harnesses.
 
 ## What changed
 
@@ -74,27 +74,32 @@ those pieces, so they stay source-built regardless of the package manager.
 
 - `skills/common/SKILL.md` added, so the shared pages install as a sibling
   skill through any Agent Skills-compliant installer and the layout matches
-  the existing mirrors. `npx skills add matsunagalab/mdclaw` is the
-  documented path for Codex / Cursor / OpenCode and other harnesses;
-  `scripts/install-agent-skills.sh` stays for Node-less and checkout-local
-  setups. Claude Code plugin and Pi paths are unchanged.
+  the existing mirrors. `npx skills add matsunagalab/mdclaw` is the single
+  external install path for Codex / Cursor / OpenCode and other harnesses;
+  `scripts/install-agent-skills.sh` was deleted (2026-10-23) — the checkout's
+  tracked mirrors cover repo-local agents, restored with `git checkout` when
+  a sync tool strips symlinks. Claude Code plugin and Pi paths are unchanged.
 
-## Release gates (not yet validated)
+## Release gates
 
-The amd64 image rewrite cannot be built on this Mac (no Docker daemon). At
-the next release, on a Docker host:
+The CPU portion is automated (2026-10-23, decisions 1A/2A/3A on CI):
+`.github/workflows/ci.yml` validates the lock and runs the test set on
+macos-latest (osx-arm64) and ubuntu-latest (linux-64, `CONDA_OVERRIDE_CUDA`);
+`.github/workflows/container.yml` builds the amd64 image from the lock and
+runs `test-container.sh` in CPU mode on every `v*` tag or manual dispatch,
+pushing to GHCR on success. The build carries two specific first-run risks —
+`CONDA_OVERRIDE_CUDA` satisfying the lock on a GPU-less builder, and
+`conda-pack -p` accepting the pixi prefix — so run the Container workflow
+once via `workflow_dispatch` (without `push_image`) before the first tagged
+release. If conda-pack refuses the pixi prefix, the fallbacks in order:
+`pixi-pack` (needs a check that git PyPI deps are supported), or keeping the
+env path identical across stages instead of packing.
 
-1. `docker build -f container/Dockerfile .` — watch two specific risks:
-   `CONDA_OVERRIDE_CUDA` satisfying the lock on a GPU-less builder, and
-   `conda-pack -p` accepting the pixi prefix (pixi writes standard
-   conda-meta, but this combination is unproven here).
-2. `container/scripts/test-container.sh` (CPU and `--gpus all`).
-3. Only then replace GHCR `latest` / the shared floyd SIF, per the protocol
-   in `conda-env-parity-plan.md`.
-
-If conda-pack refuses the pixi prefix, the fallbacks in order: `pixi-pack`
-(needs a check that git PyPI deps are supported), or keeping the env path
-identical across stages instead of packing.
+Still manual, by decision (3A): the GPU smoke test
+(`test-container.sh` with `--gpus all`) on a GPU host before GHCR `latest`
+or the shared floyd SIF is replaced, per the protocol in
+`conda-env-parity-plan.md`. Hosted runners have no GPU; a self-hosted lab
+runner was considered and deferred.
 
 ## Migration state and follow-ups
 

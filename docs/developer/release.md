@@ -21,23 +21,32 @@ in sync.
 scripts/bump-version.sh X.Y.Z
 scripts/mdclaw-doctor.sh
 
-# 2. Commit, tag, and push
+# 2. Commit, tag, and push. The v-tag triggers .github/workflows/container.yml:
+#    it builds the amd64 image from the committed pixi.lock, runs the CPU
+#    smoke test (container/scripts/test-container.sh), and pushes
+#    ghcr.io/matsunagalab/mdclaw:X.Y.Z and :latest. The workflow fails if the
+#    tag does not match the plugin.json version or if pixi.lock is stale.
 git add -A
 git commit -m "release: vX.Y.Z"
 git tag vX.Y.Z
 git push origin main --tags
 
-# 3. Build and test the packaged MD runtime image
-docker build -f container/Dockerfile -t mdclaw:latest .
-docker run --rm --gpus all -v "$(pwd)/container/scripts/test-container.sh:/work/test.sh:ro" \
-  mdclaw:latest bash /work/test.sh
-
-# 4. Push versioned and latest runtime images
-docker tag mdclaw:latest ghcr.io/matsunagalab/mdclaw:X.Y.Z
-docker tag mdclaw:latest ghcr.io/matsunagalab/mdclaw:latest
-docker push ghcr.io/matsunagalab/mdclaw:X.Y.Z
-docker push ghcr.io/matsunagalab/mdclaw:latest
+# 3. GPU smoke test — a manual gate (hosted runners have no GPU). Run on a
+#    GPU host before replacing any shared SIF:
+docker run --rm --gpus all \
+  -v "$(pwd)/container/scripts/test-container.sh:/work/test.sh:ro" \
+  ghcr.io/matsunagalab/mdclaw:X.Y.Z bash /work/test.sh
 ```
+
+To rebuild and validate without cutting a release, run the Container workflow
+manually (`workflow_dispatch`); it pushes only when `push_image` is set. The
+old manual build-and-push commands remain in `docs/developer/container.md` as
+the fallback when Actions is unavailable.
+
+One-time setup: the GHCR package `mdclaw` must grant this repository's
+Actions write access (package settings → Manage Actions access) or the
+`GITHUB_TOKEN` push is denied — the existing package was first pushed with a
+personal token, so it is not linked to the repository automatically.
 
 Users update skills and the wrapper with:
 

@@ -145,7 +145,7 @@ for skills_root in "${skill_roots[@]}"; do
         done
         if [ -n "$missing" ]; then
             echo "[warn] $label is missing:$missing"
-            echo "      Run: scripts/install-agent-skills.sh"
+            echo "      Restore the tracked mirrors: git checkout -- .agents .claude"
         fi
         if [ -e "$skills_root/common/run-loop.md" ]; then
             echo "[ok] $label/common"
@@ -160,6 +160,7 @@ for skills_root in "${skill_roots[@]}"; do
         fi
     else
         echo "[warn] $label not found"
-        echo "      Run: scripts/install-agent-skills.sh"
+        echo "      Restore the tracked mirrors (git checkout -- .agents .claude)"
+        echo "      or install skills: npx skills add matsunagalab/mdclaw"
     fi
 done

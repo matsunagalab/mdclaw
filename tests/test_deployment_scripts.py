@@ -163,44 +163,13 @@ def test_tracked_skill_mirrors_have_common_and_no_broken_symlinks():
                 assert path.exists(), f"{path.relative_to(REPO_ROOT)} -> {os.readlink(path)}"
 
 
-def _copy_install_fixture(tmp_path: Path) -> Path:
-    shutil.copytree(REPO_ROOT / "skills", tmp_path / "skills", symlinks=True)
-    (tmp_path / "scripts").mkdir()
-    shutil.copy2(REPO_ROOT / "scripts" / "install-agent-skills.sh", tmp_path / "scripts")
-    return tmp_path
-
-
-def test_install_agent_skills_copy_includes_support_dirs_and_codex(tmp_path):
-    root = _copy_install_fixture(tmp_path)
-
-    subprocess.run(
-        ["bash", "scripts/install-agent-skills.sh", "--copy"],
-        cwd=root,
-        check=True,
-        text=True,
-        capture_output=True,
-    )
-
-    for mirror in (".agents/skills", ".claude/skills", ".codex/skills"):
-        assert (root / mirror / "common" / "run-loop.md").exists()
-        assert (root / mirror / "md-prepare" / "SKILL.md").exists()
-
-
-def test_install_agent_skills_symlink_mode_prunes_stale_entries(tmp_path):
-    root = _copy_install_fixture(tmp_path)
-    stale = root / ".agents" / "skills" / "md-benchmark"
-    stale.parent.mkdir(parents=True)
-    stale.symlink_to("../../skills/md-benchmark")
-
-    subprocess.run(
-        ["bash", "scripts/install-agent-skills.sh"],
-        cwd=root,
-        check=True,
-        text=True,
-        capture_output=True,
-    )
-
-    assert not stale.exists()
-    assert not stale.is_symlink()
-    assert os.readlink(root / ".agents" / "skills" / "common") == "../../skills/common"
-    assert os.readlink(root / ".codex" / "skills" / "md-prepare") == "../../skills/md-prepare"
+def test_every_skill_is_mirrored_and_declares_frontmatter():
+    """The tracked mirrors must cover every skill, and every skill must carry
+    the Agent Skills frontmatter the `npx skills` installer reads."""
+    skills = sorted(p.name for p in (REPO_ROOT / "skills").iterdir() if p.is_dir())
+    assert skills, "skills/ is empty?"
+    for name in skills:
+        head = (REPO_ROOT / "skills" / name / "SKILL.md").read_text().split("\n", 5)
+        assert head[0] == "---", f"skills/{name}/SKILL.md lacks YAML frontmatter"
+        for mirror in (".agents/skills", ".claude/skills"):
+            assert (REPO_ROOT / mirror / name).exists(), f"{mirror}/{name} missing"

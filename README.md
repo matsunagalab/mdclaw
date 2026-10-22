@@ -23,8 +23,13 @@ Every run is a small study, even when it contains only one system. A study can
 hold one or more job DAGs, and each job follows the same artifact handoff:
 
 ```text
-source -> prep -> solv -> topo -> min -> eq -> prod -> analyze
+source -> prep -> solv -> topo -> min -> eq -> {prod | fep} -> analyze
 ```
+
+Each job carries exactly one structural source identity: independent starting
+systems are separate jobs in the same study, while branches inside a job
+derive variants (mutations, ligands, protocols, temperatures, seeds) from its
+prepared structure.
 
 The CLI manages node state and passes artifacts between stages. A later agent
 can use `inspect_job` to resume from completed work, `explain_node` to validate
@@ -42,28 +47,24 @@ MDClaw needs two things, managed separately:
 
 1. **Agent skills** from `skills/`, unless you use the CLI directly.
 2. **One scientific runtime** containing the `mdclaw` CLI, AmberTools, OpenMM,
-   and the Python dependencies: a Conda environment, a Singularity/Apptainer
-   SIF, or a Docker image.
+   and the Python dependencies: a [Pixi](https://pixi.sh) environment, a
+   Singularity/Apptainer SIF, or a Docker image.
 
 ### Quickstart From A Checkout
 
-Provide one runtime first: [pixi](https://pixi.sh) for a fast locked local
-environment, or Singularity/Apptainer or Docker for the packaged runtime
-image (an existing `mdclaw` conda env is also detected and reused).
+Repo-local agents need no skill installer: the checkout already tracks the
+discovery mirrors (`.agents/skills`, `.claude/skills`). Provide a runtime and
+verify:
 
 ```bash
 git clone https://github.com/matsunagalab/mdclaw.git
 cd mdclaw
 
-# Expose the skills to repo-local agent harnesses
-# (.agents/.claude/.codex mirrors).
-scripts/install-agent-skills.sh
-
 # Local env (recommended on a workstation): locked install in seconds.
 pixi install
-# ...or packaged runtime: reuse an existing pixi/conda env, otherwise
-# download the version-matched image from ghcr.io/matsunagalab/mdclaw
-# (SIF preferred, Docker fallback). Nothing is rebuilt.
+# ...or packaged runtime: downloads the version-matched image from
+# ghcr.io/matsunagalab/mdclaw (SIF preferred, Docker fallback), skipping
+# the pull when a local pixi or conda env already exists. Nothing is rebuilt.
 scripts/setup-container.sh
 
 # Put the runtime-selecting wrapper on PATH and verify.
@@ -74,39 +75,50 @@ scripts/mdclaw-doctor.sh
 
 ### Install Skills For Your Agent
 
-| Agent or use case | Skill setup | Runtime setup |
-|---|---|---|
-| Claude Code plugin | `/plugin marketplace add matsunagalab/mdclaw`, then `/plugin install mdclaw@mdclaw` | Session-start hook runs the packaged-runtime setup |
-| Codex, Cursor, OpenCode, and other [Agent Skills](https://agentskills.io) harnesses | `npx skills add matsunagalab/mdclaw` ([skills CLI](https://github.com/vercel-labs/skills), Node 22.20+) | Provide one runtime |
-| Pi | `pi install git:github.com/matsunagalab/mdclaw@main` | Provide one runtime; Pi installs skills only |
-| Direct CLI or development | Skills are optional | Pixi, Conda, or a packaged runtime |
+MDClaw skills follow the [Agent Skills](https://agentskills.io) standard, so
+one command installs them for any supported harness — Claude Code, Codex,
+Cursor, OpenCode, and others ([skills CLI](https://github.com/vercel-labs/skills),
+Node 22.20+). Run it in the project the agent works in and select the skills
+and target agents when prompted:
 
-Both installers create discovery mirrors under `.agents/skills`,
-`.claude/skills`, and the other agents' skill directories; `skills/` remains
-the only source of truth. Without Node, `scripts/install-agent-skills.sh`
-does the same for a checkout (`--copy` on filesystems that do not support
-symlinks).
+```bash
+npx skills add matsunagalab/mdclaw
+```
+
+Two agent-native setups install more than the skill text and replace the
+command above where they apply:
+
+| Agent | Setup | What it adds |
+|---|---|---|
+| Claude Code plugin | `/plugin marketplace add matsunagalab/mdclaw`, then `/plugin install mdclaw@mdclaw` | `/mdclaw:*` commands and a session-start hook that prepares the packaged runtime |
+| Pi | `pi install git:github.com/matsunagalab/mdclaw@main` | Pi-native skill management (runtime still provided separately) |
+
+Every installer creates discovery mirrors (e.g. `.agents/skills`,
+`.claude/skills`); `skills/` remains the only source of truth. Use
+`npx skills add matsunagalab/mdclaw --copy` on filesystems that do not
+support symlinks. Skills are optional when driving the CLI directly.
 
 ### Runtime Selection
 
 `bin/mdclaw` selects exactly one runtime for each call. The order is an explicit
-`MDCLAW_RUNTIME=conda|singularity|apptainer|docker` override, then conda env
-`mdclaw`, SIF, Docker, and finally a local `mdclaw` executable. Set the override
-when more than one is installed and you need predictable selection. Container
-calls bind the current working directory at the same absolute path, so run from
-the study/project directory and keep inputs below it.
+`MDCLAW_RUNTIME=pixi|conda|singularity|apptainer|docker` override, then the
+checkout pixi env (`.pixi/envs/default`), conda env `mdclaw`, SIF, Docker, and
+finally a local `mdclaw` executable. Set the override when more than one is
+installed and you need predictable selection. Container calls bind the current
+working directory at the same absolute path, so run from the study/project
+directory and keep inputs below it.
 
 Per-runtime setup — an administrator-provided shared SIF with no checkout,
-Conda for development, a SIF on Linux HPC, Docker on a desktop — plus
-verification and troubleshooting live in
+Pixi for development, a SIF on Linux HPC, Docker on a desktop, legacy Conda —
+plus verification and troubleshooting live in
 [docs/agents/deployment.md](docs/agents/deployment.md). Image build and
 publishing details are in `docs/developer/container.md`.
 
 ### AI Model Backends (BioEmu, Boltz-2)
 
 BioEmu (monomer conformational ensembles) and Boltz-2 (structure prediction,
-pinned to 2.2.1) are optional. They are **not** in the core conda environment or
-container because their Torch/CUDA stacks are independent. Install only the
+pinned to 2.2.1) are optional. They are **not** in the core runtime environment
+or container because their Torch/CUDA stacks are independent. Install only the
 backend you need:
 
 ```bash
@@ -119,47 +131,22 @@ mdclaw check_model_backend  --model boltz
 On a read-only SIF, point `MDCLAW_SURROGATE_DIR` at a writable (ideally shared)
 filesystem and bind-mount it so the venv and model weight caches persist.
 
-BioEmu can then generate a monomer conformational ensemble as a source bundle:
-
-```bash
-mdclaw generate_surrogate_candidates \
-  --model bioemu \
-  --amino-acid-sequence YYDPETGTWY \
-  --num-samples 100 \
-  --max-candidates 20 \
-  --job-dir <job_dir> \
-  --node-id source_001
-```
-
-The generated candidates are recorded in the source node's `source_bundle.json`
-with `source_type="surrogate"` and can be consumed by
-`prepare_complex --source-candidate-id candidate_NNN`. Boltz-2 is driven through
-the `boltz-predict` skill / `boltz2_protein_from_seq` tool once its backend is
-installed. See `docs/developer/model-backends.md` for the registry contract and
-how to add or swap a model.
+Once a backend is installed, the agent drives it through the skills: BioEmu
+monomer ensembles via `bioemu-sample` (`generate_surrogate_candidates`,
+recorded as a source bundle for preparation), Boltz-2 predictions via
+`boltz-predict` (`boltz2_protein_from_seq`). See
+`docs/developer/model-backends.md` for the registry contract and how to add
+or swap a model.
 
 ## Ask In Plain Language
 
-Users do not need to remember command names. The framing of your request
-decides where MDClaw stops. There are three patterns:
+Users do not need to remember command names. Describe the work; MDClaw stops
+where your request stops. There are two shapes:
 
-**Plan only.** Ask the agent to plan a study. It records a lightweight
-`study_plan.json` (question, MD goal, planned jobs, observables, decision
-criteria) and stops so you can review before any system is built.
-
-```text
-Plan an MD study for the PSD-95 PDZ3 domain bound to the CRIPT peptide
-(PDB 1BE9). Test whether the H372A mutation weakens dynamic coupling between
-the distal alpha-3 helix and the peptide-binding groove. Define the WT and
-mutant jobs, peptide-contact and groove-dynamics observables, and decision
-criteria.
-```
-
-**Run to a stage or resume.** Name the last stage you need: preparation,
-equilibration, production, or analysis. For an existing study or job, state
-the new purpose; MDClaw inspects the DAG, reuses completed artifacts, and
-continues only as far as that request requires. A direct one-system run still
-gets a thin study record with one `jobs/main` job.
+**One system (a single job).** Name the structure and the last stage you
+need — preparation, equilibration, production, or analysis. A direct run
+still gets a thin study record with one `jobs/main` job, so a later agent can
+inspect and resume it.
 
 ```text
 Prepare PDB 1AKE chain A as a protein-only explicit-water system using the
@@ -167,10 +154,10 @@ default force field and water model. Continue through default equilibration
 and stop before production.
 ```
 
-**Scientific answer.** Explicitly ask the agent to answer the scientific
-question using MD. It advances every required job through the planned
-analysis, packages evidence, applies the decision criteria, and returns a
-supported conclusion.
+**A scientific question (a study).** State the question, the comparison
+groups, and what evidence would answer it. MDClaw plans the jobs and runs
+only as far as you ask: stop at the plan for review, stop at a named stage,
+or continue through analysis to an evidence-backed conclusion.
 
 ```text
 Set up and run an apo-vs-holo MD study for the T4 lysozyme L99A
@@ -181,14 +168,10 @@ analyze cavity hydration and ligand-pose observables, and return an
 evidence-backed conclusion.
 ```
 
-Good prompts for **planning** state the scientific question, comparison
-groups, and what evidence would answer the question. Good prompts for a
-**stage or resume** name the target study or structure and the last required
-stage. Good prompts for a **scientific answer** add a production length,
-replicate count, observables, and the conclusion to be supported. If required
-work remains queued or running, MDClaw reports a resumable DAG handoff instead
-of claiming completion. HPC/SLURM submission occurs only when the current
-request explicitly asks for it.
+In both shapes a plan is never permission to run everything: HPC/SLURM
+submission happens only when the request asks for it, and work still queued
+or running is reported as a resumable DAG handoff instead of claimed as
+complete.
 
 ## Repository Map
 
@@ -200,11 +183,14 @@ request explicitly asks for it.
 | `.claude-plugin/` | Claude plugin marketplace metadata. |
 | `hooks/` | Plugin lifecycle hooks, including packaged runtime setup. |
 | `bin/mdclaw` | Runtime wrapper used by plugin and local deployments. |
+| `pixi.toml`, `pixi.lock` | Locked definition of the scientific runtime (dev env and container Stage 1). |
+| `environment.yml` | Legacy conda definition, kept for existing envs and the arm64 image. |
+| `.github/workflows/` | CI (pixi env tests on macOS/Linux) and the container build/publish workflow. |
 | `mdclaw/` | Python package and CLI tool implementations. |
 | `container/` | Docker image and Singularity/Apptainer SIF build assets for the packaged MD runtime. |
 | `docs/agents/` | Deployment notes for agent harnesses. |
 | `docs/developer/` | Architecture, CLI internals, testing, release, and tool references. |
-| `tests/` | Unit, smoke, benchmark, and integration tests. |
+| `tests/` | Unit, smoke, and integration tests. |
 
 ## Supported Capabilities
 
@@ -214,13 +200,13 @@ request explicitly asks for it.
 | Structure sources | PDB, AlphaFold/UniProt, and local PDB/mmCIF; biological assemblies and multi-model source bundles; optional source generation with Boltz-2, BioEmu, and MODELLER. |
 | Inspection and selection | Proteins, DNA/RNA, ligands, waters, bare ions, glycans, PTMs, chain identity, source candidates, and covalent protein-glycan connectivity before preparation. |
 | Protein and nucleic force fields | Amber ff19SB by default (ff14SB available), standard DNA OL15, and standard RNA OL3. Nucleic terminal charge corrections are derived from the selected force-field XML. |
-| Ligands, glycans, and PTMs | Noncovalent small molecules through GAFF2 with OpenFF NAGL charges and AM1-BCC fallback; covalently linked glycans through GLYCAM; SEP/TPO/PTR phosphorylation parameters. |
+| Ligands, glycans, and PTMs | Noncovalent small molecules through GAFF2; ligand charges from OpenFF NAGL by default, with AM1-BCC selectable (`--ligand-charge-method`) or as automatic fallback; covalently linked glycans through GLYCAM; SEP/TPO/PTR phosphorylation parameters. |
 | Solvent and membranes | Explicit water (ff19SB + OPC, 15 A buffer, and 0.15 M salt by default), implicit solvent, vacuum, and Lipid21 membranes. The patch-tile membrane path supports selected neutral and anionic mixtures, including POPC/POPG, and derives lipid templates and charges from the active XML files. |
 | Simulation | Standalone minimization, staged NVT/NPT equilibration, production MD, HMR (4 fs production default), XML-state restart, extensions, replicates, and optional PythonTorchForce custom bias/CV scripts. |
 | Free energy and enhanced sampling | Hybrid-topology FEP for point-mutation folding ddG, absolute binding free energy by double decoupling with Boresch restraints, weighted-ensemble kinetics with round-driven sampling schemes, metadynamics, and SST2 solute tempering. |
 | Analysis and evidence | Trajectory concatenation/fitting, RMSD, RMSF, distances, contact frequencies, Q values, equilibration detection, custom-result registration, provenance reports, Methods-style reports, and study-level evidence packages. |
-| Execution | Local Conda, Docker, Singularity/Apptainer SIF, explicit SLURM submission/monitoring, and homogeneous job arrays. |
-| Evaluation | Agent-agnostic MDPrepBench and MDStudyBench runners, public task packaging, raw-artifact validation, and scoring. |
+| Execution | Local Pixi or Conda environments, Docker, Singularity/Apptainer SIF, explicit SLURM submission/monitoring, and homogeneous job arrays. |
+| Evaluation | Opt-in execution-record protocol for external benchmark harnesses: stage records appended to `$MDCLAW_BENCHMARK_HARNESS_LOG` (`mdclaw/_benchmark_log.py`). |
 
 Support is fail-closed where MDClaw can check the contract. Ambiguous molecule
 selection, missing force-field templates, inconsistent charges, invalid DAG
@@ -254,38 +240,17 @@ the failed node for provenance instead of silently continuing.
   plus metadynamics and SST2 solute-tempering runs with their analyses.
   Relative binding FEP between ligands, replica exchange, and
   umbrella-sampling/PMF campaign automation are not provided.
-- **One job has one structural source identity.** Its source bundle may contain
-  many candidates, but `prep` selects one. Put independent starting systems in
-  separate study jobs; branch a prepared job for mutations, ligands, protocols,
-  temperatures, or seeds.
 - **Guardrails are not scientific proof.** Passing topology, charge, energy,
   and artifact checks does not establish convergence, adequate sampling, or a
   biological conclusion. Those require appropriate controls, replicates,
   analysis, and expert review.
 
-## Benchmarking
-
-The MDAgentBench suites live in their own public repositories:
-
-- [matsunagalab/MDPrepBench](https://github.com/matsunagalab/MDPrepBench) —
-  40-task MD system preparation battery, deterministic artifact scoring.
-- [matsunagalab/MDStudyBench](https://github.com/matsunagalab/MDStudyBench) —
-  scientific question answering with runner-certified confirmatory MD and the
-  grounded-correct contract.
-
-The MDStudyBench confirmatory runner executes MDClaw production nodes, so it
-depends on this package at runtime. MDClaw's CLI cooperates with both harnesses
-by appending measured execution records to `$MDCLAW_BENCHMARK_HARNESS_LOG`
-(see `mdclaw/_cli.py`); that stage-record protocol is part of MDClaw's public
-contract with the benchmark repositories.
-
 ## Developer Quickstart
 
 ```bash
-conda env create -f environment.yml   # installs the mdclaw CLI editable (-e .)
-conda activate mdclaw
-ruff check mdclaw/
-pytest tests/test_registry.py tests/test_cli.py tests/test_guardrails.py tests/test_guardrail_code_registry.py tests/test_slurm_server.py -v
+pixi install   # locked env from pixi.toml + pixi.lock (installs mdclaw editable)
+pixi run ruff check mdclaw/
+pixi run pytest tests/test_registry.py tests/test_cli.py tests/test_guardrails.py tests/test_guardrail_code_registry.py tests/test_slurm_server.py -v
 ```
 
 Short agent guidance is mirrored in `CLAUDE.md` and `AGENTS.md`; keep those
@@ -301,14 +266,14 @@ files identical. Long-form references:
 
 ## Release
 
-Follow `docs/developer/release.md`. Version tags must stay synchronized across
-the Python package, plugin metadata, marketplace metadata, and container image.
+Follow `docs/developer/release.md`: `scripts/bump-version.sh X.Y.Z` writes
+every version location at once, and pushing the `vX.Y.Z` tag triggers the
+container workflow, which builds the image from `pixi.lock`, runs the CPU
+smoke test, and publishes the GHCR tags. The GPU smoke test stays a manual
+gate before shared SIFs are replaced.
 
-Users update the plugin with:
-
-```text
-/plugin update mdclaw@mdclaw
-```
+Users update skills with `/plugin update mdclaw@mdclaw` (Claude Code plugin)
+or `npx skills update` (skills CLI).
 
 ## License
 

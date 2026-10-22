@@ -979,8 +979,8 @@ def run_production(
                 raise
             # PythonTorchForce may contain a Python callable that OpenMM cannot
             # pickle. Custom-force production remains supported, but such a run
-            # intentionally cannot satisfy MDStudyBench's serializable,
-            # no-production-bias confirmatory adapter.
+            # intentionally cannot hand a serializable, bias-free runtime
+            # System to an external confirmatory harness.
             runtime_system_file.unlink(missing_ok=True)
             result["warnings"].append(
                 "Live runtime System could not be serialized because the "

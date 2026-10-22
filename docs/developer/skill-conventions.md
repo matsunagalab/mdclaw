@@ -7,7 +7,8 @@ top-to-bottom by a weak LLM. Apply them to every `skills/**/*.md` file.
 
 The skill tree lives under `skills/`; `.agents/skills/`, `.claude/skills/`, and
 `.codex/skills/` are discovery mirrors (symlinks or copies produced by
-`scripts/install-agent-skills.sh`). Edit only `skills/`.
+tracked relative symlinks; external installs go through `npx skills add`).
+Edit only `skills/`; a new skill also gets a symlink in each tracked mirror.
 
 A skill states intent and procedure; it is never the safety layer. Anything
 that must not happen is enforced by a tool guardrail

@@ -7,6 +7,22 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-23 — README 総点検: skills インストールを npx に一本化、ベンチマーク記述の削除
+
+ユーザーレビューでの指摘を受けた一括整理。
+
+- **skills インストールの一本化**: `scripts/install-agent-skills.sh` を削除。外部プロジェクトは `npx skills add matsunagalab/mdclaw`（Claude Code 含む 17 ハーネス対応、`--copy` あり）、チェックアウト内は git 追跡済みミラーで無操作、Claude Code の plugin は「スキル＋コマンド＋ランタイムフック」の上位互換、Pi のみ専用コマンド。doctor のヒントは `git checkout -- .agents .claude`／`npx skills add` に変更。installer のテスト2件を削除し、全スキルのミラー存在＋frontmatter を検査するテストに置換。
+- **ベンチマーク記述の削除**: MDPrepBench・MDStudyBench はもう使っていない（ユーザー確認）。README の Benchmarking 節と Evaluation 行・roadmap の移設記録・production.py のコメントから削除。**MDDataBench は現役**なので、実行記録プロトコル（`MDCLAW_BENCHMARK_HARNESS_LOG`、`_benchmark_log.py`）とそのテスト・AGENTS.md の言及は残した。
+- **README 全文パス**: conda 残骸を一掃（Install/Deploy 冒頭・Quickstart・Runtime Selection・AI Model Backends・Developer Quickstart）。DAG 図を CLI 表示と同じ `{prod | fep}` に修正。Ask In Plain Language を「単一ジョブ」「スタディ」の2通りに簡素化。「One job has one structural source identity」は制限ではなく構造ルールなので Boundaries から How It Works へ移動（ユーザー指摘）。AM1-BCC が `--ligand-charge-method` で選択可能になった件を Capabilities に反映。Repository Map に pixi.toml/pixi.lock・environment.yml（legacy）・.github/workflows/ を追加。BioEmu の CLI 実行例は削除（エージェントが skills 経由で叩くため）。
+
+## 2026-10-23 — GitHub Actions 導入: pixi 環境 CI とコンテナの自動ビルド・GHCR push
+
+ユーザー承認（1A: ci.yml、2A: container.yml はタグ自動＋手動両対応、3A: GPU スモークは手動のまま）。このリポジトリ初の CI。
+
+- **`.github/workflows/ci.yml`**（push/PR）: `macos-latest`（Apple Silicon = osx-arm64）と `ubuntu-latest`（linux-64、`CONDA_OVERRIDE_CUDA=12.9`）で `setup-pixi`（lock キャッシュつき）→ `pixi install --locked`（lock が古いと fail）→ ruff → 標準テストセット＋deployment/docs/wrapper テスト。
+- **`.github/workflows/container.yml`**（`v*` タグ＋`workflow_dispatch`）: ディスク掃除（約25-30 GB 確保）→ タグと plugin.json のバージョン一致検査 → buildx（レイヤーキャッシュは GHCR の `:buildcache`、lock 不変なら Stage 1 再利用）→ `test-container.sh`（CPU。GPU チェックは SKIP 設計）→ タグ時は `:X.Y.Z`＋`:latest` を push、dispatch は `push_image` 指定時のみ versioned を push。
+- release.md の手順 3〜4（手動ビルド＋push）はタグ push に置き換え、GPU スモークだけ手動ゲートとして残した。初回実行前の注意 2 点: (1) GHCR の既存 `mdclaw` パッケージは PAT で作られているので、パッケージ設定でこのリポジトリの Actions に write を許可しないと `GITHUB_TOKEN` の push が拒否される。(2) GPU なしビルダーでの `CONDA_OVERRIDE_CUDA` と pixi prefix への `conda-pack` は未検証なので、最初のタグの前に dispatch（push なし）で一度通すこと（deploy-v2-plan の Release gates を更新済み）。
+
 ## 2026-10-23 — Deploy v2: pixi ロックによる依存一本化と Agent Skills 標準配布（deploy-v2-plan）
 
 ユーザー承認（1A: pixi を dev 環境＋amd64 コンテナまで一本化、2A: skills 標準配布、3B: ワンライナーは見送り）。設計と残リスクは `docs/developer/deploy-v2-plan.md`。
