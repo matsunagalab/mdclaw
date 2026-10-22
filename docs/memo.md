@@ -7,6 +7,14 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-23 — LICENSE ファイル新設とサードパーティライセンスの表記
+
+ユーザー依頼（依存ソフトのライセンスの書き方を調べて README 末尾へ）。
+
+- **表記の規約**（Apache / Linux Foundation / OSPO のガイダンス）: LICENSE ファイルには自プロジェクトのライセンスだけを書く。NOTICE/THIRD_PARTY に載せるのは**実際に同梱・再配布するもの**だけで、ユーザーが自分でインストールする依存は載せない。MDClaw のリポジトリはサードパーティのコードを一切ベンダリングしていないので LICENSE は純粋な MIT のみ、依存の一覧は README の情報セクションとして書く（コンテナイメージは再配布に当たるので、その旨とライセンステキストの所在を明記）。
+- **発見**: リポジトリに LICENSE ファイル自体が無かった（README が MIT と宣言するのみ）→ MIT 全文を新設し、pyproject.toml に `license = "MIT"` / `license-files`（PEP 639）を追加。pip のメタデータビルドが通ることを確認。
+- **依存ライセンスの実測**（pixi 環境の conda-meta と importlib.metadata が正）: OpenMM LGPL-3.0+、AmberTools は GPL-3.0+ AND LGPL-3.0+ AND BSD-3 AND MIT の複合、MDAnalysis LGPL-3.0+（GPL ではない）、MDTraj LGPL-2.1+、ParmEd LGPL-2.1+、propka LGPL-2.1、SST2 GPL-2.0（サブプロセス実行で分離済み）、RDKit/PyTorch BSD-3、PDBFixer・OpenFF 系・pymbar・e3nn・hpacker（GitHub 確認）・BioEmu・Boltz-2 MIT、dimorphite-dl・HOLE2 Apache-2.0、gemmi MPL-2.0、PyMOL は独自 OSS ライセンス、MODELLER はプロプライエタリ（学術無償・ユーザーがキー供給）。README 末尾に表として記載。
+
 ## 2026-10-23 — README 総点検: skills インストールを npx に一本化、ベンチマーク記述の削除
 
 ユーザーレビューでの指摘を受けた一括整理。

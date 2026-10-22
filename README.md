@@ -277,4 +277,42 @@ or `npx skills update` (skills CLI).
 
 ## License
 
-MIT
+MDClaw is MIT-licensed ([LICENSE](LICENSE)). This repository contains only
+MDClaw's own code, skills, and documentation; no third-party source is
+vendored, so the MIT text is the only license in the source tree.
+
+### Third-Party Software
+
+MDClaw orchestrates scientific software that is installed separately — from
+conda-forge/PyPI via pixi or conda, or prebuilt inside the published
+container image — and that remains under its own license. The main runtime
+components (license identifiers as declared by the installed packages):
+
+| Component | License |
+|---|---|
+| OpenMM | LGPL-3.0-or-later |
+| AmberTools | GPL-3.0-or-later AND LGPL-3.0-or-later AND BSD-3-Clause AND MIT |
+| MDAnalysis | LGPL-3.0-or-later |
+| MDTraj | LGPL-2.1-or-later |
+| ParmEd | LGPL-2.1-or-later |
+| PLUMED (container image only) | LGPL-3.0 |
+| propka | LGPL-2.1 |
+| SST2 | GPL-2.0 (invoked as a separate subprocess) |
+| RDKit, PyTorch | BSD-3-Clause |
+| pdb2pqr | BSD-style |
+| PDBFixer, openmmforcefields, OpenFF toolkit / NAGL / Pablo, pymbar, e3nn, HPacker | MIT |
+| BioEmu, Boltz-2 (optional model backends) | MIT |
+| dimorphite-dl, HOLE2 | Apache-2.0 |
+| gemmi | MPL-2.0 |
+| PyMOL (open-source build) | PyMOL Open-Source License |
+| MODELLER | Proprietary; free for academic use with a registered license key |
+
+The container/SIF images redistribute these components in binary form; the
+license texts travel inside the image with each conda package
+(`/opt/mdclaw/conda-meta/` and the packages' `share/` directories). Two
+components need explicit care: MODELLER ships in the image **without** a
+license key — each user supplies their own `KEY_MODELLER` at run time and
+accepts the salilab academic-use terms — and SST2 (GPL-2.0) is executed as a
+standalone subprocess rather than imported. MDClaw's MIT license covers only
+MDClaw's own files; using or redistributing the images means honoring the
+component licenses above.
