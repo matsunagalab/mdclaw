@@ -16,6 +16,20 @@ else
     echo "[warn] bin/mdclaw is not executable"
 fi
 
+# Cloud-synced checkouts (Drive, Dropbox) can strip exec bits and symlinks.
+exec_warn=0
+for script in "$REPO_ROOT"/scripts/*.sh "$REPO_ROOT"/container/scripts/*.sh; do
+    [ -f "$script" ] || continue
+    if [ ! -x "$script" ]; then
+        echo "[warn] not executable: ${script#$REPO_ROOT/}"
+        exec_warn=1
+    fi
+done
+if [ "$exec_warn" = "1" ]; then
+    echo "      Restore tracked modes and symlinks with:"
+    echo "      git checkout -- scripts container/scripts .agents .claude"
+fi
+
 echo
 echo "Version sync:"
 python3 - "$REPO_ROOT" <<'PY' || true
@@ -104,6 +118,15 @@ for skills_root in "${skill_roots[@]}"; do
                 echo "[warn] broken symlink: ${link#$REPO_ROOT/} -> $(readlink "$link")"
             fi
         done < <(find "$skills_root" -maxdepth 2 -type l -print)
+        missing=""
+        for src in "$REPO_ROOT"/skills/*/; do
+            name="$(basename "$src")"
+            [ -e "$skills_root/$name" ] || missing="$missing $name"
+        done
+        if [ -n "$missing" ]; then
+            echo "[warn] $label is missing:$missing"
+            echo "      Run: scripts/install-agent-skills.sh"
+        fi
         if [ -e "$skills_root/common/run-loop.md" ]; then
             echo "[ok] $label/common"
         else

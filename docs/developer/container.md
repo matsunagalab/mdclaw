@@ -45,7 +45,6 @@ patches with `scripts/warmup_membrane_cache.py --out mdclaw/data/membrane_patche
 
 ```bash
 docker build -f container/Dockerfile -t mdclaw:latest .
-docker build -f container/Dockerfile --build-arg BIOEMU_DEVICE=cuda -t mdclaw:latest .
 docker run --rm -v "$(pwd)/container/scripts/test-container.sh:/work/test.sh:ro" \
   mdclaw:latest bash /work/test.sh
 docker run --rm --gpus all -v "$(pwd)/container/scripts/test-container.sh:/work/test.sh:ro" \
@@ -420,7 +419,8 @@ singularity exec --nv \
 - These venvs pull their own Torch and have CUDA/driver requirements
   independent of the OpenMM `cu118` build. Verify each with
   `mdclaw check_model_backend --model <name>`.
-- Boltz is pinned to `surrogate_server.BOLTZ_VERSION`; bump deliberately.
+- Boltz is pinned to `BOLTZ_VERSION` in `mdclaw/surrogate/_base.py`; bump
+  deliberately.
 
 ## Binds made by the launcher
 

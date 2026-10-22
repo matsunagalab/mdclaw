@@ -17,7 +17,8 @@ in sync.
 ## Steps
 
 ```bash
-# 1. Update all version locations to X.Y.Z
+# 1. Write X.Y.Z to all version locations at once, then verify the sync
+scripts/bump-version.sh X.Y.Z
 scripts/mdclaw-doctor.sh
 
 # 2. Commit, tag, and push

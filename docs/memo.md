@@ -7,6 +7,23 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-22 — README の正確性修正と deploy 記述の一本化（deploy-simplification-plan A1 の完遂）
+
+ユーザー依頼（README の正確性・わかりやすさと deploy のわかりにくさの調査 → 改善計画 → 全フェーズ実装を承認）。
+
+- **正確性の修正**:
+  - README の Developer Quickstart が存在しない `tests/test_mcp_server.py` を挙げていた → `AGENTS.md` と同じ実在リスト（`test_registry.py` ほか）に修正。
+  - Repository Map の `benchmarks/mdprepbench/`・`benchmarks/mdstudybench/` は存在しないディレクトリ（別リポジトリへ移設済み）→ 行を削除。
+  - Boundaries の「alchemical FEP/TI… は未提供」は実装済みの md-fep / md-abfe / md-we / メタダイナミクス / SST2 と矛盾 → 「範囲は特定的」へ書き換え、Supported Capabilities に自由エネルギー・強化サンプリングの行を追加。
+  - `container.md` のビルド例から廃止済みの `--build-arg BIOEMU_DEVICE=cuda` を削除し、`surrogate_server.BOLTZ_VERSION` の所在を `mdclaw/surrogate/_base.py` に修正。
+  - `release.md` 手順1を `scripts/bump-version.sh X.Y.Z`（一括書き込み）→ doctor 検証に差し替え。
+- **deploy 記述の一本化**: README の Install/Deploy（約120行、`docs/agents/deployment.md` とほぼ全面重複・非対称）を約63行に縮小。一本道の Quickstart ＋ エージェント別の表 ＋ ランタイム選択順 ＋ deployment.md へのリンクだけ残した。README にしかなかった共有ラボ SIF 節と各ランタイムの pull/env 手順は deployment.md へ移設し、冒頭にシナリオ別の選択ガイドを追加。検証コマンドは `mdclaw --version` ＋ doctor に統一（`--list-json bootstrap_md_workflow` の繰り返しを廃止）。
+- **再発防止のガードレール**:
+  - `tests/test_docs_paths.py` 新設: README / AGENTS.md / deployment.md / container.md / release.md のバッククォート・コードフェンス・リンク中のリポジトリパスの実在を検査。修正前 README に対して `tests/test_mcp_server.py` と `benchmarks/` の両方を検出することを確認済み。
+  - `mdclaw-doctor.sh` に、`scripts/*.sh`・`container/scripts/*.sh` の実行ビットと、`skills/` 全エントリのミラー完全性のチェックを追加（クラウド同期チェックアウトが exec bit と symlink を剥がす事故の検知。実際にこの作業ツリーで追跡 symlink 22 本の消失と 9 ファイルの exec bit 剥落が起きており、`git checkout` で復旧した）。
+  - doctor の新チェックが `container/scripts/build-plumed.sh` の exec bit 欠落（git 追跡モードも 100644）を即検出 → `chmod +x` で修正（Dockerfile は `bash` 経由で呼ぶため実害はなかった）。
+- **検証**: 標準テストセット＋deployment＋bin wrapper＋新テストの 387 passed、ruff clean、doctor 動作確認。GHCR には `0.6.8` / `latest` が公開済みで、バージョン 5 箇所の同期も確認した。
+
 ## 2026-10-01 — `--ligand-charge-method {nagl, am1bcc}`: リガンド電荷を AM1-BCC に切り替える CLI オプション（既定は NAGL のまま）
 
 ユーザー承認（「対応案に賛成、実装とテストを」）。きっかけは T4L のインドール。NAGL（`openff-gnn-am1bcc-1.0.0`）が N1 に −0.583 e を付けたが、AmberTools sqm の AM1-BCC では −0.196 e だった。それまでは AM1-BCC を選ぶ手段がなく、NAGL が失敗したときの自動代替（`am1bcc_fallback`）でしか使われなかった。

@@ -158,33 +158,71 @@ SIF and Docker are two forms of the same packaged MD runtime. Use them when
 the host does not already provide the conda scientific stack, or when a
 reproducible runtime boundary is more useful than a local editable install.
 
+Pick by scenario:
+
+- **Shared lab SIF**: an administrator already provides a SIF; two environment
+  variables, no checkout or host Python needed.
+- **Conda**: local development or a controlled workstation.
+- **Singularity/Apptainer SIF**: recommended for Linux HPC.
+- **Docker**: desktop or workstation container runtime; the easiest install on
+  macOS.
+
 Container invocations bind the current working directory at the same absolute
 path inside the container and set the container working directory to that path.
 Agents should still pass paths relative to the current job directory when
 possible, but absolute paths under the current working tree resolve the same
 way on the host, in Docker, and in Singularity/Apptainer.
 
+### Shared Lab SIF: No User Checkout Required
+
+If the administrator provides `/data/mdclaw.sif`, install the Claude Code or
+Pi skills and put these in `~/.bashrc`:
+
+```bash
+export MDCLAW_SIF=/data/mdclaw.sif
+export MDCLAW_RUNTIME=singularity
+```
+
+Work in your own directory, e.g. `~/work`, and invoke the installed SIF CLI:
+
+```bash
+singularity exec --env PYTHONPATH= --env PYTHONHOME= "$MDCLAW_SIF" mdclaw --version
+```
+
+No external launcher, user checkout, or host Python packages are required.
+For SLURM tools, the agent adds standard `--bind` options for the host clients,
+libraries, configuration and authentication socket. See
+[direct SIF/SLURM invocation](../../skills/hpc-run/sif-slurm.md) for the
+tested lab command and how to keep submission-host binds out of queued jobs.
+
 ### Conda Runtime
 
 ```bash
-conda env create -f environment.yml
-conda activate mdclaw
-pip install -e .
+conda env create -f environment.yml   # installs this checkout editable (-e .)
+export MDCLAW_RUNTIME=conda
+export PATH="$PWD/bin:$PATH"
 mdclaw --list
 ```
 
 Use conda for local development and for machines where you control the Python
-environment.
+environment. The wrapper invokes the env with `conda run`, so activation is
+optional.
 
 ### Singularity / Apptainer Runtime
 
-Use this on HPC systems. Let the plugin hook download a SIF, or set:
+Use this on HPC systems. Let the plugin hook download a SIF, or pull one:
 
 ```bash
-export MDCLAW_SIF=/path/to/mdclaw.sif
+singularity pull mdclaw.sif \
+  docker://ghcr.io/matsunagalab/mdclaw:latest
+export MDCLAW_SIF="$PWD/mdclaw.sif"
+export MDCLAW_RUNTIME=singularity
+export PATH="$PWD/bin:$PATH"
+mdclaw --list
 ```
 
-For NVIDIA GPUs, verify host/container compatibility:
+Use `apptainer pull` and `MDCLAW_RUNTIME=apptainer` instead when that is the
+installed command. For NVIDIA GPUs, verify host/container compatibility:
 
 ```bash
 singularity exec --nv "$MDCLAW_SIF" python -m openmm.testInstallation
@@ -196,8 +234,11 @@ Docker is the easiest desktop container path. It uses the same GHCR image that
 can be converted to a SIF for Singularity/Apptainer on HPC:
 
 ```bash
+docker pull ghcr.io/matsunagalab/mdclaw:latest
+export MDCLAW_RUNTIME=docker
 export MDCLAW_DOCKER_IMAGE=ghcr.io/matsunagalab/mdclaw:latest
-bin/mdclaw --list
+export PATH="$PWD/bin:$PATH"
+mdclaw --list
 ```
 
 On Linux with NVIDIA GPUs, `bin/mdclaw` adds `--gpus all` when `nvidia-smi` is
@@ -214,13 +255,17 @@ scripts/mdclaw-doctor.sh
 It checks:
 
 - `bin/mdclaw` availability.
+- executable bits on `scripts/*.sh` and `container/scripts/*.sh`
+  (cloud-synced checkouts can strip exec bits and symlinks; restore with
+  `git checkout`).
 - conda env `mdclaw`, if present.
 - OpenMM test installation.
 - AmberTools executables: `pdb4amber`, `cpptraj`.
 - container command availability.
 - version sync across Python, plugin, and Pi package metadata.
 - `.agents/skills`, `.claude/skills`, and optional `.codex/skills` discovery.
-- missing shared `common` skill instructions and broken mirror symlinks.
+- missing shared `common` skill instructions, broken mirror symlinks, and
+  mirror entries missing for any `skills/` directory.
 
 ## Common Pitfalls
 

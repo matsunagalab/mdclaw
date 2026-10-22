@@ -38,113 +38,54 @@ to run every stage or submit HPC jobs.
 
 ## Install / Deploy
 
-MDClaw needs two things:
+MDClaw needs two things, managed separately:
 
 1. **Agent skills** from `skills/`, unless you use the CLI directly.
 2. **One scientific runtime** containing the `mdclaw` CLI, AmberTools, OpenMM,
-   and the Python dependencies.
+   and the Python dependencies: a Conda environment, a Singularity/Apptainer
+   SIF, or a Docker image.
 
-### Fastest Setup From A Checkout
+### Quickstart From A Checkout
 
-Install Singularity/Apptainer or Docker first. For Conda instead, create the
-environment under [Choose One Runtime](#choose-one-runtime) before running this
-block; the setup script will detect and reuse it.
+Install one runtime provider first: Singularity/Apptainer or Docker, or a
+Conda environment created with `conda env create -f environment.yml` (the
+setup script detects the `mdclaw` env and reuses it instead of pulling an
+image).
 
 ```bash
 git clone https://github.com/matsunagalab/mdclaw.git
 cd mdclaw
 
-# Expose the skills to repo-local agent harnesses.
+# Expose the skills to repo-local agent harnesses
+# (.agents/.claude/.codex mirrors).
 scripts/install-agent-skills.sh
 
-# Reuse a conda env named mdclaw, or pull the matching SIF/Docker image.
+# Reuse the mdclaw conda env if present; otherwise download the
+# version-matched runtime from ghcr.io/matsunagalab/mdclaw
+# (SIF preferred, Docker fallback). Nothing is rebuilt.
 scripts/setup-container.sh
 
-# Make the runtime-selecting wrapper available in this shell.
+# Put the runtime-selecting wrapper on PATH and verify.
 export PATH="$PWD/bin:$PATH"
-
 mdclaw --version
-mdclaw --list-json bootstrap_md_workflow
 scripts/mdclaw-doctor.sh
 ```
-
-`scripts/setup-container.sh` does not rebuild anything. It reuses an existing
-`mdclaw` conda environment; otherwise it downloads the version-matched runtime
-from `ghcr.io/matsunagalab/mdclaw` using Singularity/Apptainer or Docker.
 
 ### Install Skills For Your Agent
 
 | Agent or use case | Skill setup | Runtime setup |
 |---|---|---|
 | Claude Code plugin | `/plugin marketplace add matsunagalab/mdclaw`, then `/plugin install mdclaw@mdclaw` | Session-start hook runs the packaged-runtime setup |
-| Pi | `pi install git:github.com/matsunagalab/mdclaw@main` | Provide one runtime below; Pi installs skills only |
-| Codex, OpenCode, generic repo-local agents | `scripts/install-agent-skills.sh` | Provide one runtime below |
-| Direct CLI or development | Skills are optional | Use Conda or a packaged runtime below |
+| Pi | `pi install git:github.com/matsunagalab/mdclaw@main` | Provide one runtime; Pi installs skills only |
+| Codex, OpenCode, generic repo-local agents | `scripts/install-agent-skills.sh` | Provide one runtime |
+| Direct CLI or development | Skills are optional | Conda or a packaged runtime |
 
 The installer creates discovery mirrors under `.agents/skills`,
 `.claude/skills`, and `.codex/skills`; `skills/` remains the only source of
 truth. Use `scripts/install-agent-skills.sh --copy` on filesystems that do not
 support symlinks.
 
-### Choose One Runtime
-
-**Shared lab SIF: no user checkout required**
-
-If the administrator provides `/data/mdclaw.sif`,
-install the Claude Code/Pi skills above and put these in `~/.bashrc`:
-
-```bash
-export MDCLAW_SIF=/data/mdclaw.sif
-export MDCLAW_RUNTIME=singularity
-```
-
-Work in your own directory, e.g. `~/work`, and invoke the installed SIF CLI:
-
-```bash
-singularity exec --env PYTHONPATH= --env PYTHONHOME= "$MDCLAW_SIF" mdclaw --version
-```
-
-No external launcher, user checkout, or host Python packages are required.
-For SLURM tools, the agent adds standard `--bind` options for the host clients,
-libraries, configuration and authentication socket. See
-[direct SIF/SLURM invocation](skills/hpc-run/sif-slurm.md) for the tested lab
-command and how to keep submission-host binds out of queued jobs.
-
-**Conda: local development or a controlled workstation**
-
-```bash
-conda env create -f environment.yml
-export MDCLAW_RUNTIME=conda
-export PATH="$PWD/bin:$PATH"
-mdclaw --list-json bootstrap_md_workflow
-```
-
-`environment.yml` installs this checkout in editable mode. The wrapper invokes
-it with `conda run`, so activation is optional.
-
-**Singularity/Apptainer SIF: recommended for Linux HPC**
-
-```bash
-singularity pull mdclaw.sif \
-  docker://ghcr.io/matsunagalab/mdclaw:latest
-export MDCLAW_SIF="$PWD/mdclaw.sif"
-export MDCLAW_RUNTIME=singularity
-export PATH="$PWD/bin:$PATH"
-mdclaw --list-json bootstrap_md_workflow
-```
-
-Use `apptainer pull` and `MDCLAW_RUNTIME=apptainer` instead when that is the
-installed command.
-
-**Docker: desktop or workstation container runtime**
-
-```bash
-docker pull ghcr.io/matsunagalab/mdclaw:latest
-export MDCLAW_RUNTIME=docker
-export MDCLAW_DOCKER_IMAGE=ghcr.io/matsunagalab/mdclaw:latest
-export PATH="$PWD/bin:$PATH"
-mdclaw --list-json bootstrap_md_workflow
-```
+### Runtime Selection
 
 `bin/mdclaw` selects exactly one runtime for each call. The order is an explicit
 `MDCLAW_RUNTIME=conda|singularity|apptainer|docker` override, then conda env
@@ -153,9 +94,11 @@ when more than one is installed and you need predictable selection. Container
 calls bind the current working directory at the same absolute path, so run from
 the study/project directory and keep inputs below it.
 
-Troubleshooting and less common deployment layouts are in
-`docs/agents/deployment.md`; image and SIF details are in
-`docs/developer/container.md`.
+Per-runtime setup — an administrator-provided shared SIF with no checkout,
+Conda for development, a SIF on Linux HPC, Docker on a desktop — plus
+verification and troubleshooting live in
+[docs/agents/deployment.md](docs/agents/deployment.md). Image build and
+publishing details are in `docs/developer/container.md`.
 
 ### AI Model Backends (BioEmu, Boltz-2)
 
@@ -257,8 +200,6 @@ request explicitly asks for it.
 | `bin/mdclaw` | Runtime wrapper used by plugin and local deployments. |
 | `mdclaw/` | Python package and CLI tool implementations. |
 | `container/` | Docker image and Singularity/Apptainer SIF build assets for the packaged MD runtime. |
-| `benchmarks/mdprepbench/` | Preparation workflow benchmark tasks and scorer contracts. |
-| `benchmarks/mdstudybench/` | Scientific question and study-bundle benchmark tasks. |
 | `docs/agents/` | Deployment notes for agent harnesses. |
 | `docs/developer/` | Architecture, CLI internals, testing, release, and tool references. |
 | `tests/` | Unit, smoke, benchmark, and integration tests. |
@@ -274,6 +215,7 @@ request explicitly asks for it.
 | Ligands, glycans, and PTMs | Noncovalent small molecules through GAFF2 with OpenFF NAGL charges and AM1-BCC fallback; covalently linked glycans through GLYCAM; SEP/TPO/PTR phosphorylation parameters. |
 | Solvent and membranes | Explicit water (ff19SB + OPC, 15 A buffer, and 0.15 M salt by default), implicit solvent, vacuum, and Lipid21 membranes. The patch-tile membrane path supports selected neutral and anionic mixtures, including POPC/POPG, and derives lipid templates and charges from the active XML files. |
 | Simulation | Standalone minimization, staged NVT/NPT equilibration, production MD, HMR (4 fs production default), XML-state restart, extensions, replicates, and optional PythonTorchForce custom bias/CV scripts. |
+| Free energy and enhanced sampling | Hybrid-topology FEP for point-mutation folding ddG, absolute binding free energy by double decoupling with Boresch restraints, weighted-ensemble kinetics with round-driven sampling schemes, metadynamics, and SST2 solute tempering. |
 | Analysis and evidence | Trajectory concatenation/fitting, RMSD, RMSF, distances, contact frequencies, Q values, equilibration detection, custom-result registration, provenance reports, Methods-style reports, and study-level evidence packages. |
 | Execution | Local Conda, Docker, Singularity/Apptainer SIF, explicit SLURM submission/monitoring, and homogeneous job arrays. |
 | Evaluation | Agent-agnostic MDPrepBench and MDStudyBench runners, public task packaging, raw-artifact validation, and scoring. |
@@ -303,10 +245,13 @@ the failed node for provenance instead of silently continuing.
 - **Force-field scope is Amber/OpenMM, not universal.** Arbitrary force fields,
   CHARMM-native preparation, coarse-grained or polarizable models, and QM/MM are
   outside the standard workflow.
-- **Advanced sampling and free-energy methods are not turnkey pipelines.** The
-  custom-force interface can run a user-defined bias, but MDClaw does not yet
-  provide complete alchemical FEP/TI, replica-exchange, metadynamics, or
-  umbrella-sampling/PMF campaign automation and validation.
+- **Free-energy and enhanced-sampling scope is specific, not general.** The
+  turnkey pipelines are hybrid-topology FEP for a single point mutation
+  (`skills/md-fep`), absolute binding free energy of one neutral non-covalent
+  ligand (`skills/md-abfe`), and weighted-ensemble kinetics (`skills/md-we`),
+  plus metadynamics and SST2 solute-tempering runs with their analyses.
+  Relative binding FEP between ligands, replica exchange, and
+  umbrella-sampling/PMF campaign automation are not provided.
 - **One job has one structural source identity.** Its source bundle may contain
   many candidates, but `prep` selects one. Put independent starting systems in
   separate study jobs; branch a prepared job for mutations, ligands, protocols,
@@ -338,7 +283,7 @@ contract with the benchmark repositories.
 conda env create -f environment.yml   # installs the mdclaw CLI editable (-e .)
 conda activate mdclaw
 ruff check mdclaw/
-pytest tests/test_mcp_server.py tests/test_cli.py tests/test_guardrails.py tests/test_slurm_server.py -v
+pytest tests/test_registry.py tests/test_cli.py tests/test_guardrails.py tests/test_guardrail_code_registry.py tests/test_slurm_server.py -v
 ```
 
 Short agent guidance is mirrored in `CLAUDE.md` and `AGENTS.md`; keep those
