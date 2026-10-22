@@ -41,13 +41,54 @@ def test_release_versions_stay_in_sync():
 
 
 def test_container_definition_includes_dev_tools_for_sif_workflows():
+    """The image env comes from the lock; the dev feature must carry the tools."""
     dockerfile = (REPO_ROOT / "container" / "Dockerfile").read_text()
+    pixi_manifest = (REPO_ROOT / "pixi.toml").read_text()
     test_script = (REPO_ROOT / "container" / "scripts" / "test-container.sh").read_text()
 
-    assert 'pip install ".[dev]"' in dockerfile
+    assert "pixi install --locked" in dockerfile
+    dev_feature = pixi_manifest.split("[feature.dev.dependencies]", 1)[1]
+    for tool in ("pytest", "pytest-asyncio", "ruff"):
+        assert tool in dev_feature.split("[", 1)[0]
     assert "python -m ruff --version" in test_script
     assert "python -m pytest --version" in test_script
     assert "import pytest_asyncio" in test_script
+
+
+def test_container_build_is_gated_on_the_lockfile():
+    """Stage 1 must install from pixi.lock, never re-solve, and must not
+    reintroduce the editable install into the packed env."""
+    dockerfile = (REPO_ROOT / "container" / "Dockerfile").read_text()
+
+    assert "COPY pixi.toml pixi.lock" in dockerfile
+    assert "pixi install --locked" in dockerfile
+    assert "pip install --no-deps --force-reinstall ." in dockerfile
+    assert "--ignore-editable-packages" in dockerfile
+    assert (REPO_ROOT / "pixi.lock").exists()
+
+
+def test_container_setup_skips_when_pixi_env_exists(tmp_path):
+    (tmp_path / "scripts").mkdir()
+    shutil.copy2(REPO_ROOT / "scripts" / "setup-container.sh", tmp_path / "scripts")
+    (tmp_path / "pixi.toml").write_text("[workspace]\n")
+    (tmp_path / ".pixi" / "envs" / "default").mkdir(parents=True)
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    (stub_bin / "pixi").symlink_to(shutil.which("echo"))
+    runtime = stub_bin / "singularity"
+    runtime.write_text('#!/bin/sh\necho "unexpected runtime call" >&2\nexit 99\n')
+    runtime.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", str(tmp_path / "scripts" / "setup-container.sh")],
+        env={**os.environ, "PATH": f"{stub_bin}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "pixi env found" in result.stderr
+    assert "unexpected runtime call" not in result.stderr
 
 
 def test_container_setup_preserves_explicit_existing_sif(tmp_path):

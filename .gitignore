@@ -1,6 +1,9 @@
 # Python
 .env
 __pycache__/
+
+# pixi environments (recreated from pixi.toml + pixi.lock)
+.pixi/
 *.py[cod]
 *$py.class
 *.so

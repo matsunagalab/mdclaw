@@ -35,7 +35,7 @@ of truth; they are discovery surfaces that mirror `skills/`.
 | Claude Code plugin user | Plugin exposes `skills/` and `/mdclaw:*` commands | `bin/mdclaw` plus SessionStart runtime setup | `/plugin install mdclaw@mdclaw` |
 | Repo-local Claude Code developer | `.claude/skills/` mirrors `skills/` | Usually conda env `mdclaw`; `bin/mdclaw` also works | Open repo, use discovered skills |
 | Pi | `package.json` points Pi at `./skills` | Conda, SIF, Docker, or local CLI | `pi install git:github.com/matsunagalab/mdclaw@main` |
-| Codex / OpenCode / generic skill harness | `.agents/skills/`, `.claude/skills/`, or `.codex/skills/` mirrors `skills/` | Conda, SIF, Docker, or local CLI | `scripts/install-agent-skills.sh` |
+| Codex / Cursor / OpenCode / generic skill harness | `.agents/skills/`, `.claude/skills/`, or the harness's own skill directory | Pixi, Conda, SIF, Docker, or local CLI | `npx skills add matsunagalab/mdclaw` (or `scripts/install-agent-skills.sh`) |
 | Direct CLI user | No skills required | `mdclaw` command in conda/local/container | `mdclaw --list` |
 
 ## Claude Code Plugin
@@ -104,10 +104,24 @@ The relevant `package.json` entry is:
 Pi skill installation does not by itself install AmberTools/OpenMM. Provide a
 runtime with one of the methods below.
 
-## Codex, OpenCode, and Generic Agents
+## Codex, Cursor, OpenCode, and Generic Agents
 
-For harnesses that discover skills under `.agents/skills`, `.claude/skills`,
-or `.codex/skills`, use:
+MDClaw skills follow the [Agent Skills](https://agentskills.io) layout, so the
+standard [skills CLI](https://github.com/vercel-labs/skills) installs them for
+any supported harness (Node 22.20+ required). Run it in the project where the
+agent works:
+
+```bash
+npx skills add matsunagalab/mdclaw
+```
+
+Select the skills and target agents when prompted; the shared `common` skill
+must be installed alongside the `md-*` skills because they reference its
+pages. `npx skills update` picks up later releases.
+
+Without Node, or when working inside this checkout, the bundled installer
+creates the same mirrors under `.agents/skills`, `.claude/skills`, and
+`.codex/skills`:
 
 ```bash
 git clone https://github.com/matsunagalab/mdclaw
@@ -141,14 +155,16 @@ available after copying or packaging a mirror.
 
 `bin/mdclaw` chooses a runtime for each CLI invocation:
 
-1. Explicit `MDCLAW_RUNTIME=conda|singularity|apptainer|docker`.
-2. A conda env named by `MDCLAW_CONDA_ENV`, default `mdclaw`.
-3. Singularity with `MDCLAW_SIF`, plugin data SIF, or repo-local `mdclaw.sif`.
-4. Apptainer with the same SIF search path.
-5. Docker image from `MDCLAW_DOCKER_IMAGE`, default
+1. Explicit `MDCLAW_RUNTIME=pixi|conda|singularity|apptainer|docker`.
+2. A pixi env installed in the checkout (`.pixi/envs/default`, created by
+   `pixi install`).
+3. A conda env named by `MDCLAW_CONDA_ENV`, default `mdclaw`.
+4. Singularity with `MDCLAW_SIF`, plugin data SIF, or repo-local `mdclaw.sif`.
+5. Apptainer with the same SIF search path.
+6. Docker image from `MDCLAW_DOCKER_IMAGE`, default
    `ghcr.io/matsunagalab/mdclaw:<plugin-version>` when the version is known,
    otherwise `ghcr.io/matsunagalab/mdclaw:latest`.
-6. A local `mdclaw` executable on `PATH`.
+7. A local `mdclaw` executable on `PATH`.
 
 Host-side SLURM tools run natively because they need `sbatch`, `squeue`,
 `sinfo`, `sacct`, and `scancel`. Compute-heavy tools run inside the selected
@@ -162,7 +178,10 @@ Pick by scenario:
 
 - **Shared lab SIF**: an administrator already provides a SIF; two environment
   variables, no checkout or host Python needed.
-- **Conda**: local development or a controlled workstation.
+- **Pixi**: local development from a checkout; fast, locked installs of the
+  same conda-forge stack.
+- **Conda**: the legacy local route; works, but has no lockfile and solves
+  slowly.
 - **Singularity/Apptainer SIF**: recommended for Linux HPC.
 - **Docker**: desktop or workstation container runtime; the easiest install on
   macOS.
@@ -195,7 +214,28 @@ libraries, configuration and authentication socket. See
 [direct SIF/SLURM invocation](../../skills/hpc-run/sif-slurm.md) for the
 tested lab command and how to keep submission-host binds out of queued jobs.
 
-### Conda Runtime
+### Pixi Runtime (Recommended For Development)
+
+[Pixi](https://pixi.sh) installs the same conda-forge scientific stack from
+the committed lockfile, in seconds rather than minutes, with per-platform
+differences handled inside `pixi.toml`:
+
+```bash
+curl -fsSL https://pixi.sh/install.sh | sh   # once per machine, no root
+cd mdclaw
+pixi install                                 # locked env under .pixi/
+export PATH="$PWD/bin:$PATH"
+mdclaw --list                                # wrapper auto-selects pixi
+```
+
+`pixi run <cmd>` (or `pixi shell`) activates the env for direct use, e.g.
+`pixi run pytest tests/test_cli.py`. Dependency updates go through
+`pixi update` and a committed `pixi.lock` diff, so environment changes have
+history. The source-built extras (openmm-torch with PythonTorchForce, PLUMED)
+are not conda-installable and still follow
+`docs/developer/conda-env-parity-plan.md`.
+
+### Conda Runtime (Legacy)
 
 ```bash
 conda env create -f environment.yml   # installs this checkout editable (-e .)
@@ -204,9 +244,11 @@ export PATH="$PWD/bin:$PATH"
 mdclaw --list
 ```
 
-Use conda for local development and for machines where you control the Python
-environment. The wrapper invokes the env with `conda run`, so activation is
-optional.
+Use conda only where pixi is unavailable or an existing `mdclaw` env is
+already in place. The wrapper invokes the env with `conda run`, so activation
+is optional. Note the known platform limits recorded in
+`docs/developer/conda-env-parity-plan.md` (no `hole2` on osx-arm64; the
+conda `openmm-torch` line is unsolvable next to `openmm>=8.5.1`).
 
 ### Singularity / Apptainer Runtime
 
@@ -255,6 +297,7 @@ scripts/mdclaw-doctor.sh
 It checks:
 
 - `bin/mdclaw` availability.
+- the checkout pixi env, if present (version, OpenMM, AmberTools).
 - executable bits on `scripts/*.sh` and `container/scripts/*.sh`
   (cloud-synced checkouts can strip exec bits and symlinks; restore with
   `git checkout`).

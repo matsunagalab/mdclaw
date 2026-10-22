@@ -44,14 +44,11 @@ dependencies:
   # HPacker uses torch at import time. Keep this on conda-forge to avoid
   # mixing pkgs/main PyTorch with conda-forge protobuf on macOS.
   - pytorch>=2.7,<2.8
-  # openmm-torch (openmmtorch) backs the production custom force / CV bias
-  # plugin via PythonTorchForce (agent-written energy(positions, ctx) scripts;
-  # autograd computes the forces). NOTE: PythonTorchForce landed on master on
-  # 2026-06-24 (#179) and is NOT in any tagged release yet (v1.5.1 ships only
-  # the deprecated TorchForce). The container source-builds the pinned commit;
-  # this conda package mainly pulls a matching openmm+pytorch ABI for local
-  # dev, where the custom-force path is skipped until PythonTorchForce exists.
-  - openmm-torch>=1.5
+  # openmm-torch is deliberately absent: every conda-forge build pins
+  # openmm <8.5, unsolvable next to the openmm floor above, and ships only the
+  # deprecated TorchForce. The container source-builds the pinned commit with
+  # PythonTorchForce; locally the custom-force path is skipped until that
+  # build exists (docs/developer/conda-env-parity-plan.md).
   # openmm-plumed 2.1 conda binaries constrain OpenMM below 8.5. Keep our
   # modern OpenMM and source-build PLUMED 2.9.4 + its plugin into this prefix:
   # bash container/scripts/build-plumed.sh "$CONDA_PREFIX" /tmp/new-plumed-build

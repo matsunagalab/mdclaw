@@ -3,7 +3,7 @@
 # simulations, autonomous scientific investigation, and reproducible atomistic
 # evidence. Skills remain text files under `skills/`; this image is the
 # execution environment.
-# 3-stage build: mambaforge -> OpenMM source build (CUDA 11.8) -> slim runtime
+# 3-stage build: pixi locked env -> OpenMM source build (CUDA 11.8) -> slim runtime
 #
 # Driver compatibility:
 #   450.x+ (CUDA 11.0+): OpenMM CUDA + PyTorch cu118
@@ -38,68 +38,63 @@
 #   singularity exec --nv mdclaw.sif mdclaw --list
 
 # =============================================================================
-# Stage 1: Build conda environment (everything except OpenMM)
+# Stage 1: Install the locked pixi environment (everything except OpenMM)
 # =============================================================================
-FROM --platform=linux/amd64 condaforge/mambaforge:latest AS conda-base
+# The environment comes from pixi.toml + pixi.lock — the same lockfile a
+# developer installs locally with `pixi install` — so the image and the dev
+# environment cannot drift apart (docs/developer/deploy-v2-plan.md). The lock
+# already contains salilab MODELLER, the git-pinned PyPI layer (hpacker,
+# openff-pablo, SST2), and the dev tools (pytest, ruff) that SIF overlay
+# workflows need; openmm-torch is absent by design and built from source in
+# Stage 2.
+FROM --platform=linux/amd64 ghcr.io/prefix-dev/pixi:latest AS conda-base
 
 WORKDIR /build
 
-# C++ toolchain for source-built pip dependencies.
-# Stays in stage 1 only — conda-pack copies just /opt/mdclaw to later stages.
+# C++ toolchain for PyPI source builds during `pixi install` (hpacker, SST2).
+# Stays in stage 1 only — conda-pack carries just the env to later stages.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends build-essential && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy environment definition and project files
-COPY environment.yml pyproject.toml README.md ./
+# The lock pins an editable install of this checkout, so the manifest needs
+# the package source present; the editable install is replaced by a real one
+# below.
+COPY pixi.toml pixi.lock pyproject.toml README.md ./
 COPY mdclaw/ mdclaw/
 
-# Create conda environment. Strip the editable install (added separately
-# below) and openmm-torch: the conda build of openmm-torch links the conda
-# OpenMM, but Stage 2 replaces OpenMM with a CUDA-11.8 source build, so the
-# plugin is rebuilt from source there against that OpenMM + the cu118 torch.
-RUN sed -e '/- -e \./d' -e '/openmm-torch/d' environment.yml > environment-docker.yml && \
-    mamba env create -f environment-docker.yml -n mdclaw && \
-    mamba clean -afy
-
-# MODELLER, for `modeller_from_alignment` and the modeller-predict skill.
-# Installed here rather than in environment.yml because the salilab channel
-# publishes linux-64 only, and Dockerfile.rikyu-arm64 derives its environment
-# from that same shared file — adding it there would break the arm64 solve.
-# That image installs the aarch64 build from the generic tarball instead.
-# No license key is baked in: mdclaw injects a synthetic `modeller.config`
-# from a KEY_MODELLER* environment variable at call time
-# (mdclaw/genesis/modeller.py), so the image ships the unlicensed package and
-# each user supplies their own key at runtime.
-ARG MODELLER_VERSION=10.8
-RUN mamba install -n mdclaw -y -c salilab "modeller=${MODELLER_VERSION}" && \
-    mamba clean -afy
+# Install exactly what the lock says: --locked fails the build when pixi.lock
+# is out of date with pixi.toml instead of silently re-solving.
+# CONDA_OVERRIDE_CUDA satisfies the lock's __cuda=12.9 virtual package on the
+# GPU-less build machine (same override conda uses).
+ENV CONDA_OVERRIDE_CUDA=12.9
+RUN pixi install --locked
 
 # Install PyTorch with CUDA 11.8 support (matches the base image's CUDA
 # toolkit, so PyTorch's bundled CUDA runtime is consistent with the one
-# OpenMM is compiled against — no dual-runtime loader surprises).
-RUN mamba run -n mdclaw pip install --force-reinstall "torch==2.7.1+cu118" --index-url https://download.pytorch.org/whl/cu118 && \
-    mamba run -n mdclaw pip cache purge
+# OpenMM is compiled against — no dual-runtime loader surprises). This
+# replaces the lock's conda PyTorch (a cuda 12.9 build).
+RUN /build/.pixi/envs/default/bin/pip install --force-reinstall "torch==2.7.1+cu118" --index-url https://download.pytorch.org/whl/cu118 && \
+    /build/.pixi/envs/default/bin/pip cache purge
 
-# Install mdclaw plus its development tools into the packaged environment so
-# SIF overlay workflows can run repository lint and tests without a separate
-# host conda environment.
-RUN mamba run -n mdclaw pip install ".[dev]" \
-      "SST2 @ git+https://github.com/matsunagalab/SST2.git@ba48461" && \
-    mamba run -n mdclaw pip cache purge
+# Replace the editable mdclaw from the lock with a real install of this
+# checkout. --no-deps: every dependency is already pinned by the lock.
+RUN /build/.pixi/envs/default/bin/pip install --no-deps --force-reinstall . && \
+    /build/.pixi/envs/default/bin/pip cache purge
 
 # Apply packmol-memgen numpy compatibility patch
-RUN SITE_PACKAGES=$(mamba run -n mdclaw python -c "import site; print(site.getsitepackages()[0])") && \
+RUN SITE_PACKAGES=$(/build/.pixi/envs/default/bin/python -c "import site; print(site.getsitepackages()[0])") && \
     PATCH_FILE="$SITE_PACKAGES/packmol_memgen/lib/pdbremix/v3numpy.py" && \
     if [ -f "$PATCH_FILE" ]; then \
         sed -i.bak "s/np\.float)/float)/g; s/np\.int)/int)/g" "$PATCH_FILE" && \
         rm -f "${PATCH_FILE}.bak"; \
     fi
 
-# Install conda-pack and pack the environment
-RUN mamba install -n base -y conda-pack && \
-    conda-pack -n mdclaw -o /build/mdclaw_env.tar.gz --ignore-editable-packages --ignore-missing-files && \
-    mamba clean -afy
+# Pack the environment for the later stages. A pixi env is a standard conda
+# prefix (conda-meta/ included), which is what conda-pack operates on.
+RUN /build/.pixi/envs/default/bin/pip install --no-cache-dir conda-pack && \
+    /build/.pixi/envs/default/bin/conda-pack -p /build/.pixi/envs/default \
+      -o /build/mdclaw_env.tar.gz --ignore-editable-packages --ignore-missing-files
 
 # =============================================================================
 # Stage 2: Build OpenMM from source against CUDA 11.8

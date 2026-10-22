@@ -3,13 +3,17 @@
 ## Environment Setup
 
 ```bash
-conda env create -f environment.yml
-conda activate mdclaw
+pixi install         # locked environment from pixi.toml + pixi.lock
+pixi run mdclaw --version
 ```
 
-`environment.yml` is the authoritative local development environment. It
-includes conda-only or conda-preferred scientific/runtime dependencies such as
-AmberTools, OpenMM, RDKit, PDBFixer, and `pymol-open-source`. The PyMOL package
+`pixi.toml` plus the committed `pixi.lock` are the authoritative local
+development environment: conda-forge scientific dependencies (AmberTools,
+OpenMM, RDKit, PDBFixer, `pymol-open-source`) and the PyPI layer (editable
+`mdclaw`, git-pinned hpacker / openff-pablo / SST2) resolve into one
+multi-platform lockfile. The legacy conda route (`conda env create -f
+environment.yml`, env name `mdclaw`) still works but has no lockfile; see
+`docs/developer/deploy-v2-plan.md` for the migration state. The PyMOL package
 is required only for `render_structure_preview`; when it is missing, that tool
 returns `code=pymol_not_available` without blocking MD workflow tools.
 
@@ -129,12 +133,15 @@ Boltz-2 for multimers, ligands, and PTMs.
 Non-plugin harnesses do not need a special integration layer. Make `skills/`
 readable, put `mdclaw` on `PATH`, and provide one runtime:
 
+- pixi: `pixi install` in the checkout (locked env under `.pixi/`).
 - conda: create `environment.yml` and install the package in that environment.
 - SIF: set `MDCLAW_SIF=/path/to/mdclaw.sif`.
 - Docker: set `MDCLAW_DOCKER_IMAGE` if using a non-default image.
 
-`bin/mdclaw` auto-selects conda first, then SIF with Singularity/Apptainer, then
-Docker, and finally a local `mdclaw` command if one is already on `PATH`.
+`bin/mdclaw` auto-selects the checkout pixi env first, then conda, then SIF
+with Singularity/Apptainer, then Docker, and finally a local `mdclaw` command
+if one is already on `PATH`. `MDCLAW_RUNTIME=pixi|conda|singularity|apptainer|docker`
+overrides the detection.
 The SIF and Docker options are packaged MD runtimes for the CLI; they do not
 replace or duplicate the agent-facing skill files.
 

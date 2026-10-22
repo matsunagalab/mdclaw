@@ -7,6 +7,18 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-23 — Deploy v2: pixi ロックによる依存一本化と Agent Skills 標準配布（deploy-v2-plan）
+
+ユーザー承認（1A: pixi を dev 環境＋amd64 コンテナまで一本化、2A: skills 標準配布、3B: ワンライナーは見送り）。設計と残リスクは `docs/developer/deploy-v2-plan.md`。
+
+- **調査の確定事項**: uv 単体は不可（AmberTools・hole2・pymol-open-source・openmm-torch が conda 限定。OpenMM 自体は 8.2 から pip 公式配布）。pixi は conda-forge＋PyPI を 1 つのマルチプラットフォーム lockfile に解決し（内部 uv）、git ピンも editable も扱える。スキル配布は vercel-labs/skills（`npx skills add`、17 ハーネス対応）が業界標準化しており、`install-agent-skills.sh` と同じ symlink ミラー方式。
+- **顕在化した既存バグ**: コミット済み `environment.yml` は解決不能だった（conda-forge の openmm-torch 全ビルドが openmm<8.5 を固定。conda-env-parity-plan が 9/11 に記録済み）→ 行を削除。hpacker の `biopython==1.81` 固定は pip が conda の 1.88 を黙って上書きして成立していた → pixi.toml で conda 側も 1.81 に明示固定。
+- **R1（dev 環境）**: `pixi.toml`＋`pixi.lock`（673 パッケージ、linux-64／linux-aarch64／osx-arm64、linux は __cuda=12.9 宣言で CUDA 12.9 ビルドを選択、hole2 は linux のみ、MODELLER は salilab feature で linux-64／osx-arm64）。osx-arm64 で検証: `pixi install` 約17秒、`--list` のツール集合は手ビルド conda 環境と完全一致、標準テスト＋wrapper/deployment/docs テスト 391 passed、ruff clean。`bin/mdclaw` はチェックアウトの `.pixi/envs/default` を最優先で自動検出（`MDCLAW_RUNTIME=pixi` で明示も可）、`setup-container.sh` は pixi 環境があれば pull をスキップ、doctor に pixi ブロック追加。
+- **R2（コンテナ）**: `container/Dockerfile` Stage 1 を `ghcr.io/prefix-dev/pixi` ＋ `pixi install --locked` に置換（lock が古いとビルドが即失敗＝再解決しない）。MODELLER・SST2・hpacker・openff-pablo の個別インストール手順は lock に吸収されて消えた。Stage 2（OpenMM 8.5.1 cu118 ソースビルド、openmm-torch ピンコミット、PLUMED）と Stage 3 は不変。**未検証ゲート**: この Mac に Docker が無いためビルド未実施。次回リリース時に Docker ホストで (1) GPU なしビルダーでの `CONDA_OVERRIDE_CUDA`、(2) pixi prefix への `conda-pack -p`、(3) `test-container.sh` を通してから GHCR latest／共有 SIF を置き換える。失敗時の代替は pixi-pack か同一パス方式（plan doc 参照）。
+- **2A（skills）**: `skills/common/SKILL.md` を追加して共有ページ群を正規スキル化（`name: common`、ミラーと同じ兄弟レイアウトで入る）。`npx skills add ./ --list` で common を含む 14 スキルの発見を確認。README／deployment.md の生成系エージェント導線を `npx skills add matsunagalab/mdclaw` 優先に変更（Node なしは従来スクリプト）。
+- **位置づけ**: conda-env-parity-plan の環境レイヤ（§1・§3）は本件で置き換え。ソースビルド層（openmm-torch／PLUMED／packmol 修正、§2・§4・§5）は引き続き有効で未実装。`environment.yml` は conda ユーザーと rikyu-arm64 Dockerfile のために残置（正本は pixi.toml）。ambertools は lock で 24.8（floor >=24.0 のまま。25/26 への bump は別件）。
+- AGENTS.md／CLAUDE.md の開発デフォルトを `pixi run` に変更（conda は併記）。`configuration.md`・`container.md`・`deployment.md` 更新。lockfile 更新は `pixi update`＋`pixi.lock` 差分のコミットで履歴化。
+
 ## 2026-10-22 — README の正確性修正と deploy 記述の一本化（deploy-simplification-plan A1 の完遂）
 
 ユーザー依頼（README の正確性・わかりやすさと deploy のわかりにくさの調査 → 改善計画 → 全フェーズ実装を承認）。

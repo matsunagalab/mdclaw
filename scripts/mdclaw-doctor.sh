@@ -60,6 +60,26 @@ else:
 PY
 
 echo
+if command -v pixi >/dev/null 2>&1 && [ -f "$REPO_ROOT/pixi.toml" ] && [ -d "$REPO_ROOT/.pixi/envs/default" ]; then
+    echo "[ok] pixi env found in checkout ($(pixi --version 2>/dev/null))"
+    pixi run --frozen --manifest-path "$REPO_ROOT/pixi.toml" python -m mdclaw._cli --version || true
+    echo
+    echo "OpenMM installation (pixi):"
+    pixi run --frozen --manifest-path "$REPO_ROOT/pixi.toml" python -m openmm.testInstallation || true
+    echo
+    echo "AmberTools executables (pixi):"
+    for exe in pdb4amber cpptraj; do
+        if [ -x "$REPO_ROOT/.pixi/envs/default/bin/$exe" ]; then
+            echo "[ok] $exe"
+        else
+            echo "[warn] $exe not found in pixi env"
+        fi
+    done
+elif command -v pixi >/dev/null 2>&1 && [ -f "$REPO_ROOT/pixi.toml" ]; then
+    echo "[warn] pixi found but env not installed; run: pixi install"
+fi
+
+echo
 if command -v conda >/dev/null 2>&1 && conda env list 2>/dev/null | awk '{print $1}' | grep -qx "$CONDA_ENV_NAME"; then
     echo "[ok] conda env '${CONDA_ENV_NAME}' found"
     conda run -n "$CONDA_ENV_NAME" python -m mdclaw._cli --version || true

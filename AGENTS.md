@@ -73,13 +73,17 @@ Developer references:
 
 ## Development Defaults
 
-Default to the `mdclaw` conda environment for local development, linting, and
-tests:
+Default to the checkout pixi environment for local development, linting, and
+tests (`pixi install` once; it materializes the committed `pixi.lock`):
 
 ```bash
-conda run -n mdclaw ruff check mdclaw/
-conda run -n mdclaw pytest tests/test_registry.py tests/test_cli.py tests/test_guardrails.py tests/test_guardrail_code_registry.py tests/test_slurm_server.py -v
+pixi run ruff check mdclaw/
+pixi run pytest tests/test_registry.py tests/test_cli.py tests/test_guardrails.py tests/test_guardrail_code_registry.py tests/test_slurm_server.py -v
 ```
+
+An existing `mdclaw` conda env still works through `conda run -n mdclaw ...`,
+but pixi is preferred: it installs the lockfile, so every machine gets the
+same resolved environment.
 
 On Linux hosts where creating conda is expensive, use the current SIF as a
 dependency/runtime image and import the checkout source instead of rebuilding

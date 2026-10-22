@@ -34,6 +34,18 @@ environment behind `mdclaw <tool>`.
 
 ## Build And Test
 
+Stage 1 of `container/Dockerfile` installs the environment from the committed
+`pixi.toml` + `pixi.lock` (`pixi install --locked`) — the same lockfile a
+developer materializes locally — so the image cannot drift from the dev
+environment. A build fails fast when the lock is out of date with the
+manifest; run `pixi lock` and commit the diff first. The lock's `__cuda=12.9`
+requirement is satisfied on GPU-less build machines by `CONDA_OVERRIDE_CUDA`,
+set in the Dockerfile. MODELLER (salilab channel) and the git-pinned PyPI
+layer (hpacker, openff-pablo, SST2) come from the lock; the amd64 image no
+longer installs them in separate steps. `Dockerfile.rikyu-arm64` still builds
+from `environment.yml` and migrates separately
+(`docs/developer/deploy-v2-plan.md`).
+
 The amd64 image ships the membrane-patch cache that lives in the package
 (`mdclaw/data/membrane_patches`, OPC and TIP3P) and asserts at build time that
 both water models are present; it no longer runs a build-time warm-up. The

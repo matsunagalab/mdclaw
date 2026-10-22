@@ -33,6 +33,12 @@ _conda_env_exists() {
         && conda env list 2>/dev/null | awk '{print $1}' | grep -qx "$CONDA_ENV_NAME"
 }
 
+_pixi_env_exists() {
+    command -v pixi &>/dev/null \
+        && [ -f "$REPO_ROOT/pixi.toml" ] \
+        && [ -d "$REPO_ROOT/.pixi/envs/default" ]
+}
+
 # --- Determine version ---
 if [ -n "${1:-}" ]; then
     EXPLICIT_VERSION=1
@@ -42,11 +48,17 @@ else
 fi
 
 if [ "$EXPLICIT_VERSION" = "0" ] \
-    && [ "${MDCLAW_FORCE_CONTAINER_SETUP:-}" != "1" ] \
-    && _conda_env_exists; then
-    echo "MDClaw conda env '${CONDA_ENV_NAME}' found; packaged container setup is not required." >&2
-    echo "Set MDCLAW_FORCE_CONTAINER_SETUP=1 to pull the packaged runtime anyway." >&2
-    exit 0
+    && [ "${MDCLAW_FORCE_CONTAINER_SETUP:-}" != "1" ]; then
+    if _pixi_env_exists; then
+        echo "MDClaw pixi env found in checkout; packaged container setup is not required." >&2
+        echo "Set MDCLAW_FORCE_CONTAINER_SETUP=1 to pull the packaged runtime anyway." >&2
+        exit 0
+    fi
+    if _conda_env_exists; then
+        echo "MDClaw conda env '${CONDA_ENV_NAME}' found; packaged container setup is not required." >&2
+        echo "Set MDCLAW_FORCE_CONTAINER_SETUP=1 to pull the packaged runtime anyway." >&2
+        exit 0
+    fi
 fi
 
 # --- Determine destination ---

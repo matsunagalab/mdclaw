@@ -1,0 +1,117 @@
+# MDClaw pixi manifest: the single dependency definition for the local dev
+# environment and the container build (docs/developer/deploy-v2-plan.md).
+#
+#   pixi install          # create/update the env from pixi.lock (fast, locked)
+#   pixi run mdclaw ...   # run the CLI inside the env
+#   pixi run pytest ...   # run tests inside the env
+#
+# pixi resolves conda-forge first, then the PyPI layer through uv, and commits
+# the whole solve to pixi.lock for every platform below. Unlike
+# environment.yml, per-platform differences (hole2, MODELLER, CUDA) are
+# expressed here directly instead of in sed lines inside Dockerfiles.
+#
+# What this manifest deliberately does NOT contain — the source-built pieces
+# that no conda package can currently provide (see
+# docs/developer/conda-env-parity-plan.md):
+#   - openmm-torch with PythonTorchForce (conda-forge's 1.5.1 lacks it and
+#     pins openmm <8.5, unsolvable next to our openmm floor; the container
+#     builds the pinned commit from source)
+#   - PLUMED 2.9.4 + openmm-plumed (container/scripts/build-plumed.sh)
+#   - packmol-memgen fixes (v3numpy patch, PPM3 immers rebuild)
+#   - hole2 on osx-arm64 (no conda-forge build; build from source or use
+#     host binaries)
+
+[workspace]
+name = "mdclaw"
+channels = ["conda-forge"]
+# The cuda entries declare __cuda=12.9 as available at solve time so the lock
+# selects the CUDA 12.9 builds of OpenMM/PyTorch on linux (conda-forge has no
+# lower CUDA build for OpenMM >= 8.5, see the note in environment.yml; driver
+# floor R575). osx-arm64 solves CPU/OpenCL-only. The container image replaces
+# OpenMM with a CUDA 11.8 source build on top of this env for old-driver HPC
+# nodes.
+platforms = [
+    { name = "linux-64-cuda", platform = "linux-64", cuda = "12.9" },
+    { name = "linux-aarch64-cuda", platform = "linux-aarch64", cuda = "12.9" },
+    "osx-arm64",
+]
+
+[dependencies]
+python = "3.12.*"
+# conda-only or conda-preferred scientific stack (mirrors environment.yml)
+ambertools = ">=24.0"
+pdbfixer = ">=1.9"
+rdkit = ">=2023.9.1"
+openblas = "*"
+matplotlib = "*"
+pymol-open-source = "*"
+pymbar = ">=4.2.0,<5"
+mdanalysis = ">=2.8,<3"
+openmm = ">=8.5.1"
+openmmforcefields = ">=0.16.0"
+openff-toolkit-base = ">=0.17.1"
+openff-nagl = ">=0.5"
+# openff-pablo runtime deps (rustworkx for graph algos, pyxdg for the CCD
+# download cache location)
+rustworkx = ">=0.14"
+pyxdg = ">=0.28"
+# hpacker (installed from git via pyproject.toml) pins biopython==1.81
+# exactly. Under conda+pip that pin was silently satisfied by pip clobbering
+# the conda biopython; the locked solve makes it explicit, so hold the conda
+# package at the same version.
+biopython = "1.81.*"
+# HPacker imports torch; keep torch on conda-forge to avoid mixing wheel
+# PyTorch with conda-forge protobuf on macOS.
+pytorch = ">=2.7,<2.8"
+# Build toolchain so a local prefix can run container/scripts/build-plumed.sh
+# and the openmm-torch source build.
+cmake = ">=3.18,<4"
+swig = "*"
+patch = "*"
+make = "*"
+cxx-compiler = "*"
+git = "*"
+pip = "*"
+
+# hole2: Fortran executables for pore analysis. conda-forge ships linux-64 /
+# linux-aarch64 / osx-64 but no osx-arm64 build; on Apple Silicon build from
+# source or provide `hole` on PATH (docs/developer/conda-env-parity-plan.md).
+[target.linux-64.dependencies]
+hole2 = "2.3.1.*"
+cuda-version = ">=12.0,<13"
+
+[target.linux-aarch64.dependencies]
+hole2 = "2.3.1.*"
+cuda-version = ">=12.0,<13"
+
+[pypi-dependencies]
+# Editable install of this checkout; pulls and locks every [project]
+# dependency from pyproject.toml (including the hpacker git reference and
+# e3nn==0.5.0). The container build replaces it with a real install via
+# `pip install --no-deps .` before packing.
+mdclaw = { path = ".", editable = true }
+# Pre-1.0, not on conda-forge / PyPI; pin the tag (same as environment.yml).
+openff-pablo = { git = "https://github.com/openforcefield/openff-pablo.git", tag = "v0.2.2" }
+# SST2 (simulated solute tempering), matsunagalab fork, pinned commit.
+# ba48461 is the floor for charge-unscaled solutes (run_sst2 refuses older).
+sst2 = { git = "https://github.com/matsunagalab/SST2.git", rev = "ba48461" }
+
+[feature.dev.dependencies]
+pytest = ">=7.4"
+pytest-asyncio = ">=0.21"
+ruff = ">=0.1"
+
+# MODELLER for modeller_from_alignment / the modeller-predict skill. The
+# salilab channel publishes linux-64 and osx-arm64 only; linux-aarch64 takes
+# the generic-tarball route in Dockerfile.rikyu-arm64. No license key is baked
+# in: mdclaw/genesis/modeller.py injects a synthetic modeller.config from a
+# KEY_MODELLER* environment variable at call time.
+[feature.modeller]
+channels = ["salilab"]
+platforms = ["linux-64-cuda", "osx-arm64"]
+
+[feature.modeller.dependencies]
+modeller = "10.8.*"
+
+[environments]
+default = { features = ["dev", "modeller"], solve-group = "main" }

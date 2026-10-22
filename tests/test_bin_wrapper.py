@@ -134,6 +134,60 @@ def test_slurm_tools_run_natively_wherever_global_options_sit(tmp_path, args, ex
     assert _route(tmp_path, args) == expected
 
 
+def _pixi_fixture(tmp_path: Path) -> tuple[Path, dict]:
+    """A wrapper copy whose PKG_ROOT is tmp_path, with a stub pixi on PATH."""
+    echo = shutil.which("echo")
+    if echo is None:
+        pytest.skip("echo is unavailable on this host")
+    wrapper_dir = tmp_path / "bin"
+    wrapper_dir.mkdir()
+    wrapper_copy = wrapper_dir / "mdclaw"
+    wrapper_copy.write_text(WRAPPER.read_text())
+    (tmp_path / "pixi.toml").write_text("[workspace]\n")
+    (tmp_path / ".pixi" / "envs" / "default").mkdir(parents=True)
+    stub_bin = tmp_path / "stubs"
+    stub_bin.mkdir()
+    (stub_bin / "pixi").symlink_to(echo)
+    env = os.environ.copy()
+    env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
+    env.pop("MDCLAW_RUNTIME", None)
+    return wrapper_copy, env
+
+
+def test_wrapper_autodetects_checkout_pixi_env_first(tmp_path: Path):
+    """A .pixi env in the checkout wins the auto-detection for compute tools."""
+    wrapper_copy, env = _pixi_fixture(tmp_path)
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this host")
+
+    result = subprocess.run(
+        [bash, str(wrapper_copy), "solvate_structure"],
+        env=env, cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith(
+        f"run --frozen --manifest-path {tmp_path}/pixi.toml python -m mdclaw._cli"
+    ), result.stdout
+
+
+def test_wrapper_explicit_pixi_runtime(tmp_path: Path):
+    wrapper_copy, env = _pixi_fixture(tmp_path)
+    env["MDCLAW_RUNTIME"] = "pixi"
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this host")
+
+    result = subprocess.run(
+        [bash, str(wrapper_copy), "solvate_structure", "--label", "x"],
+        env=env, cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "python -m mdclaw._cli solvate_structure --label x" in result.stdout
+
+
 def test_wrapper_global_value_options_match_the_cli():
     import re
 

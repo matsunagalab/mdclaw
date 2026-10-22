@@ -47,10 +47,9 @@ MDClaw needs two things, managed separately:
 
 ### Quickstart From A Checkout
 
-Install one runtime provider first: Singularity/Apptainer or Docker, or a
-Conda environment created with `conda env create -f environment.yml` (the
-setup script detects the `mdclaw` env and reuses it instead of pulling an
-image).
+Provide one runtime first: [pixi](https://pixi.sh) for a fast locked local
+environment, or Singularity/Apptainer or Docker for the packaged runtime
+image (an existing `mdclaw` conda env is also detected and reused).
 
 ```bash
 git clone https://github.com/matsunagalab/mdclaw.git
@@ -60,8 +59,10 @@ cd mdclaw
 # (.agents/.claude/.codex mirrors).
 scripts/install-agent-skills.sh
 
-# Reuse the mdclaw conda env if present; otherwise download the
-# version-matched runtime from ghcr.io/matsunagalab/mdclaw
+# Local env (recommended on a workstation): locked install in seconds.
+pixi install
+# ...or packaged runtime: reuse an existing pixi/conda env, otherwise
+# download the version-matched image from ghcr.io/matsunagalab/mdclaw
 # (SIF preferred, Docker fallback). Nothing is rebuilt.
 scripts/setup-container.sh
 
@@ -76,14 +77,15 @@ scripts/mdclaw-doctor.sh
 | Agent or use case | Skill setup | Runtime setup |
 |---|---|---|
 | Claude Code plugin | `/plugin marketplace add matsunagalab/mdclaw`, then `/plugin install mdclaw@mdclaw` | Session-start hook runs the packaged-runtime setup |
+| Codex, Cursor, OpenCode, and other [Agent Skills](https://agentskills.io) harnesses | `npx skills add matsunagalab/mdclaw` ([skills CLI](https://github.com/vercel-labs/skills), Node 22.20+) | Provide one runtime |
 | Pi | `pi install git:github.com/matsunagalab/mdclaw@main` | Provide one runtime; Pi installs skills only |
-| Codex, OpenCode, generic repo-local agents | `scripts/install-agent-skills.sh` | Provide one runtime |
-| Direct CLI or development | Skills are optional | Conda or a packaged runtime |
+| Direct CLI or development | Skills are optional | Pixi, Conda, or a packaged runtime |
 
-The installer creates discovery mirrors under `.agents/skills`,
-`.claude/skills`, and `.codex/skills`; `skills/` remains the only source of
-truth. Use `scripts/install-agent-skills.sh --copy` on filesystems that do not
-support symlinks.
+Both installers create discovery mirrors under `.agents/skills`,
+`.claude/skills`, and the other agents' skill directories; `skills/` remains
+the only source of truth. Without Node, `scripts/install-agent-skills.sh`
+does the same for a checkout (`--copy` on filesystems that do not support
+symlinks).
 
 ### Runtime Selection
 
