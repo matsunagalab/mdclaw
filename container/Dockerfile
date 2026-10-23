@@ -89,9 +89,15 @@ if [ -f "$PATCH_FILE" ]; then
 fi
 pip install conda-pack==0.9.2
 python /build/test-env-relocation.py
-conda-pack -p /build/.pixi/envs/default -o /opt/mdclaw \
-    --format no-archive --dest-prefix /opt/mdclaw \
-    --ignore-editable-packages --ignore-missing-files
+python - <<'PY'
+import conda_pack
+from conda_pack.formats import NoArchive
+# 0.9.2 returns a truthy value here, hiding errors and leaving partial output.
+NoArchive.__exit__ = lambda self, *args: False
+conda_pack.pack(prefix="/build/.pixi/envs/default", output="/opt/mdclaw",
+                format="no-archive", dest_prefix="/opt/mdclaw",
+                ignore_editable_packages=True, ignore_missing_files=True)
+PY
 # No conda-unpack is needed: every prefix was rewritten to its final path.
 /opt/mdclaw/bin/python -c 'import sys; assert sys.prefix == "/opt/mdclaw"'
 rm -rf /build/.pixi /root/.cache
