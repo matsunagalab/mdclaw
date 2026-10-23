@@ -7,6 +7,14 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-24 — Actionsのコンテナビルドと公開SIF取得の結果
+
+- [SIF download run 39972794665](https://github.com/matsunagalab/mdclaw/actions/runs/39972794665) が成功。Ubuntu 24.04 / SingularityCE 4.6.0で、GitHub認証なし・checkoutなしにREADMEの `singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest` を実行した。
+- 取得・変換は14分30秒。SIFは5.6 GiB、SHA-256 `fd4f345bc71c3d343faa7936433c62f56cb2f9b77bda52a492ac5a4dad35a2f6`。`mdclaw --version` は0.6.8、`inspect_openmm_platforms` はReference/CPUを返し、実際のReference Context生成・エネルギー計算・1ステップが成功。GPUは未検証。
+- 30秒間隔の空き容量記録は最少79 GiB、終了時104 GiB。永続キャッシュを無効にした検証で容量不足は発生しなかった。SIFは使い捨てrunner内で生成し、Mac・Google Driveへの大容量取得はしていない。
+- 対象は公開済みlatest（OCI digest `sha256:b3783f686bc3ae196a622c1c8d09b120a5004a04ed615ef68de3289c1b6b9c8f`、x86_64）で、新規ビルドとは別。READMEとdeploymentへx86_64向けであること、一時領域を含め約60 GBを見込むことを追記した。文書参照テスト成功。
+- `7ac36a7` の通常CIはmacOS/Linuxとも433テスト成功。[Container再実行39972790606](https://github.com/matsunagalab/mdclaw/actions/runs/39972790606) はStage 2で `tar -xzf /tmp/mdclaw_env.tar.gz` が `tar: Skipping to next header` を出して失敗。git不足は解消したが、アーカイブ展開の失敗原因は未確定で、コンテナ内の動作テストには未到達。開始時106 GiB、終了時35 GiBの空きがあり、容量不足のエラーは記録されていない。新イメージとlatestの公開・更新は行われていない。
+
 ## 2026-10-23 — ActionsでコンテナとREADMEのSIF取得を実検証
 
 - Containerを公開なしで初実行したところ、`pixi install --locked` がGit経由の依存取得時に `Git executable not found` で失敗（run 39972019507）。Stage 1へgitとCA証明書を追加した。開始時のrunner空き容量は106 GiBで、この失敗は容量不足ではない。

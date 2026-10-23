@@ -9,13 +9,19 @@ software that executes them. Install skills after preparing the runtime.
 
 ### SIF: No User Checkout Required
 
-On a server with Singularity installed, download the MDClaw image and select it:
+On an x86_64 (Intel/AMD) Linux server with Singularity installed, download the
+MDClaw image and select it:
 
 ```bash
 singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest
 export MDCLAW_SIF="$PWD/mdclaw.sif"
 export MDCLAW_RUNTIME=singularity
 ```
+
+The public image is x86_64 only. Pulling converts it to a SIF locally; allow
+about 60 GB for temporary files and the result. If `/tmp` or your home directory
+is small, [choose a larger temporary/cache location](../developer/container.md#singularity)
+before pulling.
 
 If your lab already has a shared SIF, set `MDCLAW_SIF` to its path instead
 of downloading another copy.

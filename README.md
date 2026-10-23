@@ -56,11 +56,17 @@ CPU-only machines can prepare systems and run short checks.
 ### On A Compute Server: SIF
 
 A SIF (Singularity Image Format) file packages MDClaw and its scientific
-dependencies. On a Linux server with Singularity installed, download it with:
+dependencies. On an x86_64 (Intel/AMD) Linux server with Singularity installed,
+download it with:
 
 ```bash
 singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest
 ```
+
+The command downloads the container and converts it to a SIF locally. Allow
+about 60 GB of free space for temporary files and the result; see
+[temporary storage](docs/developer/container.md#singularity) if `/tmp` or
+your home directory is small. The published image does not support ARM servers.
 
 You do not need to clone this repository or install Pixi for this path.
 Check the downloaded image:
