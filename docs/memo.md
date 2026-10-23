@@ -7,6 +7,13 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-24 — コンテナビルド・CPU 24項目・両OSのCI成功
+
+- `31fb3ea`の[Container 39996483738](https://github.com/matsunagalab/mdclaw/actions/runs/39996483738)が成功。環境移行のtar破損・重複パス・バイナリprefix、Docker読み込み時の容量不足、Ruff検査の誤った起動方法を解消した。CPU smokeは24件成功・0件失敗。CLI、解析ライブラリ、PLUMEDのCPUエネルギー／力、AmberTools、MODELLER、PPM3を確認した。
+- 同コミットの[CI 39996454682](https://github.com/matsunagalab/mdclaw/actions/runs/39996454682)はmacOS/Linuxとも433テストとlint成功。ローカル回帰検査、関連10テスト、actionlint、shell構文・差分確認も成功。
+- 容量対策後のキャッシュなしビルド（39989926000）は空き最少約12 GiB、解放後95 GiB、終了時83 GiB。最終のキャッシュ利用再検証は最少61 GiB、終了時83 GiB。15秒間隔の監視と10 GiB未満でbuilderを止める保護を維持する。CPUテスト前のDocker読み込みには40 GiB以上を要求する。
+- GPU実機検査は未実施。検証はpush_image=falseで実行し、公開latest／versionタグは更新していない。レジストリにはビルドキャッシュだけを保存した。別作業のCUDA構成変更は今回のコミットと検証には含めていない。
+
 ## 2026-10-24 — 容量対策でビルド成功、Ruffの検査コマンドを訂正
 
 - [Container 39989926000](https://github.com/matsunagalab/mdclaw/actions/runs/39989926000)でコンテナビルド・キャッシュ解放・Docker読み込みが成功。15秒ごとの容量記録は最少約12 GiB、キャッシュ解放後95 GiB、終了時83 GiB。前回の容量保護停止を回避した。公開latestは更新していない。
