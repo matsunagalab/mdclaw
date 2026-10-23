@@ -63,6 +63,7 @@ RUN apt-get update && \
 COPY pixi.toml pixi.lock pyproject.toml README.md ./
 COPY mdclaw/ mdclaw/
 COPY container/scripts/test-env-relocation.py /build/test-env-relocation.py
+COPY container/Dockerfile /build/Dockerfile
 
 # Install exactly what the lock says: --locked fails the build when pixi.lock
 # is out of date with pixi.toml instead of silently re-solving.
@@ -88,16 +89,31 @@ if [ -f "$PATCH_FILE" ]; then
     sed -i "s/np\.float)/float)/g; s/np\.int)/int)/g" "$PATCH_FILE"
 fi
 pip install conda-pack==0.9.2
-python /build/test-env-relocation.py
-python - <<'PY'
+# Pack the installed files, including pip replacements and the memgen patch,
+# rather than conda's original cached copies. Also release scratch space now.
+rm -rf /root/.cache
+python /build/test-env-relocation.py /build/Dockerfile
+python - /build/.pixi/envs/default /opt/mdclaw <<'PY_RELOCATE'
 import conda_pack
+import sys
 from conda_pack.formats import NoArchive
 # 0.9.2 returns a truthy value here, hiding errors and leaving partial output.
 NoArchive.__exit__ = lambda self, *args: False
-conda_pack.pack(prefix="/build/.pixi/envs/default", output="/opt/mdclaw",
-                format="no-archive", dest_prefix="/opt/mdclaw",
-                ignore_editable_packages=True, ignore_missing_files=True)
-PY
+source, target = sys.argv[1:]
+env = conda_pack.CondaEnv.from_prefix(
+    source, ignore_editable_packages=True, ignore_missing_files=True,
+    on_missing_cache="ignore")
+# Overlapping conda package ownership can list one installed path twice.
+# Preserve distinct hardlink names, but write each destination only once.
+files = {}
+for file in env.files:
+    previous = files.get(file.target)
+    if previous is not None and previous.source != file.source:
+        raise ValueError(f"Conflicting sources for {file.target}")
+    files[file.target] = file
+env = conda_pack.CondaEnv(source, files.values())
+env.pack(output=target, format="no-archive", dest_prefix=target)
+PY_RELOCATE
 # No conda-unpack is needed: every prefix was rewritten to its final path.
 /opt/mdclaw/bin/python -c 'import sys; assert sys.prefix == "/opt/mdclaw"'
 rm -rf /build/.pixi /root/.cache

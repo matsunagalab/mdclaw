@@ -7,6 +7,12 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-24 — ディレクトリ移行の重複パスと隠れた例外を修正
+
+- tar回避後のrun 39980255537は途中で出力が止まり、Pythonが欠落した。conda-pack 0.9.2のNoArchiveが例外を抑制するため、例外を伝播させたrun 39981406336で、複数パッケージが同じLICENSEを所有することによるFileExistsErrorを確認した。
+- 移行前にパッケージキャッシュを削除して、pipによる置換とmemgenの修正を含む実際のインストール済みファイルを使う。移行先が同じエントリだけをまとめ、異なる移行元の衝突は失敗させる。別名のハードリンクは保持する。
+- 回帰テストはDockerfileの移行処理そのものを取り出して実行する形へ更新。重複所有のファイルとsymlinkで失敗を再現し、修正後は成功。関連10テストとruffも成功。実ビルドはpush後に確認する。
+
 ## 2026-10-24 — conda-packのハードリンクtar破損を再現して回避
 
 - conda-pack 0.9.2で2つのハードリンクを含む最小環境を固めると、GNU tarが `Skipping to next header`・終了コード2を返す。通常コピー／シンボリックリンクでは成功し、gzipなしでもハードリンクだけ失敗。`TarArchive._add_bytes` がハードリンク型のヘッダーへ内容サイズとデータを付けることが原因で、ディスク不足ではない。回帰検査の旧経路は `python container/scripts/test-env-relocation.py tar.gz /path/to/gtar` で再現できる。

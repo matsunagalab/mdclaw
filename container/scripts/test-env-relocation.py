@@ -1,10 +1,10 @@
 """Exercise conda-pack relocation with hardlinks and executable scripts.
 
-Run with the builder's Python. Optional arguments ``tar.gz /path/to/gtar``
-reproduce the old archive route for diagnosis; the default tests the directory
-route used by the Dockerfile.
+Run with the builder's Python and optionally the Dockerfile path. The test runs
+the actual relocation block, so fixes to it cannot diverge from the test.
 """
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -12,7 +12,9 @@ import sys
 import tempfile
 
 
-def check_relocation(pack_format="no-archive", tar="tar"):
+def check_relocation(dockerfile=Path(__file__).resolve().parents[1] / "Dockerfile"):
+    block = Path(dockerfile).read_text(encoding="utf-8").split("<<'PY_RELOCATE'\n", 1)[1]
+    block = block.split("\nPY_RELOCATE", 1)[0]
     with tempfile.TemporaryDirectory(prefix="mdclaw-relocation-") as directory:
         root = Path(directory)
         source = root / "source"
@@ -27,16 +29,16 @@ def check_relocation(pack_format="no-archive", tar="tar"):
         os.link(program, source / "bin/second")
         (source / "bin/alias").symlink_to("first")
         (source / "data").write_bytes(b"\x00\xffpayload")
-        output = target if pack_format == "no-archive" else root / "environment.tar.gz"
+        # Real environments can have overlapping ownership (e.g. LICENSE).
+        for name in ("package-a", "package-b"):
+            metadata = {"name": name, "version": "1", "url": "",
+                        "link": None, "files": ["data", "bin/alias", "bin/second"]}
+            (source / "conda-meta" / f"{name}.json").write_text(
+                json.dumps(metadata), encoding="utf-8")
         subprocess.run(
-            [sys.executable, "-m", "conda_pack.cli", "-p", str(source), "-o", str(output),
-             "--format", pack_format, "--dest-prefix", str(target),
-             "--ignore-editable-packages", "--ignore-missing-files"],
-            check=True,
+            [sys.executable, "-", str(source), str(target)],
+            input=block, text=True, check=True,
         )
-        if pack_format != "no-archive":
-            target.mkdir()
-            subprocess.run([tar, "-xzf", str(output), "-C", str(target)], check=True)
         # Both names must work after relocation, with executable bits preserved.
         # Prefix replacement must not modify either source hardlink.
         for name in ("first", "second", "alias"):
@@ -46,7 +48,7 @@ def check_relocation(pack_format="no-archive", tar="tar"):
         assert (target / "bin/alias").is_symlink()
         assert (target / "data").read_bytes() == b"\x00\xffpayload"
         assert (target / "bin/activate").is_file()
-    print("PASS: relocated hardlinks, symlink, executable mode, data, and source integrity")
+    print("PASS: relocated hardlinks, duplicate paths, symlink, modes, data, and source integrity")
 
 
 if __name__ == "__main__":
