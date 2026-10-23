@@ -63,7 +63,7 @@ def test_container_build_is_gated_on_the_lockfile():
     assert "COPY pixi.toml pixi.lock" in dockerfile
     assert "pixi install --locked" in dockerfile
     assert "pip install --no-deps --force-reinstall ." in dockerfile
-    assert "--ignore-editable-packages" in dockerfile
+    assert "ignore_editable_packages=True" in dockerfile
     assert (REPO_ROOT / "pixi.lock").exists()
 
 
