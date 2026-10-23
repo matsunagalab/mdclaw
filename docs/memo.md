@@ -7,6 +7,12 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-23 — 実行環境選択テストからホストのDockerを隔離
+
+- `e4775e1` の[CI](https://github.com/matsunagalab/mdclaw/actions/runs/39967846716)はmacOS成功、Linuxで431件成功・2件失敗。テスト用PATHに `/usr/bin:/bin` が残っていたため、Dockerスタブ削除後にGitHubランナーの実Dockerを検出し、setupテストがイメージ取得を始めてタイムアウトした。ランタイム不在テストも同じ理由で誤った環境を選んだ。
+- `tests/test_runtime_selection.py` のPATHをスタブと必要なシェル用コマンドだけに限定。シェル用コマンドは専用ディレクトリにリンクし、実Docker・Pixi・Condaなどをホストから拾わないようにした。製品側の実行環境選択は変更していない。
+- ローカルのruntime selection・deployment・wrapper関連65テスト、ruff、差分チェック成功。両OSでの再検証はpush後のGitHub Actionsで行う。
+
 ## 2026-10-23 — README全体を利用者の作業順に再構成
 
 本人「全体の流れが重要」。冒頭は目的とskills／CLIの役割に絞り、導入→依頼例→結果と再開→対応範囲と制限→更新→開発・公開→ライセンスの順に整理。DAGは結果の保存・再開を説明する位置で定義し、リポジトリ構成は開発節へ移動した。重複する実行範囲の注意を整理し、機能表の内部用語を利用者が行える操作に置換。PixiのPATHの有効範囲、SIF実行形、実行環境とskillsの違いも補った。機能や実行コードの変更はない。

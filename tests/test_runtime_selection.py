@@ -33,10 +33,19 @@ def deployment(tmp_path):
     (root / "mdclaw.sif").write_text("existing SIF")
     stubs = tmp_path / "stubs"
     stubs.mkdir()
+    # Expose only shell utilities, never a host runtime. Keeping /usr/bin or
+    # /bin on PATH lets a removed stub fall through to CI's real Docker.
+    utilities = tmp_path / "utilities"
+    utilities.mkdir()
+    for name in ("awk", "basename", "cat", "dirname", "find", "grep", "head",
+                 "id", "mkdir", "readlink", "sed", "tr", "uname", "wc"):
+        executable = shutil.which(name, path=os.defpath)
+        assert executable is not None, f"Required shell utility not found: {name}"
+        (utilities / name).symlink_to(executable)
     calls = tmp_path / "calls.jsonl"
     env = {key: val for key, val in os.environ.items()
            if not key.startswith(("MDCLAW_", "CLAUDE_PLUGIN_"))}
-    env.update(PATH=f"{stubs}:/usr/bin:/bin", CALL_LOG=str(calls))
+    env.update(PATH=f"{stubs}:{utilities}", CALL_LOG=str(calls))
     stub = f"#!{sys.executable}\n" + '''import json, os, sys
 from pathlib import Path
 name, args = Path(sys.argv[0]).name, sys.argv[1:]
