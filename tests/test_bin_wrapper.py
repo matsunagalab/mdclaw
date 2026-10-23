@@ -143,6 +143,7 @@ def _pixi_fixture(tmp_path: Path) -> tuple[Path, dict]:
     wrapper_dir.mkdir()
     wrapper_copy = wrapper_dir / "mdclaw"
     wrapper_copy.write_text(WRAPPER.read_text())
+    shutil.copytree(REPO_ROOT / "scripts/_internal", tmp_path / "scripts/_internal")
     (tmp_path / "pixi.toml").write_text("[workspace]\n")
     (tmp_path / ".pixi" / "envs" / "default").mkdir(parents=True)
     stub_bin = tmp_path / "stubs"
@@ -168,7 +169,7 @@ def test_wrapper_autodetects_checkout_pixi_env_first(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.startswith(
-        f"run --frozen --manifest-path {tmp_path}/pixi.toml python -m mdclaw._cli"
+        f"run --frozen --no-install --manifest-path {tmp_path}/pixi.toml python -m mdclaw._cli"
     ), result.stdout
 
 

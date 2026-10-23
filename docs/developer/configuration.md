@@ -138,12 +138,14 @@ readable, put `mdclaw` on `PATH`, and provide one runtime:
 - SIF: set `MDCLAW_SIF=/path/to/mdclaw.sif`.
 - Docker: set `MDCLAW_DOCKER_IMAGE` if using a non-default image.
 
-`bin/mdclaw` auto-selects the checkout pixi env first, then conda, then SIF
-with Singularity/Apptainer, then Docker, and finally a local `mdclaw` command
-if one is already on `PATH`. `MDCLAW_RUNTIME=pixi|conda|singularity|apptainer|docker`
-overrides the detection.
-The SIF and Docker options are packaged MD runtimes for the CLI; they do not
-replace or duplicate the agent-facing skill files.
+The launcher, setup and doctor use the same runtime selection. Explicit
+`MDCLAW_RUNTIME=pixi|conda|singularity|apptainer|docker` takes priority;
+a missing selected environment is an error. See
+[Runtime Selection](../agents/deployment.md#runtime-selection) for the full
+order and setup behavior. Pixi commands use the installed environment without
+automatically updating it; run `pixi install` explicitly when it needs updating.
+The SIF and Docker options provide scientific dependencies, separately from
+the agent-facing skill files.
 
 ## CLI Basics
 

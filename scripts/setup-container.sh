@@ -1,121 +1,63 @@
 #!/usr/bin/env bash
-# Prepare the packaged MDClaw runtime matching the plugin version.
-#
-# Priority: Singularity/Apptainer (SIF) > Docker (image pull)
-#   - Singularity/Apptainer: preferred on HPC clusters
-#   - Docker: fallback for macOS and systems without Singularity
-#
-# Usage:
-#   ./scripts/setup-container.sh              # auto-detect version from plugin.json
-#   ./scripts/setup-container.sh 0.5.0        # explicit version
-#   MDCLAW_SIF=/custom/path.sif ./scripts/setup-container.sh  # custom SIF destination
+# Prepare the selected runtime. Existing Pixi/Conda environments need no pull.
+# Usage: scripts/setup-container.sh [version]
+# A version or MDCLAW_FORCE_CONTAINER_SETUP=1 requests a container pull when
+# MDCLAW_RUNTIME is unset. Explicit runtime/image choices always take priority.
 set -euo pipefail
-
-# An explicit existing SIF is an operator-managed runtime, not an auto-update
-# destination. In particular, never replace a shared SIF from an agent hook.
-if [ -n "${MDCLAW_SIF:-}" ] && [ -f "$MDCLAW_SIF" ]; then
-    if [ ! -r "$MDCLAW_SIF" ]; then
-        echo "MDClaw SIF is not readable: $MDCLAW_SIF" >&2
-        exit 1
-    fi
-    echo "Using configured MDClaw SIF: $MDCLAW_SIF" >&2
-    exit 0
-fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-REGISTRY="ghcr.io/matsunagalab/mdclaw"
-EXPLICIT_VERSION=0
-CONDA_ENV_NAME="${MDCLAW_CONDA_ENV:-mdclaw}"
+PKG_ROOT="${CLAUDE_PLUGIN_ROOT:-$REPO_ROOT}"
+source "$PKG_ROOT/scripts/_internal/runtime.sh"
 
-_conda_env_exists() {
-    command -v conda &>/dev/null \
-        && conda env list 2>/dev/null | awk '{print $1}' | grep -qx "$CONDA_ENV_NAME"
-}
-
-_pixi_env_exists() {
-    command -v pixi &>/dev/null \
-        && [ -f "$REPO_ROOT/pixi.toml" ] \
-        && [ -d "$REPO_ROOT/.pixi/envs/default" ]
-}
-
-# --- Determine version ---
-if [ -n "${1:-}" ]; then
-    EXPLICIT_VERSION=1
-    VERSION="$1"
-else
-    VERSION=$(python3 -c "import json; print(json.load(open('${REPO_ROOT}/.claude-plugin/plugin.json'))['version'])" 2>/dev/null || echo "latest")
+MODE=auto
+if [ -n "${1:-}" ] || [ "${MDCLAW_FORCE_CONTAINER_SETUP:-}" = 1 ]; then
+    MODE=container
 fi
-
-if [ "$EXPLICIT_VERSION" = "0" ] \
-    && [ "${MDCLAW_FORCE_CONTAINER_SETUP:-}" != "1" ]; then
-    if _pixi_env_exists; then
-        echo "MDClaw pixi env found in checkout; packaged container setup is not required." >&2
-        echo "Set MDCLAW_FORCE_CONTAINER_SETUP=1 to pull the packaged runtime anyway." >&2
-        exit 0
-    fi
-    if _conda_env_exists; then
-        echo "MDClaw conda env '${CONDA_ENV_NAME}' found; packaged container setup is not required." >&2
-        echo "Set MDCLAW_FORCE_CONTAINER_SETUP=1 to pull the packaged runtime anyway." >&2
-        exit 0
-    fi
+mdclaw_select_runtime "$MODE"
+if [ -n "${1:-}" ] && [ -z "${MDCLAW_DOCKER_IMAGE:-}" ]; then
+    DOCKER_IMAGE="ghcr.io/matsunagalab/mdclaw:$1"
 fi
+mdclaw_describe_runtime >&2
+mdclaw_require_runtime setup
 
-# --- Determine destination ---
-if [ -n "${MDCLAW_SIF:-}" ]; then
-    SIF_PATH="$MDCLAW_SIF"
-elif [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
-    mkdir -p "$CLAUDE_PLUGIN_DATA"
-    SIF_PATH="${CLAUDE_PLUGIN_DATA}/mdclaw.sif"
-else
-    SIF_PATH="${REPO_ROOT}/mdclaw.sif"
-fi
-
-# --- Singularity/Apptainer path: build SIF ---
-if command -v singularity &>/dev/null || command -v apptainer &>/dev/null; then
-    # Check if SIF is already up to date
-    mkdir -p "$(dirname "$SIF_PATH")"
-    MANIFEST_PATH="$(dirname "$SIF_PATH")/.mdclaw-version"
-    if [ -f "$SIF_PATH" ] && [ -f "$MANIFEST_PATH" ] && [ "$(cat "$MANIFEST_PATH")" = "$VERSION" ]; then
-        echo "MDClaw SIF v${VERSION} already installed at: $SIF_PATH" >&2
-        exit 0
-    fi
-
-    echo "Downloading MDClaw container v${VERSION} from ${REGISTRY} (Singularity)..." >&2
-    echo "Destination: ${SIF_PATH}" >&2
-
-    if command -v singularity &>/dev/null; then
-        singularity pull --force "$SIF_PATH" "docker://${REGISTRY}:${VERSION}"
-    else
-        apptainer pull --force "$SIF_PATH" "docker://${REGISTRY}:${VERSION}"
-    fi
-
-    echo "$VERSION" > "$MANIFEST_PATH"
-    echo "MDClaw SIF v${VERSION} installed at: $SIF_PATH" >&2
-    exit 0
-fi
-
-# --- Docker fallback: pull image ---
-if command -v docker &>/dev/null; then
-    if ! docker info >/dev/null 2>&1; then
-        echo "Warning: Docker command found, but the Docker daemon is not available." >&2
-        echo "Start Docker Desktop, use Singularity/Apptainer, or create the conda env '${CONDA_ENV_NAME}'." >&2
-        if [ "$EXPLICIT_VERSION" = "1" ] || [ "${MDCLAW_FORCE_CONTAINER_SETUP:-}" = "1" ]; then
-            exit 1
+case "$RUNTIME" in
+    pixi|conda|local)
+        echo "Using $RUNTIME; packaged container setup is not required." >&2
+        echo "Next: run $PKG_ROOT/scripts/mdclaw-doctor.sh." >&2
+        exit 0 ;;
+    singularity|apptainer)
+        # An operator-managed SIF is never an auto-update destination.
+        if [ -n "${MDCLAW_SIF:-}" ] && [ -e "$SIF" ]; then
+            if [ ! -f "$SIF" ] || [ ! -r "$SIF" ]; then
+                echo "Error: configured SIF is not a readable file: $SIF" >&2
+                exit 1
+            fi
+            echo "Using configured MDClaw SIF: $SIF" >&2
+            echo "Next: run $PKG_ROOT/scripts/mdclaw-doctor.sh." >&2
+            exit 0
         fi
-        exit 0
-    fi
-    echo "Downloading MDClaw container v${VERSION} from ${REGISTRY} (Docker)..." >&2
-    docker pull "${REGISTRY}:${VERSION}"
-    echo "MDClaw Docker image ${REGISTRY}:${VERSION} pulled." >&2
-    echo "bin/mdclaw will use this image automatically." >&2
-    exit 0
-fi
+        mkdir -p "$(dirname "$SIF")"
+        MANIFEST_PATH="$(dirname "$SIF")/.mdclaw-version"
+        # Read old version-only markers too; new markers identify custom images.
+        VERSION="${1:-${DEFAULT_IMAGE_TAG:-latest}}"
+        if [ -f "$SIF" ] && [ -f "$MANIFEST_PATH" ] \
+            && { [ "$(cat "$MANIFEST_PATH")" = "$DOCKER_IMAGE" ] \
+                || { [ "$DOCKER_IMAGE" = "ghcr.io/matsunagalab/mdclaw:$VERSION" ] \
+                    && [ "$(cat "$MANIFEST_PATH")" = "$VERSION" ]; }; }; then
+            echo "MDClaw SIF already installed at: $SIF" >&2
+        else
+            echo "Downloading $DOCKER_IMAGE to $SIF ($RUNTIME)..." >&2
+            "$RUNTIME" pull --force "$SIF" "docker://$DOCKER_IMAGE"
+            echo "$DOCKER_IMAGE" > "$MANIFEST_PATH"
+        fi ;;
+    docker)
+        echo "Downloading $DOCKER_IMAGE (Docker)..." >&2
+        docker pull "$DOCKER_IMAGE" ;;
+esac
 
-# --- No runtime available ---
-echo "Error: No container runtime found." >&2
-echo "Install one of:" >&2
-echo "  - Singularity (preferred for HPC): https://docs.sylabs.io/guides/latest/user-guide/quick_start.html" >&2
-echo "  - Apptainer: https://apptainer.org/docs/user/main/quick_start.html" >&2
-echo "  - Docker (macOS/desktop): https://docs.docker.com/get-docker/" >&2
-exit 1
+if [ "$MODE" = container ] && [ -z "${MDCLAW_RUNTIME:-}" ]; then
+    echo "Next: export MDCLAW_RUNTIME=$RUNTIME to select this container, then run scripts/mdclaw-doctor.sh." >&2
+else
+    echo "Next: run $PKG_ROOT/scripts/mdclaw-doctor.sh." >&2
+fi

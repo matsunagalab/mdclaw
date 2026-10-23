@@ -70,6 +70,7 @@ def test_container_build_is_gated_on_the_lockfile():
 def test_container_setup_skips_when_pixi_env_exists(tmp_path):
     (tmp_path / "scripts").mkdir()
     shutil.copy2(REPO_ROOT / "scripts" / "setup-container.sh", tmp_path / "scripts")
+    shutil.copytree(REPO_ROOT / "scripts/_internal", tmp_path / "scripts/_internal")
     (tmp_path / "pixi.toml").write_text("[workspace]\n")
     (tmp_path / ".pixi" / "envs" / "default").mkdir(parents=True)
     stub_bin = tmp_path / "bin"
@@ -87,7 +88,7 @@ def test_container_setup_skips_when_pixi_env_exists(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert "pixi env found" in result.stderr
+    assert "Using pixi" in result.stderr
     assert "unexpected runtime call" not in result.stderr
 
 

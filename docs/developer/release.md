@@ -63,8 +63,9 @@ For harnesses without MDClaw plugin support, keep deployment simple:
 1. Install or check out this repository so the harness can read `skills/`.
 2. Put `bin/mdclaw` on `PATH`, or install the Python package and expose the
    `mdclaw` CLI.
-3. Provide one runtime: conda (`environment.yml`), SIF (`MDCLAW_SIF`), or Docker
-   (`MDCLAW_DOCKER_IMAGE`).
+3. Provide one runtime: Pixi (`pixi install`), a shared SIF, Docker, or an
+   existing Conda environment. Follow [deployment](../agents/deployment.md)
+   for explicit runtime selection and diagnosis.
 
 Slash commands are optional. A generic harness can start by reading
 `skills/md-prepare/SKILL.md` and then continue through the next `SKILL.md`

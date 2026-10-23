@@ -1,139 +1,14 @@
 #!/usr/bin/env bash
-# MDClaw CLI wrapper — routes SLURM tools to host, everything else to a container.
-#
-# SLURM tools (submit_job, check_job, etc.) run natively on the host using
-# python3 + the mdclaw package from the plugin/repo directory. This gives
-# them access to host SLURM commands (sbatch, squeue, sinfo, sacct, scancel).
-#
-# Computation tools (solvate, MD, etc.) run inside a container
-# (Singularity/Apptainer or Docker) where AmberTools, OpenMM, and other
-# scientific packages are available. Singularity/Apptainer is preferred when
-# available; Docker is used as a fallback (useful on macOS where it is much
-# easier to install).
+# Select one scientific runtime; Slurm submission/control stays on the host.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-# Package root: plugin install or repo checkout
 PKG_ROOT="${CLAUDE_PLUGIN_ROOT:-$REPO_ROOT}"
-
-# Directories to bind for the absolute paths found in the arguments (a
-# job_dir, a study_dir, a reference structure inside a JSON argument): the
-# deepest existing directory of each path, one per line, minus the working
-# directory, the package root, $HOME (bound by default) and system prefixes.
-# Without this a job_dir outside the working directory is invisible inside
-# the container and the tools report a job that exists as "no progress.json".
-_mdclaw_arg_bind_dirs() {
-    local cwd="$1" pkg="$2"
-    shift 2
-    local arg path dir anc seen="|" skip
-    for arg in "$@"; do
-        while IFS= read -r path; do
-            [ -n "$path" ] || continue
-            dir="$path"
-            while [ ! -d "$dir" ] && [ "$dir" != "/" ]; do
-                dir="$(dirname "$dir")"
-            done
-            { [ -d "$dir" ] && [ "$dir" != "/" ]; } || continue
-            case "$dir" in
-                /proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/usr|/usr/*|/etc|/etc/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/lib64/*|/opt|/opt/*|/tmp|/tmp/*|/var|/var/*|/run|/run/*|/root|/root/*) continue ;;
-                "$cwd"|"$cwd"/*|"$pkg"|"$pkg"/*) continue ;;
-            esac
-            if [ -n "${HOME:-}" ]; then
-                case "$dir" in "$HOME"|"$HOME"/*) continue ;; esac
-            fi
-            case "$seen" in *"|$dir|"*) continue ;; esac
-            seen="${seen}${dir}|"
-        done < <(printf '%s\n' "$arg" | grep -oE '/[^]"'"'"'[:space:],}]+' || true)
-    done
-    # Keep the minimal set: a directory whose ancestor is also listed is
-    # covered by that ancestor's bind (nested binds are not needed).
-    local candidate other
-    printf '%s\n' "${seen//|/$'\n'}" | sed '/^$/d' | while IFS= read -r candidate; do
-        skip=""
-        other="$(dirname "$candidate")"
-        while [ "$other" != "/" ]; do
-            case "$seen" in *"|$other|"*) skip=1; break ;; esac
-            other="$(dirname "$other")"
-        done
-        [ -n "$skip" ] || printf '%s\n' "$candidate"
-    done
-}
+source "$PKG_ROOT/scripts/_internal/runtime.sh"
 
 # Tools that run natively on the host (need sbatch/squeue/sinfo/sacct/scancel)
 NATIVE_TOOLS="submit_job submit_array_job submit_mps_job check_job list_jobs cancel_job check_job_log inspect_cluster set_policy show_policy configure_container list_tracked_jobs"
-
-# Docker image (default: published on GHCR, pinned to plugin version when known)
-_plugin_version() {
-    python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' \
-        "${PKG_ROOT}/.claude-plugin/plugin.json" 2>/dev/null || true
-}
-DEFAULT_IMAGE_TAG="$(_plugin_version)"
-if [ -n "$DEFAULT_IMAGE_TAG" ]; then
-    DOCKER_IMAGE="${MDCLAW_DOCKER_IMAGE:-ghcr.io/matsunagalab/mdclaw:${DEFAULT_IMAGE_TAG}}"
-else
-    DOCKER_IMAGE="${MDCLAW_DOCKER_IMAGE:-ghcr.io/matsunagalab/mdclaw:latest}"
-fi
-
-# --- Locate SIF (for Singularity/Apptainer) ---
-# Search order:
-#   1. MDCLAW_SIF env var (explicit path)
-#   2. ${CLAUDE_PLUGIN_DATA}/mdclaw.sif (plugin auto-download)
-#   3. ${PKG_ROOT}/mdclaw.sif (repo checkout or plugin directory)
-if [ -n "${MDCLAW_SIF:-}" ] && [ -f "$MDCLAW_SIF" ]; then
-    SIF="$MDCLAW_SIF"
-elif [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -f "${CLAUDE_PLUGIN_DATA}/mdclaw.sif" ]; then
-    SIF="${CLAUDE_PLUGIN_DATA}/mdclaw.sif"
-elif [ -f "${PKG_ROOT}/mdclaw.sif" ]; then
-    SIF="${PKG_ROOT}/mdclaw.sif"
-else
-    SIF=""
-fi
-
-# --- Determine runtime ---
-# Explicit override via MDCLAW_RUNTIME=pixi|conda|singularity|apptainer|docker
-# Otherwise auto-detect:
-#   pixi env installed in the checkout (.pixi/envs/default) → pixi
-#   else conda env named "mdclaw" exists → conda
-#   else singularity (with SIF) > apptainer (with SIF) > docker
-#
-# Self-containment rule: every command for a given invocation runs entirely
-# inside the chosen runtime. SLURM tools still execute on the host because
-# they need host-side commands (sbatch, etc).
-CONDA_ENV_NAME="${MDCLAW_CONDA_ENV:-mdclaw}"
-RUNTIME="${MDCLAW_RUNTIME:-}"
-CONTAINER_CMD=""
-_conda_env_exists() {
-    command -v conda &>/dev/null \
-        && conda env list 2>/dev/null | awk '{print $1}' | grep -qx "$CONDA_ENV_NAME"
-}
-_pixi_env_exists() {
-    command -v pixi &>/dev/null \
-        && [ -f "$PKG_ROOT/pixi.toml" ] \
-        && [ -d "$PKG_ROOT/.pixi/envs/default" ]
-}
-if [ -z "$RUNTIME" ]; then
-    if _pixi_env_exists; then
-        RUNTIME="pixi"
-    elif _conda_env_exists; then
-        RUNTIME="conda"
-    elif [ -n "$SIF" ] && command -v singularity &>/dev/null; then
-        RUNTIME="singularity"
-        CONTAINER_CMD="singularity"
-    elif [ -n "$SIF" ] && command -v apptainer &>/dev/null; then
-        RUNTIME="apptainer"
-        CONTAINER_CMD="apptainer"
-    elif command -v docker &>/dev/null; then
-        RUNTIME="docker"
-    else
-        RUNTIME=""
-    fi
-elif [ "$RUNTIME" = "singularity" ]; then
-    CONTAINER_CMD="singularity"
-elif [ "$RUNTIME" = "apptainer" ]; then
-    CONTAINER_CMD="apptainer"
-fi
 
 # The tool name is the first argument that is neither an option nor the value
 # of a global option, as in mdclaw/_cli.py::_detect_subcommand (keep
@@ -163,19 +38,6 @@ for _arg in "$@"; do
     esac
 done
 
-# --- Flags (--list, --version, --help) ---
-# These must reflect the runtime that actually executes tools. Host Python may
-# be missing science deps, which silently hides tools whose modules fail to
-# import, so only the no-runtime fallback handles these flags directly here.
-case "${1:-}" in
-    --list|--version|--help|-h)
-        if [ -z "$RUNTIME" ]; then
-            PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
-                exec python3 -m mdclaw._cli "$@"
-        fi
-        ;;
-esac
-
 # --- SLURM tools run natively (host python3 + host sbatch/squeue) ---
 # run_rounds --executor mps drives Slurm jobs itself (submit_mps_job,
 # check_job) and runs the policy through this launcher, so it is native too.
@@ -190,119 +52,10 @@ if [ -n "$TOOL" ] && { echo " $NATIVE_TOOLS " | grep -q -- " $TOOL " || [ -n "$N
         exec python3 -m mdclaw._cli "$@"
 fi
 
-# --- Computation tools run via the chosen runtime (self-contained) ---
+mdclaw_select_runtime
+mdclaw_require_runtime
 case "$RUNTIME" in
-    pixi)
-        # Run mdclaw inside the checkout's pixi env (created with
-        # `pixi install` from pixi.toml + pixi.lock). --frozen uses the env
-        # as installed without re-solving; `pixi run` performs the full
-        # activation (PATH, AMBERHOME, ...) like `conda run` does.
-        exec pixi run --frozen --manifest-path "$PKG_ROOT/pixi.toml" \
-            python -m mdclaw._cli "$@"
-        ;;
-    conda)
-        # Run mdclaw entirely inside the conda env. The env must contain
-        # mdclaw (-e .) plus its scientific dependencies. No mixing with
-        # the host Python.
-        exec conda run --no-capture-output -n "$CONDA_ENV_NAME" \
-            python -m mdclaw._cli "$@"
-        ;;
-    singularity|apptainer)
-        # In a user namespace the kernel ignores the setuid bit on
-        # starter-suid and fusermount3, so the SIF cannot be mounted and every
-        # call re-extracts it instead. See docs/developer/container.md.
-        # MDCLAW_UID_MAP_FILE is a test seam, not a supported configuration knob.
-        UID_MAP_FILE="${MDCLAW_UID_MAP_FILE:-/proc/self/uid_map}"
-        if [ -r "$UID_MAP_FILE" ] \
-            && ! grep -qE '^[[:space:]]*0[[:space:]]+0[[:space:]]+4294967295' \
-                "$UID_MAP_FILE"; then
-            echo "Warning: running $CONTAINER_CMD inside a user namespace;" \
-                "the SIF will be extracted on every call instead of mounted." \
-                "Drop the unshare wrapper and use --no-home with a neutral" \
-                "bind path instead." >&2
-        fi
-        NV_FLAG=""
-        if command -v nvidia-smi &>/dev/null; then
-            NV_FLAG="--nv"
-        fi
-        # Bind cwd at the same absolute path used by the host. This keeps
-        # relative and absolute arguments in one namespace, matching Docker.
-        # PKG_ROOT is bound and put on PYTHONPATH so the container runs the
-        # same mdclaw source as the host-side native tools (the image's baked
-        # package is only the dependency layer).
-        CWD="$(pwd)"
-        # Arrays, not word-split strings: a bind path may contain spaces.
-        # Expanded as ${arr[@]+"${arr[@]}"}: under `set -u`, bash 3.2 — still
-        # the system bash on macOS — treats "${arr[@]}" on an empty array as an
-        # unbound variable and aborts, where bash 4.4+ expands it to nothing.
-        PKG_BIND=()
-        if [ "$PKG_ROOT" != "$CWD" ]; then
-            PKG_BIND=(--bind "${PKG_ROOT}:${PKG_ROOT}")
-        fi
-        NV=()
-        [ -n "$NV_FLAG" ] && NV=("$NV_FLAG")
-        # Absolute paths in the arguments (--job-dir, --study-dir, a reference
-        # PDB inside a JSON argument) are bound too: a job_dir outside the
-        # working directory is otherwise invisible in the container and the
-        # tools report "no progress.json; bootstrap the job" for a job that
-        # exists (2026-09-21).
-        ARG_BIND=()
-        while IFS= read -r _dir; do
-            [ -n "$_dir" ] && ARG_BIND+=(--bind "${_dir}:${_dir}")
-        done < <(_mdclaw_arg_bind_dirs "$CWD" "$PKG_ROOT" "$@")
-        exec "$CONTAINER_CMD" exec ${NV[@]+"${NV[@]}"} \
-            --bind "${CWD}:${CWD}" ${PKG_BIND[@]+"${PKG_BIND[@]}"} ${ARG_BIND[@]+"${ARG_BIND[@]}"} \
-            --pwd "${CWD}" \
-            --env PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
-            "$SIF" mdclaw "$@"
-        ;;
-    docker)
-        GPU_FLAG=""
-        if command -v nvidia-smi &>/dev/null; then
-            GPU_FLAG="--gpus all"
-        fi
-        # Map host user so output files have correct ownership (Linux only)
-        USER_FLAG=""
-        if [ "$(uname -s)" = "Linux" ]; then
-            USER_FLAG="--user $(id -u):$(id -g)"
-        fi
-        # Bind cwd at its absolute path so absolute paths in arguments still resolve.
-        # This mirrors Singularity's default behavior of binding $HOME. PKG_ROOT
-        # is mounted and put on PYTHONPATH for the same reason as the Singularity
-        # branch: the container must run this checkout, not the image's baked
-        # package, or host-side native tools and container tools drift apart.
-        CWD="$(pwd)"
-        # Arrays, not word-split strings: a mount path may contain spaces.
-        PKG_MOUNT=()
-        if [ "$PKG_ROOT" != "$CWD" ]; then
-            PKG_MOUNT=(-v "${PKG_ROOT}:${PKG_ROOT}")
-        fi
-        GPU=()
-        [ -n "$GPU_FLAG" ] && GPU=($GPU_FLAG)
-        USER_ARGS=()
-        [ -n "$USER_FLAG" ] && USER_ARGS=($USER_FLAG)
-        ARG_MOUNT=()
-        while IFS= read -r _dir; do
-            [ -n "$_dir" ] && ARG_MOUNT+=(-v "${_dir}:${_dir}")
-        done < <(_mdclaw_arg_bind_dirs "$CWD" "$PKG_ROOT" "$@")
-        exec docker run --rm ${GPU[@]+"${GPU[@]}"} ${USER_ARGS[@]+"${USER_ARGS[@]}"} \
-            -v "${CWD}:${CWD}" ${PKG_MOUNT[@]+"${PKG_MOUNT[@]}"} ${ARG_MOUNT[@]+"${ARG_MOUNT[@]}"} -w "${CWD}" \
-            -e PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
-            "$DOCKER_IMAGE" mdclaw "$@"
-        ;;
-    *)
-        # Fallback: local mdclaw (conda env / pip install)
-        LOCAL_MDCLAW="$(command -v mdclaw 2>/dev/null || true)"
-        if [ -n "$LOCAL_MDCLAW" ] && [ "$LOCAL_MDCLAW" != "$(readlink -f "$0")" ]; then
-            exec "$LOCAL_MDCLAW" "$@"
-        fi
-        echo "Error: No container runtime available." >&2
-        echo "Install one of:" >&2
-        echo "  - Singularity: https://docs.sylabs.io/guides/latest/user-guide/quick_start.html" >&2
-        echo "  - Apptainer: https://apptainer.org/docs/user/main/quick_start.html" >&2
-        echo "  - Docker: https://docs.docker.com/get-docker/" >&2
-        echo "Or create a conda env named 'mdclaw' (with mdclaw + AmberTools + OpenMM)" >&2
-        echo "Or set MDCLAW_SIF=/path/to/mdclaw.sif" >&2
-        exit 1
-        ;;
+    pixi|conda) mdclaw_runtime_exec python -m mdclaw._cli "$@" ;;
+    local) exec "$LOCAL_MDCLAW" "$@" ;;
+    *) mdclaw_runtime_exec mdclaw "$@" ;;
 esac

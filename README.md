@@ -43,100 +43,63 @@ to run every stage or submit HPC jobs.
 
 ## Install / Deploy
 
-MDClaw needs two things, managed separately:
+Choose where the calculations will run. Then install the skills for your agent.
 
-1. **Agent skills** from `skills/`, unless you use the CLI directly.
-2. **One scientific runtime** containing the `mdclaw` CLI, AmberTools, OpenMM,
-   and the Python dependencies: a [Pixi](https://pixi.sh) environment, a
-   Singularity/Apptainer SIF, or a Docker image.
+### On Your Workstation: Pixi
 
-### Quickstart From A Checkout
-
-Repo-local agents need no skill installer: the checkout already tracks the
-discovery mirrors (`.agents/skills`, `.claude/skills`). Provide a runtime and
-verify:
+Install [Pixi](https://pixi.sh) once, then:
 
 ```bash
 git clone https://github.com/matsunagalab/mdclaw.git
 cd mdclaw
-
-# Local env (recommended on a workstation): locked install in seconds.
 pixi install
-# ...or packaged runtime: downloads the version-matched image from
-# ghcr.io/matsunagalab/mdclaw (SIF preferred, Docker fallback), skipping
-# the pull when a local pixi or conda env already exists. Nothing is rebuilt.
-scripts/setup-container.sh
-
-# Put the runtime-selecting wrapper on PATH and verify.
 export PATH="$PWD/bin:$PATH"
-mdclaw --version
 scripts/mdclaw-doctor.sh
 ```
 
-### Install Skills For Your Agent
+Pixi installs the scientific dependencies from the committed lockfile. Use a
+checkout outside cloud-synced folders: the large `.pixi/` environment contains
+machine-specific files that should not be synced. Keep
+`bin/` on your shell's PATH to use `mdclaw` from other project directories.
+Doctor shows the selected environment, checks OpenMM and AmberTools, and
+reports whether GPU execution and optional plugins are available. CPU-only
+machines can prepare systems and run short checks; use a GPU for long MD.
 
-MDClaw skills follow the [Agent Skills](https://agentskills.io) standard, so
-one command installs them for any supported harness — Claude Code, Codex,
-Cursor, OpenCode, and others ([skills CLI](https://github.com/vercel-labs/skills),
-Node 22.20+). Run it in the project the agent works in and select the skills
-and target agents when prompted:
+### On A Compute Server: Shared SIF
+
+Use the SIF file provided by your administrator. A SIF contains the packaged
+scientific software; you do not need your own checkout or Pixi environment.
+Replace the example path with the actual shared image:
+
+```bash
+export MDCLAW_SIF=/data/mdclaw.sif
+singularity exec --nv "$MDCLAW_SIF" mdclaw --version
+singularity exec --nv "$MDCLAW_SIF" mdclaw inspect_openmm_platforms
+```
+
+Use `apptainer` instead of `singularity` if that is the installed command.
+Run GPU checks on a GPU node. See [server setup and Slurm](docs/agents/deployment.md#shared-lab-sif-no-user-checkout-required)
+for working-directory mounts and job submission.
+
+### Connect Your Agent
+
+Inside this checkout, skills are already discoverable. For another project,
+run this in that project's directory:
 
 ```bash
 npx skills add matsunagalab/mdclaw
 ```
 
-Two agent-native setups install more than the skill text and replace the
-command above where they apply:
+Select your agent and install `common` together with the workflow skills.
+This installs instructions; it uses the runtime you prepared above.
+Direct CLI use needs no skills.
 
-| Agent | Setup | What it adds |
-|---|---|---|
-| Claude Code plugin | `/plugin marketplace add matsunagalab/mdclaw`, then `/plugin install mdclaw@mdclaw` | `/mdclaw:*` commands and a session-start hook that prepares the packaged runtime |
-| Pi | `pi install git:github.com/matsunagalab/mdclaw@main` | Pi-native skill management (runtime still provided separately) |
-
-Every installer creates discovery mirrors (e.g. `.agents/skills`,
-`.claude/skills`); `skills/` remains the only source of truth. Use
-`npx skills add matsunagalab/mdclaw --copy` on filesystems that do not
-support symlinks. Skills are optional when driving the CLI directly.
-
-### Runtime Selection
-
-`bin/mdclaw` selects exactly one runtime for each call. The order is an explicit
-`MDCLAW_RUNTIME=pixi|conda|singularity|apptainer|docker` override, then the
-checkout pixi env (`.pixi/envs/default`), conda env `mdclaw`, SIF, Docker, and
-finally a local `mdclaw` executable. Set the override when more than one is
-installed and you need predictable selection. Container calls bind the current
-working directory at the same absolute path, so run from the study/project
-directory and keep inputs below it.
-
-Per-runtime setup — an administrator-provided shared SIF with no checkout,
-Pixi for development, a SIF on Linux HPC, Docker on a desktop, legacy Conda —
-plus verification and troubleshooting live in
-[docs/agents/deployment.md](docs/agents/deployment.md). Image build and
-publishing details are in `docs/developer/container.md`.
-
-### AI Model Backends (BioEmu, Boltz-2)
-
-BioEmu (monomer conformational ensembles) and Boltz-2 (structure prediction,
-pinned to 2.2.1) are optional. They are **not** in the core runtime environment
-or container because their Torch/CUDA stacks are independent. Install only the
-backend you need:
-
-```bash
-mdclaw setup_model_backend --model bioemu --device cuda
-mdclaw setup_model_backend --model boltz  --device cuda
-mdclaw check_model_backend  --model bioemu
-mdclaw check_model_backend  --model boltz
-```
-
-On a read-only SIF, point `MDCLAW_SURROGATE_DIR` at a writable (ideally shared)
-filesystem and bind-mount it so the venv and model weight caches persist.
-
-Once a backend is installed, the agent drives it through the skills: BioEmu
-monomer ensembles via `bioemu-sample` (`generate_surrogate_candidates`,
-recorded as a source bundle for preparation), Boltz-2 predictions via
-`boltz-predict` (`boltz2_protein_from_seq`). See
-`docs/developer/model-backends.md` for the registry contract and how to add
-or swap a model.
+[Deployment details](docs/agents/deployment.md) cover Claude Code plugins, Pi,
+Docker, existing Conda environments, runtime selection, and troubleshooting.
+BioEmu and Boltz-2 are optional, separate installs; see
+[model backend setup](docs/developer/configuration.md#model-backend-runtime).
+Image building and publishing are covered in the
+[maintainer release guide](docs/developer/release.md).
 
 ## Ask In Plain Language
 

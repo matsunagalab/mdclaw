@@ -1,15 +1,40 @@
 #!/usr/bin/env bash
-# Lightweight runtime check for agent deployments.
+# Read-only diagnosis of the same runtime used by bin/mdclaw.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CONDA_ENV_NAME="${MDCLAW_CONDA_ENV:-mdclaw}"
+PKG_ROOT="${CLAUDE_PLUGIN_ROOT:-$REPO_ROOT}"
+source "$PKG_ROOT/scripts/_internal/runtime.sh"
 
 echo "MDClaw doctor"
-echo "repo: $REPO_ROOT"
-echo
+mdclaw_select_runtime
+mdclaw_describe_runtime
+mdclaw_require_runtime
 
+status=0
+case "$RUNTIME" in
+    pixi|conda)
+        (mdclaw_runtime_exec python -m mdclaw._cli --version) || status=1 ;;
+    local)
+        "$LOCAL_MDCLAW" --version || status=1 ;;
+    *)
+        (mdclaw_runtime_exec mdclaw --version) || status=1 ;;
+esac
+if [ "$status" != 0 ]; then
+    echo "[fail] MDClaw CLI could not start in the selected runtime." >&2
+    echo "Next: repair this runtime's MDClaw installation and rerun doctor." >&2
+fi
+if [ "$RUNTIME" = local ]; then
+    echo "[info] Standalone CLI: dependency checks are unavailable without its Python environment."
+    echo "Next: select Pixi, Conda or a container for full diagnosis; for OpenMM use mdclaw inspect_openmm_platforms."
+else
+    (mdclaw_runtime_exec python "$PKG_ROOT/scripts/_internal/doctor.py") || status=1
+fi
+
+echo
+echo "Repository checks (independent of runtime readiness):"
+REPO_ROOT="$PKG_ROOT"
 if [ -x "$REPO_ROOT/bin/mdclaw" ]; then
     echo "[ok] bin/mdclaw exists"
 else
@@ -28,100 +53,6 @@ done
 if [ "$exec_warn" = "1" ]; then
     echo "      Restore tracked modes and symlinks with:"
     echo "      git checkout -- scripts container/scripts .agents .claude"
-fi
-
-echo
-echo "Version sync:"
-python3 - "$REPO_ROOT" <<'PY' || true
-import json
-import re
-import sys
-import tomllib
-from pathlib import Path
-
-root = Path(sys.argv[1])
-versions = {}
-versions["pyproject.toml"] = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
-init_text = (root / "mdclaw" / "__init__.py").read_text()
-versions["mdclaw/__init__.py"] = re.search(r'__version__\s*=\s*"([^"]+)"', init_text).group(1)
-versions[".claude-plugin/plugin.json"] = json.loads((root / ".claude-plugin" / "plugin.json").read_text())["version"]
-marketplace = json.loads((root / ".claude-plugin" / "marketplace.json").read_text())
-versions[".claude-plugin/marketplace.json metadata.version"] = marketplace["metadata"]["version"]
-versions[".claude-plugin/marketplace.json plugins[0].version"] = marketplace["plugins"][0]["version"]
-versions["package.json"] = json.loads((root / "package.json").read_text())["version"]
-
-unique = sorted(set(versions.values()))
-if len(unique) == 1:
-    print(f"[ok] all package/plugin versions are {unique[0]}")
-else:
-    print("[warn] version mismatch")
-    for name, version in versions.items():
-        print(f"      {name}: {version}")
-PY
-
-echo
-if command -v pixi >/dev/null 2>&1 && [ -f "$REPO_ROOT/pixi.toml" ] && [ -d "$REPO_ROOT/.pixi/envs/default" ]; then
-    echo "[ok] pixi env found in checkout ($(pixi --version 2>/dev/null))"
-    pixi run --frozen --manifest-path "$REPO_ROOT/pixi.toml" python -m mdclaw._cli --version || true
-    echo
-    echo "OpenMM installation (pixi):"
-    pixi run --frozen --manifest-path "$REPO_ROOT/pixi.toml" python -m openmm.testInstallation || true
-    echo
-    echo "AmberTools executables (pixi):"
-    for exe in pdb4amber cpptraj; do
-        if [ -x "$REPO_ROOT/.pixi/envs/default/bin/$exe" ]; then
-            echo "[ok] $exe"
-        else
-            echo "[warn] $exe not found in pixi env"
-        fi
-    done
-elif command -v pixi >/dev/null 2>&1 && [ -f "$REPO_ROOT/pixi.toml" ]; then
-    echo "[warn] pixi found but env not installed; run: pixi install"
-fi
-
-echo
-if command -v conda >/dev/null 2>&1 && conda env list 2>/dev/null | awk '{print $1}' | grep -qx "$CONDA_ENV_NAME"; then
-    echo "[ok] conda env '${CONDA_ENV_NAME}' found"
-    conda run -n "$CONDA_ENV_NAME" python -m mdclaw._cli --version || true
-    conda run -n "$CONDA_ENV_NAME" python -c 'import sys; print(sys.executable)'
-    echo
-    echo "OpenMM installation:"
-    conda run -n "$CONDA_ENV_NAME" python -m openmm.testInstallation || true
-    echo
-    echo "AmberTools executables:"
-    for exe in pdb4amber cpptraj; do
-        if conda run -n "$CONDA_ENV_NAME" bash -lc "command -v $exe" >/dev/null 2>&1; then
-            echo "[ok] $exe"
-        else
-            echo "[warn] $exe not found in ${CONDA_ENV_NAME} env"
-        fi
-    done
-else
-    echo "[warn] conda env '${CONDA_ENV_NAME}' not found"
-    echo "      Create it with: conda env create -f environment.yml"
-fi
-
-echo
-echo "Container/runtime detection:"
-runtime_found=0
-if command -v singularity >/dev/null 2>&1; then
-    echo "[ok] singularity: $(command -v singularity)"
-    runtime_found=1
-fi
-if command -v apptainer >/dev/null 2>&1; then
-    echo "[ok] apptainer: $(command -v apptainer)"
-    runtime_found=1
-fi
-if command -v docker >/dev/null 2>&1; then
-    if docker info >/dev/null 2>&1; then
-        echo "[ok] docker: $(command -v docker) (daemon available)"
-    else
-        echo "[warn] docker: $(command -v docker) (daemon unavailable)"
-    fi
-    runtime_found=1
-fi
-if [ "$runtime_found" = "0" ]; then
-    echo "[warn] no singularity/apptainer/docker command found"
 fi
 
 echo
@@ -154,7 +85,7 @@ for skills_root in "${skill_roots[@]}"; do
         fi
         found="$(find -L "$skills_root" -maxdepth 2 -name SKILL.md -print 2>/dev/null || true)"
         if [ -n "$found" ]; then
-            printf '%s\n' "$found" | sed "s#^$REPO_ROOT/#[ok] #"
+            echo "[ok] $label: $(printf '%s\n' "$found" | wc -l | tr -d ' ') skills discovered"
         else
             echo "[warn] $label contains no SKILL.md files"
         fi
@@ -164,3 +95,5 @@ for skills_root in "${skill_roots[@]}"; do
         echo "      or install skills: npx skills add matsunagalab/mdclaw"
     fi
 done
+
+exit "$status"

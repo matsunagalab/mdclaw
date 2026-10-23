@@ -7,6 +7,28 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-23 — Deploy案内と実行環境選択の統一、同期対象外への移行
+
+追加承認「まず1と2を実装して、テストまで」に対応。上の依頼は、下の同日調査時点の「未承認」を更新する。
+
+- READMEを手元のPixi／計算サーバーの共有SIFの2経路に整理。エージェントのskills導入と、詳細な環境選択・管理者向け公開手順を分離。
+- 準備・起動・診断の選択処理を `scripts/_internal/runtime.sh` に統合。明示runtime・SIF・image指定を優先し、指定先が使えない場合は理由と次の操作を表示。実行・診断ではPixiの自動インストールやDockerの自動pullを行わない。
+- doctorは選択環境のCLI、OpenMMのContext生成・エネルギー計算・1ステップ、AmberToolsの起動を確認。必須部分の失敗は非ゼロ終了、追加機能の有無は別表示。Slurmのホスト実行は維持。
+- 移行後の標準テスト群（registry、CLI、guardrails、Slurm、deployment、docs、wrapper、runtime selection）：**433 passed in 80.81s**。ruff、bash構文、git diff --checkも成功。実doctorはReference・CPU・OpenCLとAmberToolsが成功、Torch force／PLUMED／HOLEは利用不可。コンテナ経路はスタブで検証し、実コンテナのビルド・公開・NVIDIA GPU検証は行っていない。
+- 本人指定で開発場所をGoogle Drive外の `~/tmp/mdclaw` に変更。GitHubの同じ `bcfda5e` をcloneし、変更中・未追跡15ファイルを内容照合して引き継いだ。旧checkout全体は `/Volumes/ssd/mdclaw-migration-20261023-225107/original-checkout` に退避し、未追跡資料・計算データ・旧環境を保持。新Pixi環境は `pixi install --locked --offline` で作成。Drive同期は本人承認で一時停止したまま。
+
+## 2026-10-23 — Deploy の追加調査：導入経路と準備・起動・診断の不一致
+
+本人依頼は「もっと簡単にわかりやすく、シンプルに。まず調査」。対象は `bcfda5e`。実装・公開は行わず、調査記録のみ追記した。
+
+- Pixi と標準 skills 配布は既に導入済み。`docs/developer/deploy-v2-plan.md` の既存判断（ワンライナー導入は見送り）を前提に、案内を利用場面別に整理するのが最小の改善候補。
+- README の Quickstart は `pixi install` と `setup-container.sh` の択一を同じコードブロックに置く。通常利用・開発・管理者の公開作業も別ページをまたいで理解する必要がある。
+- `setup-container.sh` は `MDCLAW_RUNTIME` を参照しない。既存 Pixi 環境と `MDCLAW_RUNTIME=docker` を用意した一時ディレクトリで、Docker を呼ばず成功終了することをスタブで再現。起動側の明示指定と準備側の判断が一致しない。
+- `mdclaw-doctor.sh` は実際に選択される環境を表示・検査せず、Pixi/Conda を個別に調べ、未使用の Conda やコンテナの欠如も警告する。SIF の中身を検査する経路はなく、OpenMM の失敗も `|| true` で継続する。
+- Pixi とコンテナは完全に同じ構成ではない。Dockerfile は lock 導入後に PyTorch と OpenMM を CUDA 11.8 向けに置換し、openmm-torch・PLUMED・膜作成関連の修正を追加する。arm64 は別 Dockerfile と environment.yml を維持。
+- 検証：`pixi run --frozen pytest tests/test_deployment_scripts.py tests/test_bin_wrapper.py tests/test_docs_paths.py -q` は **23 passed**。別ディレクトリからの Pixi 実行は cwd を保持した。[最新 CI](https://github.com/matsunagalab/mdclaw/actions/runs/39818911480) は macOS/Linux とも成功。GitHub API の Container workflow 実行件数は調査時点で **0**。コンテナの実ビルド・GPU 動作は今回未検証。
+- 提案（未承認）：README は手元の Pixi／計算サーバーの共有 SIF を主入口にし、Docker・既存 Conda・エージェント固有経路は詳細へ。既存の準備・起動・診断で同じ環境を選び、その環境で何が使えるかを示す。新しいインストーラーや設定を増やす前に、この不一致を直す。
+
 ## 2026-10-23 — LICENSE ファイル新設とサードパーティライセンスの表記
 
 ユーザー依頼（依存ソフトのライセンスの書き方を調べて README 末尾へ）。

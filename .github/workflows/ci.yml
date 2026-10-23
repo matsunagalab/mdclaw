@@ -44,7 +44,7 @@ jobs:
           locked: true
 
       - name: Lint
-        run: pixi run --frozen ruff check mdclaw/ tests/
+        run: pixi run --frozen ruff check mdclaw/ tests/ scripts/_internal/doctor.py
 
       - name: Tests
         run: >
@@ -52,4 +52,4 @@ jobs:
           tests/test_registry.py tests/test_cli.py tests/test_guardrails.py
           tests/test_guardrail_code_registry.py tests/test_slurm_server.py
           tests/test_deployment_scripts.py tests/test_docs_paths.py
-          tests/test_bin_wrapper.py -q
+          tests/test_bin_wrapper.py tests/test_runtime_selection.py -q
