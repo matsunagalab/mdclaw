@@ -68,12 +68,12 @@ jobs:
       - name: Monitor build disk space
         run: |
           nohup bash -c '
-            while sleep 30; do
+            while sleep 15; do
               date -u
               df -h /
               available_kib=$(df -Pk / | awk "NR == 2 { print \$4 }")
-              if (( available_kib < 5 * 1024 * 1024 )); then
-                echo "::error::Stopping the builder: less than 5 GiB free."
+              if (( available_kib < 10 * 1024 * 1024 )); then
+                echo "::error::Stopping the builder: less than 10 GiB free."
                 docker buildx stop
                 exit 1
               fi
@@ -81,17 +81,31 @@ jobs:
           ' > "$RUNNER_TEMP/mdclaw-build-disk.log" 2>&1 &
           echo "$!" > "$RUNNER_TEMP/mdclaw-build-disk.pid"
 
-      # Layer cache lives on GHCR, so a rebuild with an unchanged pixi.lock
-      # reuses stage 1 and an unchanged OpenMM/PLUMED pin reuses stage 2.
+      # Export before loading: BuildKit's snapshots and Docker's unpacked image
+      # otherwise coexist and exhaust the hosted runner's disk. Keep only final
+      # image layers in the registry cache to limit export scratch space.
       - name: Build image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: container/Dockerfile
-          load: true
+          outputs: type=docker,dest=${{ runner.temp }}/mdclaw-image.tar
           tags: mdclaw:ci
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache,mode=max
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache,mode=min
+
+      - name: Release build cache and load image
+        run: |
+          docker buildx prune --all --force
+          df -h /
+          available_kib=$(df -Pk / | awk 'NR == 2 { print $4 }')
+          if (( available_kib < 40 * 1024 * 1024 )); then
+            echo "Need at least 40 GiB free before loading the image." >&2
+            exit 1
+          fi
+          docker load --input "$RUNNER_TEMP/mdclaw-image.tar"
+          rm -f "$RUNNER_TEMP/mdclaw-image.tar"
+          df -h /
 
       - name: Smoke test (CPU only; GPU smoke is a manual release gate)
         run: |

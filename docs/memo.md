@@ -7,6 +7,12 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-24 — Actionsのイメージ取り込み時の容量不足を回避
+
+- run 39984204189で環境移行・OpenMM・openmm-torch・PLUMED・同梱データのビルドは成功。移行後は20 GiBの環境、空き75 GiB。Dockerへ最終イメージを直接読み込む段階で、BuildKitの約87 GBのデータとDockerの展開データが同時に残り、空き4.0 GiBで監視がbuilderを停止した。停止完了時は2.4 GiB。CPUテストは未実行。
+- workflowをDocker形式ファイルへの出力→BuildKitキャッシュ解放→空き40 GiB以上の確認→Docker読み込みの順へ変更。レジストリキャッシュも最終レイヤーだけのmode=minにして、中間レイヤーの圧縮コピーを増やさない。これは再ビルドの速度よりVM容量を優先する変更。監視を15秒間隔・空き10 GiB未満で停止へ引き上げた。
+- [Docker exporter](https://docs.docker.com/build/exporters/oci-docker/)と[buildx prune](https://docs.docker.com/reference/cli/docker/buildx/prune/)の公式仕様を確認。actionlintと差分チェック成功。実ビルド・CPUテストは再実行して確認する。
+
 ## 2026-10-24 — ディレクトリ移行の重複パスと隠れた例外を修正
 
 - 追加検査で、キャッシュのないUnix環境ではconda-packがバイナリ内の旧prefixを置換しないことを再現した。Pixiのpaths_dataから置換対象の形式を復元し、元prefixを最終prefixへ置換する。バイナリのサイズと元データを保持する回帰検査も成功。途中のrun 39983492186は不要な長時間実行を避けるため取消した。
