@@ -3,7 +3,7 @@
 # simulations, autonomous scientific investigation, and reproducible atomistic
 # evidence. Skills remain text files under `skills/`; this image is the
 # execution environment.
-# 3-stage build: pixi locked env -> OpenMM source build (CUDA 11.8) -> slim runtime
+# 3-stage build: relocated pixi env -> OpenMM source build (CUDA 11.8) -> runtime
 #
 # Driver compatibility:
 #   450.x+ (CUDA 11.0+): OpenMM CUDA + PyTorch cu118
@@ -62,39 +62,42 @@ RUN apt-get update && \
 # below.
 COPY pixi.toml pixi.lock pyproject.toml README.md ./
 COPY mdclaw/ mdclaw/
+COPY container/scripts/test-env-relocation.py /build/test-env-relocation.py
 
 # Install exactly what the lock says: --locked fails the build when pixi.lock
 # is out of date with pixi.toml instead of silently re-solving.
 # CONDA_OVERRIDE_CUDA satisfies the lock's __cuda=12.9 virtual package on the
 # GPU-less build machine (same override conda uses).
 ENV CONDA_OVERRIDE_CUDA=12.9
-RUN pixi install --locked
-
-# Install PyTorch with CUDA 11.8 support (matches the base image's CUDA
-# toolkit, so PyTorch's bundled CUDA runtime is consistent with the one
-# OpenMM is compiled against — no dual-runtime loader surprises). This
-# replaces the lock's conda PyTorch (a cuda 12.9 build).
-RUN /build/.pixi/envs/default/bin/pip install --force-reinstall "torch==2.7.1+cu118" --index-url https://download.pytorch.org/whl/cu118 && \
-    /build/.pixi/envs/default/bin/pip cache purge
-
-# Replace the editable mdclaw from the lock with a real install of this
-# checkout. --no-deps: every dependency is already pinned by the lock.
-RUN /build/.pixi/envs/default/bin/pip install --no-deps --force-reinstall . && \
-    /build/.pixi/envs/default/bin/pip cache purge
-
-# Apply packmol-memgen numpy compatibility patch
-RUN SITE_PACKAGES=$(/build/.pixi/envs/default/bin/python -c "import site; print(site.getsitepackages()[0])") && \
-    PATCH_FILE="$SITE_PACKAGES/packmol_memgen/lib/pdbremix/v3numpy.py" && \
-    if [ -f "$PATCH_FILE" ]; then \
-        sed -i.bak "s/np\.float)/float)/g; s/np\.int)/int)/g" "$PATCH_FILE" && \
-        rm -f "${PATCH_FILE}.bak"; \
-    fi
-
-# Pack the environment for the later stages. A pixi env is a standard conda
-# prefix (conda-meta/ included), which is what conda-pack operates on.
-RUN /build/.pixi/envs/default/bin/pip install --no-cache-dir conda-pack && \
-    /build/.pixi/envs/default/bin/conda-pack -p /build/.pixi/envs/default \
-      -o /build/mdclaw_env.tar.gz --ignore-editable-packages --ignore-missing-files
+# Keep installation, relocation, and cache cleanup in one layer: deleting a
+# cache in a later RUN would still retain its bytes in earlier build layers.
+# conda-pack's tar writer emits invalid hardlink entries when rewriting file
+# contents. Directory output avoids that bug and the extra archive copies.
+RUN <<'SH'
+set -eu
+pixi install --locked
+export PATH="/build/.pixi/envs/default/bin:$PATH"
+export PIP_NO_CACHE_DIR=1
+# Match the CUDA 11.8 runtime used by the source-built OpenMM below.
+pip install --force-reinstall "torch==2.7.1+cu118" --index-url https://download.pytorch.org/whl/cu118
+# Replace the editable checkout without resolving dependencies again.
+pip install --no-deps --force-reinstall .
+SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])")
+PATCH_FILE="$SITE_PACKAGES/packmol_memgen/lib/pdbremix/v3numpy.py"
+if [ -f "$PATCH_FILE" ]; then
+    sed -i "s/np\.float)/float)/g; s/np\.int)/int)/g" "$PATCH_FILE"
+fi
+pip install conda-pack==0.9.2
+python /build/test-env-relocation.py
+conda-pack -p /build/.pixi/envs/default -o /opt/mdclaw \
+    --format no-archive --dest-prefix /opt/mdclaw \
+    --ignore-editable-packages --ignore-missing-files
+# No conda-unpack is needed: every prefix was rewritten to its final path.
+/opt/mdclaw/bin/python -c 'import sys; assert sys.prefix == "/opt/mdclaw"'
+rm -rf /build/.pixi /root/.cache
+du -sh /opt/mdclaw
+df -h /
+SH
 
 # =============================================================================
 # Stage 2: Build OpenMM from source against CUDA 11.8
@@ -107,12 +110,8 @@ RUN apt-get update && \
         cmake swig doxygen git patch ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Unpack conda environment from Stage 1
-RUN mkdir -p /opt/mdclaw
-COPY --from=conda-base /build/mdclaw_env.tar.gz /tmp/mdclaw_env.tar.gz
-RUN tar -xzf /tmp/mdclaw_env.tar.gz -C /opt/mdclaw && \
-    rm /tmp/mdclaw_env.tar.gz && \
-    /opt/mdclaw/bin/python /opt/mdclaw/bin/conda-unpack
+# Copy the already relocated environment without an intermediate tar archive.
+COPY --from=conda-base /opt/mdclaw /opt/mdclaw
 
 # The packed environment goes LAST on PATH here. environment.yml carries a build
 # toolchain (cmake, swig, patch, make, cxx-compiler, git) so a local conda prefix

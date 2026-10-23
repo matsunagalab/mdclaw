@@ -7,6 +7,13 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-24 — conda-packのハードリンクtar破損を再現して回避
+
+- conda-pack 0.9.2で2つのハードリンクを含む最小環境を固めると、GNU tarが `Skipping to next header`・終了コード2を返す。通常コピー／シンボリックリンクでは成功し、gzipなしでもハードリンクだけ失敗。`TarArchive._add_bytes` がハードリンク型のヘッダーへ内容サイズとデータを付けることが原因で、ディスク不足ではない。回帰検査の旧経路は `python container/scripts/test-env-relocation.py tar.gz /path/to/gtar` で再現できる。
+- Stage 1を `conda-pack --format no-archive --dest-prefix /opt/mdclaw` に変更。Stage 2は完成ディレクトリをCOPYし、tar生成・中間コピー・展開・conda-unpackを廃止。インストールからキャッシュ削除までを同じRUNにまとめ、元環境やダウンロードキャッシュを過去レイヤーへ残さない。
+- 新経路の実回帰検査はハードリンクの両名、symlink、実行権限、パス置換、バイナリ内容と元ファイルの保持が成功。ビルド内でも同じ検査を実行する。deployment・文書10テスト、ruff、actionlint、差分・shell構文確認が成功。実コンテナビルドと動作テストはpush後に確認する。
+- Actionsに30秒ごとの容量記録と空き5 GiB未満でbuilderを停止する保護を追加。公開済みlatestの更新はしない。
+
 ## 2026-10-24 — Actionsのコンテナビルドと公開SIF取得の結果
 
 - [SIF download run 39972794665](https://github.com/matsunagalab/mdclaw/actions/runs/39972794665) が成功。Ubuntu 24.04 / SingularityCE 4.6.0で、GitHub認証なし・checkoutなしにREADMEの `singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest` を実行した。

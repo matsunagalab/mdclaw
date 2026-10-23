@@ -46,6 +46,16 @@ longer installs them in separate steps. `Dockerfile.rikyu-arm64` still builds
 from `environment.yml` and migrates separately
 (`docs/developer/deploy-v2-plan.md`).
 
+The environment is relocated directly to `/opt/mdclaw` with conda-pack's
+`no-archive` format and `--dest-prefix`. This avoids conda-pack 0.9.2's invalid
+tar headers for rewritten hardlinked files, as well as intermediate archive
+copies. Installation, relocation, and cache cleanup share one Docker layer so
+deleted caches do not remain in earlier layers. The build runs
+`container/scripts/test-env-relocation.py` to check hardlinks, symlinks, prefix
+replacement, and executable permissions before relocating the full environment.
+Actions records free disk space every 30 seconds and stops its builder if less
+than 5 GiB remains.
+
 The amd64 image ships the membrane-patch cache that lives in the package
 (`mdclaw/data/membrane_patches`, OPC and TIP3P) and asserts at build time that
 both water models are present; it no longer runs a build-time warm-up. The
