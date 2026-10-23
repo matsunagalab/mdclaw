@@ -1,0 +1,79 @@
+# Exercise the README's public download on a separate runner from the build.
+# This checks the published :latest image, not the current checkout's image.
+name: SIF download
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      # Avoid keeping a second SIF and downloaded layers after conversion.
+      SINGULARITY_DISABLE_CACHE: "true"
+    steps:
+      - name: Prepare disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache
+          sudo docker image prune -af
+          mkdir -p "$RUNNER_TEMP/singularity-cache" "$RUNNER_TEMP/singularity-tmp" "$RUNNER_TEMP/mdclaw-sif"
+          echo "SINGULARITY_CACHEDIR=$RUNNER_TEMP/singularity-cache" >> "$GITHUB_ENV"
+          echo "SINGULARITY_TMPDIR=$RUNNER_TEMP/singularity-tmp" >> "$GITHUB_ENV"
+          df -h "$RUNNER_TEMP"
+          available_kib=$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 { print $4 }')
+          if (( available_kib < 60 * 1024 * 1024 )); then
+            echo "Need at least 60 GiB free for OCI layers, extraction, and SIF conversion." >&2
+            exit 1
+          fi
+
+      - name: Install SingularityCE
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fL --retry 3 -o singularity.deb \
+            https://github.com/sylabs/singularity/releases/download/v4.6.0/singularity-ce_4.6.0-noble_amd64.deb
+          sudo apt-get update
+          sudo apt-get install -y ./singularity.deb
+          singularity --version
+
+      # No registry login or GitHub token: a reader must be able to pull this.
+      - name: Run README download command anonymously
+        working-directory: ${{ runner.temp }}/mdclaw-sif
+        run: |
+          while sleep 30; do df -h "$RUNNER_TEMP"; done &
+          disk_monitor=$!
+          trap 'kill "$disk_monitor" 2>/dev/null || true' EXIT
+          singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest
+          ls -lh mdclaw.sif
+          sha256sum mdclaw.sif
+          df -h "$RUNNER_TEMP"
+
+      - name: Check downloaded SIF (CPU only)
+        working-directory: ${{ runner.temp }}/mdclaw-sif
+        run: |
+          export MDCLAW_SIF="$PWD/mdclaw.sif"
+          singularity exec "$MDCLAW_SIF" mdclaw --version
+          singularity exec "$MDCLAW_SIF" mdclaw inspect_openmm_platforms
+          singularity exec "$MDCLAW_SIF" python - <<'PY'
+          import math
+          import openmm as mm
+          from openmm import unit
+
+          system = mm.System()
+          system.addParticle(1.0)
+          integrator = mm.VerletIntegrator(0.001)
+          context = mm.Context(system, integrator, mm.Platform.getPlatformByName("Reference"))
+          context.setPositions([[0, 0, 0]])
+          integrator.step(1)
+          energy = context.getState(getEnergy=True).getPotentialEnergy()
+          assert math.isfinite(energy.value_in_unit(unit.kilojoule_per_mole))
+          print("OpenMM Reference: Context, energy, and one step passed")
+          PY
+
+      - name: Final disk usage
+        if: always()
+        run: df -h "$RUNNER_TEMP"

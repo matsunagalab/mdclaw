@@ -7,6 +7,12 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-23 — ActionsでコンテナとREADMEのSIF取得を実検証
+
+- Containerを公開なしで初実行したところ、`pixi install --locked` がGit経由の依存取得時に `Git executable not found` で失敗（run 39972019507）。Stage 1へgitとCA証明書を追加した。開始時のrunner空き容量は106 GiBで、この失敗は容量不足ではない。
+- 本人承認で手動実行の `SIF download` workflowを追加。公開済みlatestを認証なしでREADMEと同じコマンドから取得し、CLIとOpenMM ReferenceのContext・エネルギー・1ステップを確認する。新規ビルドとは別runnerで、取得キャッシュを残さず、開始時60 GiB以上を要求し、変換中も空き容量を記録する。Containerにも開始時の容量検査と終了時の使用量を追加。
+- actionlint・YAML読込・shell構文・差分チェック成功。実ビルドの再試行とSIF実取得は、この変更をpush後に実施する。公開イメージの更新とGPU実行は対象外。
+
 ## 2026-10-23 — 実行環境選択テストからホストのDockerを隔離
 
 - `e4775e1` の[CI](https://github.com/matsunagalab/mdclaw/actions/runs/39967846716)はmacOS成功、Linuxで431件成功・2件失敗。テスト用PATHに `/usr/bin:/bin` が残っていたため、Dockerスタブ削除後にGitHubランナーの実Dockerを検出し、setupテストがイメージ取得を始めてタイムアウトした。ランタイム不在テストも同じ理由で誤った環境を選んだ。

@@ -51,10 +51,10 @@ FROM --platform=linux/amd64 ghcr.io/prefix-dev/pixi:latest AS conda-base
 
 WORKDIR /build
 
-# C++ toolchain for PyPI source builds during `pixi install` (hpacker, SST2).
+# Git and C++ toolchain for PyPI source builds during `pixi install`.
 # Stays in stage 1 only — conda-pack carries just the env to later stages.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential && \
+    apt-get install -y --no-install-recommends build-essential git ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 # The lock pins an editable install of this checkout, so the manifest needs

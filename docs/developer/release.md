@@ -43,6 +43,13 @@ manually (`workflow_dispatch`); it pushes only when `push_image` is set. The
 old manual build-and-push commands remain in `docs/developer/container.md` as
 the fallback when Actions is unavailable.
 
+Run the **SIF download** workflow manually to check the README's download
+command against the public `:latest` image. It uses a separate Ubuntu runner,
+requires at least 60 GiB of free scratch space, disables the persistent image
+cache, and checks the downloaded CLI plus one OpenMM Reference step. This does
+not validate the newly built image or NVIDIA GPU execution. Neither validation
+workflow updates `:latest`; the Container workflow still writes its build cache.
+
 One-time setup: the GHCR package `mdclaw` must grant this repository's
 Actions write access (package settings → Manage Actions access) or the
 `GITHUB_TOKEN` push is denied — the existing package was first pushed with a

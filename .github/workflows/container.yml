@@ -41,6 +41,11 @@ jobs:
             /opt/hostedtoolcache/CodeQL
           sudo docker image prune -af
           df -h /
+          available_kib=$(df -Pk / | awk 'NR == 2 { print $4 }')
+          if (( available_kib < 60 * 1024 * 1024 )); then
+            echo "Need at least 60 GiB free for the multi-stage build." >&2
+            exit 1
+          fi
 
       - name: Resolve version and check tag sync
         id: version
@@ -88,3 +93,9 @@ jobs:
             docker tag mdclaw:ci "ghcr.io/${{ github.repository }}:latest"
             docker push "ghcr.io/${{ github.repository }}:latest"
           fi
+
+      - name: Final disk usage
+        if: always()
+        run: |
+          df -h /
+          docker system df
