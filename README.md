@@ -4,50 +4,32 @@
 
 # MDClaw
 
-MDClaw provides agent skills and CLI tools for molecular dynamics (MD) and
-autonomous scientific investigation in the Amber/OpenMM ecosystem. It helps an
-AI agent turn scientific intent into reproducible atomistic work: plan a study,
-prepare systems, run MD, analyze trajectories, branch hypotheses, and package
-evidence with provenance.
+MDClaw helps AI coding agents prepare, run, and analyze molecular dynamics
+(MD) simulations with AmberTools and OpenMM. Describe a system or a research
+question in plain language; the agent uses MDClaw to plan the work, execute
+calculations, and report the results.
 
-MDClaw is not one hidden end-to-end planner. Its responsibilities are explicit:
-
-- **Skills** translate scientific intent into an MD procedure.
-- **CLI tools** execute concrete operations and record their outputs.
-- **A durable DAG** is the source of truth for progress, artifacts, failures,
-  branching, and re-entry by another agent.
-
-## How It Works
-
-Every run is a small study, even when it contains only one system. A study can
-hold one or more job DAGs, and each job follows the same artifact handoff:
-
-```text
-source -> prep -> solv -> topo -> min -> eq -> {prod | fep} -> analyze
-```
-
-Each job carries exactly one structural source identity: independent starting
-systems are separate jobs in the same study, while branches inside a job
-derive variants (mutations, ligands, protocols, temperatures, seeds) from its
-prepared structure.
-
-The CLI manages node state and passes artifacts between stages. A later agent
-can use `inspect_job` to resume from completed work, `explain_node` to validate
-the next node before execution, and `trace_failure` to choose a new recovery
-branch without rewriting terminal history.
-
-The request controls how far the agent proceeds. MDClaw can stop after planning
-or any named stage, or continue through analysis when the user explicitly asks
-for an evidence-backed scientific answer. It does not treat a plan as permission
-to run every stage or submit HPC jobs.
+MDClaw provides **skills** (instructions for the agent) and **command-line
+tools** (the programs that perform the calculations). It records each step's
+inputs, outputs, and status so work can be inspected and resumed later.
+Use it with an agent such as Claude Code or Codex, or call the tools directly.
 
 ## Install / Deploy
 
-Choose where the calculations will run. Then install the skills for your agent.
+First prepare the scientific software on the machine that will run the
+calculations: choose **Pixi** for a local environment or **SIF** for a Linux
+server with Singularity/Apptainer. Then install the skills for your agent.
 
 ### On Your Workstation: Pixi
 
-Install [Pixi](https://pixi.sh) once, then:
+Install Pixi on Linux or macOS with the [official installer](https://pixi.prefix.dev/latest/installation/):
+
+```bash
+curl -fsSL https://pixi.sh/install.sh | sh
+```
+
+Restart your terminal so `pixi` is on PATH. In a directory outside cloud-sync
+folders, run:
 
 ```bash
 git clone https://github.com/matsunagalab/mdclaw.git
@@ -57,59 +39,82 @@ export PATH="$PWD/bin:$PATH"
 scripts/mdclaw-doctor.sh
 ```
 
-Pixi installs the scientific dependencies from the committed lockfile. Use a
-checkout outside cloud-synced folders: the large `.pixi/` environment contains
-machine-specific files that should not be synced. Keep
-`bin/` on your shell's PATH to use `mdclaw` from other project directories.
-Doctor shows the selected environment, checks OpenMM and AmberTools, and
-reports whether GPU execution and optional plugins are available. CPU-only
-machines can prepare systems and run short checks; use a GPU for long MD.
+Pixi installs the package versions recorded in `pixi.lock` into `.pixi/`.
+The committed environment targets Apple Silicon macOS and Linux x86-64/ARM64;
+the Linux packages target CUDA 12.9. The `.pixi/` directory contains large,
+machine-specific files and should stay outside cloud-sync folders.
 
-### On A Compute Server: Shared SIF
+The `export PATH` command makes `mdclaw` available in the current terminal.
+For future terminals, add this checkout's **absolute `bin/` path** to your
+shell startup file.
 
-Use the SIF file provided by your administrator. A SIF contains the packaged
-scientific software; you do not need your own checkout or Pixi environment.
-Replace the example path with the actual shared image:
+The doctor command checks OpenMM and AmberTools and reports usable GPU
+platforms and optional features. Resolve any `[fail]` messages before running
+calculations. Missing optional features only affect workflows that need them;
+CPU-only machines can prepare systems and run short checks.
+
+### On A Compute Server: SIF
+
+A SIF (Singularity Image Format) file packages MDClaw and its scientific
+dependencies. On a Linux server with Singularity installed, download it with:
 
 ```bash
-export MDCLAW_SIF=/data/mdclaw.sif
+singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest
+```
+
+You do not need to clone this repository or install Pixi for this path.
+Check the downloaded image:
+
+```bash
+export MDCLAW_SIF="$PWD/mdclaw.sif"
 singularity exec --nv "$MDCLAW_SIF" mdclaw --version
 singularity exec --nv "$MDCLAW_SIF" mdclaw inspect_openmm_platforms
 ```
 
-Use `apptainer` instead of `singularity` if that is the installed command.
-Run GPU checks on a GPU node. See [server setup and Slurm](docs/agents/deployment.md#shared-lab-sif-no-user-checkout-required)
+Use `apptainer` instead of `singularity` in all commands if that is installed.
+Run the GPU check on a GPU node; `--nv` makes its NVIDIA GPU available inside
+the container. For CPU-only checks, omit `--nv`. Subsequent tools use the same
+`singularity exec ... mdclaw <tool>` form. See [server setup and Slurm](docs/agents/deployment.md#sif-no-user-checkout-required)
 for working-directory mounts and job submission.
 
 ### Connect Your Agent
 
-Inside this checkout, skills are already discoverable. For another project,
-run this in that project's directory:
+If you work inside the MDClaw checkout, Claude Code and agents that read
+`.agents/skills/` can discover the included skills directly. For other working
+directories, choose one of the following (Node.js 22.20+ required).
+
+**For the current project:** run this in that project's directory:
 
 ```bash
 npx skills add matsunagalab/mdclaw
 ```
 
+**For your user account, across projects:** run this from any directory:
+
+```bash
+npx skills add matsunagalab/mdclaw --global
+```
+
+`--global` (or `-g`) installs to the selected agents' user skill directories
+under your home directory. It does not require administrator privileges.
 Select your agent and install `common` together with the workflow skills.
-This installs instructions; it uses the runtime you prepared above.
-Direct CLI use needs no skills.
+Skills provide instructions; they do not install the scientific software.
+Your agent must also be able to run `mdclaw` through the Pixi environment or
+SIF prepared above. Direct CLI use needs no skills.
 
 [Deployment details](docs/agents/deployment.md) cover Claude Code plugins, Pi,
 Docker, existing Conda environments, runtime selection, and troubleshooting.
 BioEmu and Boltz-2 are optional, separate installs; see
 [model backend setup](docs/developer/configuration.md#model-backend-runtime).
-Image building and publishing are covered in the
-[maintainer release guide](docs/developer/release.md).
 
 ## Ask In Plain Language
 
-Users do not need to remember command names. Describe the work; MDClaw stops
-where your request stops. There are two shapes:
+Start your agent in the directory where you want to keep the simulation
+files. If using a SIF, give the agent its absolute path. Describe the target,
+the work to do, and where to stop. For long simulations, use a GPU; if you
+want jobs submitted through Slurm, say so explicitly.
 
-**One system (a single job).** Name the structure and the last stage you
-need — preparation, equilibration, production, or analysis. A direct run
-still gets a thin study record with one `jobs/main` job, so a later agent can
-inspect and resume it.
+**Prepare and equilibrate one system:**
 
 ```text
 Prepare PDB 1AKE chain A as a protein-only explicit-water system using the
@@ -117,10 +122,7 @@ default force field and water model. Continue through default equilibration
 and stop before production.
 ```
 
-**A scientific question (a study).** State the question, the comparison
-groups, and what evidence would answer it. MDClaw plans the jobs and runs
-only as far as you ask: stop at the plan for review, stop at a named stage,
-or continue through analysis to an evidence-backed conclusion.
+**Run a comparison and analyze the results:**
 
 ```text
 Set up and run an apo-vs-holo MD study for the T4 lysozyme L99A
@@ -131,12 +133,108 @@ analyze cavity hydration and ligand-pose observables, and return an
 evidence-backed conclusion.
 ```
 
-In both shapes a plan is never permission to run everything: HPC/SLURM
-submission happens only when the request asks for it, and work still queued
-or running is reported as a resumable DAG handoff instead of claimed as
-complete.
+For a plan without execution, ask the agent to propose the study and stop
+before running calculations. The skills instruct the agent to stay within
+the requested scope and report any work that is still queued or running.
 
-## Repository Map
+## Results And Resuming Work
+
+Each study has a plan and one or more **jobs**: one job for a single starting
+system, or several jobs for a comparison. A typical job follows these stages:
+
+```text
+Structure -> Preparation -> Solvation -> Force-field setup
+          -> Minimization -> Equilibration -> Production -> Analysis
+```
+
+Free-energy calculations branch from the equilibrated system. Within a job,
+variants and retries create new branches while preserving earlier results.
+
+MDClaw records the stages and their dependencies as a directed acyclic graph
+(DAG). Each stage keeps its inputs, outputs, and execution status. Depending
+on how far the run proceeds, outputs include prepared structures, simulation
+systems, trajectories, and analysis reports.
+
+To continue later, give the agent the existing study directory and say what
+to do next. The agent uses `inspect_job` to read progress, `explain_node` to
+check the next step, and `trace_failure` to investigate a failed step. It can
+reuse completed results without relying on the previous chat history.
+
+## Supported Capabilities
+
+The following workflows are available through the skills and CLI. Some need
+optional software: check the doctor output and the relevant skill before use.
+
+| Area | What you can do |
+|---|---|
+| Studies | Run a single system or compare several systems; resume work from completed stages and create branches for variants or retries. |
+| Starting structures | Fetch PDB structures, AlphaFold predictions via UniProt, or use local PDB/mmCIF files. Select biological assemblies or models; optionally generate structures with Boltz-2, BioEmu, or MODELLER. |
+| Molecular selection | Inspect and select proteins, DNA/RNA, ligands, waters, ions, glycans, and supported post-translational modifications (PTMs) before preparation. |
+| Protein and nucleic acid force fields | Use Amber ff19SB by default, ff14SB as an alternative, DNA OL15, and RNA OL3. |
+| Ligands, glycans, and PTMs | Prepare noncovalent small molecules with GAFF2 and OpenFF NAGL charges; select AM1-BCC with `--ligand-charge-method` or use it as fallback. Prepare covalently linked glycans with GLYCAM and phosphorylated serine, threonine, and tyrosine (SEP/TPO/PTR). |
+| Solvent and membranes | Use explicit water (ff19SB + OPC, a 15 Å buffer, and 0.15 M salt by default), implicit solvent, vacuum, or Lipid21 membranes. Supported membrane mixtures include POPC/POPG. |
+| Simulation | Minimize, equilibrate at constant volume or pressure (NVT/NPT), run production MD, restart or extend runs, and create replicates. Production defaults to a 4 fs step with hydrogen mass repartitioning (HMR). Optional PythonTorchForce scripts add custom bias forces and collective variables. |
+| Free energy and enhanced sampling | Estimate folding free-energy changes for single point mutations using free-energy perturbation (FEP), or absolute binding free energies for neutral noncovalent ligands. Run weighted-ensemble kinetics, metadynamics, and SST2 solute tempering. |
+| Analysis and reporting | Join and align trajectories; analyze structural deviations and fluctuations (RMSD/RMSF), distances, contacts, native-contact fractions, and equilibration. Record custom analyses and generate Methods-style reports with inputs, parameters, and result provenance. |
+| Execution | Run locally with Pixi or Conda, use Docker or Singularity/Apptainer, or submit and monitor Slurm jobs and arrays. |
+
+When a required check fails, the tool stops and reports the reason and next
+action. Checks cover molecule selection, force-field templates, charges,
+stage dependencies, and the files required to run a simulation. Recorded
+failures remain available for inspection.
+
+## Boundaries And Non-Goals
+
+- **Modified DNA/RNA needs custom preparation.** The standard workflow stops
+  rather than replacing a modified nucleotide with an ordinary one. The legacy
+  modXNA helper is experimental; advanced users can supply their own OpenMM
+  system or force-field definitions.
+- **Only selected PTMs are supported.** Phospho-histidine, O-GlcNAc,
+  acetylation, methylation, ubiquitination, lipidation, and selectable phosphate
+  protonation states are not included in the standard workflows.
+- **Specialized chemistry still needs an explicit model.** MDClaw does not
+  automatically create covalent-ligand parameters, bonded metal-center models,
+  or general organometallic chemistry. Supported bare structural ions are
+  checked against the selected water/ion force-field templates.
+- **The standard workflows use Amber force fields and OpenMM.** Other force
+  fields, CHARMM-native preparation, coarse-grained or polarizable models, and
+  combined quantum/classical calculations (QM/MM) need separate workflows.
+- **Free-energy workflows have defined limits.** The [mutation FEP skill](skills/md-fep/SKILL.md)
+  handles one point mutation, and the [absolute binding free-energy skill](skills/md-abfe/SKILL.md)
+  handles one neutral noncovalent ligand. Automated campaigns for relative
+  binding FEP between ligands, replica exchange, or umbrella sampling are not
+  provided.
+- **Successful execution does not establish scientific validity.** Passing
+  topology, charge, energy, and output-file checks does not establish
+  convergence, adequate sampling, or a biological conclusion. Those require
+  appropriate controls, replicates,
+  analysis, and expert review.
+
+## Updating Skills
+
+Run `npx skills update` to update skills installed with the skills CLI. This
+updates the instructions only; update the scientific environment or downloaded
+SIF separately. If you installed MDClaw as a Claude Code plugin, use
+`/plugin update mdclaw@mdclaw` instead.
+
+## Development
+
+From the MDClaw checkout, install the environment and run the standard checks:
+
+```bash
+pixi install   # locked env from pixi.toml + pixi.lock (installs mdclaw editable)
+pixi run ruff check mdclaw/
+pixi run pytest tests/test_registry.py tests/test_cli.py tests/test_guardrails.py tests/test_guardrail_code_registry.py tests/test_slurm_server.py -v
+```
+
+Short agent guidance is mirrored in `CLAUDE.md` and `AGENTS.md`; keep those
+files identical. See the [architecture](docs/developer/architecture.md),
+[tool reference](docs/developer/tool-reference.md),
+[CLI internals](docs/developer/cli-internals.md),
+[testing guide](docs/developer/testing.md), and
+[configuration reference](docs/developer/configuration.md) for details.
+
+### Repository Map
 
 | Path | Role |
 |---|---|
@@ -155,88 +253,14 @@ complete.
 | `docs/developer/` | Architecture, CLI internals, testing, release, and tool references. |
 | `tests/` | Unit, smoke, and integration tests. |
 
-## Supported Capabilities
+### Building And Publishing Releases
 
-| Area | Current support |
-|---|---|
-| Study and workflow | Minimal one-system plans and multi-job comparative studies; resumable per-job DAGs; immutable completed/failed nodes; explicit branches for variants and recovery. |
-| Structure sources | PDB, AlphaFold/UniProt, and local PDB/mmCIF; biological assemblies and multi-model source bundles; optional source generation with Boltz-2, BioEmu, and MODELLER. |
-| Inspection and selection | Proteins, DNA/RNA, ligands, waters, bare ions, glycans, PTMs, chain identity, source candidates, and covalent protein-glycan connectivity before preparation. |
-| Protein and nucleic force fields | Amber ff19SB by default (ff14SB available), standard DNA OL15, and standard RNA OL3. Nucleic terminal charge corrections are derived from the selected force-field XML. |
-| Ligands, glycans, and PTMs | Noncovalent small molecules through GAFF2; ligand charges from OpenFF NAGL by default, with AM1-BCC selectable (`--ligand-charge-method`) or as automatic fallback; covalently linked glycans through GLYCAM; SEP/TPO/PTR phosphorylation parameters. |
-| Solvent and membranes | Explicit water (ff19SB + OPC, 15 A buffer, and 0.15 M salt by default), implicit solvent, vacuum, and Lipid21 membranes. The patch-tile membrane path supports selected neutral and anionic mixtures, including POPC/POPG, and derives lipid templates and charges from the active XML files. |
-| Simulation | Standalone minimization, staged NVT/NPT equilibration, production MD, HMR (4 fs production default), XML-state restart, extensions, replicates, and optional PythonTorchForce custom bias/CV scripts. |
-| Free energy and enhanced sampling | Hybrid-topology FEP for point-mutation folding ddG, absolute binding free energy by double decoupling with Boresch restraints, weighted-ensemble kinetics with round-driven sampling schemes, metadynamics, and SST2 solute tempering. |
-| Analysis and evidence | Trajectory concatenation/fitting, RMSD, RMSF, distances, contact frequencies, Q values, equilibration detection, custom-result registration, provenance reports, Methods-style reports, and study-level evidence packages. |
-| Execution | Local Pixi or Conda environments, Docker, Singularity/Apptainer SIF, explicit SLURM submission/monitoring, and homogeneous job arrays. |
-| Evaluation | Opt-in execution-record protocol for external benchmark harnesses: stage records appended to `$MDCLAW_BENCHMARK_HARNESS_LOG` (`mdclaw/_benchmark_log.py`). |
-
-Support is fail-closed where MDClaw can check the contract. Ambiguous molecule
-selection, missing force-field templates, inconsistent charges, invalid DAG
-parents, or incomplete topology artifacts return stable error codes and preserve
-the failed node for provenance instead of silently continuing.
-
-## Boundaries And Non-Goals
-
-- **No unrequested end-to-end execution.** A plan records intent; it is not
-  permission to run production, analysis, or HPC submission. The current
-  request sets the stopping point. Long studies can be handed to another agent
-  and resumed from the DAG.
-- **Modified DNA/RNA is not supported by the standard MD-ready topology path.**
-  Inspection stops before an unsafe ordinary-nucleotide substitution. The
-  legacy modXNA helper is experimental and does not make that path supported;
-  a user-supplied OpenMM System/ForceField escape hatch remains possible.
-- **PTM coverage is deliberately narrow.** Phospho-histidine, O-GlcNAc,
-  acetylation, methylation, ubiquitination, lipidation, and selectable phosphate
-  protonation states are not turnkey workflows.
-- **Specialized chemistry still needs an explicit model.** MDClaw does not
-  automatically create covalent-ligand parameters, bonded metal-center models,
-  or general organometallic chemistry. Supported bare structural ions are
-  checked against the selected water/ion force-field templates.
-- **Force-field scope is Amber/OpenMM, not universal.** Arbitrary force fields,
-  CHARMM-native preparation, coarse-grained or polarizable models, and QM/MM are
-  outside the standard workflow.
-- **Free-energy and enhanced-sampling scope is specific, not general.** The
-  turnkey pipelines are hybrid-topology FEP for a single point mutation
-  (`skills/md-fep`), absolute binding free energy of one neutral non-covalent
-  ligand (`skills/md-abfe`), and weighted-ensemble kinetics (`skills/md-we`),
-  plus metadynamics and SST2 solute-tempering runs with their analyses.
-  Relative binding FEP between ligands, replica exchange, and
-  umbrella-sampling/PMF campaign automation are not provided.
-- **Guardrails are not scientific proof.** Passing topology, charge, energy,
-  and artifact checks does not establish convergence, adequate sampling, or a
-  biological conclusion. Those require appropriate controls, replicates,
-  analysis, and expert review.
-
-## Developer Quickstart
-
-```bash
-pixi install   # locked env from pixi.toml + pixi.lock (installs mdclaw editable)
-pixi run ruff check mdclaw/
-pixi run pytest tests/test_registry.py tests/test_cli.py tests/test_guardrails.py tests/test_guardrail_code_registry.py tests/test_slurm_server.py -v
-```
-
-Short agent guidance is mirrored in `CLAUDE.md` and `AGENTS.md`; keep those
-files identical. Long-form references:
-
-- `docs/developer/architecture.md`
-- `docs/developer/tool-reference.md`
-- `docs/developer/cli-internals.md`
-- `docs/developer/testing.md`
-- `docs/developer/configuration.md`
-- `docs/developer/container.md`
-- `docs/developer/release.md`
-
-## Release
-
-Follow `docs/developer/release.md`: `scripts/bump-version.sh X.Y.Z` writes
+For maintainers, follow the [release guide](docs/developer/release.md).
+`scripts/bump-version.sh X.Y.Z` writes
 every version location at once, and pushing the `vX.Y.Z` tag triggers the
 container workflow, which builds the image from `pixi.lock`, runs the CPU
 smoke test, and publishes the GHCR tags. The GPU smoke test stays a manual
 gate before shared SIFs are replaced.
-
-Users update skills with `/plugin update mdclaw@mdclaw` (Claude Code plugin)
-or `npx skills update` (skills CLI).
 
 ## License
 

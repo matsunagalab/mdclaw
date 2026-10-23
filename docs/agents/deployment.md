@@ -1,21 +1,24 @@
 # Agent Deployment
 
 Start with one of the two paths in the [README](../../README.md#install--deploy):
-Pixi on your workstation, or an administrator-provided SIF on a compute server.
+Pixi on your workstation, or a downloaded SIF on a compute server.
 Skills provide instructions to your agent; the runtime provides the scientific
 software that executes them. Install skills after preparing the runtime.
 
 ## Workstation And Compute Server
 
-### Shared Lab SIF: No User Checkout Required
+### SIF: No User Checkout Required
 
-If the administrator provides `/data/mdclaw.sif`, install the agent skills
-and put these in `~/.bashrc`:
+On a server with Singularity installed, download the MDClaw image and select it:
 
 ```bash
-export MDCLAW_SIF=/data/mdclaw.sif
+singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest
+export MDCLAW_SIF="$PWD/mdclaw.sif"
 export MDCLAW_RUNTIME=singularity
 ```
+
+If your lab already has a shared SIF, set `MDCLAW_SIF` to its path instead
+of downloading another copy.
 
 Work in your own directory, e.g. `~/work`, and invoke the installed SIF CLI:
 
@@ -31,7 +34,7 @@ container. Use `apptainer` and `MDCLAW_RUNTIME=apptainer` where appropriate.
 Keep input/output files under the mounted working directory, or add explicit
 binds for other locations. No external launcher, user checkout, or host Python
 packages are required. The full doctor below is available with a checkout;
-these direct commands verify a shared image without one.
+these direct commands verify the image without one.
 For SLURM tools, the agent adds standard `--bind` options for the host clients,
 libraries, configuration and authentication socket. See
 [direct SIF/SLURM invocation](../../skills/hpc-run/sif-slurm.md) for the
@@ -42,8 +45,16 @@ tested lab command and how to keep submission-host binds out of queued jobs.
 [Pixi](https://pixi.sh) installs the conda-forge scientific stack from the
 committed lockfile, with platform differences handled inside `pixi.toml`:
 
+Install Pixi once with the [official installer](https://pixi.prefix.dev/latest/installation/):
+
 ```bash
-curl -fsSL https://pixi.sh/install.sh | sh   # once per machine, no root
+curl -fsSL https://pixi.sh/install.sh | sh
+```
+
+Restart your terminal so `pixi` is on PATH, then:
+
+```bash
+git clone https://github.com/matsunagalab/mdclaw.git
 cd mdclaw
 pixi install                                 # locked env under .pixi/
 export PATH="$PWD/bin:$PATH"
@@ -250,12 +261,22 @@ runtime with one of the methods below.
 
 MDClaw skills follow the [Agent Skills](https://agentskills.io) layout, so the
 standard [skills CLI](https://github.com/vercel-labs/skills) installs them for
-any supported harness (Node 22.20+ required). Run it in the project where the
-agent works:
+any supported harness (Node 22.20+ required). Choose the installation scope.
+
+For the current project, run this in the project where the agent works:
 
 ```bash
 npx skills add matsunagalab/mdclaw
 ```
+
+For your user account across projects, run this from any directory:
+
+```bash
+npx skills add matsunagalab/mdclaw --global
+```
+
+`--global` (or `-g`) uses the selected agents' user skill directories under
+your home directory; it does not require administrator privileges.
 
 Select the skills and target agents when prompted; the shared `common` skill
 must be installed alongside the `md-*` skills because they reference its

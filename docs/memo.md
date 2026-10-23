@@ -7,6 +7,20 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-23 — README全体を利用者の作業順に再構成
+
+本人「全体の流れが重要」。冒頭は目的とskills／CLIの役割に絞り、導入→依頼例→結果と再開→対応範囲と制限→更新→開発・公開→ライセンスの順に整理。DAGは結果の保存・再開を説明する位置で定義し、リポジトリ構成は開発節へ移動した。重複する実行範囲の注意を整理し、機能表の内部用語を利用者が行える操作に置換。PixiのPATHの有効範囲、SIF実行形、実行環境とskillsの違いも補った。機能や実行コードの変更はない。
+
+## 2026-10-23 — skillsのプロジェクト内・ユーザー全体の導入を併記
+
+本人指摘により、READMEとdeployment.mdに通常の `npx skills add matsunagalab/mdclaw` と `--global`（`-g`）の両方を記載。[公式CLI仕様](https://github.com/vercel-labs/skills/blob/main/docs/commands.md)で確認。前者は現在のプロジェクト、後者はホーム配下の各エージェント用ディレクトリへ入り、複数プロジェクトで利用できる。どちらも `common` を併せて選ぶ。実際のskillsインストールは行わず、文書を更新した。
+
+## 2026-10-23 — READMEにSIF取得とPixi本体のインストール手順を明記
+
+- 本人指摘を反映し、SIF導入を管理者からの配布前提にせず、`singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest` から始める説明に変更。共有SIFは詳細ページの代替経路として残した。
+- Pixiは[公式手順](https://pixi.prefix.dev/latest/installation/)の `curl -fsSL https://pixi.sh/install.sh | sh` と、端末再起動後のMDClaw導入をREADME・deployment.mdに明記。
+- ドキュメント参照テスト1件と `git diff --check` が成功。文書のみの変更で、インストールやイメージ取得は実行していない。
+
 ## 2026-10-23 — Deploy案内と実行環境選択の統一、同期対象外への移行
 
 追加承認「まず1と2を実装して、テストまで」に対応。上の依頼は、下の同日調査時点の「未承認」を更新する。
