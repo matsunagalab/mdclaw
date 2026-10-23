@@ -95,6 +95,8 @@ rm -rf /root/.cache
 python /build/test-env-relocation.py /build/Dockerfile
 python - /build/.pixi/envs/default /opt/mdclaw <<'PY_RELOCATE'
 import conda_pack
+import json
+from pathlib import Path
 import sys
 from conda_pack.formats import NoArchive
 # 0.9.2 returns a truthy value here, hiding errors and leaving partial output.
@@ -103,6 +105,18 @@ source, target = sys.argv[1:]
 env = conda_pack.CondaEnv.from_prefix(
     source, ignore_editable_packages=True, ignore_missing_files=True,
     on_missing_cache="ignore")
+# With no cache, conda-pack cannot infer binary prefix replacement on Unix.
+# Pixi records which installed files contain a relocatable prefix.
+modes = {}
+for metadata in (Path(source) / "conda-meta").glob("*.json"):
+    record = json.loads(metadata.read_text())
+    for path in record.get("paths_data", {}).get("paths", []):
+        if path.get("prefix_placeholder") and path.get("file_mode") in {"text", "binary"}:
+            modes[path["_path"]] = path["file_mode"]
+for file in env.files:
+    if file.target in modes:
+        file.file_mode = modes[file.target]
+        file.prefix_placeholder = source
 # Overlapping conda package ownership can list one installed path twice.
 # Preserve distinct hardlink names, but write each destination only once.
 files = {}

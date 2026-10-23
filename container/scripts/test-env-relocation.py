@@ -17,7 +17,7 @@ def check_relocation(dockerfile=Path(__file__).resolve().parents[1] / "Dockerfil
     block = block.split("\nPY_RELOCATE", 1)[0]
     with tempfile.TemporaryDirectory(prefix="mdclaw-relocation-") as directory:
         root = Path(directory)
-        source = root / "source"
+        source = root / "source-environment"
         target = root / "target"
         (source / "conda-meta").mkdir(parents=True)
         (source / "conda-meta/history").write_text("", encoding="utf-8")
@@ -29,10 +29,15 @@ def check_relocation(dockerfile=Path(__file__).resolve().parents[1] / "Dockerfil
         os.link(program, source / "bin/second")
         (source / "bin/alias").symlink_to("first")
         (source / "data").write_bytes(b"\x00\xffpayload")
+        binary = b"\x00" + str(source).encode() + b"/lib\x00\xff"
+        (source / "binary-prefix").write_bytes(binary)
         # Real environments can have overlapping ownership (e.g. LICENSE).
         for name in ("package-a", "package-b"):
             metadata = {"name": name, "version": "1", "url": "",
-                        "link": None, "files": ["data", "bin/alias", "bin/second"]}
+                        "link": None,
+                        "files": ["data", "bin/alias", "bin/second", "binary-prefix"],
+                        "paths_data": {"paths": [{"_path": "binary-prefix",
+                            "file_mode": "binary", "prefix_placeholder": "/old-build"}]}}
             (source / "conda-meta" / f"{name}.json").write_text(
                 json.dumps(metadata), encoding="utf-8")
         subprocess.run(
@@ -48,6 +53,11 @@ def check_relocation(dockerfile=Path(__file__).resolve().parents[1] / "Dockerfil
         assert (target / "bin/alias").is_symlink()
         assert (target / "data").read_bytes() == b"\x00\xffpayload"
         assert (target / "bin/activate").is_file()
+        relocated = (target / "binary-prefix").read_bytes()
+        assert str(source).encode() not in relocated, relocated
+        assert str(target).encode() + b"/lib" in relocated, relocated
+        assert len(relocated) == len(binary)
+        assert (source / "binary-prefix").read_bytes() == binary
     print("PASS: relocated hardlinks, duplicate paths, symlink, modes, data, and source integrity")
 
 
