@@ -7,6 +7,12 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-24 — 容量対策でビルド成功、Ruffの検査コマンドを訂正
+
+- [Container 39989926000](https://github.com/matsunagalab/mdclaw/actions/runs/39989926000)でコンテナビルド・キャッシュ解放・Docker読み込みが成功。15秒ごとの容量記録は最少約12 GiB、キャッシュ解放後95 GiB、終了時83 GiB。前回の容量保護停止を回避した。公開latestは更新していない。
+- CPU smokeは23件成功・Ruffだけ1件失敗。Conda版Ruffはbin/ruffを配る単体バイナリでPythonモジュールを配らないため、テストの `python -m ruff --version` が不適切だった。同じPixi環境でModuleNotFoundErrorと `ruff --version` の成功を再現し、実コマンドの検査へ変更。科学計算のimport・PLUMED CPUエネルギー／力・AmberTools・MODELLER・PPM3は成功した。
+- `ec913d4`の[通常CI](https://github.com/matsunagalab/mdclaw/actions/runs/39989923958)はmacOS/Linuxとも433テスト・lint成功。Ruffの訂正後、Containerを再実行して全項目の成功を確認する。
+
 ## 2026-10-24 — Actionsのイメージ取り込み時の容量不足を回避
 
 - run 39984204189で環境移行・OpenMM・openmm-torch・PLUMED・同梱データのビルドは成功。移行後は20 GiBの環境、空き75 GiB。Dockerへ最終イメージを直接読み込む段階で、BuildKitの約87 GBのデータとDockerの展開データが同時に残り、空き4.0 GiBで監視がbuilderを停止した。停止完了時は2.4 GiB。CPUテストは未実行。

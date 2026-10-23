@@ -50,11 +50,20 @@ The environment is relocated directly to `/opt/mdclaw` with conda-pack's
 `no-archive` format and `--dest-prefix`. This avoids conda-pack 0.9.2's invalid
 tar headers for rewritten hardlinked files, as well as intermediate archive
 copies. Installation, relocation, and cache cleanup share one Docker layer so
-deleted caches do not remain in earlier layers. The build runs
-`container/scripts/test-env-relocation.py` to check hardlinks, symlinks, prefix
-replacement, and executable permissions before relocating the full environment.
-Actions records free disk space every 30 seconds and stops its builder if less
-than 5 GiB remains.
+deleted caches do not remain in earlier layers. Relocation uses the installed
+files, deduplicates overlapping package paths, and preserves the binary prefix
+metadata needed after cache removal. The build runs
+`container/scripts/test-env-relocation.py` against the actual Dockerfile block
+to check hardlinks, duplicate paths, symlinks, text/binary prefix replacement,
+executable permissions, and source-file integrity.
+
+Actions writes the Docker image to a temporary file, releases the BuildKit
+cache, requires at least 40 GiB free, and only then loads the image for the CPU
+smoke test. This avoids retaining the build snapshots and Docker's expanded
+image simultaneously. The registry cache keeps final-image layers only
+(`mode=min`), trading intermediate-stage reuse for lower peak disk usage.
+Actions records free disk space every 15 seconds and stops its builder if less
+than 10 GiB remains.
 
 The amd64 image ships the membrane-patch cache that lives in the package
 (`mdclaw/data/membrane_patches`, OPC and TIP3P) and asserts at build time that

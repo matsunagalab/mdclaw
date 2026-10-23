@@ -51,7 +51,7 @@ check "mdclaw --list" mdclaw --list
 # Model backends (BioEmu, Boltz-2) are installed at runtime into isolated
 # venvs, not baked into the image, so only verify the management CLI exists.
 check "model-backend CLI discoverable" bash -c "mdclaw --list | grep -q setup_model_backend"
-check "ruff" python -m ruff --version
+check "ruff" ruff --version
 check "pytest" python -m pytest --version
 check "pytest-asyncio" python -c "import pytest_asyncio"
 check_declared PYTHONUTF8 "UTF-8 mode contract" python -c "

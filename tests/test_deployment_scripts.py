@@ -50,7 +50,8 @@ def test_container_definition_includes_dev_tools_for_sif_workflows():
     dev_feature = pixi_manifest.split("[feature.dev.dependencies]", 1)[1]
     for tool in ("pytest", "pytest-asyncio", "ruff"):
         assert tool in dev_feature.split("[", 1)[0]
-    assert "python -m ruff --version" in test_script
+    # Conda's Ruff package ships an executable, not a Python module.
+    assert 'check "ruff" ruff --version' in test_script
     assert "python -m pytest --version" in test_script
     assert "import pytest_asyncio" in test_script
 
