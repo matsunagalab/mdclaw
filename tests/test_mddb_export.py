@@ -202,7 +202,8 @@ def peptide_job(job):
     top.create_standard_bonds()
     xyz = np.arange(7 * top.n_atoms * 3, dtype=np.float32).reshape(7, top.n_atoms, 3) / 1000
     traj = md.Trajectory(xyz, top)
-    topo = node(job, "topo", "topo", artifacts={"topology_pdb": "system.pdb"})
+    topo = node(job, "topo", "topo", artifacts={"topology_pdb": "system.pdb"},
+                metadata={"effective_forcefield": "ff14SB", "solvent_type": "vacuum"})
     traj[0].save_pdb(str(topo / "system.pdb"))
     add_prod(job, traj, "prod")
     return traj
@@ -688,6 +689,192 @@ def test_runtime_settings_and_actual_frame_times_override_nominal_metadata(tmp_p
     assert params["framestep"] == pytest.approx(0.02)
     assert params["temp"] == 310 and params["timestep"] == 2
     assert params["program"] == "OpenMM" and params["version"] == "8.5.1"
+
+
+@pytest.mark.parametrize("field,node_id,key", [
+    ("ff", "topo", "effective_forcefield"), ("wat", "topo", "water_model"),
+    ("temp", "prod", "temperature_kelvin"), ("timestep", "prod", "timestep_fs"),
+    ("ensemble", "prod", "system_signature"), ("framestep", "prod", "output_frequency_ps"),
+])
+@pytest.mark.parametrize("empty", [False, True])
+def test_single_missing_conditions_fail_before_writing(tmp_path, field, node_id, key, empty):
+    job = tmp_path / "job"
+    fixture_job(job)
+    path = job / "nodes" / node_id / "node.json"
+    data = json.loads(path.read_text())
+    data["metadata"].pop(key)
+    if empty:
+        data["metadata"][key] = None
+    if field == "framestep":
+        data["artifacts"].pop("energy")
+    path.write_text(json.dumps(data))
+    before = {p: p.read_bytes() for p in job.rglob("*") if p.is_file()}
+    result = export(tmp_path, job_dir=str(job))
+    assert result["code"] == "mddb_metadata_required", result
+    assert result["missing_fields"] == [field]
+    assert result["node_id"] == "prod"
+    assert not (tmp_path / "bundle").exists()
+    assert {p: p.read_bytes() for p in job.rglob("*") if p.is_file()} == before
+
+
+def test_single_missing_conditions_do_not_use_ancestor_or_dependency_run(tmp_path):
+    job = tmp_path / "job"
+    traj = fixture_job(job)
+    prod = add_prod(job, traj, "prod2")
+    data = json.loads((prod / "node.json").read_text())
+    data.update(parent_node_ids=["prod"], dependency_node_ids=["dependency"],
+                metadata={}, conditions={"temperature_kelvin": 400, "timestep_fs": 1})
+    data["artifacts"].pop("energy")
+    (prod / "node.json").write_text(json.dumps(data))
+    add_prod(job, traj, "dependency")
+    node(job, "analysis", "analyze", ["prod2"])
+    result = export(tmp_path, targets=[target(job, "analysis")])
+    assert result["code"] == "mddb_metadata_required", result
+    assert result["missing_fields"] == ["ensemble", "framestep", "temp", "timestep"]
+    assert result["node_id"] == "prod2"
+    assert not (tmp_path / "bundle").exists()
+    result = export_mddb(str(tmp_path / "bundle"), targets=[target(job, "analysis")],
+                         metadata={**METADATA, "temp": 310, "timestep": 2, "ensemble": "NVT", "framestep": 0.01})
+    assert result["success"], result
+    params = yaml.safe_load((tmp_path / "bundle/project/inputs.yaml").read_text())["mds"][0]
+    assert params["temp"] == 310 and params["ensemble"] == "NVT"
+
+
+@pytest.mark.parametrize("source", ["metadata", "signature", "provenance"])
+@pytest.mark.parametrize("solvent", ["implicit", "vacuum", "explicit"])
+def test_single_solvent_regime_controls_water_requirement(tmp_path, source, solvent):
+    job = tmp_path / "job"
+    fixture_job(job)
+    path = job / "nodes/topo/node.json"
+    topo = json.loads(path.read_text())
+    topo["metadata"].pop("water_model")
+    if source == "metadata":
+        topo["metadata"]["solvent_type"] = solvent
+    elif source == "provenance":
+        topo["metadata"]["forcefield_provenance"] = {"method": {"solvent_type": solvent}}
+    else:
+        prod_path = job / "nodes/prod/node.json"
+        prod = json.loads(prod_path.read_text())
+        prod["metadata"]["system_signature"]["solvent_type"] = solvent
+        prod_path.write_text(json.dumps(prod))
+    path.write_text(json.dumps(topo))
+    result = export(tmp_path, job_dir=str(job))
+    if solvent == "explicit":
+        assert result["code"] == "mddb_metadata_required", result
+        assert result["missing_fields"] == ["wat"]
+    else:
+        assert result["success"], result
+
+
+def test_single_recovers_integrator_signature_and_serialized_version(tmp_path):
+    job = tmp_path / "job"
+    fixture_job(job)
+    path = job / "nodes/prod/node.json"
+    data = json.loads(path.read_text())
+    for key in ("temperature_kelvin", "timestep_fs"):
+        data["metadata"].pop(key)
+    data["metadata"]["integrator_signature"] = {"temperature_kelvin": 315, "timestep_fs": 2}
+    data["artifacts"]["state"] = "state.xml"
+    (path.parent / "state.xml").write_text('<State openmmVersion="8.5.1"/>')
+    path.write_text(json.dumps(data))
+    result = export(tmp_path, job_dir=str(job))
+    assert result["success"], result
+    params = yaml.safe_load((tmp_path / "bundle/project/inputs.yaml").read_text())["mds"][0]
+    assert params["temp"] == 315 and params["timestep"] == 2
+    assert params["program"] == "OpenMM" and params["version"] == "8.5.1"
+
+
+@pytest.mark.parametrize("key,field,value", [("temperature_kelvin", "temp", 315), ("timestep_fs", "timestep", 2)])
+def test_single_conflicting_integrator_signature_requires_runtime_evidence(tmp_path, key, field, value):
+    job = tmp_path / "job"
+    fixture_job(job)
+    path = job / "nodes/prod/node.json"
+    data = json.loads(path.read_text())
+    data["metadata"]["integrator_signature"] = {key: value}
+    path.write_text(json.dumps(data))
+    result = export(tmp_path, job_dir=str(job))
+    assert result["code"] == "mddb_export_failed", result
+    assert f"{field} conflicts" in str(result)
+    assert not (tmp_path / "bundle").exists()
+    data["artifacts"]["integrator"] = "integrator.xml"
+    (path.parent / "integrator.xml").write_text('<Integrator temperature="315" stepSize="0.002"/>')
+    path.write_text(json.dumps(data))
+    result = export(tmp_path, job_dir=str(job))
+    assert result["success"], result
+    params = yaml.safe_load((tmp_path / "bundle/project/inputs.yaml").read_text())["mds"][0]
+    assert params[field] == value
+
+
+@pytest.mark.parametrize("source", ["node", "artifact"])
+def test_single_recovers_topology_build_provenance(tmp_path, source):
+    job = tmp_path / "job"
+    fixture_job(job)
+    path = job / "nodes/topo/node.json"
+    data = json.loads(path.read_text())
+    data["metadata"] = {"water_model": "tip3p"}
+    provenance = {"forcefield_xml": ["amber14-all.xml", "amber14/tip3p.xml"],
+                  "method": {"solvent_type": "explicit"}}
+    if source == "node":
+        data["metadata"]["forcefield_provenance"] = provenance
+    else:
+        data["metadata"] = {}
+        data["artifacts"]["amber_metadata"] = "amber_metadata.json"
+        (path.parent / "amber_metadata.json").write_text(json.dumps({
+            "success": True, "parameters": {"water_model": "tip3p"},
+            "solvent_type": "explicit", "forcefield_provenance": provenance}))
+    path.write_text(json.dumps(data))
+    result = export(tmp_path, job_dir=str(job))
+    assert result["success"], result
+    params = yaml.safe_load((tmp_path / "bundle/project/inputs.yaml").read_text())["mds"][0]
+    assert params["ff"] == provenance["forcefield_xml"] and params["wat"] == "tip3p"
+    if source == "artifact":
+        import hashlib
+        report = json.loads((tmp_path / "bundle/report.json").read_text())
+        history = report["subjects"][0]["history"]
+        evidence = next(r for r in history if r["node_id"] == "topo")["runtime_sources"]["amber_metadata"]
+        assert evidence["sha256"] == hashlib.sha256((path.parent / "amber_metadata.json").read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("damage", ["failed_build", "invalid_json", "water_conflict", "solvent_conflict"])
+def test_single_rejects_invalid_or_conflicting_build_evidence(tmp_path, damage):
+    job = tmp_path / "job"
+    fixture_job(job)
+    path = job / "nodes/topo/node.json"
+    data = json.loads(path.read_text())
+    data["artifacts"]["amber_metadata"] = "amber_metadata.json"
+    build = {"success": True, "parameters": {"water_model": "tip3p"}, "solvent_type": "explicit"}
+    if damage == "failed_build":
+        build["success"] = False
+    elif damage == "water_conflict":
+        build["parameters"]["water_model"] = "opc"
+    elif damage == "solvent_conflict":
+        data["metadata"]["forcefield_provenance"] = {"method": {"solvent_type": "vacuum"}}
+    (path.parent / "amber_metadata.json").write_text("{" if damage == "invalid_json" else json.dumps(build))
+    path.write_text(json.dumps(data))
+    result = export(tmp_path, job_dir=str(job))
+    assert result["code"] == "mddb_export_failed", result
+    assert not (tmp_path / "bundle").exists()
+
+
+def test_cli_single_missing_conditions_and_explicit_supplement(tmp_path):
+    job = tmp_path / "job"
+    fixture_job(job)
+    path = job / "nodes/prod/node.json"
+    data = json.loads(path.read_text())
+    data["metadata"].pop("temperature_kelvin")
+    path.write_text(json.dumps(data))
+    command = [sys.executable, "-m", "mdclaw._cli", "export_mddb", "--job-dir", str(job),
+               "--output-dir", str(tmp_path / "bundle"), "--metadata"]
+    run = subprocess.run(command + [json.dumps(METADATA)], capture_output=True, text=True)
+    result = json.loads(run.stdout)
+    assert result["code"] == "mddb_metadata_required", result
+    assert result["missing_fields"] == ["temp"]
+    assert not (tmp_path / "bundle").exists()
+    run = subprocess.run(command + [json.dumps({**METADATA, "temp": 310})], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout)["success"]
+    inputs = yaml.safe_load((tmp_path / "bundle/project/inputs.yaml").read_text())
+    assert inputs["mds"][0]["temp"] == 310
 
 
 def test_ambiguous_analysis_source_needs_explicit_target(tmp_path):

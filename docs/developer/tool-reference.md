@@ -1586,6 +1586,19 @@ terminal analyze node turns the recycled flux into a rate. Design notes:
   metadata consistent with the known values. Export segments separately when one
   value cannot describe all included segments. Frame spacing always refers to the
   combined artifact, never an input segment's sampling interval.
+  Single, non-combined trajectories also require force field, temperature,
+  timestep, ensemble, frame spacing, and (unless implicit solvent or vacuum is
+  recorded) water model. Missing values return `mddb_metadata_required` with
+  `missing_fields` and the source node before any bundle is written.
+  Extraction uses the selected trajectory's runtime XML, recorded metadata and
+  integrator signature, plus its parent-lineage topology's force-field provenance
+  and recorded `amber_metadata` build result. The build-result path and hash are
+  included in the report. Saved runtime System/Integrator/State XML can identify
+  the OpenMM version. Missing conditions are never borrowed from an earlier
+  production/equilibration segment, a dependency, or requested node conditions.
+  Conflicting build records or solvent regimes fail; conflicting temperature or
+  timestep records require runtime XML to resolve them. Explicit metadata can
+  fill remaining gaps but cannot override known values.
   Supply `--metadata '<JSON>'` with `name`, `authors`, `contact`, `license`,
   `linkcense` (official spelling), and `method`. These are exporter safeguards,
   not claims about mandatory website fields. Missing values return

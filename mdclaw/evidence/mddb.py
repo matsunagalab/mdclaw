@@ -144,32 +144,93 @@ def _source(subject):
     return record, topology_record, topology, trajectory
 
 
+def _mapping(value, name):
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"Invalid recorded {name}: expected an object")
+    return value
+
+
+def _topology_metadata(record):
+    """Use only the selected topology's metadata and its recorded build result."""
+    topo = dict(record["recorded_metadata"])
+    if record["artifacts"].get("amber_metadata"):
+        path = _artifact(record, "amber_metadata")
+        raw = path.read_bytes()
+        build = _mapping(json.loads(raw), "amber_metadata")
+        if build.get("success") is not True:
+            raise ValueError(f"Topology build metadata does not record success: {path}")
+        parameters = _mapping(build.get("parameters"), "topology parameters")
+        fallback = {"effective_forcefield": parameters.get("effective_forcefield"),
+                    "water_model": parameters.get("water_model"),
+                    "solvent_type": build.get("solvent_type"),
+                    "forcefield_provenance": build.get("forcefield_provenance")}
+        for key, value in fallback.items():
+            if value is None:
+                continue
+            if topo.get(key) is not None and topo[key] != value:
+                raise ValueError(f"Topology {key} conflicts with recorded build metadata: {path}")
+            topo[key] = value
+        record["runtime_sources"]["amber_metadata"] = {
+            "file": str(path), "sha256": hashlib.sha256(raw).hexdigest()}
+    return topo
+
+
+def _required_conditions(record, topology_record):
+    topo = _topology_metadata(topology_record)
+    provenance = _mapping(topo.get("forcefield_provenance"), "forcefield_provenance")
+    method = _mapping(provenance.get("method"), "forcefield method")
+    signature = _mapping(record["recorded_metadata"].get("system_signature"), "system_signature")
+    solvents = {v for v in (signature.get("solvent_type"), topo.get("solvent_type"),
+                            method.get("solvent_type")) if v is not None}
+    if len(solvents) > 1:
+        raise ValueError(f"Conflicting recorded solvent types: {sorted(solvents)}")
+    required = {"ff", "temp", "timestep", "ensemble"}
+    if not solvents or not solvents <= {"implicit", "vacuum"}:
+        required.add("wat")
+    return required
+
+
 def _recorded_conditions(record, topology_record):
     """Scientific settings, without trajectory-specific sampling intervals."""
     recorded = record["recorded_metadata"]
-    topo = topology_record["recorded_metadata"]
+    topo = _topology_metadata(topology_record)
     runtime = record["runtime"]
     integrator = runtime.get("integrator", {})
     system = runtime.get("runtime_system", {})
     params = {}
-    if system.get("openmm_version"):
-        params.update(program="OpenMM", version=system["openmm_version"])
-    for field, key in (("temp", "temperature_kelvin"), ("timestep", "timestep_fs")):
+    version = (system.get("openmm_version") or integrator.get("openmmVersion")
+               or runtime.get("openmm_serialization", {}).get("openmm_version"))
+    if version:
+        params.update(program="OpenMM", version=version)
+    integrator_signature = _mapping(recorded.get("integrator_signature"), "integrator_signature")
+    for field, key, attribute in (("temp", "temperature_kelvin", "temperature"),
+                                  ("timestep", "timestep_fs", "stepSize")):
         value = recorded.get(key)
+        signed = integrator_signature.get(key)
+        if (attribute not in integrator and value is not None and signed is not None
+                and not _same_parameter(field, value, signed)):
+            raise ValueError(f"Recorded {field} conflicts with the trajectory's integrator_signature")
+        if value is None:
+            value = signed
         if value is not None:
             params[field] = value
     if "temperature" in integrator:
         params["temp"] = float(integrator["temperature"])
     if "stepSize" in integrator:
         params["timestep"] = float(integrator["stepSize"]) * 1000  # OpenMM ps -> MDDB fs
-    signature = recorded.get("system_signature", {})
-    if isinstance(signature, dict) and signature.get("ensemble"):
+    signature = _mapping(recorded.get("system_signature"), "system_signature")
+    if signature.get("ensemble"):
         params["ensemble"] = signature["ensemble"]
+    elif recorded.get("ensemble"):
+        params["ensemble"] = recorded["ensemble"]
     if topo.get("effective_forcefield"):
         params["ff"] = [topo["effective_forcefield"]]
-    provenance = topo.get("forcefield_provenance", {})
-    if isinstance(provenance, dict) and provenance.get("openmm_xml"):
-        params["ff"] = provenance["openmm_xml"]
+    provenance = _mapping(topo.get("forcefield_provenance"), "forcefield_provenance")
+    forcefield_xml = provenance.get("openmm_xml") or provenance.get("forcefield_xml") or topo.get("forcefield_xml")
+    if forcefield_xml:
+        params["ff"] = forcefield_xml
     if topo.get("water_model"):
         params["wat"] = topo["water_model"]
     return params
@@ -210,8 +271,7 @@ def _combined_conditions(subject, record, metadata):
         segment = matches[0]
         topo = _nearest(records, segment["node_id"], lambda r: "topology_pdb" in r["artifacts"])
         values = _recorded_conditions(segment, topo)
-        if topo["recorded_metadata"].get("solvent_type") not in ("implicit", "vacuum"):
-            required.add("wat")
+        required.update(_required_conditions(segment, topo))
         conditions.append((segment["node_id"], values))
     common, missing = {}, []
     fields = required | {key for _, values in conditions for key in values}
@@ -265,13 +325,17 @@ def _parameters(record, topology_record, metadata, stride, inherited=None):
         if key in params and not _same_parameter(key, metadata[key], params[key]):
             raise ValueError(f"Metadata {key} conflicts with recorded source value {params[key]!r}")
         params[key] = metadata[key]
-    if "framestep" not in params:
-        raise ValueError("Missing frame spacing: supply metadata.framestep in ns for the source DCD")
     for key in ("framestep", "timestep", "temp"):
         if key in params and (isinstance(params[key], bool) or not isinstance(params[key], (int, float))
                               or not math.isfinite(params[key]) or params[key] <= 0):
             raise ValueError(f"{key} must be a finite positive number")
-    params["framestep"] *= stride
+    for key in ("ff", "wat", "ensemble", "program", "version"):
+        if key in params:
+            values = params[key] if key == "ff" and isinstance(params[key], list) else [params[key]]
+            if not values or not all(isinstance(v, str) and v.strip() for v in values):
+                raise ValueError(f"Invalid recorded {key}: expected nonempty strings")
+    if "framestep" in params:
+        params["framestep"] *= stride
     return params
 
 
@@ -463,15 +527,21 @@ def export_mddb(
         params = []
         for subject, src in zip(report["subjects"], sources):
             inherited = None
+            missing = []
+            required = {"framestep"}
             if "combined_trajectory" in src[0]["artifacts"]:
                 inherited, missing = _combined_conditions(subject, src[0], metadata)
-                if missing:
-                    return {"success": False, "code": "mddb_metadata_required", "missing_fields": missing,
-                            "node_id": src[0]["node_id"], "job_dir": subject["job_dir"],
-                            "message": "Combined trajectory conditions are not recorded for every source. "
-                                       "Supply the missing metadata only if it applies to all included segments; "
-                                       "otherwise export segments separately. No files written."}
-            params.append(_parameters(src[0], src[1], metadata, stride, inherited))
+            else:
+                required.update(_required_conditions(src[0], src[1]))
+            values = _parameters(src[0], src[1], metadata, stride, inherited)
+            missing = sorted(set(missing) | (required - values.keys()))
+            if missing:
+                return {"success": False, "code": "mddb_metadata_required", "missing_fields": missing,
+                        "node_id": src[0]["node_id"], "job_dir": subject["job_dir"],
+                        "message": "Trajectory conditions are not fully recorded for the selected source(s). "
+                                   "Supply the missing metadata only if it applies to all included frames; "
+                                   "otherwise export segments separately. No files written."}
+            params.append(values)
         template = yaml.safe_load(Path(__file__).with_name("mddb_template.yaml").read_text())
         out.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".mdclaw-mddb-", dir=out.parent) as staging:
