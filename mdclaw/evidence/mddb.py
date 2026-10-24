@@ -96,7 +96,8 @@ def _source(subject):
     return record, topology_record, topology, trajectory
 
 
-def _parameters(record, topology_record, metadata, stride):
+def _recorded_conditions(record, topology_record):
+    """Scientific settings, without trajectory-specific sampling intervals."""
     recorded = record["recorded_metadata"]
     topo = topology_record["recorded_metadata"]
     runtime = record["runtime"]
@@ -113,6 +114,82 @@ def _parameters(record, topology_record, metadata, stride):
         params["temp"] = float(integrator["temperature"])
     if "stepSize" in integrator:
         params["timestep"] = float(integrator["stepSize"]) * 1000  # OpenMM ps -> MDDB fs
+    signature = recorded.get("system_signature", {})
+    if isinstance(signature, dict) and signature.get("ensemble"):
+        params["ensemble"] = signature["ensemble"]
+    if topo.get("effective_forcefield"):
+        params["ff"] = [topo["effective_forcefield"]]
+    provenance = topo.get("forcefield_provenance", {})
+    if isinstance(provenance, dict) and provenance.get("openmm_xml"):
+        params["ff"] = provenance["openmm_xml"]
+    if topo.get("water_model"):
+        params["wat"] = topo["water_model"]
+    return params
+
+
+def _same_parameter(key, left, right):
+    if key in ("framestep", "timestep", "temp") and type(left) in (float, int) and type(right) in (float, int):
+        return math.isclose(left, right, rel_tol=1e-6, abs_tol=1e-9)
+    return type(left) is type(right) and left == right
+
+
+def _combined_conditions(subject, record, metadata):
+    """Recover only conditions evidenced for every recorded concat input."""
+    sources = record["recorded_metadata"].get("source_trajectories")
+    if not isinstance(sources, list) or not sources or not all(isinstance(p, str) and p for p in sources):
+        raise ValueError(f"Combined trajectory {record['node_id']} lacks source_trajectories provenance; "
+                         "export the source nodes separately or recreate the combined artifact with recorded inputs")
+    records = {r["node_id"]: r for r in subject["history"]}
+    ancestors, pending = set(), list(record["parent_node_ids"])
+    while pending:
+        nid = pending.pop()
+        if nid not in ancestors:
+            ancestors.add(nid)
+            pending.extend(records[nid]["parent_node_ids"])
+    conditions = []
+    required = {"ff", "temp", "timestep", "ensemble"}
+    for source in sources:
+        path = Path(source)
+        # concat records absolute paths. Never resolve legacy relative paths
+        # against the exporter's current working directory.
+        matches = [records[nid] for nid in sorted(ancestors) if path.is_absolute()
+                   and isinstance(records[nid]["artifacts"].get("trajectory"), str)
+                   and (Path(records[nid]["artifact_base_dir"]) /
+                        records[nid]["artifacts"]["trajectory"]).resolve() == path.resolve()]
+        if len(matches) != 1 or matches[0]["status"] != "completed":
+            raise ValueError(f"Combined trajectory source {source!r} must identify one completed parent-lineage "
+                             "trajectory; export the source nodes separately or recreate the combined artifact")
+        segment = matches[0]
+        topo = _nearest(records, segment["node_id"], lambda r: "topology_pdb" in r["artifacts"])
+        values = _recorded_conditions(segment, topo)
+        if topo["recorded_metadata"].get("solvent_type") not in ("implicit", "vacuum"):
+            required.add("wat")
+        conditions.append((segment["node_id"], values))
+    common, missing = {}, []
+    fields = required | {key for _, values in conditions for key in values}
+    for key in sorted(fields):
+        known = {nid: values[key] for nid, values in conditions if key in values}
+        if known:
+            value = next(iter(known.values()))
+            if any(not _same_parameter(key, value, other) for other in known.values()):
+                raise ValueError(f"Combined trajectory has conflicting {key} across source nodes: {known!r}; "
+                                 "export segments separately instead of assigning one value")
+            if metadata.get(key) is not None and not _same_parameter(key, metadata[key], value):
+                raise ValueError(f"Metadata {key} conflicts with recorded source values {known!r}")
+        if all(key in values for _, values in conditions):
+            common[key] = next(iter(known.values()))
+        elif metadata.get(key) is None:
+            missing.append(key)
+    return common, missing
+
+
+def _parameters(record, topology_record, metadata, stride, inherited=None):
+    recorded = record["recorded_metadata"]
+    params = _recorded_conditions(record, topology_record)
+    for key, value in (inherited or {}).items():
+        if key in params and not _same_parameter(key, params[key], value):
+            raise ValueError(f"Combined trajectory {key} conflicts with its source nodes")
+        params[key] = value
     if recorded.get("output_frequency_ps") is not None:
         params["framestep"] = float(recorded["output_frequency_ps"]) / 1000
     if "energy" in record["artifacts"]:
@@ -134,23 +211,10 @@ def _parameters(record, topology_record, metadata, stride):
         if steps[0] <= 0 or not np.allclose(steps, steps[0], rtol=1e-6, atol=1e-9):
             raise ValueError("Irregular frame times cannot be represented by MDDB framestep; split/resample explicitly")
         params["framestep"] = float(steps[0])
-    signature = recorded.get("system_signature", {})
-    if isinstance(signature, dict) and signature.get("ensemble"):
-        params["ensemble"] = signature["ensemble"]
-    if topo.get("effective_forcefield"):
-        params["ff"] = [topo["effective_forcefield"]]
-    provenance = topo.get("forcefield_provenance", {})
-    if isinstance(provenance, dict) and provenance.get("openmm_xml"):
-        params["ff"] = provenance["openmm_xml"]
-    if topo.get("water_model"):
-        params["wat"] = topo["water_model"]
     for key in _MD_FIELDS:
         if metadata.get(key) is None:
             continue
-        same = metadata[key] == params.get(key)
-        if key in ("framestep", "timestep", "temp") and type(metadata[key]) in (float, int) and key in params:
-            same = math.isclose(metadata[key], params[key], rel_tol=1e-6, abs_tol=1e-9)
-        if key in params and not same:
+        if key in params and not _same_parameter(key, metadata[key], params[key]):
             raise ValueError(f"Metadata {key} conflicts with recorded source value {params[key]!r}")
         params[key] = metadata[key]
     if "framestep" not in params:
@@ -343,7 +407,18 @@ def export_mddb(
         identities = [str(src[3]) for src in sources]
         if grouping == "replicas" and len(set(identities)) != len(identities):
             raise ValueError("Replica targets resolve to the same source trajectory")
-        params = [_parameters(src[0], src[1], metadata, stride) for src in sources]
+        params = []
+        for subject, src in zip(report["subjects"], sources):
+            inherited = None
+            if "combined_trajectory" in src[0]["artifacts"]:
+                inherited, missing = _combined_conditions(subject, src[0], metadata)
+                if missing:
+                    return {"success": False, "code": "mddb_metadata_required", "missing_fields": missing,
+                            "node_id": src[0]["node_id"], "job_dir": subject["job_dir"],
+                            "message": "Combined trajectory conditions are not recorded for every source. "
+                                       "Supply the missing metadata only if it applies to all included segments; "
+                                       "otherwise export segments separately. No files written."}
+            params.append(_parameters(src[0], src[1], metadata, stride, inherited))
         template = yaml.safe_load(Path(__file__).with_name("mddb_template.yaml").read_text())
         out.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".mdclaw-mddb-", dir=out.parent) as staging:

@@ -1576,6 +1576,16 @@ terminal analyze node turns the recycled flux into a rate. Design notes:
   projects. A completed analysis target resolves its nearest unique parent-lineage
   DCD, recording both identities. Existing `combined_trajectory` artifacts use
   their recorded `reference_pdb`; no new concatenation or analysis is performed.
+  For combined trajectories, `metadata.source_trajectories` must identify completed
+  parent-lineage trajectory nodes. Settings are inherited only when recorded for
+  every included source and consistent across them; runtime XML takes precedence
+  over nominal metadata. Conflicting settings fail before writing, even if an
+  override is supplied. Missing force field, temperature, timestep or ensemble
+  (and water model unless the topology records implicit solvent or vacuum) return
+  `mddb_metadata_required`. Partially recorded settings also require explicit
+  metadata consistent with the known values. Export segments separately when one
+  value cannot describe all included segments. Frame spacing always refers to the
+  combined artifact, never an input segment's sampling interval.
   Supply `--metadata '<JSON>'` with `name`, `authors`, `contact`, `license`,
   `linkcense` (official spelling), and `method`. These are exporter safeguards,
   not claims about mandatory website fields. Missing values return

@@ -13,6 +13,14 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-24 — MDDB連結済み軌道の計算条件欠落を修正
+
+- 本人が前項の点検結果のうち条件欠落の修正とテストを指定。既存の連結軌道テストにYAMLの力場・水モデル・温度・時間刻み・アンサンブルの検査を加え、修正前に `KeyError: 'ff'` を再現した。原因は登録用条件抽出が連結処理ノードだけを参照していたこと。
+- `export_mddb` は連結ノードの `source_trajectories` を親系統の完了済み軌道へ照合し、各区間の実行記録・XMLとトポロジーから全区間で一致する条件を引き継ぐ。連結に含まれない祖先や依存ノードは採用しない。時間間隔は連結後の時刻列を使い、登録時のstrideだけを適用する。
+- 条件の混在や出典不明は書き出し前に停止。力場・温度・時間刻み・アンサンブル、水モデル（implicit/vacuumを記録した系を除く）が不足する場合、および一部区間だけに記録された項目は `mddb_metadata_required` と不足一覧を返す。全区間へ適用できる明示metadataで補完できるが、既知の値との矛盾や区間間の混在は上書きで隠せない。
+- Pixiで **469 passed**：MDDB出力、report、CLI／契約、registry、guardrails、Slurm、既存DAG連結テスト。MDDBテストは40→59件。実際の `concat_trajectory` 出力を記録した合成DAGからCLIでYAML・水抜きPDB/DCDを書き出す検査も成功。対象ファイルのRuff、CLI discovery、`git diff --check`成功。
+- tool-referenceとwikiを更新。skill・CI・依存関係は変更せず、MDDBへの実登録は行っていない。作業中に追加された別作業のREADME／deployment文書等はそのまま保持。
+
 ## 2026-10-24 — コンテナビルド・CPU 24項目・両OSのCI成功
 
 - `31fb3ea`の[Container 39996483738](https://github.com/matsunagalab/mdclaw/actions/runs/39996483738)が成功。環境移行のtar破損・重複パス・バイナリprefix、Docker読み込み時の容量不足、Ruff検査の誤った起動方法を解消した。CPU smokeは24件成功・0件失敗。CLI、解析ライブラリ、PLUMEDのCPUエネルギー／力、AmberTools、MODELLER、PPM3を確認した。

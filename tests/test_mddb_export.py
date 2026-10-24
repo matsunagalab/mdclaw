@@ -279,13 +279,210 @@ def test_existing_combined_trajectory_uses_recorded_reference(tmp_path):
     job = tmp_path / "job"
     traj = fixture_job(job)
     combined = node(job, "concat", "analyze", ["prod"], artifacts={
-        "combined_trajectory": "combined.dcd", "reference_pdb": "reference.pdb", "frame_times_ns": "times.npy"})
+        "combined_trajectory": "combined.dcd", "reference_pdb": "reference.pdb", "frame_times_ns": "times.npy"},
+        metadata={"source_trajectories": [str(job / "nodes/prod/trajectory.dcd")]})
     traj.save_dcd(str(combined / "combined.dcd"))
     traj[0].save_pdb(str(combined / "reference.pdb"))
     np.save(combined / "times.npy", np.arange(7) * 0.01)
     result = export(tmp_path, job_dir=str(job))
     assert result["success"], result
     assert result["manifest"]["runs"][0]["trajectory_node_id"] == "concat"
+    params = yaml.safe_load((tmp_path / "bundle/project/inputs.yaml").read_text())["mds"][0]
+    assert params["ff"] == ["ff14SB"]
+    assert params["wat"] == "tip3p"
+    assert params["temp"] == 300
+    assert params["timestep"] == 4
+    assert params["ensemble"] == "NPT"
+
+
+def combined_job(job):
+    """Two recorded continuation segments and their already combined trajectory."""
+    traj = fixture_job(job)
+    second = add_prod(job, traj, "prod2")
+    path = second / "node.json"
+    data = json.loads(path.read_text())
+    data["parent_node_ids"] = ["prod"]
+    path.write_text(json.dumps(data))
+    combined = node(job, "concat", "analyze", ["prod2"], artifacts={
+        "combined_trajectory": "combined.dcd", "reference_pdb": "reference.pdb", "frame_times_ns": "times.npy"},
+        metadata={"source_trajectories": [str(job / f"nodes/{nid}/trajectory.dcd") for nid in ("prod", "prod2")],
+                  "frames_per_source": [7, 7]})
+    md.join([traj, traj]).save_dcd(str(combined / "combined.dcd"))
+    traj[0].save_pdb(str(combined / "reference.pdb"))
+    np.save(combined / "times.npy", np.arange(14) * 0.01)
+    return combined
+
+
+def test_combined_conditions_use_runtime_and_combined_frame_spacing(tmp_path):
+    job = tmp_path / "job"
+    combined = combined_job(job)
+    for nid in ("prod", "prod2"):
+        path = job / "nodes" / nid / "node.json"
+        data = json.loads(path.read_text())
+        data["artifacts"].update(integrator="integrator.xml", runtime_system="system.xml")
+        path.write_text(json.dumps(data))
+        (path.parent / "integrator.xml").write_text(
+            '<Integrator type="LangevinMiddleIntegrator" stepSize="0.002" temperature="310"/>')
+        (path.parent / "system.xml").write_text('<System openmmVersion="8.5.1"><Constraints/><Forces/></System>')
+    # The combined artifact has already been sampled differently from the inputs.
+    np.save(combined / "times.npy", np.arange(14) * 0.03)
+    before = {p: p.read_bytes() for p in job.rglob("*") if p.is_file()}
+    result = export(tmp_path, job_dir=str(job), stride=2)
+    assert result["success"], result
+    params = yaml.safe_load((tmp_path / "bundle/project/inputs.yaml").read_text())["mds"][0]
+    assert params["temp"] == 310 and params["timestep"] == 2
+    assert params["program"] == "OpenMM" and params["version"] == "8.5.1"
+    assert params["framestep"] == pytest.approx(0.06)
+    assert result["manifest"]["runs"][0]["n_frames"] == 7
+    assert {p: p.read_bytes() for p in job.rglob("*") if p.is_file()} == before
+
+
+@pytest.mark.parametrize("field,override", [("temp", {}), ("temp", {"temp": 300}),
+                                           ("timestep", {}), ("ensemble", {}), ("ff", {}), ("wat", {})])
+def test_combined_rejects_mixed_conditions_before_writing(tmp_path, field, override):
+    job = tmp_path / "job"
+    combined_job(job)
+    path = job / "nodes/prod2/node.json"
+    data = json.loads(path.read_text())
+    if field in ("ff", "wat"):
+        topo = node(job, "topo2", "topo", ["prod"], artifacts={"topology_pdb": "system.pdb"},
+                    metadata={"effective_forcefield": "ff19SB" if field == "ff" else "ff14SB",
+                              "water_model": "opc" if field == "wat" else "tip3p"})
+        (topo / "system.pdb").write_bytes((job / "nodes/topo/system.pdb").read_bytes())
+        data["parent_node_ids"] = ["topo2"]
+    elif field == "ensemble":
+        data["metadata"]["system_signature"]["ensemble"] = "NVT"
+    else:
+        data["metadata"][{"temp": "temperature_kelvin", "timestep": "timestep_fs"}[field]] = 310 if field == "temp" else 2
+    path.write_text(json.dumps(data))
+    result = export_mddb(str(tmp_path / "bundle"), job_dir=str(job), metadata={**METADATA, **override})
+    assert result["code"] == "mddb_export_failed", result
+    assert f"conflicting {field}" in str(result)
+    assert "prod2" in str(result) and "prod" in str(result)
+    assert not (tmp_path / "bundle").exists()
+
+
+@pytest.mark.parametrize("both", [False, True])
+def test_combined_missing_conditions_require_explicit_metadata(tmp_path, both):
+    job = tmp_path / "job"
+    combined_job(job)
+    for nid in (("prod", "prod2") if both else ("prod2",)):
+        path = job / "nodes" / nid / "node.json"
+        data = json.loads(path.read_text())
+        del data["metadata"]["temperature_kelvin"]
+        path.write_text(json.dumps(data))
+    result = export(tmp_path, job_dir=str(job))
+    assert result["code"] == "mddb_metadata_required", result
+    assert result["missing_fields"] == ["temp"]
+    assert result["node_id"] == "concat"
+    assert not (tmp_path / "bundle").exists()
+    if not both:
+        conflict = export_mddb(str(tmp_path / "bundle"), job_dir=str(job), metadata={**METADATA, "temp": 310})
+        assert conflict["code"] == "mddb_export_failed", conflict
+        assert "temp conflicts" in str(conflict)
+    result = export_mddb(str(tmp_path / "bundle"), job_dir=str(job), metadata={**METADATA, "temp": 300})
+    assert result["success"], result
+    params = yaml.safe_load((tmp_path / "bundle/project/inputs.yaml").read_text())["mds"][0]
+    assert params["temp"] == 300
+
+
+@pytest.mark.parametrize("solvent", ["explicit", "implicit", "vacuum"])
+def test_combined_missing_water_model_depends_on_solvent_regime(tmp_path, solvent):
+    job = tmp_path / "job"
+    combined_job(job)
+    path = job / "nodes/topo/node.json"
+    data = json.loads(path.read_text())
+    data["metadata"].update(water_model=None, solvent_type=solvent)
+    path.write_text(json.dumps(data))
+    result = export(tmp_path, job_dir=str(job))
+    if solvent == "explicit":
+        assert result["code"] == "mddb_metadata_required", result
+        assert result["missing_fields"] == ["wat"]
+        assert not (tmp_path / "bundle").exists()
+    else:
+        assert result["success"], result
+        params = yaml.safe_load((tmp_path / "bundle/project/inputs.yaml").read_text())["mds"][0]
+        assert "wat" not in params
+
+
+@pytest.mark.parametrize("damage", ["missing", "unknown", "relative", "dependency", "failed"])
+def test_combined_requires_traceable_completed_sources(tmp_path, damage):
+    job = tmp_path / "job"
+    combined = combined_job(job)
+    path = combined / "node.json"
+    data = json.loads(path.read_text())
+    if damage == "missing":
+        del data["metadata"]["source_trajectories"]
+    elif damage == "unknown":
+        data["metadata"]["source_trajectories"] = [str(tmp_path / "unknown.dcd")]
+    elif damage == "relative":
+        data["metadata"]["source_trajectories"] = ["nodes/prod/trajectory.dcd"]
+    elif damage == "dependency":
+        # A dependency is evidence history, but is not a parent-lineage source.
+        add_prod(job, md.load(str(combined / "combined.dcd"), top=str(combined / "reference.pdb"))[:7], "other")
+        data["dependency_node_ids"] = ["other"]
+        data["metadata"]["source_trajectories"] = [str(job / "nodes/other/trajectory.dcd")]
+    else:
+        source_path = job / "nodes/prod/node.json"
+        source = json.loads(source_path.read_text())
+        source["status"] = "failed"
+        source_path.write_text(json.dumps(source))
+    path.write_text(json.dumps(data))
+    result = export(tmp_path, targets=[target(job, "concat")])
+    assert result["code"] == "mddb_export_failed", result
+    assert not (tmp_path / "bundle").exists()
+
+
+def test_combined_does_not_inherit_unselected_ancestor_conditions(tmp_path):
+    job = tmp_path / "job"
+    combined = combined_job(job)
+    path = job / "nodes/prod/node.json"
+    data = json.loads(path.read_text())
+    data["metadata"]["temperature_kelvin"] = 999
+    path.write_text(json.dumps(data))
+    path = combined / "node.json"
+    data = json.loads(path.read_text())
+    data["metadata"]["source_trajectories"] = [str(job / "nodes/prod2/trajectory.dcd")]
+    data["metadata"]["frames_per_source"] = [7]
+    path.write_text(json.dumps(data))
+    traj = md.load(str(job / "nodes/prod2/trajectory.dcd"), top=str(combined / "reference.pdb"))
+    traj.save_dcd(str(combined / "combined.dcd"))
+    np.save(combined / "times.npy", np.arange(7) * 0.01)
+    result = export(tmp_path, job_dir=str(job))
+    assert result["success"], result
+    params = yaml.safe_load((tmp_path / "bundle/project/inputs.yaml").read_text())["mds"][0]
+    assert params["temp"] == 300
+
+
+def test_concat_tool_then_cli_export_preserves_conditions(tmp_path, monkeypatch):
+    from mdclaw.analyze.concat import concat_trajectory
+
+    job = tmp_path / "job"
+    combined = combined_job(job)
+    monkeypatch.chdir(tmp_path)
+    joined = concat_trajectory(
+        trajectory_files=[str(job / f"nodes/{nid}/trajectory.dcd") for nid in ("prod", "prod2")],
+        topology_file=str(job / "nodes/topo/system.pdb"), energy_files=[], selection="all", chunk=2,
+    )
+    assert joined["success"], joined
+    # Record the real tool output in the existing synthetic DAG fixture.
+    path = combined / "node.json"
+    data = json.loads(path.read_text())
+    data["artifacts"].update({key: joined[key] for key in ("combined_trajectory", "reference_pdb")})
+    data["metadata"].update({key: joined[key] for key in ("source_trajectories", "frames_per_source")})
+    path.write_text(json.dumps(data))
+    completed = subprocess.run([sys.executable, "-m", "mdclaw._cli", "export_mddb",
+                                "--job-dir", str(job), "--output-dir", str(tmp_path / "bundle"),
+                                "--metadata", json.dumps(METADATA)], capture_output=True, text=True, timeout=60)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert json.loads(completed.stdout)["success"]
+    params = yaml.safe_load((tmp_path / "bundle/project/inputs.yaml").read_text())["mds"][0]
+    assert params["ff"] == ["ff14SB"] and params["wat"] == "tip3p"
+    assert params["temp"] == 300 and params["timestep"] == 4 and params["ensemble"] == "NPT"
+    assert params["framestep"] == pytest.approx(0.01)
+    converted = md.load(str(tmp_path / "bundle/project/md_001/trajectory.dcd"),
+                        top=str(tmp_path / "bundle/project/md_001/system.pdb"))
+    assert converted.n_frames == 14 and converted.n_atoms == 7
 
 
 def test_cli_export_executes_without_node_context(tmp_path):
