@@ -1638,6 +1638,13 @@ terminal analyze node turns the recycled flux into a rate. Design notes:
   records source/output hashes, retained atom indices, frame counts and labels;
   `report.json` and `references.bib` accompany the bundle. PDB is a structure
   fallback (`input_topology_filepath: 'no'`), **not** a force-field topology.
+  Before publishing any output, every generated YAML is validated against the
+  bundled official MDDB schema, including each MD's effective metadata overrides
+  and unknown fields. Schema violations or unavailable/corrupt schema resources
+  return `mddb_export_failed` and remove staging files; no final bundle is created.
+  The manifest's `schema_validation` records the schema repository, commit and
+  SHA-256. Validation is offline and requires neither pytest nor the MDDB workflow.
+  It does not set `mddb_server_validated`: schema compatibility is not ingestion/QA.
   Output must be new and outside node directories. No upload, ingestion,
   scientific QA or MDDB acceptance is implied. The minimal template follows the
   [official template at pinned commit 4e6dceee](https://github.com/mmb-irb/MDDB-workflow/blob/4e6dceeee67ce83650eed4aa2cfffe10107e2564/mddb_workflow/resources/inputs_file_template.yml).

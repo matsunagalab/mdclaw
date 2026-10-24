@@ -14,6 +14,7 @@ import tempfile
 from typing import Optional
 
 from mdclaw.evidence.reporting import generate_md_report
+from mdclaw.evidence.mddb_schema import validate_mddb_inputs
 
 
 _UPSTREAM = "https://github.com/mmb-irb/MDDB-workflow/blob/4e6dceeee67ce83650eed4aa2cfffe10107e2564/"
@@ -581,11 +582,18 @@ def export_mddb(
                 runs.append({"project": project_key, "directory": md_dir, **data})
             for key, inputs in projects.items():
                 text = yaml.safe_dump(inputs, sort_keys=False, allow_unicode=True)
-                if yaml.safe_load(text) != inputs:
+                loaded = yaml.safe_load(text)
+                if loaded != inputs:
                     raise ValueError("YAML round-trip validation failed")
+                try:
+                    schema_validation = validate_mddb_inputs(loaded)
+                except ValueError as exc:
+                    raise ValueError(f"Official MDDB schema rejected {key}/inputs.yaml: {exc}") from exc
                 (stage / key / "inputs.yaml").write_text(text)
             manifest = {"schema_version": 1, "runs": runs, "projects": list(projects),
-                        "validation": "PDB/DCD counts, atom ordering, first coordinates, YAML round-trip",
+                        "validation": "PDB/DCD counts, atom ordering, first coordinates, YAML round-trip, "
+                                      "official MDDB schema (project and MD overrides)",
+                        "schema_validation": schema_validation,
                         "uploaded": False, "mddb_server_validated": False}
             (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
             (stage / "report.json").write_text(json.dumps(report, indent=2) + "\n")

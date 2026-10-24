@@ -1,9 +1,9 @@
 ---
-title: Official MDDB schema test snapshot
+title: Official MDDB schema snapshot
 updated: 2026-10-24
 ---
 
-# Official MDDB schema test snapshot
+# Official MDDB schema snapshot
 
 Source: [mmb-irb/MDDB-workflow](https://github.com/mmb-irb/MDDB-workflow/tree/2b380ae29b682c97665c8290fce06da46f49eb57),
 commit `2b380ae29b682c97665c8290fce06da46f49eb57`.
@@ -21,14 +21,21 @@ The upstream Apache 2.0 license is included in `LICENSE`.
   SHA-256, and checksums for the three bundled files. The test loader verifies
   the bundled checksums before loading the schema.
 
-`tests/mddb_schema.py` executes the unchanged schema with its constants and
-test-only substitutes for `InputError` and `warn`. Errors and unexpected
+`mdclaw/evidence/mddb_schema.py` executes the unchanged schema with its constants
+and local substitutes for `InputError` and `warn`. Errors and unexpected
 warnings fail validation. No MDDB workflow installation, GROMACS, database, or
-network access is needed. Project metadata and each MD's effective overrides
+network access or pytest is needed. Imports are scoped to the schema's own
+namespace, without modifying process-wide imports or installed MDDB modules.
+Project metadata and each MD's effective overrides
 are checked with `validate_inputs(strict_unknown=True)`; inputs are copied
 because upstream validation can normalize ligand entries in place.
 
-The autouse fixture in `tests/test_mddb_export.py` validates every `inputs.yaml`
+`export_mddb` validates each generated YAML before publishing the output
+directory. A validation or schema-loading failure returns `mddb_export_failed`
+and cleans up staging files. The manifest records the schema commit and hash;
+`mddb_server_validated` remains false because no ingestion has been run.
+
+The autouse fixture in `tests/test_mddb_export.py` uses the same validator on every `inputs.yaml`
 left under each test's temporary directory. This covers Python and CLI exports,
 replicas, separate projects, combined trajectories, and reference metadata.
 It is a pinned schema compatibility test, not a full MDDB ingestion or a check

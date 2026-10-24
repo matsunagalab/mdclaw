@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 from mdclaw.evidence import export_mddb
-from tests.mddb_schema import official_mddb_schema, validate_mddb_inputs
+from mdclaw.evidence.mddb_schema import official_mddb_schema, validate_mddb_inputs
 
 
 METADATA = dict(name="Synthetic export test", authors=["Test fixture"],
@@ -106,7 +106,7 @@ def test_official_schema_rejects_invalid_export_metadata(tmp_path, damage, field
 
 def test_official_schema_is_isolated_and_preserves_inputs():
     module_names = ("mddb_workflow.utils.constants", "mddb_workflow.utils.auxiliar",
-                    "_mdclaw_test_official_mddb_schema")
+                    "mdclaw.evidence._official_mddb_schema")
     before_modules = {name: sys.modules.get(name) for name in module_names}
     official_mddb_schema.__wrapped__()  # Exercise a fresh load, including module cleanup.
     assert {name: sys.modules.get(name) for name in module_names} == before_modules
@@ -116,6 +116,107 @@ def test_official_schema_is_isolated_and_preserves_inputs():
     assert json.dumps(inputs, sort_keys=True) == before
 
 
+def test_runtime_schema_rejects_unsupported_md_field(tmp_path):
+    job = tmp_path / "job"
+    fixture_job(job)
+    # Accepted by the legacy exporter's local type check, absent from the
+    # official schema. This must be caught inside export, not only by pytest.
+    result = export_mddb(str(tmp_path / "bundle"), job_dir=str(job),
+                         metadata={**METADATA, "boxtype": "cubic"})
+    assert result["code"] == "mddb_export_failed", result
+    assert "Official MDDB schema" in str(result) and "boxtype" in str(result)
+    assert not (tmp_path / "bundle").exists()
+    assert not list(tmp_path.glob(".mdclaw-mddb-*"))
+
+
+@pytest.mark.parametrize("damage", ["project_type", "md_temp", "md_unknown"])
+def test_runtime_schema_checks_generated_project_and_md_overrides(tmp_path, monkeypatch, damage):
+    from mdclaw.evidence import mddb
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    fixture_job(a)
+    fixture_job(b)
+    if damage == "project_type":
+        # The YAML round-trip succeeds; its type still violates the schema.
+        template = mddb.Path(mddb.__file__).with_name("mddb_template.yaml")
+        read_text = mddb.Path.read_text
+
+        def invalid_template(path, *args, **kwargs):
+            text = read_text(path, *args, **kwargs)
+            return text.replace("type: trajectory", "type: invalid") if path == template else text
+
+        monkeypatch.setattr(mddb.Path, "read_text", invalid_template)
+        field = "type"
+    else:
+        original = mddb._parameters
+
+        def corrupt(*args, **kwargs):
+            params = original(*args, **kwargs)
+            if args[0]["artifact_base_dir"].startswith(str(b)):
+                params["temp" if damage == "md_temp" else "unknown_field"] = -1
+            return params
+
+        monkeypatch.setattr(mddb, "_parameters", corrupt)
+        field = "temp" if damage == "md_temp" else "unknown_field"
+    result = export(tmp_path, targets=[target(a), target(b)], grouping="separate")
+    assert result["code"] == "mddb_export_failed", result
+    assert "Official MDDB schema" in str(result) and field in str(result)
+    if damage != "project_type":
+        assert "project_002" in str(result) and "mds[0]" in str(result)
+    assert not (tmp_path / "bundle").exists()
+    assert not list(tmp_path.glob(".mdclaw-mddb-*"))
+
+
+def test_cli_runtime_schema_rejects_invalid_metadata(tmp_path):
+    job = tmp_path / "job"
+    fixture_job(job)
+    run = subprocess.run([
+        sys.executable, "-m", "mdclaw._cli", "export_mddb", "--job-dir", str(job),
+        "--output-dir", str(tmp_path / "bundle"), "--metadata",
+        json.dumps({**METADATA, "boxtype": "cubic"}),
+    ], capture_output=True, text=True)
+    result = json.loads(run.stdout)
+    assert result["code"] == "mddb_export_failed", result
+    assert "Official MDDB schema" in str(result) and "boxtype" in str(result)
+    assert not (tmp_path / "bundle").exists()
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt", "dependency"])
+def test_runtime_schema_unavailable_does_not_skip_validation(tmp_path, monkeypatch, damage):
+    import builtins
+    import shutil
+    from mdclaw.evidence import mddb_schema
+
+    job = tmp_path / "job"
+    fixture_job(job)
+    snapshot = tmp_path / "schema"
+    shutil.copytree(mddb_schema._SNAPSHOT, snapshot)
+    if damage == "missing":
+        (snapshot / "inputs_schema.py.txt").unlink()
+    elif damage == "corrupt":
+        with (snapshot / "inputs_schema.py.txt").open("a") as stream:
+            stream.write("\n# damaged\n")
+    else:
+        real_import = builtins.__import__
+
+        def unavailable(name, *args, **kwargs):
+            if name == "pydantic":
+                raise ImportError("pydantic unavailable")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", unavailable)
+    monkeypatch.setattr(mddb_schema, "_SNAPSHOT", snapshot)
+    official_mddb_schema.cache_clear()
+    try:
+        result = export(tmp_path, job_dir=str(job))
+        assert result["code"] == "mddb_export_failed", result
+        assert "Cannot load official MDDB schema" in str(result)
+        assert not (tmp_path / "bundle").exists()
+        assert not list(tmp_path.glob(".mdclaw-mddb-*"))
+    finally:
+        official_mddb_schema.cache_clear()
+
+
 @pytest.mark.parametrize("stride,chunk", [(1, 2), (2, 2), (3, 1), (10, 100)])
 def test_paired_export_roundtrip_and_identity(tmp_path, stride, chunk):
     job = tmp_path / "job"
@@ -123,6 +224,10 @@ def test_paired_export_roundtrip_and_identity(tmp_path, stride, chunk):
     before = {p: p.read_bytes() for p in job.rglob("*") if p.is_file()}
     result = export(tmp_path, job_dir=str(job), stride=stride, chunk=chunk)
     assert result["success"], result
+    validation = result["manifest"]["schema_validation"]
+    assert validation["commit"] == "2b380ae29b682c97665c8290fce06da46f49eb57"
+    assert validation["sha256"] == "ab0486178140ea9bfba088ff3bc5d77337c3c17d1411c50cb1a1d7fc7e215f92"
+    assert result["manifest"]["mddb_server_validated"] is False
     run = result["manifest"]["runs"][0]
     assert run["atom_indices"] == [0, 1, 2, 3, 4, 5, 10]  # retain lipid/ligand/Zn
     root = tmp_path / "bundle" / "project"

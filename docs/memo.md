@@ -13,6 +13,14 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-24 — 公式MDDBスキーマ検証をexport実行時にも適用
+
+- 本人指定で `export_mddb` の出力確定前に公式スキーマ検証を追加。シリアライズしたYAMLを読み戻し、プロジェクト全体と各MDの実効上書き値を `strict_unknown=True` で検査する。不適合やスキーマ読込失敗は `mddb_export_failed` と対象YAML・項目を返し、一時出力を削除して最終ディレクトリを作らない。複数プロジェクトの後半だけ失敗するケースも検証した。
+- `tests/data/mddb_schema/` とテスト専用loaderを `mdclaw/evidence/mddb_schema_data/`・`mddb_schema.py` へ移し、実行時とテストで共用。固定コミット `2b380ae29b682c97665c8290fce06da46f49eb57` のスキーマ・定数・ライセンス・出典はバイト単位で不変。pytest依存を除去し、公式モジュールへのimportは専用名前空間内で解決するため、プロセス全体のimportや既存MDDBモジュールを書き換えない。ネット接続・MDDB workflow・追加依存は不要。
+- manifestの `schema_validation` に公式repository・commit・スキーマSHA-256を記録。`mddb_server_validated` はfalseのまま。公式スキーマにない `boxtype`、不正なプロジェクトtype、MD別温度・未知項目について修正前の成功を再現し、修正後の拒否を確認。スキーマ欠落・改変・Pydantic読込不可でも検証を省略しない。
+- 通常CI一式＋evidence／CLI契約・分離テストが **647 passed in 43.51s**（MDDB出力156件）。Ruff・差分検査成功。隔離したbuild依存環境でwheelを作成し、公式ソース一式の同梱を確認。wheelを展開した環境でpytest・tests・mddb_workflowのimportを禁止し、CLIの正常export／不適合拒否とmanifestを検査した。製品の依存定義・lockは変更なし。
+- 実行方法・スキーマ更新手順・tool-referenceを更新。別作業の既存memo差分と未追跡文書は保持し、コミット・push・MDDB実登録は行っていない。
+
 ## 2026-10-24 — 非連結軌道のMDDB計算条件を必須化し自動取得を補強
 
 - 本人が通常の非連結軌道でも計算条件の欠落を許さず、DAGから取得できる情報を自動取得するよう指定。新しい回帰テストで修正前の欠落・取得漏れを19件再現した。

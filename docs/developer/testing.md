@@ -61,9 +61,12 @@ MD entry. The same test file runs in the standard CI matrix on macOS, Linux
 x86-64, and Linux ARM64. Invalid project fields, reference metadata, and MD
 overrides have explicit rejection tests.
 
-Validation runs offline with the existing development dependencies. It does
-not require installing the MDDB workflow or running ingestion. See the
-[schema snapshot](../../tests/data/mddb_schema/README.md) for provenance,
+The exporter and tests share the same runtime validator. Tests also inject
+invalid generated fields and unavailable/corrupt schema resources to verify
+that export fails without publishing a partial bundle.
+Validation runs offline with the existing runtime dependencies. It does
+not require pytest in production, installing the MDDB workflow, or running ingestion. See the
+[schema snapshot](../../mdclaw/evidence/mddb_schema_data/README.md) for provenance,
 limitations, and the manual update procedure.
 
 ### Shared conventions
