@@ -10,11 +10,23 @@ import pytest
 import yaml
 
 from mdclaw.evidence import export_mddb
+from tests.mddb_schema import official_mddb_schema, validate_mddb_inputs
 
 
 METADATA = dict(name="Synthetic export test", authors=["Test fixture"],
                 contact="test@example.invalid", license="Synthetic test data only",
                 linkcense="https://example.invalid/license", method="Synthetic trajectory fixture")
+
+
+@pytest.fixture(autouse=True)
+def check_exported_yaml_against_official_schema(tmp_path):
+    official_mddb_schema()  # Missing/corrupt snapshots must fail, never skip.
+    yield
+    for path in sorted(tmp_path.rglob("inputs.yaml")):
+        try:
+            validate_mddb_inputs(yaml.safe_load(path.read_text()))
+        except ValueError as exc:
+            pytest.fail(f"Official MDDB schema rejected {path}: {exc}", pytrace=False)
 
 
 def node(job, nid, kind, parents=(), artifacts=None, metadata=None):
@@ -65,6 +77,43 @@ def target(job, nid="prod"):
 
 def export(tmp_path, **kwargs):
     return export_mddb(str(tmp_path / "bundle"), metadata=METADATA, **kwargs)
+
+
+@pytest.mark.parametrize("damage,field", [
+    ("unknown_project", "unknown_field"), ("ligand", "ligands"),
+    ("reference", "forced_references"), ("md_temp", "temp"),
+    ("unknown_md", "unknown_field"),
+])
+def test_official_schema_rejects_invalid_export_metadata(tmp_path, damage, field):
+    job = tmp_path / "job"
+    fixture_job(job)
+    result = export(tmp_path, job_dir=str(job))
+    assert result["success"], result
+    inputs = yaml.safe_load((tmp_path / "bundle/project/inputs.yaml").read_text())
+    if damage == "unknown_project":
+        inputs["unknown_field"] = "typo"
+    elif damage == "ligand":
+        inputs["ligands"] = [{"vmd_selection": "resname LIG"}]
+    elif damage == "reference":
+        inputs["forced_references"] = {"A": ["Q9BYF1"]}
+    elif damage == "md_temp":
+        inputs["mds"][0]["temp"] = -1
+    else:
+        inputs["mds"][0]["unknown_field"] = "typo"
+    with pytest.raises(ValueError, match=field):
+        validate_mddb_inputs(inputs)
+
+
+def test_official_schema_is_isolated_and_preserves_inputs():
+    module_names = ("mddb_workflow.utils.constants", "mddb_workflow.utils.auxiliar",
+                    "_mdclaw_test_official_mddb_schema")
+    before_modules = {name: sys.modules.get(name) for name in module_names}
+    official_mddb_schema.__wrapped__()  # Exercise a fresh load, including module cleanup.
+    assert {name: sys.modules.get(name) for name in module_names} == before_modules
+    inputs = {"ligands": [2244], "mds": [{"name": "replica", "mdir": "md_001", "temp": 300}]}
+    before = json.dumps(inputs, sort_keys=True)
+    validate_mddb_inputs(inputs)
+    assert json.dumps(inputs, sort_keys=True) == before
 
 
 @pytest.mark.parametrize("stride,chunk", [(1, 2), (2, 2), (3, 1), (10, 100)])

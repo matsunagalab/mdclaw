@@ -13,6 +13,13 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-24 — 公式MDDBスキーマ検証を通常テストへ組込み
+
+- 本人指定の項目3に対応。公式MDDB-workflowの `2b380ae29b682c97665c8290fce06da46f49eb57` からスキーマを無改変で同梱し、必要な4定数・Apache 2.0ライセンス・出典・SHA-256も保存。テスト時の取得やMDDB実行環境の導入を不要にした。固定版の互換性検査であり、上流更新は手動で確認する。
+- 既存のMDDB出力テストに自動fixtureを追加し、各テストが生成した `inputs.yaml` を `validate_inputs(strict_unknown=True)` で検証。MDごとの上書き値もプロジェクトmetadataと合成して検査し、公式処理による入力の書換えはコピー上に限定する。未知項目、リガンド識別子欠落、UniProt対応の型違い、MD別温度の不正値を拒否する回帰テストを追加した。
+- macOS／Linux x86-64／Linux ARM64の通常CI対象へ `tests/test_mddb_export.py` を追加。ローカルPixiで同じテスト一式が **560 passed in 44.30s**（MDDB出力116件）、CIと同じRuff検査・差分検査も成功。リモートCIとMDDB実登録は未実施。更新手順は `tests/data/mddb_schema/README.md`、実行方法は `docs/developer/testing.md` に記載。
+- 製品コード・skill・依存関係は変更なし。別作業の未追跡文書と既存memo差分は保持し、今回はコミット・pushしていない。
+
 ## 2026-10-24 — MDDBリガンド識別子とUniProt対応のCLI入力
 
 - 本人指定の点検項目2に対応し、既存の `export_mddb --metadata` に `ligands` と `forced_references` を追加。新しいフラグ・サブコマンド・依存関係は追加していない。前の点検で「CLIから指定できない」とした制限を解消した。

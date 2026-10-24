@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/mmb-irb/MDDB-workflow",
+  "commit": "2b380ae29b682c97665c8290fce06da46f49eb57",
+  "upstream_paths": {
+    "inputs_schema.py.txt": "mddb_workflow/core/inputs_schema.py",
+    "constants.json": "mddb_workflow/utils/constants.py",
+    "LICENSE": "LICENSE"
+  },
+  "upstream_constants_sha256": "41d38a1ad973fa34e6f9aeac25d5dac7f96c7fd0cb810d3958afb3fdf3466751",
+  "sha256": {
+    "inputs_schema.py.txt": "ab0486178140ea9bfba088ff3bc5d77337c3c17d1411c50cb1a1d7fc7e215f92",
+    "constants.json": "3761d118d152f2267db4f5a21ef8097d049a23d7ba62e8514031a0c354e0fc31",
+    "LICENSE": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"
+  }
+}

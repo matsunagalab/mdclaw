@@ -49,6 +49,25 @@ Markers are configured in `pyproject.toml`:
 
 ## Test Patterns
 
+### MDDB export schema compatibility
+
+```bash
+pixi run pytest tests/test_mddb_export.py -q
+```
+
+Every generated `inputs.yaml` in these tests is checked against a pinned copy
+of the official MDDB schema, including effective metadata overrides on each
+MD entry. The same test file runs in the standard CI matrix on macOS, Linux
+x86-64, and Linux ARM64. Invalid project fields, reference metadata, and MD
+overrides have explicit rejection tests.
+
+Validation runs offline with the existing development dependencies. It does
+not require installing the MDDB workflow or running ingestion. See the
+[schema snapshot](../../tests/data/mddb_schema/README.md) for provenance,
+limitations, and the manual update procedure.
+
+### Shared conventions
+
 - Tool functions are called directly, e.g. `tool_name(param=value)`.
 - Shared fixtures such as `small_pdb` and `alanine_dipeptide_pdb` live in
   `tests/conftest.py`.
