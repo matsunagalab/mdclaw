@@ -314,6 +314,7 @@ RUN test "$(dpkg --print-architecture)" = "arm64" && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=openmm-builder /opt/mdclaw /opt/mdclaw
+COPY container/scripts/test-gpu.py /opt/mdclaw/share/mdclaw/test-gpu.py
 COPY --from=openmm-builder /opt/mdclaw-layer-parts/lib/ /opt/mdclaw/lib/
 COPY --from=openmm-builder /opt/mdclaw-layer-parts/python3.12/ /opt/mdclaw/lib/python3.12/
 COPY --from=openmm-builder /opt/mdclaw-layer-parts/targets/ /opt/mdclaw/targets/

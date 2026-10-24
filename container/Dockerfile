@@ -3,24 +3,12 @@
 # simulations, autonomous scientific investigation, and reproducible atomistic
 # evidence. Skills remain text files under `skills/`; this image is the
 # execution environment.
-# 3-stage build: relocated pixi env -> OpenMM source build (CUDA 11.8) -> runtime
-#
-# Driver compatibility:
-#   450.x+ (CUDA 11.0+): OpenMM CUDA + PyTorch cu118
-#   530.x+ (CUDA 12.1):  still fine (newer drivers are always backward compatible)
-#   550.x+ (CUDA 12.4):  still fine
-#   560.x+ (CUDA 12.6):  still fine
-#
-# Why 11.8 rather than 12.x:
-#   Some HPC sites run heterogeneous clusters where a subset of GPU nodes
-#   still have NVIDIA drivers in the 460-520 range (e.g. Pascal / Turing
-#   era). CUDA 12.x toolkits require driver >=525, so a 12.x-built SIF
-#   silently fails with `CUDA_ERROR_UNSUPPORTED_PTX_VERSION` on those
-#   nodes. CUDA 11.8 is supported by driver 450+, which covers every
-#   NVIDIA GPU generation from Maxwell through Hopper on any reasonably
-#   maintained cluster. OpenMM MD workloads do not depend on features
-#   introduced after CUDA 11.x, so there is no measurable performance
-#   cost to building against 11.8.
+# 3-stage build: clean locked seed -> CUDA 11.8 OpenMM/plugins -> runtime
+# Standard x86-64 image for floyd/n1-n5: retain CUDA 11.8 compatibility.
+# Remove the entire Conda GPU stack (including JAX) before installing cu118
+# wheels and source-building OpenMM. Pixi development remains on CUDA 12.9;
+# RIKYU keeps its independent CUDA 13 build. Driver 520.61.05+ is the
+# conservative PTX baseline; each node still requires real GPU acceptance.
 #
 # Build:
 #   docker build -f container/Dockerfile -t mdclaw:latest .
@@ -38,16 +26,13 @@
 #   singularity exec --nv mdclaw.sif mdclaw --list
 
 # =============================================================================
-# Stage 1: Install the locked pixi environment (everything except OpenMM)
+# Stage 1: Install the lock, then replace its GPU stack as one unit
 # =============================================================================
-# The environment comes from pixi.toml + pixi.lock — the same lockfile a
-# developer installs locally with `pixi install` — so the image and the dev
-# environment cannot drift apart (docs/developer/deploy-v2-plan.md). The lock
-# already contains salilab MODELLER, the git-pinned PyPI layer (hpacker,
-# openff-pablo, SST2), and the dev tools (pytest, ruff) that SIF overlay
-# workflows need; openmm-torch is absent by design and built from source in
-# Stage 2.
-FROM --platform=linux/amd64 ghcr.io/prefix-dev/pixi:latest AS conda-base
+# pixi.lock supplies scientific tools, MODELLER and dev dependencies. Its
+# CUDA 12.9 OpenMM/Torch/JAX libraries cannot be retained in the 11.8 image.
+# The build-only removal helper deletes their owned files and metadata before
+# the pinned wheel stack is installed. No solver runs after this replacement.
+FROM --platform=linux/amd64 ghcr.io/prefix-dev/pixi:0.82.1@sha256:f83a5fc6d1bb9a2ced27faf2b26c04c5eb618eed22fe13eb60f9225db4817ce0 AS conda-base
 
 WORKDIR /build
 
@@ -64,6 +49,8 @@ COPY pixi.toml pixi.lock pyproject.toml README.md ./
 COPY mdclaw/ mdclaw/
 COPY container/scripts/test-env-relocation.py /build/test-env-relocation.py
 COPY container/Dockerfile /build/Dockerfile
+COPY container/scripts/remove-conda-gpu-stack.py /build/remove-conda-gpu-stack.py
+COPY container/cuda118-requirements.txt /build/cuda118-requirements.txt
 
 # Install exactly what the lock says: --locked fails the build when pixi.lock
 # is out of date with pixi.toml instead of silently re-solving.
@@ -79,8 +66,20 @@ set -eu
 pixi install --locked
 export PATH="/build/.pixi/envs/default/bin:$PATH"
 export PIP_NO_CACHE_DIR=1
-# Match the CUDA 11.8 runtime used by the source-built OpenMM below.
-pip install --force-reinstall "torch==2.7.1+cu118" --index-url https://download.pytorch.org/whl/cu118
+python /build/remove-conda-gpu-stack.py
+pip install --no-deps --only-binary=:all: -r /build/cuda118-requirements.txt
+# OpenMM's loader needs NVRTC/cuFFT by SONAME. Link to the wheel-owned files
+# instead of copying another CUDA toolkit into the environment.
+python - <<'PY_LINK_CUDA'
+from pathlib import Path
+import sys
+prefix = Path(sys.prefix)
+for library in (prefix / "lib/python3.12/site-packages/nvidia").glob("*/lib/*.so*"):
+    target = prefix / "lib" / library.name
+    if target.exists() or target.is_symlink():
+        raise RuntimeError(f"Unexpected pre-existing CUDA library: {target}")
+    target.symlink_to(library.relative_to(prefix / "lib"))
+PY_LINK_CUDA
 # Replace the editable checkout without resolving dependencies again.
 pip install --no-deps --force-reinstall .
 SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])")
@@ -136,9 +135,9 @@ df -h /
 SH
 
 # =============================================================================
-# Stage 2: Build OpenMM from source against CUDA 11.8
+# Stage 2: Build OpenMM and plugins against the clean CUDA 11.8 stack
 # =============================================================================
-FROM --platform=linux/amd64 nvidia/cuda:11.8.0-devel-ubuntu22.04 AS openmm-builder
+FROM --platform=linux/amd64 nvidia/cuda:11.8.0-devel-ubuntu22.04@sha256:94fd755736cb58979173d491504f0b573247b1745250249415b07fefc738e41f AS openmm-builder
 
 # Build dependencies
 RUN apt-get update && \
@@ -194,40 +193,24 @@ RUN PPM3_DIR=$(/opt/mdclaw/bin/python -c "import packmol_memgen, pathlib; print(
     /opt/mdclaw/bin/immers < /dev/null 2>&1 | grep -q "Fortran runtime error: Missing comma" \
       && { echo "PPM3 format bug still present after patch"; exit 1; } || true
 
-# Cython is needed for OpenMM Python wrappers
-RUN /opt/mdclaw/bin/pip install --no-cache-dir cython
-
-# Clone OpenMM (pinned release for reproducibility).
-# Must satisfy openmmforcefields>=0.16.0, which imports openmm.app.topology.MergedResidue
-# (added in OpenMM 8.5). environment.yml floors openmm at 8.5.1; we pin the source
-# build to the same release tag so the Stage 2 install does not downgrade the API.
-ARG OPENMM_VERSION=8.5.1
+# Match the source version to the lock, but compile its CUDA kernels with 11.8.
+ARG OPENMM_VERSION=8.6.1
 RUN git clone --depth 1 --branch ${OPENMM_VERSION} \
     https://github.com/openmm/openmm.git /build/openmm
-
-# Build OpenMM with CUDA 11.8 support
-# OpenMM embeds CUDA kernels as source strings and compiles them at runtime
-# via NVRTC, so CMAKE_CUDA_ARCHITECTURES is not needed.
-RUN mkdir /build/openmm/build
 WORKDIR /build/openmm/build
-RUN cmake .. \
+RUN TORCH_ABI=$(/opt/mdclaw/bin/python -c 'import torch; print(int(torch._C._GLIBCXX_USE_CXX11_ABI))') && \
+    export CXXFLAGS="-D_GLIBCXX_USE_CXX11_ABI=${TORCH_ABI}" && \
+    cmake .. \
     -DCMAKE_INSTALL_PREFIX=/opt/mdclaw \
     -DPYTHON_EXECUTABLE=/opt/mdclaw/bin/python \
+    -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda \
+    -DCMAKE_CXX_FLAGS="-D_GLIBCXX_USE_CXX11_ABI=${TORCH_ABI}" \
     -DOPENMM_BUILD_CUDA_LIB=ON \
     -DOPENMM_BUILD_OPENCL_LIB=OFF \
     -DOPENMM_BUILD_C_AND_FORTRAN_WRAPPERS=OFF && \
-    make -j$(nproc) && \
-    make install && \
-    make PythonInstall
+    make -j$(nproc) && make install && make PythonInstall
 
-# Verify OpenMM installed correctly
-RUN /opt/mdclaw/bin/python -c "import openmm; print(f'OpenMM {openmm.__version__}')"
-
-# Build openmm-torch from source against the just-built OpenMM and the
-# cu118 PyTorch already installed in /opt/mdclaw. This backs the production
-# custom force / CV bias plugin via PythonTorchForce. The conda build was
-# stripped above because it links the conda OpenMM ABI.
-#
+# Build PythonTorchForce against this OpenMM and the sole cu118 Torch install.
 # Pinned to the master commit that introduced PythonTorchForce
 # ("Create PythonTorchForce (#179)", 2026-06-24). Upstream deprecated the
 # TorchScript-based TorchForce and recommends PythonTorchForce in all cases,
@@ -241,13 +224,18 @@ RUN mkdir -p /build/openmm-torch && cd /build/openmm-torch && \
     git checkout -q FETCH_HEAD && \
     mkdir build
 WORKDIR /build/openmm-torch/build
-# Conda's PyTorch 2.7 CUDAMacros.h can reference a generated header that is
-# not packaged. PyTorch supports C10_CUDA_NO_CMAKE_CONFIGURE_FILE as an opt-out
-# for external CUDA builds such as openmm-torch.
-RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c "import pathlib, torch; print(pathlib.Path(torch.__file__).resolve().parent / 'share' / 'cmake' / 'Torch')") && \
+# Compile the plugin against the wheel ABI, including its Python wrapper.
+# Explicit arch coverage avoids relying on GPU detection on the builder.
+ENV TORCH_CUDA_ARCH_LIST="5.0;6.0;6.1;7.0;7.5;8.0;8.6;8.9;9.0"
+RUN TORCH_ABI=$(/opt/mdclaw/bin/python -c 'import torch; print(int(torch._C._GLIBCXX_USE_CXX11_ABI))') && \
+    export CXXFLAGS="-D_GLIBCXX_USE_CXX11_ABI=${TORCH_ABI}" && \
+    TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c "import pathlib, torch; print(pathlib.Path(torch.__file__).resolve().parent / 'share' / 'cmake' / 'Torch')") && \
     cmake .. \
     -DCMAKE_INSTALL_PREFIX=/opt/mdclaw \
     -DOPENMM_DIR=/opt/mdclaw \
+    -DCUDAToolkit_ROOT=/usr/local/cuda \
+    -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+    -DCMAKE_INSTALL_RPATH=/opt/mdclaw/lib \
     -DPYTHON_EXECUTABLE=/opt/mdclaw/bin/python \
     -DTorch_DIR="${TORCH_CMAKE_DIR}" \
     -DCMAKE_CXX_FLAGS="-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE" \
@@ -260,14 +248,16 @@ RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c "import pathlib, torch; print(pa
 # Verify the openmm-torch plugin imports and provides PythonTorchForce
 RUN /opt/mdclaw/bin/python -c "import openmmtorch; assert hasattr(openmmtorch, 'PythonTorchForce'), 'PythonTorchForce missing'; print('openmm-torch OK (PythonTorchForce present)')"
 
-# Build both PLUMED and its plugin against our OpenMM, never a conda OpenMM ABI.
+# Build PLUMED and its plugin with the same OpenMM/Torch C++ ABI.
 COPY container/scripts/build-plumed.sh /build/build-plumed.sh
-RUN bash /build/build-plumed.sh /opt/mdclaw /build/plumed-stack 8
+RUN TORCH_ABI=$(/opt/mdclaw/bin/python -c 'import torch; print(int(torch._C._GLIBCXX_USE_CXX11_ABI))') && \
+    CXXFLAGS="-D_GLIBCXX_USE_CXX11_ABI=${TORCH_ABI}" \
+    bash /build/build-plumed.sh /opt/mdclaw /build/plumed-stack 8
 
 # =============================================================================
 # Stage 3: Slim runtime
 # =============================================================================
-FROM --platform=linux/amd64 nvidia/cuda:11.8.0-runtime-ubuntu22.04
+FROM --platform=linux/amd64 nvidia/cuda:11.8.0-base-ubuntu22.04@sha256:f895871972c1c91eb6a896eee68468f40289395a1e58c492e1be7929d0f8703b
 
 LABEL org.opencontainers.image.title="MDClaw" \
       org.opencontainers.image.description="Packaged Amber/OpenMM runtime for MDClaw skills and CLIs: vibe-MD simulations, autonomous scientific investigation, and reproducible atomistic evidence." \
@@ -288,12 +278,12 @@ RUN apt-get update && \
 # Copy conda environment (includes OpenMM)
 COPY --from=openmm-builder /opt/mdclaw /opt/mdclaw
 
-# Copy NVRTC from CUDA 11.8 toolkit (needed by OpenMM at runtime for
-# kernel compilation; not included in the runtime base image)
-COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc.so* /opt/mdclaw/lib/
-COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc-builtins.so* /opt/mdclaw/lib/
+# NVRTC and CUDA math libraries come only from the pinned cu11 wheels.
+# Do not copy toolkit libraries over them or retain Conda GPU libraries.
+COPY container/scripts/test-gpu.py /opt/mdclaw/share/mdclaw/test-gpu.py
 
 # Set environment variables
+ENV MDCLAW_CUDA_TOOLKIT_VERSION="11.8"
 ENV MDCLAW_PLUMED_VERSION=2.9.4
 ENV MDCLAW_SST2_REVISION=ba48461
 ENV PATH="/opt/mdclaw/bin:$PATH"
@@ -317,12 +307,44 @@ ENV MDCLAW_PPM3_PATCHED="1"
 ENV LD_LIBRARY_PATH="/opt/mdclaw/lib:${LD_LIBRARY_PATH}"
 
 # Heavy AI model backends (BioEmu, Boltz-2) are NOT baked into the image.
-# They ship their own Torch/CUDA stacks that conflict with the OpenMM cu118
-# pin, so they install into isolated venvs at runtime via
+# They ship their own Torch/CUDA stacks, so they install into isolated
+# venvs at runtime via
 # `mdclaw setup_model_backend --model <bioemu|boltz>`. Because the SIF is
 # read-only, point MDCLAW_SURROGATE_DIR at a writable (ideally shared)
 # filesystem and bind-mount it; otherwise it defaults to
 # ~/.cache/mdclaw/surrogates on the host bind.
+
+# Check the loaded runtime, not just package metadata, on the GPU-less builder.
+RUN /opt/mdclaw/bin/python - <<'PY_CUDA'
+import ctypes
+import json
+from pathlib import Path
+import torch
+import openmm
+
+assert torch.__version__ == "2.7.1+cu118", torch.__version__
+assert torch.version.cuda == "11.8", torch.version.cuda
+assert openmm.__version__ == "8.6.1", openmm.__version__
+nvrtc = ctypes.CDLL("libnvrtc.so.11.2")
+major, minor = ctypes.c_int(), ctypes.c_int()
+assert nvrtc.nvrtcVersion(ctypes.byref(major), ctypes.byref(minor)) == 0
+assert (major.value, minor.value) == (11, 8), (major.value, minor.value)
+for path in Path("/opt/mdclaw/conda-meta").glob("*.json"):
+    record = json.loads(path.read_text())
+    name = record["name"]
+    assert not name.startswith(("cuda-", "libcublas", "libcud", "libcufft", "libcufile",
+                                "libcurand", "libcusolver", "libcusparse", "libnv")), name
+    assert name not in {"openmm", "pytorch", "libtorch", "jaxlib", "triton", "cudnn", "nccl", "libmagma"}, name
+from importlib.metadata import distributions
+assert not any(d.name.startswith("nvidia-") and not d.name.endswith("-cu11") for d in distributions())
+import jax
+assert jax.default_backend() == "cpu", jax.devices()
+assert float(jax.numpy.sum(jax.numpy.arange(4))) == 6
+# cu118 must retain Pascal (GTX 1080, sm_61) and Turing (RTX 2080, sm_75).
+architectures = torch._C._cuda_getArchFlags().split()
+assert {"sm_60", "sm_75"} <= set(architectures), architectures
+print("Clean CUDA 11.8 / PyTorch / CPU JAX verified; architectures:", architectures)
+PY_CUDA
 
 # The representative membrane patches ship in the package itself
 # (mdclaw/data/membrane_patches, both OPC and TIP3P), so the image needs no

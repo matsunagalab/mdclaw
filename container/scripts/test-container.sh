@@ -8,6 +8,16 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REQUIRE_GPU=false
+case "${1:-}" in
+    --gpu) REQUIRE_GPU=true ;;
+    "") ;;
+    *) echo "Usage: $0 [--gpu]" >&2; exit 2 ;;
+esac
+GPU_TEST="$SCRIPT_DIR/test-gpu.py"
+[ -f "$GPU_TEST" ] || GPU_TEST=/opt/mdclaw/share/mdclaw/test-gpu.py
+
 # Avoid importing an adjacent source checkout instead of the installed package.
 cd "${TMPDIR:-/tmp}"
 
@@ -173,12 +183,14 @@ check "NVRTC runtime contract" python -c "
 import ctypes
 import os
 
-nvrtc = ctypes.CDLL('libnvrtc.so')
+expected = os.environ.get('MDCLAW_CUDA_TOOLKIT_VERSION')
+major_version = expected.split('.')[0] if expected else None
+soname = 'libnvrtc.so.' + ('11.2' if major_version == '11' else major_version) if expected else 'libnvrtc.so'
+nvrtc = ctypes.CDLL(soname)
 major = ctypes.c_int()
 minor = ctypes.c_int()
 assert nvrtc.nvrtcVersion(ctypes.byref(major), ctypes.byref(minor)) == 0
 actual = f'{major.value}.{minor.value}'
-expected = os.environ.get('MDCLAW_CUDA_TOOLKIT_VERSION')
 assert expected is None or actual == expected, (actual, expected)
 print(f'NVRTC {actual}')
 "
@@ -294,19 +306,18 @@ assert 'Fortran runtime error: End of file' in output, output
 print(f'PPM3 {binary} patched and runnable')
 "
 
-# --- GPU detection ---
+# --gpu is the release gate: an absent or broken GPU must fail, not skip.
 echo ""
 echo "[GPU]"
-if python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
-    echo "  PASS: CUDA available ($(python -c 'import torch; print(torch.cuda.get_device_name(0))'))"
-    PASS=$((PASS + 1))
-    check "OpenMM CUDA platform" python -c "
-import openmm
-platforms = [openmm.Platform.getPlatform(i).getName() for i in range(openmm.Platform.getNumPlatforms())]
-assert 'CUDA' in platforms, f'CUDA not in {platforms}'
-"
+if $REQUIRE_GPU || python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+    if python "$GPU_TEST" --require-torch-force; then
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: CUDA real-computation acceptance test"
+        FAIL=$((FAIL + 1))
+    fi
 else
-    echo "  SKIP: No GPU detected (CPU-only mode)"
+    echo "  SKIP: GPU calculation (CPU-only check; use --gpu for acceptance)"
 fi
 
 # --- Summary ---

@@ -13,7 +13,7 @@ ever in the image. Verified against MODELLER 10.8: installing without a key
 succeeds, and an injected key is what MODELLER actually validates.
 
 The two images install it by different routes because the `salilab` conda
-channel publishes **linux-64 only**. The amd64 image installs the conda package
+channel supplies no Linux ARM64 build. The amd64 image installs the conda package
 from `container/Dockerfile` — not from `environment.yml`, which
 `Dockerfile.rikyu-arm64` shares and which would then fail to solve on arm64.
 The arm64 image takes MODELLER from the generic tarball instead, which ships an
@@ -24,8 +24,7 @@ images apart. Both declare `MDCLAW_MODELLER_VERSION`, so both run the smoke
 check.
 
 Heavy AI model backends (BioEmu, Boltz-2) are intentionally **not** baked into
-the image. They ship their own Torch/CUDA stacks that conflict with the OpenMM
-`cu118` pin, so they install into isolated venvs at runtime via
+the image. They ship their own Torch/CUDA stacks, so they install into isolated venvs via
 `mdclaw setup_model_backend --model <bioemu|boltz>`. See "Model backends" below.
 
 It is not a separate skill distribution. Agent-facing skill text stays in
@@ -34,17 +33,26 @@ environment behind `mdclaw <tool>`.
 
 ## Build And Test
 
-Stage 1 of `container/Dockerfile` installs the environment from the committed
-`pixi.toml` + `pixi.lock` (`pixi install --locked`) — the same lockfile a
-developer materializes locally — so the image cannot drift from the dev
-environment. A build fails fast when the lock is out of date with the
-manifest; run `pixi lock` and commit the diff first. The lock's `__cuda=12.9`
-requirement is satisfied on GPU-less build machines by `CONDA_OVERRIDE_CUDA`,
-set in the Dockerfile. MODELLER (salilab channel) and the git-pinned PyPI
-layer (hpacker, openff-pablo, SST2) come from the lock; the amd64 image no
-longer installs them in separate steps. `Dockerfile.rikyu-arm64` still builds
-from `environment.yml` and migrates separately
-(`docs/developer/deploy-v2-plan.md`).
+The standard x86-64 image retains CUDA 11.8 for floyd/n1–n5. Stage 1 starts
+from `pixi.toml` + `pixi.lock` (`pixi install --locked`), then removes the
+Conda-owned OpenMM, PyTorch/libtorch, JAX GPU build, Triton and CUDA dependency
+files **and metadata** before installing `container/cuda118-requirements.txt`.
+The removal follows the locked dependency graph and aborts on unexpected
+scientific dependents; files also owned by retained packages are preserved.
+A pip overwrite alone is insufficient because it leaves Conda libraries behind.
+
+The pinned PyTorch 2.7.1+cu118 wheel supplies its exact `nvidia-*-cu11`
+dependencies. JAX uses a pinned CPU jaxlib for pymbar analysis. Stage 2 builds
+OpenMM 8.6.1 with CUDA 11.8, then PythonTorchForce and PLUMED against that
+OpenMM and Torch's C++ ABI. Runtime NVRTC and math libraries are linked to the
+wheel-owned copies; no CUDA 12 Conda stack or second NVRTC is copied in.
+The build checks NVRTC 11.8, CPU JAX calculation, absence of the old Conda GPU
+records, and PyTorch's Pascal/Turing architecture support without needing a GPU.
+
+Thus the final image has explicit CUDA 11.8 build overrides, while local Linux
+Pixi remains CUDA 12.9. MODELLER and other scientific/dev packages still come
+from the lock. RIKYU continues using `environment.yml`, NVRTC 13.0, CUDA 13.1
+math libraries, its sm_100 plugin, FUSE workaround and existing MODELLER install.
 
 The environment is relocated directly to `/opt/mdclaw` with conda-pack's
 `no-archive` format and `--dest-prefix`. This avoids conda-pack 0.9.2's invalid
@@ -79,8 +87,39 @@ docker build -f container/Dockerfile -t mdclaw:latest .
 docker run --rm -v "$(pwd)/container/scripts/test-container.sh:/work/test.sh:ro" \
   mdclaw:latest bash /work/test.sh
 docker run --rm --gpus all -v "$(pwd)/container/scripts/test-container.sh:/work/test.sh:ro" \
-  mdclaw:latest bash /work/test.sh
+  mdclaw:latest bash /work/test.sh --gpu
 ```
+
+CUDA 11.8's conservative driver baseline for OpenMM's runtime-generated PTX
+is **520.61.05**, not an unconditional claim that all R450+ drivers work.
+Newer CUDA 12/13-capable drivers can run compatible CUDA 11.8 applications.
+Do not infer support from the host's installed Toolkit version. Before
+replacing the existing shared SIF, run the common GPU test under a scheduler
+allocation on **each of n1, n2, n3, n4 and n5**, recording the driver, GPU and
+SIF checksum. A successful floyd or build-runner check does not cover the other
+nodes. These nodes have not yet been tested with the cleaned image.
+
+`container/scripts/test-gpu.py` is the common real-computation test:
+
+```bash
+# Linux Pixi: core GPU tests; reports a missing optional Torch-force plugin.
+pixi run python container/scripts/test-gpu.py
+# Final SIF: require the plugin as well, with no checkout needed.
+apptainer exec --nv mdclaw.sif python /opt/mdclaw/share/mdclaw/test-gpu.py --require-torch-force
+# RIKYU: preserve its additional architecture/NVRTC/cuFFT/FUSE checks.
+apptainer exec --nv mdclaw-rikyu.sif bash /path/to/container/scripts/test-rikyu-gpu.sh
+```
+
+The test requires CUDA, checks analytic forces and energy, integrates, compares
+PME energy to OpenMM Reference, checks Torch matrix multiplication and an FFT
+round trip, and checks PythonTorchForce's energy/autograd force transfer when
+installed (mandatory with `--require-torch-force`). It prints the loaded library
+paths. `test-container.sh --gpu` always runs this gate, including when GPU
+initialization fails; omitting `--gpu` is only a CPU/build smoke check. The
+RIKYU test adds its existing contracts then runs the same common test. Run
+both Docker and the final SIF because the latter may load libraries via FUSE
+or host `--nv` bindings. These commands are acceptance procedures, not a claim
+that GPU execution has been verified on the development Mac.
 
 ## Publish To GHCR
 
@@ -178,14 +217,15 @@ and reports `SKIP` rather than `FAIL`:
 
 | variable | declared by | gates |
 | --- | --- | --- |
-| `MDCLAW_CUDA_TOOLKIT_VERSION` | arm64 image (`13.0`) | exact NVRTC version; the check still runs everywhere and only asserts a version when the variable is set |
+| `MDCLAW_CUDA_TOOLKIT_VERSION` | standard (`11.8`), arm64 (`13.0`) | exact NVRTC version; the check still runs everywhere and only asserts a version when the variable is set |
 | `MDCLAW_CUFFT_MIN_VERSION` | arm64 image (`12.1.0.78`) | cuFFT floor and API level |
 | `MDCLAW_FUSEFIX_LIB` | arm64 image | the FUSE preload shim being present and mapped |
 | `MDCLAW_PPM3_PATCHED` | both images | `immers` being the rebuilt binary, not the one the conda package ships |
 | `PYTHONUTF8` | both images | interpreter UTF-8 mode, and text I/O staying UTF-8 after a driver resets the locale |
 
-The amd64 / CUDA 11.8 image declares none of the last two, ships cuFFT from the
-CUDA 11.8 family, and has no shim, so both checks skip there. Adding a contract
+The amd64 / CUDA 11.8 image declares NVRTC 11.8 and uses cuFFT from the
+pinned cu11 wheel set.
+It does not declare the RIKYU cuFFT floor or FUSE shim, so those checks skip. Adding a contract
 that belongs to one image means declaring a variable in that image's Dockerfile
 and gating the check on it — not forking the script. `MDCLAW_FUSEFIX_LIB` is
 also the single definition of the shim path: the runtime assertions in the
@@ -356,7 +396,8 @@ SIF as well as the container build; import-only tests are insufficient.
 ### General runtime components
 
 - Docker image size is roughly 11.4 GB; SIF size is roughly 4.6 GB.
-- Minimum actively verified NVIDIA driver is 520.
+- The former CUDA 11.8 image was tested with driver 520. The current CUDA
+  11.8 cleanup still requires a new GPU acceptance run on each target node.
 - PPM3 (`immers`), the membrane orientation code bundled with packmol-memgen,
   is rebuilt from patched source at build time, in both images. The stock
   binary computes the orientation and then dies printing it, because `opm.f`
@@ -374,19 +415,13 @@ SIF as well as the container build; import-only tests are insufficient.
   ASCII, so a report containing an em dash fails to write. `preserve_locale`
   covers the Contexts MDClaw creates; UTF-8 mode covers everything else by
   taking the locale out of the decision.
-- The image ships CUDA 11.8 to cover mixed HPC clusters with older drivers.
-- OpenMM 8.5.1 is source-built against CUDA 11.8 so NVRTC-generated PTX matches
-  the driver floor. 8.5.1 is the floor required by openmmforcefields >= 0.16
-  (uses `openmm.app.topology.MergedResidue`, added in 8.5).
-- NVRTC and nvrtc-builtins are copied into `/opt/mdclaw/lib/` so the slim
-  runtime image can JIT without using a devel base image.
-- `openmm-torch` (the production custom force / CV bias plugin backend, used
-  via `PythonTorchForce`) is source-built in Stage 2 against the source OpenMM
-  and the cu118 PyTorch, and is stripped from the conda env file because the
-  conda build links the conda OpenMM ABI. It is pinned to `OPENMM_TORCH_COMMIT`
-  (the master commit that added `PythonTorchForce`, #179) because no tagged
-  release ships it yet. Bumping `openmm`, `pytorch`, or `OPENMM_TORCH_COMMIT`
-  requires a container rebuild + push (container contents changed).
+- The lock supplies the seed environment. The standard image replaces its
+  GPU stack completely with source-built OpenMM and pinned cu118 Torch/cu11
+  libraries; CPU JAX serves analysis. Stage 3 uses a CUDA 11.8 base image.
+- `openmm-torch` is built in Stage 2 against the matching OpenMM/Torch ABI, pinned
+  to `OPENMM_TORCH_COMMIT` for PythonTorchForce. PLUMED is built against that
+  same OpenMM. Updating the lock or plugin pin requires rebuilding the image
+  and rerunning CPU and GPU acceptance before replacing a shared SIF.
 - The `dev` extra (`ruff`, `pytest`, and `pytest-asyncio`) is installed in the
   conda-packed `/opt/mdclaw` environment so Singularity/Apptainer SIF workflows
   can run repository lint and tests without a separate host conda environment.
@@ -430,7 +465,7 @@ development without a rebuild.
 
 BioEmu and Boltz-2 are not part of the image. They are installed on first use
 into isolated venvs, keeping their independent Torch/CUDA stacks out of the
-OpenMM `cu118` runtime:
+source-built OpenMM runtime:
 
 ```bash
 mdclaw setup_model_backend --model bioemu --device cuda
@@ -454,7 +489,7 @@ singularity exec --nv \
 ```
 
 - These venvs pull their own Torch and have CUDA/driver requirements
-  independent of the OpenMM `cu118` build. Verify each with
+  independent of the main OpenMM environment. Verify each with
   `mdclaw check_model_backend --model <name>`.
 - Boltz is pinned to `BOLTZ_VERSION` in `mdclaw/surrogate/_base.py`; bump
   deliberately.

@@ -1,5 +1,5 @@
 # Pixi environment validation: proves the committed pixi.lock materializes on
-# both dev platforms and the code passes lint + the standard test set in it.
+# all three dev platforms and the code passes lint + the standard test set.
 # macos-latest is Apple Silicon (osx-arm64); ubuntu-latest covers linux-64,
 # whose lock carries the CUDA builds (installable without a GPU through
 # CONDA_OVERRIDE_CUDA). GPU execution is not tested here — see
@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm]
     timeout-minutes: 90
     env:
       # Satisfy the lock's __cuda=12.9 virtual package on GPU-less runners.
@@ -43,8 +43,12 @@ jobs:
           # date with pixi.toml instead of silently re-solving.
           locked: true
 
+      - name: Install official ARM64 MODELLER binaries
+        if: matrix.os == 'ubuntu-24.04-arm'
+        run: pixi run --frozen python scripts/install-modeller-arm64.py
+
       - name: Lint
-        run: pixi run --frozen ruff check mdclaw/ tests/ scripts/_internal/doctor.py
+        run: pixi run --frozen ruff check mdclaw/ tests/ scripts/_internal/doctor.py scripts/install-modeller-arm64.py container/scripts/test-gpu.py container/scripts/remove-conda-gpu-stack.py
 
       - name: Tests
         run: >
@@ -52,4 +56,5 @@ jobs:
           tests/test_registry.py tests/test_cli.py tests/test_guardrails.py
           tests/test_guardrail_code_registry.py tests/test_slurm_server.py
           tests/test_deployment_scripts.py tests/test_docs_paths.py
-          tests/test_bin_wrapper.py tests/test_runtime_selection.py -q
+          tests/test_bin_wrapper.py tests/test_runtime_selection.py
+          tests/test_gpu_acceptance.py tests/test_modeller_arm_install.py tests/test_cuda118_container.py -q

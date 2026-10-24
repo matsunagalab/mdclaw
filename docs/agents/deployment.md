@@ -67,6 +67,26 @@ export PATH="$PWD/bin:$PATH"
 scripts/mdclaw-doctor.sh                      # checks the selected runtime
 ```
 
+Linux x86-64 and ARM64 use the CUDA 12.9 lock (R575 or newer NVIDIA drivers
+for OpenMM GPU execution). For older-driver x86-64 nodes such as floyd/n1–n5,
+use the standard CUDA 11.8 SIF (conservative driver baseline 520.61.05);
+verify each node with the shared GPU test before replacing its existing SIF.
+The RIKYU CUDA 13 image remains separate. Linux ARM64 MODELLER is available from the
+[official generic archive](https://salilab.org/modeller/download_installation.html),
+but not from the salilab Conda channel. Install it after `pixi install`:
+
+```bash
+pixi run python scripts/install-modeller-arm64.py
+```
+
+The installer verifies the pinned archive checksum and refuses to overwrite
+existing installations. Supply `KEY_MODELLER` when running MDClaw; the installer
+stores no key. RIKYU retains its existing image and MODELLER installation.
+On a GPU node, run
+`pixi run python container/scripts/test-gpu.py` for the shared calculation test.
+The optional PythonTorchForce test is skipped only when the plugin is absent;
+container acceptance requires it.
+
 `pixi run <cmd>` (or `pixi shell`) activates the env for direct use, e.g.
 `pixi run pytest tests/test_cli.py`. Dependency updates go through
 `pixi update` and a committed `pixi.lock` diff, so environment changes have
@@ -194,7 +214,7 @@ mirrors. These warnings do not change the core runtime result. Restore missing
 tracked files/modes carefully; preserve local edits before using `git checkout`.
 
 Pixi and packaged images have different optional capabilities. The image adds
-source-built OpenMM/Torch/PLUMED pieces and membrane fixes; Pixi alone does not
+source-built Torch-force/PLUMED plugins and membrane fixes; Pixi alone does not
 promise these. Diagnose the environment you will actually use.
 
 ## Claude Code Plugin

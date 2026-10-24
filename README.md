@@ -41,7 +41,15 @@ scripts/mdclaw-doctor.sh
 
 Pixi installs the package versions recorded in `pixi.lock` into `.pixi/`.
 The committed environment targets Apple Silicon macOS and Linux x86-64/ARM64;
-the Linux packages target CUDA 12.9. The `.pixi/` directory contains large,
+the Linux packages target CUDA 12.9 (R575 or newer NVIDIA drivers for GPU
+execution). For MODELLER on Linux ARM64, install its official ARM binaries
+after `pixi install` with `pixi run python scripts/install-modeller-arm64.py`.
+Other platforms install MODELLER through Conda; each user supplies their own
+`KEY_MODELLER` at run time. For older NVIDIA drivers (including floyd/n1–n5),
+use the CUDA 11.8 container/SIF described below instead of the Linux Pixi CUDA
+stack; the conservative driver baseline is 520.61.05. Each node requires the
+[GPU calculation test](docs/developer/container.md#build-and-test) before use.
+The `.pixi/` directory contains large,
 machine-specific files and should stay outside cloud-sync folders.
 
 The `export PATH` command makes `mdclaw` available in the current terminal.

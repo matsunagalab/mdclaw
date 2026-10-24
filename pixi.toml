@@ -27,9 +27,10 @@ channels = ["conda-forge"]
 # The cuda entries declare __cuda=12.9 as available at solve time so the lock
 # selects the CUDA 12.9 builds of OpenMM/PyTorch on linux (conda-forge has no
 # lower CUDA build for OpenMM >= 8.5, see the note in environment.yml; driver
-# floor R575). osx-arm64 solves CPU/OpenCL-only. The container image replaces
-# OpenMM with a CUDA 11.8 source build on top of this env for old-driver HPC
-# nodes.
+# floor R575 for OpenMM's runtime-generated PTX). osx-arm64 solves
+# CPU/OpenCL-only. The standard container uses this lock as its seed, then
+# replaces the GPU stack with pinned CUDA 11.8 wheels and source-built OpenMM
+# for older cluster drivers. RIKYU retains its separate CUDA 13 environment.
 platforms = [
     { name = "linux-64-cuda", platform = "linux-64", cuda = "12.9" },
     { name = "linux-aarch64-cuda", platform = "linux-aarch64", cuda = "12.9" },
@@ -78,11 +79,16 @@ pip = "*"
 # source or provide `hole` on PATH (docs/developer/conda-env-parity-plan.md).
 [target.linux-64.dependencies]
 hole2 = "2.3.1.*"
-cuda-version = ">=12.0,<13"
+cuda-version = "12.9.*"
 
 [target.linux-aarch64.dependencies]
 hole2 = "2.3.1.*"
-cuda-version = ">=12.0,<13"
+cuda-version = "12.9.*"
+
+[target.linux-aarch64.activation.env]
+# The official ARM MODELLER tarball is installed by install-modeller-arm64.py.
+# Its bundled shared libraries have no loader path embedded in _modeller.so.
+LD_LIBRARY_PATH = "$CONDA_PREFIX/lib/modeller-10.8/lib/armv8-gnu:$CONDA_PREFIX/lib"
 
 [pypi-dependencies]
 # Editable install of this checkout; pulls and locks every [project]
@@ -102,15 +108,19 @@ pytest-asyncio = ">=0.21"
 ruff = ">=0.1"
 
 # MODELLER for modeller_from_alignment / the modeller-predict skill. The
-# salilab channel publishes linux-64 and osx-arm64 only; linux-aarch64 takes
-# the generic-tarball route in Dockerfile.rikyu-arm64. No license key is baked
+# salilab channel covers linux-64 and osx-arm64, but not linux-aarch64, which takes
+# the generic-tarball route (scripts/install-modeller-arm64.py for Pixi;
+# Dockerfile.rikyu-arm64 for that image). No license key is baked
 # in: mdclaw/genesis/modeller.py injects a synthetic modeller.config from a
 # KEY_MODELLER* environment variable at call time.
 [feature.modeller]
 channels = ["salilab"]
-platforms = ["linux-64-cuda", "osx-arm64"]
+# Restrict the dependency, not the feature's platforms: restricting the
+# feature removes ARM from every environment that includes it.
+[feature.modeller.target.linux-64.dependencies]
+modeller = "10.8.*"
 
-[feature.modeller.dependencies]
+[feature.modeller.target.osx-arm64.dependencies]
 modeller = "10.8.*"
 
 [environments]

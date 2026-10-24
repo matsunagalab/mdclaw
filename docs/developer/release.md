@@ -35,7 +35,7 @@ git push origin main --tags
 #    GPU host before replacing any shared SIF:
 docker run --rm --gpus all \
   -v "$(pwd)/container/scripts/test-container.sh:/work/test.sh:ro" \
-  ghcr.io/matsunagalab/mdclaw:X.Y.Z bash /work/test.sh
+  ghcr.io/matsunagalab/mdclaw:X.Y.Z bash /work/test.sh --gpu
 ```
 
 To rebuild and validate without cutting a release, run the Container workflow

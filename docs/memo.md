@@ -1,3 +1,9 @@
+---
+title: MDClaw Working Memo
+category: development
+updated: 2026-10-24
+---
+
 # Working Memo
 
 Running record of benchmark work: what was run, what the numbers were, what was
@@ -26,6 +32,23 @@ add the correction and say what it overturns.
 - workflowをDocker形式ファイルへの出力→BuildKitキャッシュ解放→空き40 GiB以上の確認→Docker読み込みの順へ変更。レジストリキャッシュも最終レイヤーだけのmode=minにして、中間レイヤーの圧縮コピーを増やさない。これは再ビルドの速度よりVM容量を優先する変更。監視を15秒間隔・空き10 GiB未満で停止へ引き上げた。
 - [Docker exporter](https://docs.docker.com/build/exporters/oci-docker/)と[buildx prune](https://docs.docker.com/reference/cli/docker/buildx/prune/)の公式仕様を確認。actionlintと差分チェック成功。実ビルド・CPUテストは再実行して確認する。
 
+## 2026-10-24 — n1〜n5向け標準コンテナをCUDA 11.8で維持
+
+- 本人から「n1〜n5でも使えるようにCUDA 11.8版の依存の混在を解消して維持。RIKYUはそのまま」と指示。直前の標準12.9化を撤回し、標準Docker／SIFは11.8、Linux Pixiは12.9、RIKYUは既存13系に分ける。**最新環境へ統一するより、実際の計算ノードで使える構成の維持を優先する。** 公開済みSIFは更新しない。
+- lockの依存を確認するとOpenMM／PyTorchだけでなくJAXもCUDA 12.9版だった。ビルド専用処理でCondaのGPU依存グラフをたどり、OpenMM、pytorch/libtorch、jaxlib、Triton、CUDA関連の所有ファイルとメタデータを削除してから置換する。残す科学計算パッケージとの共有ファイルは保持し、予期しないGPU依存が増えた場合は削除前に失敗させる。`libcurl`／`libcups`をCUDAライブラリと誤認しない回帰検査も追加。
+- PyTorch 2.7.1+cu118と公式wheelが指定するcu11依存を `container/cuda118-requirements.txt` に固定。Torch本体はSHA-256も固定し、全依存wheelのLinux x86-64向け配布を確認。JAXは解析用CPU版jaxlib 0.9.0にする。pipは `--no-deps` で導入し、無関係な科学計算依存を再解決しない。
+- OpenMM 8.6.1をCUDA 11.8でソースビルドし、PythonTorchForce・PLUMEDも同じOpenMM／TorchのC++ ABIへそろえる。NVRTCと数学ライブラリはwheel内のものへ相対リンクし、別版をコピーしない。標準ベースイメージは11.8のdigest固定へ戻す。11.8のNVRTC SONAMEは `libnvrtc.so.11.2` なので共通検査も対応させる。
+- ビルド時にNVRTC 11.8、Torch cu118、CPU JAXの実計算、旧Conda GPUメタデータがないこと、TorchのPascal/Turing対応を検査する。RIKYUの依存・MODELLER・FUSE・ビルド設定には追加変更なし。
+- 標準・関連テスト **444 passed in 37.68s**、ruff、actionlint、shell／Dockerfile内Python構文、lock整合、差分検査成功。新イメージの実ビルドとn1〜n5のGPU実機検査は未実施。保守的なドライバ基準は520.61.05以降で、各ノードの現ドライバ・GPU・SIFチェックサムを記録し、共通実計算検査が通るまで共有SIFは差し替えない。停電に伴う接続停止指示は維持。
+
+## 2026-10-24 — CUDA依存の統一・ARM Pixi・GPU実計算検査
+
+- 本人承認により標準DockerのOpenMM／PyTorch後置換を廃止し、Pixi lockのCUDA 12.9・OpenMM 8.6.1・Torch 2.7.1を保持。プラグインだけを同じ環境に対してビルドする。新ビルドのGPUドライバ基準は保守的にR575以降へ上がる。公開済みSIF／latestは更新していない。
+- PixiのMODELLER featureに付いていた対象プラットフォーム制限を依存単位へ移し、Linux ARM64のlockを生成。既存macOS／Linux x86-64のパッケージ一覧は変更なし。**Linux ARM版MODELLERは存在する**（本人指摘）。不足しているのはsalilabのLinux ARM Condaパッケージで、ソフト自体ではない。公式10.8汎用アーカイブからARMバイナリを追加導入する `scripts/install-modeller-arm64.py` を用意し、ARMのPixi起動時に共有ライブラリの場所を設定。チェックサム照合、既存ファイル保護、キーを保存しない方式を採用。
+- `container/scripts/test-gpu.py` にCUDA実計算検査を共通化。解析解との力・エネルギー照合、時間積分、PMEとReference比較、Torch行列演算・FFT、PythonTorchForceの自動微分と力の受け渡しを検査。CUDA不在は失敗。コンテナではプラグイン必須、Pixiでは未導入のみ明示skip。`test-container.sh --gpu` とRIKYU検査から共用し、最終SIFでも同じ検査を実行する。
+- **RIKYU既存構成を維持する**（本人指定）。Dockerfile.rikyu-arm64の変更は共通検査ファイルのCOPYだけ。NVRTC 13.0、数学ライブラリ13.1、sm_100、FUSE対策、MODELLER導入方法を保持し、既存のRIKYU専用事前検査も残す。
+- ローカル標準・関連テスト **441 passed**、ruff、actionlint、shell構文、差分検査成功。公式アーカイブの実ファイルを一時prefixへ導入し、ARM64 ELF・配置・再実行を確認。Pixiの環境変数展開と、実スモークコマンドがCUDAなしで失敗することも確認。CIにLinux ARM runnerとMODELLERバイナリのロード検査を追加したが、リモートCI・Linux ARMネイティブ実行・コンテナビルド・GPU実機検査はこの作業では未実施。MacにはNVIDIA GPU／コンテナエンジンがなく、停電中の大学サーバーへは接続していない。
+
 ## 2026-10-24 — ディレクトリ移行の重複パスと隠れた例外を修正
 
 - 追加検査で、キャッシュのないUnix環境ではconda-packがバイナリ内の旧prefixを置換しないことを再現した。Pixiのpaths_dataから置換対象の形式を復元し、元prefixを最終prefixへ置換する。バイナリのサイズと元データを保持する回帰検査も成功。途中のrun 39983492186は不要な長時間実行を避けるため取消した。
@@ -47,6 +70,11 @@ add the correction and say what it overturns.
 - 30秒間隔の空き容量記録は最少79 GiB、終了時104 GiB。永続キャッシュを無効にした検証で容量不足は発生しなかった。SIFは使い捨てrunner内で生成し、Mac・Google Driveへの大容量取得はしていない。
 - 対象は公開済みlatest（OCI digest `sha256:b3783f686bc3ae196a622c1c8d09b120a5004a04ed615ef68de3289c1b6b9c8f`、x86_64）で、新規ビルドとは別。READMEとdeploymentへx86_64向けであること、一時領域を含め約60 GBを見込むことを追記した。文書参照テスト成功。
 - `7ac36a7` の通常CIはmacOS/Linuxとも433テスト成功。[Container再実行39972790606](https://github.com/matsunagalab/mdclaw/actions/runs/39972790606) はStage 2で `tar -xzf /tmp/mdclaw_env.tar.gz` が `tar: Skipping to next header` を出して失敗。git不足は解消したが、アーカイブ展開の失敗原因は未確定で、コンテナ内の動作テストには未到達。開始時106 GiB、終了時35 GiBの空きがあり、容量不足のエラーは記録されていない。新イメージとlatestの公開・更新は行われていない。
+
+## 2026-10-23 — CUDA 12・13対応の環境調査
+
+- [調査メモ](research/cuda-runtime-compatibility-20261023.md)へ現checkoutの設定、lock内容、NVIDIA・OpenMM・Pixi・Apptainerの一次資料を整理。通常コンテナ11.8、Pixi12.9、RIKYU13系の3構成。Pixi defaultのARM lock欠落と通常コンテナの後置換による依存残留を確認した。
+- NVRTCのPTXとドライバの整合を基準とし、CUDA 12版を対応する12／13ドライバで共用、必要な別構成を維持する案。過去の「450+なら11.8 OpenMMが動く」という無条件の説明、および10/23導入メモのPixi linux-aarch64対応の記述を訂正する。実装・ビルド・GPU検証・公開は未実施。
 
 ## 2026-10-23 — ActionsでコンテナとREADMEのSIF取得を実検証
 
