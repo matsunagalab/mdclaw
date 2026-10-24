@@ -20,9 +20,57 @@ _UPSTREAM = "https://github.com/mmb-irb/MDDB-workflow/blob/4e6dceeee67ce83650eed
 _SOLVENT = {"SOL", "WAT", "HOH", "TIP", "TP3", "SWM4", "W"}
 _COUNTER_IONS = {"K", "NA", "SOD", "POT", "CL", "CLA"}
 _HUMAN_FIELDS = {"name", "description", "authors", "groups", "contact", "license", "linkcense",
-                 "citation", "thanks", "pdb_ids", "collections"}
+                 "citation", "thanks", "pdb_ids", "collections", "ligands", "forced_references"}
 _MD_FIELDS = {"method", "program", "version", "framestep", "timestep", "temp", "ensemble", "ff", "wat", "boxtype"}
 _REQUIRED = {"name", "authors", "contact", "license", "linkcense", "method"}
+
+
+def _reference_metadata(metadata):
+    """Validate MDDB reference shapes offline, without changing caller-owned data."""
+    def nonempty_string(value):
+        return isinstance(value, str) and bool(value.strip())
+
+    metadata = dict(metadata)
+    ligands = metadata.get("ligands")
+    if ligands is not None:
+        if not isinstance(ligands, list):
+            raise ValueError("metadata.ligands must be a list of ligand entries")
+        normalized = []
+        for index, entry in enumerate(ligands):
+            field = f"metadata.ligands[{index}]"
+            if type(entry) is int or isinstance(entry, str):
+                entry = {"pubchem": str(entry)}
+            if not isinstance(entry, dict) or set(entry) - {"pubchem", "drugbank", "chembl", "vmd_selection"}:
+                raise ValueError(f"{field} accepts pubchem, drugbank, chembl and vmd_selection only; "
+                                 "use vmd_selection, not selection")
+            entry = {key: value for key, value in entry.items() if value is not None}
+            if not any(key in entry for key in ("pubchem", "drugbank", "chembl")):
+                raise ValueError(f"{field} requires a PubChem, DrugBank or ChEMBL identifier")
+            if "pubchem" in entry:
+                cid = entry["pubchem"]
+                if not ((type(cid) is int and cid > 0) or
+                        (isinstance(cid, str) and re.fullmatch(r"[0-9]+", cid) and int(cid) > 0)):
+                    raise ValueError(f"{field}.pubchem must be a positive integer CID or numeric string")
+            for key in ("drugbank", "chembl"):
+                if key in entry and not nonempty_string(entry[key]):
+                    raise ValueError(f"{field}.{key} must be a nonempty identifier string")
+            if "vmd_selection" in entry:
+                value = entry["vmd_selection"]
+                selections = value if isinstance(value, list) else [value]
+                if not selections or not all(nonempty_string(s) for s in selections):
+                    raise ValueError(f"{field}.vmd_selection must be a nonempty string or list of nonempty strings")
+            normalized.append(entry)
+        metadata["ligands"] = normalized
+    references = metadata.get("forced_references")
+    if references is not None:
+        if isinstance(references, dict):
+            valid = all(nonempty_string(k) and nonempty_string(v) for k, v in references.items())
+        else:
+            valid = isinstance(references, list) and all(nonempty_string(v) for v in references)
+        if not valid:
+            raise ValueError("metadata.forced_references must be a list of UniProt identifiers or a "
+                             "chain-to-identifier mapping with nonempty strings; noref marks an unreferenced chain")
+    return metadata
 
 
 @contextlib.contextmanager
@@ -369,6 +417,10 @@ def export_mddb(
     be supplied as metadata.framestep in ns before stride. Defaults remove water
     and standard Na/K/Cl counter ions; selection is an optional MDTraj expression.
     Export the nearest unique recorded DCD, not a silently concatenated prod chain.
+    Optional metadata.ligands accepts PubChem/DrugBank/ChEMBL identifiers and
+    vmd_selection; metadata.forced_references accepts UniProt IDs as a list or
+    chain-to-ID mapping (including noref). Identifier existence and molecular
+    mapping are checked by the downstream MDDB workflow, not this offline export.
     """
     import yaml
 
@@ -392,8 +444,9 @@ def export_mddb(
         if not isinstance(metadata["authors"], (str, list)) or (isinstance(metadata["authors"], list)
                 and not all(isinstance(a, str) and a.strip() for a in metadata["authors"])):
             raise ValueError("authors must be a name or list of names")
+        metadata = _reference_metadata(metadata)
         for key, value in metadata.items():
-            if value is None or key in ("framestep", "timestep", "temp"):
+            if value is None or key in ("framestep", "timestep", "temp", "ligands", "forced_references"):
                 continue
             values = value if key in {"authors", "groups", "pdb_ids", "collections", "ff"} and isinstance(value, list) else [value]
             if not values or not all(isinstance(v, str) and v.strip() for v in values):

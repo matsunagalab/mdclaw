@@ -1590,6 +1590,28 @@ terminal analyze node turns the recycled flux into a rate. Design notes:
   `linkcense` (official spelling), and `method`. These are exporter safeguards,
   not claims about mandatory website fields. Missing values return
   `mddb_metadata_required`; never invent identity, licensing or MD methods.
+  The same metadata object accepts optional `ligands` and `forced_references`:
+  ```json
+  {
+    "ligands": [{"pubchem": 2244, "vmd_selection": "resname LIG"}],
+    "forced_references": {"A": "Q9BYF1", "B": "noref"}
+  }
+  ```
+  Add these fields to the required metadata above, using the identifiers and
+  chains for the actual system. Each ligand needs at least one of `pubchem`
+  (positive integer or numeric string), `drugbank` or `chembl` (nonempty strings).
+  A bare positive PubChem CID in the ligand list is also accepted and expanded
+  to an entry. Optional `vmd_selection` is a nonempty VMD expression or list of
+  expressions; `selection` is not a supported ligand key. UniProt references
+  accept an ID list (downstream sequence matching) or a chain-to-ID mapping;
+  `noref` marks a chain without a reference. Empty lists/maps and null mean no
+  supplied references. These project-level values apply to every exported project;
+  use separate exports when the reference metadata differs.
+  Malformed types, empty entries, missing ligand identifiers and unknown ligand
+  keys fail before writing. This offline check does not verify accession existence,
+  sequence/chemical identity, or VMD selection matches; those require the MDDB
+  workflow. Its [reference schema](https://github.com/mmb-irb/MDDB-workflow/blob/2b380ae29b682c97665c8290fce06da46f49eb57/mddb_workflow/core/inputs_schema.py)
+  defines the supported shapes.
   Recorded settings cannot be overridden by conflicting metadata. MDDB units:
   frame spacing in ns, timestep in fs, temperature in K. Missing source frame
   spacing may be supplied as `metadata.framestep` before applying `stride`.

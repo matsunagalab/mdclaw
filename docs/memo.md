@@ -13,6 +13,14 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-24 — MDDBリガンド識別子とUniProt対応のCLI入力
+
+- 本人指定の点検項目2に対応し、既存の `export_mddb --metadata` に `ligands` と `forced_references` を追加。新しいフラグ・サブコマンド・依存関係は追加していない。前の点検で「CLIから指定できない」とした制限を解消した。
+- リガンドはPubChem CID（正の整数／数値文字列）、DrugBank・ChEMBL識別子、任意の `vmd_selection`（文字列／文字列リスト）を受け取る。CIDだけの省略記法は公式同様に辞書へ展開。UniProtはIDリストまたは鎖→IDの辞書に対応し、`noref`とアイソフォーム表記を保持する。各プロジェクトのYAMLへ保存し、入力オブジェクトは変更しない。
+- 型違い・空欄・リガンド識別子欠落・未知キー・旧 `selection` キーは、項目名付きのエラーを返して出力作成前に停止。IDの実在・分子／配列との同一性・VMD選択式の構造への適用はオフラインexportでは検証しない。異なる参照情報を使うプロジェクトは個別にexportする。
+- 追加前のCLIテスト2件が `Unsupported metadata fields` で失敗することを確認後、実装。修正後は関連 **520 passed**（MDDB出力テストは59→110件）、Ruff・CLI discovery・差分検査成功。CLIの正常／異常入力、参照情報のYAML保存、省略記法、未指定時の後方互換、レプリカ／別プロジェクト、入力不変を検証。
+- 公式MDDB-workflow HEADが `2b380ae29b682c97665c8290fce06da46f49eb57` のままであることを確認。生成した重複なし40 YAML／42 MDエントリ（参照情報あり12プロジェクト）が公式 `validate_inputs(strict_unknown=True)` に合格。ログ関数・InputErrorのみ代替した単独スキーマ検証で、GROMACS・MDDB登録は実行していない。tool-referenceに例と検査範囲を追記。別作業の未追跡文書と既存memo差分を保持し、コミット・pushはしていない。
+
 ## 2026-10-24 — MDDB連結済み軌道の計算条件欠落を修正
 
 - 本人が前項の点検結果のうち条件欠落の修正とテストを指定。既存の連結軌道テストにYAMLの力場・水モデル・温度・時間刻み・アンサンブルの検査を加え、修正前に `KeyError: 'ff'` を再現した。原因は登録用条件抽出が連結処理ノードだけを参照していたこと。

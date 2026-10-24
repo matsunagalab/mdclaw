@@ -84,6 +84,7 @@ def test_paired_export_roundtrip_and_identity(tmp_path, stride, chunk):
     assert "HIE" in pdb.read_text()
     inputs = yaml.safe_load((root / "inputs.yaml").read_text())
     assert inputs["input_topology_filepath"] == "no"
+    assert inputs["ligands"] is None and inputs["forced_references"] is None
     assert inputs["mds"][0]["framestep"] == pytest.approx(0.01 * stride)
     assert inputs["mds"][0]["timestep"] == 4
     assert inputs["mds"][0]["ff"] == ["ff14SB"]
@@ -493,6 +494,120 @@ def test_cli_export_executes_without_node_context(tmp_path):
                                 "--metadata", json.dumps(METADATA)], capture_output=True, text=True, timeout=60)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert json.loads(completed.stdout)["success"]
+
+
+@pytest.mark.parametrize("references", [["Q9BYF1", "P0DTC2"], {"A": "Q9BYF1", "B": "noref"}])
+def test_cli_export_includes_ligand_and_uniprot_references(tmp_path, references):
+    job = tmp_path / "job"
+    fixture_job(job)
+    ligands = [{"pubchem": 2244, "vmd_selection": "resname LIG"},
+               {"drugbank": "DB00945", "vmd_selection": ["resname LIG"]},
+               {"chembl": "CHEMBL25"}]
+    metadata = {**METADATA, "ligands": ligands, "forced_references": references}
+    completed = subprocess.run([sys.executable, "-m", "mdclaw._cli", "export_mddb",
+                                "--job-dir", str(job), "--output-dir", str(tmp_path / "bundle"),
+                                "--metadata", json.dumps(metadata)], capture_output=True, text=True, timeout=60)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert json.loads(completed.stdout)["success"]
+    inputs = yaml.safe_load((tmp_path / "bundle/project/inputs.yaml").read_text())
+    assert inputs["ligands"] == ligands
+    assert inputs["forced_references"] == references
+
+
+def test_cli_invalid_ligand_metadata_leaves_no_bundle(tmp_path):
+    job = tmp_path / "job"
+    fixture_job(job)
+    metadata = {**METADATA, "ligands": [{"pubchem": 2244, "selection": "resname LIG"}]}
+    completed = subprocess.run([sys.executable, "-m", "mdclaw._cli", "export_mddb",
+                                "--job-dir", str(job), "--output-dir", str(tmp_path / "bundle"),
+                                "--metadata", json.dumps(metadata)], capture_output=True, text=True, timeout=60)
+    result = json.loads(completed.stdout)
+    assert completed.returncode != 0 and result["code"] == "mddb_export_failed", result
+    assert "metadata.ligands[0]" in str(result) and "vmd_selection" in str(result)
+    assert not (tmp_path / "bundle").exists()
+
+
+@pytest.mark.parametrize("grouping", ["replicas", "separate"])
+def test_reference_metadata_is_project_level(tmp_path, grouping):
+    job = tmp_path / "job"
+    traj = fixture_job(job)
+    add_prod(job, traj, "replica")
+    references = {"ligands": [2244], "forced_references": {"A": "Q9BYF1"}}
+    result = export_mddb(str(tmp_path / "bundle"), metadata={**METADATA, **references}, grouping=grouping,
+                         targets=[target(job), target(job, "replica")])
+    assert result["success"], result
+    projects = sorted((tmp_path / "bundle").glob("*/inputs.yaml"))
+    assert len(projects) == (2 if grouping == "separate" else 1)
+    for path in projects:
+        inputs = yaml.safe_load(path.read_text())
+        assert inputs["ligands"] == [{"pubchem": "2244"}]
+        assert inputs["forced_references"] == references["forced_references"]
+        assert all("ligands" not in entry and "forced_references" not in entry for entry in inputs["mds"])
+
+
+@pytest.mark.parametrize("ligands,expected", [
+    ([2244, "1986"], [{"pubchem": "2244"}, {"pubchem": "1986"}]),
+    ([{"pubchem": "2244", "drugbank": "DB00945", "chembl": "CHEMBL25"}],
+     [{"pubchem": "2244", "drugbank": "DB00945", "chembl": "CHEMBL25"}]),
+    ([{"pubchem": None, "chembl": "CHEMBL25", "vmd_selection": None}], [{"chembl": "CHEMBL25"}]),
+    ([], []), (None, None),
+])
+def test_ligand_metadata_normalization_does_not_mutate_input(tmp_path, ligands, expected):
+    job = tmp_path / "job"
+    fixture_job(job)
+    metadata = {**METADATA, "ligands": ligands, "forced_references": {"A": "Q9BYF1"}}
+    original = json.dumps(metadata, sort_keys=True)
+    result = export_mddb(str(tmp_path / "bundle"), job_dir=str(job), metadata=metadata)
+    assert result["success"], result
+    inputs = yaml.safe_load((tmp_path / "bundle/project/inputs.yaml").read_text())
+    assert inputs["ligands"] == expected
+    assert inputs["forced_references"] == {"A": "Q9BYF1"}
+    assert json.dumps(metadata, sort_keys=True) == original
+
+
+@pytest.mark.parametrize("references", [[], {}, None, ["P12345-2"], {"A": "P12345-2"}])
+def test_optional_uniprot_reference_shapes(tmp_path, references):
+    job = tmp_path / "job"
+    fixture_job(job)
+    result = export_mddb(str(tmp_path / "bundle"), job_dir=str(job),
+                         metadata={**METADATA, "forced_references": references})
+    assert result["success"], result
+    inputs = yaml.safe_load((tmp_path / "bundle/project/inputs.yaml").read_text())
+    assert inputs["forced_references"] == references
+
+
+@pytest.mark.parametrize("ligands", [
+    "2244", {"pubchem": 2244}, ["aspirin"], [True], [2244.0], [0], [-1], ["0"],
+    [None], [{}], [{"pubchem": None}], [{"vmd_selection": "resname LIG"}],
+    [{"pubchem": True}], [{"pubchem": 0}], [{"pubchem": "aspirin"}],
+    [{"pubchem": []}], [{"pubchem": 1.2}], [{"drugbank": 945}], [{"chembl": " "}],
+    [{"pubchem": 2244, "selection": "resname LIG"}],
+    [{"pubchem": 2244, "unknown": "value"}],
+    [{"pubchem": 2244, "vmd_selection": " "}],
+    [{"pubchem": 2244, "vmd_selection": []}],
+    [{"pubchem": 2244, "vmd_selection": ["resname LIG", 1]}],
+    [{"pubchem": 2244, "vmd_selection": {"resname": "LIG"}}],
+])
+def test_invalid_ligand_metadata_fails_before_writing(tmp_path, ligands):
+    job = tmp_path / "job"
+    fixture_job(job)
+    result = export_mddb(str(tmp_path / "bundle"), job_dir=str(job), metadata={**METADATA, "ligands": ligands})
+    assert result["code"] == "mddb_export_failed", result
+    assert "metadata.ligands" in str(result)
+    assert not (tmp_path / "bundle").exists()
+
+
+@pytest.mark.parametrize("references", ["Q9BYF1", 1, True, [None], [1], [" "],
+                                       {"A": None}, {"A": ["Q9BYF1"]}, {"A": " "},
+                                       {" ": "Q9BYF1"}, {1: "Q9BYF1"}])
+def test_invalid_uniprot_metadata_fails_before_writing(tmp_path, references):
+    job = tmp_path / "job"
+    fixture_job(job)
+    result = export_mddb(str(tmp_path / "bundle"), job_dir=str(job),
+                         metadata={**METADATA, "forced_references": references})
+    assert result["code"] == "mddb_export_failed", result
+    assert "metadata.forced_references" in str(result)
+    assert not (tmp_path / "bundle").exists()
 
 
 @pytest.mark.parametrize("metadata", [{"temp": 310}, {"framestep": 1}, {"authors": [123]},
