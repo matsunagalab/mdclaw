@@ -21,6 +21,12 @@ add the correction and say what it overturns.
 - Pixiで **469 passed**：MDDB出力、report、CLI／契約、registry、guardrails、Slurm、既存DAG連結テスト。MDDBテストは40→59件。実際の `concat_trajectory` 出力を記録した合成DAGからCLIでYAML・水抜きPDB/DCDを書き出す検査も成功。対象ファイルのRuff、CLI discovery、`git diff --check`成功。
 - tool-referenceとwikiを更新。skill・CI・依存関係は変更せず、MDDBへの実登録は行っていない。作業中に追加された別作業のREADME／deployment文書等はそのまま保持。
 
+## 2026-10-24 — Node.js導入とClaude Code／Codexプラグインの手順
+
+- READMEのエージェント導入を、Claude Codeプラグイン、Codexプラグイン、Node.jsを準備して使うskills CLIの順に整理。Node.js公式ダウンロードページでのLTS選択、OS別の導入方法、node/npm/npxの確認を追加。ユーザー全体／プロジェクトの範囲と更新方法を説明し、関連するdeployment文書も合わせた。
+- Claude Code公式・OpenAI公式・Node.js公式の説明とローカルCLIのhelpを確認。Codex CLI 0.160.0へ一時的なコマンド引数でローカルmarketplaceを指定し、`plugin list --marketplace mdclaw --available --json`で既存のClaude互換定義から`mdclaw@mdclaw` 0.6.8を認識した。ユーザーの永続設定変更・プラグインの実インストール・起動hookの実行は行っていない。
+- `pixi run --frozen pytest tests/test_docs_paths.py -q`は1件成功、`git diff --check`成功。文書だけの変更でコンテナは再ビルドしない。
+
 ## 2026-10-24 — コンテナビルド・CPU 24項目・両OSのCI成功
 
 - `31fb3ea`の[Container 39996483738](https://github.com/matsunagalab/mdclaw/actions/runs/39996483738)が成功。環境移行のtar破損・重複パス・バイナリprefix、Docker読み込み時の容量不足、Ruff検査の誤った起動方法を解消した。CPU smokeは24件成功・0件失敗。CLI、解析ライブラリ、PLUMEDのCPUエネルギー／力、AmberTools、MODELLER、PPM3を確認した。

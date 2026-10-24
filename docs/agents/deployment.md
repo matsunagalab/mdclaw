@@ -219,7 +219,18 @@ promise these. Diagnose the environment you will actually use.
 
 ## Claude Code Plugin
 
-Install from the plugin marketplace:
+No Node.js or `npx` is needed. With Claude Code installed, run in your terminal:
+
+```bash
+claude plugin marketplace add matsunagalab/mdclaw
+claude plugin install mdclaw@mdclaw --scope user
+```
+
+User scope applies across projects. Use `--scope local` for yourself in the
+current project, or `--scope project` to share the enablement setting with
+collaborators. Start a new session after installation.
+
+Alternatively, add the marketplace and open the install screen inside Claude Code:
 
 ```text
 /plugin marketplace add matsunagalab/mdclaw
@@ -254,6 +265,27 @@ The plugin command namespace is prefixed:
 /mdclaw:hpc-run
 ```
 
+## Codex Plugin
+
+Use a recent Codex CLI with `codex plugin` support. In your terminal:
+
+```bash
+codex plugin marketplace add matsunagalab/mdclaw
+codex plugin add mdclaw@mdclaw
+```
+
+This uses Codex's plugin installer, with no Node.js or `npx` dependency.
+Codex accepts the existing Claude-compatible marketplace and plugin metadata;
+both agents use the same `skills/` source, including `common`.
+The plugin is installed for your user account. Start a new session after
+installation; reopen the desktop app to pick up the marketplace and plugin.
+See [OpenAI's plugin guide](https://developers.openai.com/plugins/build/plugins).
+
+Prepare Pixi or SIF first, as in the README. In particular, export
+`MDCLAW_SIF` and `MDCLAW_RUNTIME` before starting Codex when reusing a SIF.
+Do not install the same MDClaw skills again through `npx` if using the plugin.
+For project-scoped skills instead, use the skills CLI below.
+
 ## Repo-Local Claude Code
 
 When working inside this repository without installing the plugin,
@@ -287,7 +319,10 @@ runtime with one of the methods below.
 
 MDClaw skills follow the [Agent Skills](https://agentskills.io) layout, so the
 standard [skills CLI](https://github.com/vercel-labs/skills) installs them for
-any supported harness (Node 22.20+ required). Choose the installation scope.
+any supported harness (Node 22.20+ required). Follow the README's
+[Node.js installation steps](../../README.md#skills-cli-install-nodejs-first)
+first if `npx` is unavailable. Claude Code and Codex can instead use their
+plugin installers above, without Node.js. Choose the installation scope.
 
 For the current project, run this in the project where the agent works:
 
@@ -338,6 +373,7 @@ of truth; they are discovery surfaces that mirror `skills/`.
 | User / Harness | Skill Discovery | Runtime Path | Commands |
 |---|---|---|---|
 | Claude Code plugin user | Plugin exposes `skills/` and `/mdclaw:*` commands | `bin/mdclaw` plus SessionStart runtime setup | `/plugin install mdclaw@mdclaw` |
+| Codex plugin user | Plugin exposes the same `skills/`, including `common` | Prepared Pixi or SIF runtime | `codex plugin add mdclaw@mdclaw` after adding the marketplace |
 | Repo-local Claude Code developer | `.claude/skills/` mirrors `skills/` | Usually the checkout Pixi environment via `bin/mdclaw` | Open repo, use discovered skills |
 | Pi | `package.json` points Pi at `./skills` | Conda, SIF, Docker, or local CLI | `pi install git:github.com/matsunagalab/mdclaw@main` |
 | Codex / Cursor / OpenCode / generic skill harness | `.agents/skills/`, `.claude/skills/`, or the harness's own skill directory | Pixi, Conda, SIF, Docker, or local CLI | `npx skills add matsunagalab/mdclaw` |

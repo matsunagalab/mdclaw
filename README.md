@@ -95,7 +95,68 @@ for working-directory mounts and job submission.
 
 If you work inside the MDClaw checkout, Claude Code and agents that read
 `.agents/skills/` can discover the included skills directly. For other working
-directories, choose one of the following (Node.js 22.20+ required).
+directories, choose **one** installation method below. Claude Code and Codex
+can install the plugin without Node.js or `npx`; the skills CLI is an
+alternative for either agent and for other supported agents.
+
+Keep the Pixi or SIF runtime prepared above available to the agent. Installing
+skills alone does not install the scientific software. Direct CLI use needs
+no skills.
+
+#### Claude Code Plugin (No Node.js Required)
+
+In your terminal, with Claude Code already installed, run:
+
+```bash
+claude plugin marketplace add matsunagalab/mdclaw
+claude plugin install mdclaw@mdclaw --scope user
+```
+
+`--scope user` makes the plugin available across your projects. To enable it
+only for yourself in the current project, use `--scope local` instead.
+Start a new Claude Code session, then use skills such as `/mdclaw:md-prepare`.
+You can also add the marketplace and install from Claude Code's `/plugin`
+screen. See [Claude Code's plugin guide](https://code.claude.com/docs/en/discover-plugins).
+
+#### Codex Plugin (No Node.js Required)
+
+With a recent Codex CLI that supports `codex plugin`, run in your terminal:
+
+```bash
+codex plugin marketplace add matsunagalab/mdclaw
+codex plugin add mdclaw@mdclaw
+```
+
+This installs the plugin for your user account. Start a new Codex session and
+ask it to use MDClaw. In the desktop app, reopen the app and check the Plugins
+screen for MDClaw under the `mdclaw` marketplace. If `codex plugin` is not
+recognized, update Codex first. See [OpenAI's plugin guide](https://developers.openai.com/plugins/build/plugins).
+
+Both plugin methods include the shared `common` skill. The bundled startup
+hook can prepare a container runtime; to reuse your downloaded SIF, set
+`MDCLAW_SIF` to its absolute path and `MDCLAW_RUNTIME=singularity` (or
+`apptainer`) before starting the agent. See [runtime selection](docs/agents/deployment.md#runtime-selection).
+
+#### Skills CLI: Install Node.js First
+
+`npx` runs tools distributed through npm, downloading them when needed. It
+comes with npm in a standard Node.js installation; do not assume it is
+already installed on your machine. It is needed only for this method.
+
+1. Open the [official Node.js download page](https://nodejs.org/en/download).
+   Choose an **LTS** release (22.20 or newer) and your operating system.
+2. On macOS or Windows, download and run the installer. On Linux, select
+   **nvm** and **npm** on that page and run the displayed installation commands
+   in your terminal; nvm installs under your home directory without `sudo`.
+3. Open a new terminal and check:
+
+   ```bash
+   node --version
+   npm --version
+   npx --version
+   ```
+
+Then install the skills with one of these commands:
 
 **For the current project:** run this in that project's directory:
 
@@ -112,11 +173,9 @@ npx skills add matsunagalab/mdclaw --global
 `--global` (or `-g`) installs to the selected agents' user skill directories
 under your home directory. It does not require administrator privileges.
 Select your agent and install `common` together with the workflow skills.
-Skills provide instructions; they do not install the scientific software.
-Your agent must also be able to run `mdclaw` through the Pixi environment or
-SIF prepared above. Direct CLI use needs no skills.
+To select an agent explicitly, add `--agent claude-code` or `--agent codex`.
 
-[Deployment details](docs/agents/deployment.md) cover Claude Code plugins, Pi,
+[Deployment details](docs/agents/deployment.md) cover plugins, Pi,
 Docker, existing Conda environments, runtime selection, and troubleshooting.
 BioEmu and Boltz-2 are optional, separate installs; see
 [model backend setup](docs/developer/configuration.md#model-backend-runtime).
@@ -226,10 +285,16 @@ failures remain available for inspection.
 
 ## Updating Skills
 
-Run `npx skills update` to update skills installed with the skills CLI. This
-updates the instructions only; update the scientific environment or downloaded
-SIF separately. If you installed MDClaw as a Claude Code plugin, use
-`/plugin update mdclaw@mdclaw` instead.
+Update using the same method you used to install:
+
+- **Claude Code plugin:** run `claude plugin marketplace update mdclaw`, then
+  `claude plugin update mdclaw@mdclaw` in your terminal.
+- **Codex plugin:** run `codex plugin marketplace upgrade mdclaw`, then
+  `codex plugin add mdclaw@mdclaw` to refresh the installed copy.
+- **Skills CLI:** run `npx skills update`.
+
+Start a new agent session after updating a plugin. Update the scientific
+environment or downloaded SIF separately; a skill update does not rebuild it.
 
 ## Development
 
