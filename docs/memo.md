@@ -58,6 +58,13 @@ add the correction and say what it overturns.
 - Claude Code公式・OpenAI公式・Node.js公式の説明とローカルCLIのhelpを確認。Codex CLI 0.160.0へ一時的なコマンド引数でローカルmarketplaceを指定し、`plugin list --marketplace mdclaw --available --json`で既存のClaude互換定義から`mdclaw@mdclaw` 0.6.8を認識した。ユーザーの永続設定変更・プラグインの実インストール・起動hookの実行は行っていない。
 - `pixi run --frozen pytest tests/test_docs_paths.py -q`は1件成功、`git diff --check`成功。文書だけの変更でコンテナは再ビルドしない。
 
+## 2026-10-24 — MDDB登録用skillと出力の再点検
+
+- `skills/md-report/mddb.md` と `mdclaw/evidence/mddb.py` を確認。既存の `export_mddb` は登録処理前の `inputs.yaml`、水・標準Na/K/Clを除いた対応するPDB/DCD、manifest、計算履歴、BibTeXを作る。脂質・リガンド・その他の金属を保持し、レプリカを別軌道として扱う。
+- checkoutのPixiで `tests/test_mddb_export.py tests/test_evidence_server.py` が **79 passed**。公式スキーマ検証のためexportの40件を `/tmp/mdclaw-mddb-test-20261024` に再実行し、生成した重複なし18 YAML／19 MDエントリを確認した。公式MDDB-workflowの取得時HEAD `2b380ae29b682c97665c8290fce06da46f49eb57` の `validate_inputs(strict_unknown=True)` に、各YAMLとMD別上書きを合成した入力が合格。相対パスの実在も確認。ログ関数とInputErrorだけを代替し、GROMACSは実行していない。schema検証は登録・品質検査の成功を意味しない。
+- 改善候補：公式スキーマ検証は通常テストに未組込み。metadataの許可項目には `ligands`、`forced_references`、`links` がなく、リガンドDB識別子やUniProt対応をCLIから指定できない。連結済み軌道の既存テストでは `framestep` は出るが `ff/wat/temp/timestep/ensemble` は欠落したまま成功する（条件の異なる区間を一つの値へ無条件にまとめる修正は不可）。通常prodではこれらの記録値が出力される。
+- 合成データによる水抜き・座標・原子順序・結合・箱・時間間隔の検証まで。実研究データの登録、MDDB workflowの全処理、サーバー受理は未検証。今回は評価のみで、製品コード・skill・CIを変更せず、外部送信も行っていない。
+
 ## 2026-10-24 — コンテナビルド・CPU 24項目・両OSのCI成功
 
 - `31fb3ea`の[Container 39996483738](https://github.com/matsunagalab/mdclaw/actions/runs/39996483738)が成功。環境移行のtar破損・重複パス・バイナリprefix、Docker読み込み時の容量不足、Ruff検査の誤った起動方法を解消した。CPU smokeは24件成功・0件失敗。CLI、解析ライブラリ、PLUMEDのCPUエネルギー／力、AmberTools、MODELLER、PPM3を確認した。
