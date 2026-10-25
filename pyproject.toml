@@ -1,6 +1,6 @@
 [project]
 name = "mdclaw"
-version = "0.6.11"
+version = "0.6.12"
 description = "MDClaw - skills and CLIs for vibe-MD simulations and autonomous scientific investigation"
 readme = "README.md"
 license = "MIT"
