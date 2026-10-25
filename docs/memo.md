@@ -13,6 +13,12 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-25 — Molstar MCP標準deployのCI・配布完了（0.6.11）
+
+- `1269f34` / `v0.6.11` の [CI run 40186084842](https://github.com/matsunagalab/mdclaw/actions/runs/40186084842) が成功。macOS ARM64・Linux x86-64・Linux ARM64でそれぞれPython **669件**、再生JavaScript **10件**が成功。専用検証venvを使わず、標準CLI/Pixi wrapper経由の実MCP接続・分子切替も含む。
+- [Container run 40186086512](https://github.com/matsunagalab/mdclaw/actions/runs/40186086512) はイメージ作成・CPU smoke・GHCR公開まで成功。インストール済みMCPの初期化、同梱UI、DCD座標取得を含む25チェック成功。`ghcr.io/matsunagalab/mdclaw:0.6.11` と `:latest` はともに `sha256:7067af02f2685cef9eb8916f8a97c0c38346dd6de67f6708e9d6acdd2b013b5f`。両タグのmanifestを認証なしのpull権限で取得し、digest一致を確認した。
+- 別マシンの通常Pixi導入と、公開コンテナを使う標準deployにMCPを同梱。初回登録は [deployment](agents/deployment.md#molstar-mcp-display) に記載。既存Codex/MCPは再起動・再登録していない。GPU計算の実機試験、新しいSIFの実機起動、別クライアントでの描画は今回の検査には含めず、共有SIFも置換していない。
+
 ## 2026-10-25 — CUDA wheelのOpenCL loader衝突を修正（0.6.11）
 
 - `50acb84` / `v0.6.10` の3環境CIは成功。Container run `40185445509` は空dist-info問題を通過したが、CUDA runtime wheelにも入っている `libOpenCL.so.1` を既存CondaのICD loaderと同名でリンクしようとして停止し、公開されなかった。
