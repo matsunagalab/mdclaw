@@ -1,6 +1,7 @@
 """Regression tests for removing CUDA 12 dependencies from the legacy image."""
 
 import importlib.util
+import importlib.metadata
 import json
 from pathlib import Path
 
@@ -59,6 +60,28 @@ def test_cleanup_refuses_unexpected_cuda_dependents_before_deleting(tmp_path):
     with pytest.raises(RuntimeError, match="new-scientific-tool"):
         cleanup.remove_stack(tmp_path)
     assert len(list(metadata.glob("*.json"))) == len(records)
+
+
+def test_cleanup_removes_empty_distribution_directories(tmp_path):
+    metadata = tmp_path / "conda-meta"
+    metadata.mkdir()
+    site = tmp_path / "lib/python3.12/site-packages"
+    info = site / "torch-2.7.1.dist-info"
+    (info / "licenses").mkdir(parents=True)
+    (info / "METADATA").write_text("Name: torch\nVersion: 2.7.1\n")
+    (info / "licenses/LICENSE").write_text("license")
+    for name in ("openmm", "pytorch", "libtorch", "jaxlib"):
+        files = [str(p.relative_to(tmp_path)) for p in info.rglob("*") if p.is_file()] if name == "pytorch" else []
+        (metadata / f"{name}.json").write_text(json.dumps({"name": name, "files": files}))
+    retained = site / "kept-1.0.dist-info"
+    retained.mkdir()
+    (retained / "METADATA").write_text("Name: kept\nVersion: 1.0\n")
+    cleanup.remove_stack(tmp_path)
+    # pip discovers even an empty *.dist-info directory as an installed
+    # distribution with no version/RECORD and refuses to replace it.
+    found = list(importlib.metadata.distributions(path=[str(site)]))
+    assert [d.metadata['Name'] for d in found] == ['kept']
+    assert not info.exists()
 
 
 def test_cuda118_build_uses_matching_sources_and_replacement_dependencies():

@@ -6,6 +6,7 @@ alone leaves Conda's libtorch/OpenMM/CUDA libraries behind.
 """
 
 import json
+import errno
 from pathlib import Path
 import re
 import sys
@@ -62,6 +63,22 @@ def remove_stack(prefix):
         path = prefix / file
         if path.is_symlink() or path.is_file():
             path.unlink()
+    # pip discovers empty *.dist-info directories too (as "torch None" with
+    # no RECORD), so removing only files leaves an un-uninstallable package.
+    # Prune only emptied ancestors of the removed files, deepest first. Never
+    # recursively delete directories that still contain retained/shared files.
+    directories = {parent for file in remove for parent in (prefix / file).parents
+                   if parent != prefix and parent.is_relative_to(prefix)}
+    for directory in sorted(directories, key=lambda p: len(p.parts), reverse=True):
+        if directory.is_symlink():
+            continue
+        try:
+            directory.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+                raise
     for name in names:
         metadata[name].unlink()
     print("Removed Conda GPU stack:", ", ".join(sorted(names)))

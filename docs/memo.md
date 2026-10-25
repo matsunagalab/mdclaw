@@ -13,6 +13,12 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-25 — コンテナ再ビルドで残存dist-infoを検出し修正（0.6.10）
+
+- `7b3083e` とタグ `v0.6.9` をpush。3環境のCIはすべて成功したが、配布Container run `40184852231` はPyTorch置換時に `Cannot uninstall torch None / no RECORD file` で失敗し、イメージは公開されなかった。
+- 既存のGPUスタック除去処理は所有ファイルだけを削除して空の `*.dist-info` ディレクトリを残していた。Pythonのdistribution探索が空ディレクトリを既存パッケージと誤認することを最小テストで再現（修正前はtorch相当のName=Noneが残り失敗）。削除したファイルの空の親ディレクトリだけを深い順に除去し、保持/sharedファイルが残るディレクトリは消さない修正を追加。ユーザーの環境で実行せず、Dockerの使い捨てprefixとテスト一時ディレクトリだけを対象にする。
+- 失敗済みタグは移動せず、版を0.6.10へ同期して再ビルドする。MCPのpixi動作・再生コードは変えていない。SIF導入手順は最初に配布予定の0.6.10以降を指定。
+
 ## 2026-10-25 — Molstar MCPを標準runtimeへ統合（0.6.9）
 
 - 本人がpixiと標準deployへの組込み、別マシンへの導入、テスト・コミット・pushを指定。`mcp==1.30.0` を必須依存へ追加し、pixi.lockをLinux x86-64/ARM64・macOS ARM64の3対象で更新。既存依存の更新は避け、追加SDKの依存だけを解決した。package/plugin/Piの版を0.6.9へ同期。

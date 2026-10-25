@@ -127,7 +127,7 @@ Codex's explicit registration also works when the client does not import that
 plugin component. UI rendering needs an MCP Apps-capable client; registering
 tools alone does not establish that its current screen can render WebGL.
 
-For a shared SIF (0.6.9 or newer) without a checkout, register the installed CLI
+For a shared SIF (0.6.10 or newer) without a checkout, register the installed CLI
 instead. Replace the two absolute paths before running on the compute host:
 
 ```bash
