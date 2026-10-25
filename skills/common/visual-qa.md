@@ -116,7 +116,8 @@ For an interactive request, choose the first usable route:
 ### When Claude cannot find or display the MCP viewer
 
 1. Read this page before proposing a different delivery method. Identify the
-   execution host, actual checkout/skill path, and display client. Distinguish
+   execution host, actual checkout/skill path, and display client using facts
+   already supplied in the conversation; ask only for missing facts. Distinguish
    Desktop's SSH environment, a terminal session viewed through Remote Control,
    and a terminal with no graphical client. Desktop's Chat and Code tabs are
    also different clients; support on one surface is not proof for another.
@@ -143,14 +144,28 @@ For an interactive request, choose the first usable route:
    ```
 
    For the prepared full system, use its real assembled PDB, `stage: "topo"`,
-   and omit the trajectory. The tool opens a viewer; `molstar_probe_data` is
-   called by that viewer, not streamed into the model's context.
+   and omit the trajectory. The tool supplies data and a UI resource for the
+   client to open; success does not confirm that a panel exists. A permission
+   denial is a separate gate: report the denied tool and use the client's
+   approval flow. Once an authorized call succeeds, that gate is resolved.
+   `molstar_probe_data` is called by the viewer, not streamed into the model's context.
 5. Confirm the molecule is visible and Play advances frames in the user's
    client. A successful standalone SDK test proves the server/data path only.
    If the host never opens the widget or never reads the UI resource, report
    that boundary and the client/version tested. If the widget opens but fails,
    capture its error and check the MCP resource/frame requests. Server
    registration alone does not establish MCP Apps support for that surface.
+
+   **Observed failure (2026-10-26):** the user viewed a remote session in
+   Claude Desktop's Code screen. After session reload and permission approval,
+   `open_molstar_probe` succeeded for 188 atoms / 100 frames, but no panel
+   appeared. Client version and UI resource requests were not captured.
+   Report this as an unresolved client-rendering boundary. Do not promise a
+   panel below the tool row or send the user looking for it. Reuse the known
+   client identity and move to client logs/resource requests if accessible;
+   otherwise state that limitation. Re-registration or another restart is
+   not supported by this evidence. Claude's general MCP Apps support is not
+   proof of support for this particular Code/remote route.
 
 Use existing connections. Installing/registering an MCP server, restarting the
 agent app, adding SSH forwarding, or publishing a web endpoint is a separate

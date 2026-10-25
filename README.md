@@ -31,8 +31,8 @@ remote connection alternatives, and host-specific verification limits.
 
 ### Molstar from a remote Claude Code session
 
-The host that stores the MD files runs the MCP server; the app on your own
-computer renders Molstar. The UI and requested frames use the MCP connection,
+The host that stores the MD files runs the MCP server; an MCP Apps-capable
+client renders Molstar. In a supported client, the UI and requested frames use the MCP connection,
 so this route needs neither an extra web port nor a separate SSH tunnel. The
 source DCD stays on the host. An SSH terminal on that host does **not** tell
 you whether the user's app can render an interactive viewer.
@@ -69,10 +69,17 @@ That skill supplies the exact call, preparation/production defaults, and the
 checks needed to distinguish missing tools from missing client rendering.
 
 **Compatibility:** Codex desktop Remote Control playback has been verified
-with this viewer. Claude Code's MCP registration and server operation are
-supported, but they do not guarantee MCP Apps rendering in every Desktop Code,
-SSH, or Remote Control session. Check the actual client surface; Claude Chat
-and Code are distinct. See [Claude's remote-host MCP documentation](https://code.claude.com/docs/en/desktop#use-mcp-servers-set-up-on-the-remote-machine)
+with this viewer. **Claude Desktop's Code view over the user's remote connection
+did not display a Molstar panel in the 2026-10-26 trial**, even after the session
+loaded the tool and an authorized call succeeded. The client version and UI
+resource requests were not captured, so this is a failed end-to-end trial,
+not proof that every Claude version lacks support. Treat that route as
+unverified for interactive display; registration alone is insufficient.
+Claude Chat and Code are distinct. The [MCP extension support matrix](https://modelcontextprotocol.io/extensions/client-matrix)
+lists Claude Desktop generally, without establishing this Code/remote route.
+Once calls succeed, investigate client rendering rather than repeating
+registration, permission changes, or session restarts.
+See [Claude's remote-host MCP documentation](https://code.claude.com/docs/en/desktop#use-mcp-servers-set-up-on-the-remote-machine)
 and the [display troubleshooting steps](skills/common/visual-qa.md#when-claude-cannot-find-or-display-the-mcp-viewer).
 Embedding all coordinates in an HTML Artifact is a different delivery method,
 not a fix for a missing MCP viewer, and is not used when data must stay on the host.
