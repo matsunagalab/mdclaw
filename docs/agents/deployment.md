@@ -123,6 +123,9 @@ the existing runtime selector. A plugin cache is a separate checkout: for a
 workstation's existing Pixi checkout, use the explicit registration above and
 disable the plugin's duplicate server, or prepare Pixi in the plugin checkout.
 The manifest follows [Claude's bundled MCP server format](https://code.claude.com/docs/en/mcp).
+Repository-local `.claude/skills/` exposes instructions without installing that
+plugin or its MCP configuration. A SIF supplies the server executable without
+installing agent skills; keep the checkout or installed skills available too.
 Codex's explicit registration also works when the client does not import that
 plugin component. UI rendering needs an MCP Apps-capable client; registering
 tools alone does not establish that its current screen can render WebGL.
@@ -154,6 +157,30 @@ starts with no chosen molecule, so an empty open request reports which input
 is missing instead of displaying a sample or another widget's selection.
 Existing `mdclaw_molstar_probe` registrations keep working; this installer does
 not rewrite them or interrupt active connections.
+
+For Claude, register on the host running the agent (floyd for files on floyd),
+then discover `open_molstar_probe` in that **running session**. A separate
+`claude mcp get` reporting Connected confirms startup, not current-session
+tool loading or UI rendering. In an installed plugin the server is named
+`plugin:mdclaw:mdclaw_molstar`; standalone registration uses `mdclaw_molstar`.
+Use the exact name in the client's reconnect control. Remote Control supports
+`/mcp reconnect <name>`; verify the response rather than assuming a newly added
+configuration is loaded. Plugin changes use `/reload-plugins`, with `--force`
+if the response requires it. If the tool is still absent, use a new session in
+the same project; do not run a concurrent `--continue`/`--resume` against an
+active conversation. This does not require restarting the desktop application.
+See [Claude's reconnect documentation](https://code.claude.com/docs/en/remote-control#authorize-a-connector-again-from-your-shell)
+and [plugin reload rules](https://code.claude.com/docs/en/plugins/components#mcp-servers).
+
+An SSH-launched CLI can be viewed through a graphical client. Distinguish
+Desktop's SSH environment, terminal Remote Control, Desktop Chat/Code, and a
+plain terminal. The execution host's environment variables do not identify
+the display client's widget support. Test the native open tool and confirm
+actual rotation/playback before declaring that route working. Server tests
+alone do not prove Claude client rendering. Follow
+[the existing display skill](../../skills/common/visual-qa.md#when-claude-cannot-find-or-display-the-mcp-viewer)
+for troubleshooting; keep host-resident data streaming as the target rather
+than replacing it with an all-frames HTML/Artifact export.
 
 For production use `stage: "prod"`; wrap is on, fit is off, and long previews
 keep at most 1,000 frames by default. The UI targets up to 60 fps with bounded

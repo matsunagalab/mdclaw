@@ -1,7 +1,7 @@
 ---
 title: Molecular display and visual QA
 category: skill-reference
-updated: 2026-10-25
+updated: 2026-10-26
 ---
 
 # Molecular Display and Visual QA
@@ -63,6 +63,23 @@ selection is unsuitable for a membrane/complex display.
 
 ## Check the interactive route
 
+### How the MCP viewer works
+
+The **execution host** owns the PDB/DCD and runs `mdclaw molstar-mcp`. The
+**display client** is the app the user is looking at. The viewer's HTML travels
+as an MCP `ui://` resource; topology and requested coordinate frames travel
+through MCP tool calls. Molstar renders and caches frames in the display
+client. This route opens no HTTP port and requires no separate port forward.
+An SSH shell or `SSH_CONNECTION` on the execution host does not identify the
+user's display client or prove that it cannot show a widget.
+
+Register the server where the agent executes and can read the data: e.g.
+floyd's Claude Code for MD files on floyd. A plugin supplies registration when
+installed and enabled; a repository's `.claude/skills/` supplies instructions,
+not MCP registration. A server inside a SIF likewise supplies code, not the
+agent's skill discovery. Read setup commands in
+[deployment](../../docs/agents/deployment.md#molstar-mcp-display).
+
 Check capabilities in the **current session**, not an app name, OS, environment
 variable, or a previous conversation. Codex/Claude Code desktop, CLI, and remote
 sessions can expose different tools. Discover available tools before asking the
@@ -96,10 +113,54 @@ For an interactive request, choose the first usable route:
    Label it as a static substitute; it does not satisfy trajectory playback.
    If PyMOL also fails, report the error and provide the existing artifact paths.
 
+### When Claude cannot find or display the MCP viewer
+
+1. Read this page before proposing a different delivery method. Identify the
+   execution host, actual checkout/skill path, and display client. Distinguish
+   Desktop's SSH environment, a terminal session viewed through Remote Control,
+   and a terminal with no graphical client. Desktop's Chat and Code tabs are
+   also different clients; support on one surface is not proof for another.
+2. Separate **configured**, **loaded in this session**, and **visibly rendered**.
+   `claude mcp get mdclaw_molstar` reporting Connected checks a connection from
+   that command; it does not add tools to an already running agent or confirm
+   widget rendering. Discover deferred tools by `open_molstar_probe`, including
+   the plugin namespace `mcp__plugin_mdclaw_mdclaw_molstar__open_molstar_probe`.
+   Repository-local skills work even without an installed Claude plugin.
+3. If configured but absent, use the current client's MCP reconnect control
+   when it lists the server. Remote Control accepts `/mcp reconnect <name>`;
+   report its actual response. For an installed/updated plugin, use
+   `/reload-plugins` (and `--force` only if its response requests it). A name
+   that the running session still cannot discover may require a new session
+   in the same project; do not promise that reconnect loads every new config.
+   This is separate from restarting the desktop application. Keep active work
+   intact; do not start a second `claude --continue`/`--resume` writer for it.
+4. Once the tool is exposed, call it through the agent's MCP tool interface,
+   not a shell-created standalone client. For production, use the actual
+   matching topology and DCD, e.g.:
+
+   ```json
+   {"structure_file":"/absolute/job/nodes/topo_001/artifacts/system.topology.pdb","trajectory_file":"/absolute/job/nodes/prod_001/artifacts/trajectory.dcd","stage":"prod","wrap":true,"fit":false}
+   ```
+
+   For the prepared full system, use its real assembled PDB, `stage: "topo"`,
+   and omit the trajectory. The tool opens a viewer; `molstar_probe_data` is
+   called by that viewer, not streamed into the model's context.
+5. Confirm the molecule is visible and Play advances frames in the user's
+   client. A successful standalone SDK test proves the server/data path only.
+   If the host never opens the widget or never reads the UI resource, report
+   that boundary and the client/version tested. If the widget opens but fails,
+   capture its error and check the MCP resource/frame requests. Server
+   registration alone does not establish MCP Apps support for that surface.
+
 Use existing connections. Installing/registering an MCP server, restarting the
 agent app, adding SSH forwarding, or publishing a web endpoint is a separate
 setup task, not an automatic fallback. Keep the DCD on its host and transfer
-only topology and requested frames through the supplied viewer. Molstar uses
+only topology and requested frames through the supplied viewer. Keep this
+same transfer policy behind firewalls, using the existing supported
+MCP connection. A self-contained HTML/Artifact containing all coordinates is a
+different transfer method, not a streaming fix; when the user requires data to
+stay on the host, keep that requirement. A rendering claim needs actual client
+verification, including for Artifacts. Molstar uses
 orthographic camera by default. For a UI update, open a new attached viewer;
 existing widgets may retain old code (the current playback UI shows
 `playback up to 60 fps`, an upper target rather than a measured rate).

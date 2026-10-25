@@ -29,6 +29,54 @@ the printed `viewer_url` and keep the command running while viewing. Mol* is
 bundled. See the [viewer guide](docs/developer/molstar-viewer.md) for MCP setup,
 remote connection alternatives, and host-specific verification limits.
 
+### Molstar from a remote Claude Code session
+
+The host that stores the MD files runs the MCP server; the app on your own
+computer renders Molstar. The UI and requested frames use the MCP connection,
+so this route needs neither an extra web port nor a separate SSH tunnel. The
+source DCD stays on the host. An SSH terminal on that host does **not** tell
+you whether the user's app can render an interactive viewer.
+
+For data on **floyd**, register the server with **Claude Code on floyd**, not
+with Claude Code on your Mac. Choose the applicable setup:
+
+- **Installed and enabled mdclaw Claude plugin:** the plugin includes the MCP
+  registration. Its runtime must be available on the execution host.
+- **Repository checkout / Pixi / shared SIF without that plugin:** register
+  once using [the deployment commands](docs/agents/deployment.md#molstar-mcp-display).
+  Repo-local `.claude/skills/` provides the display instructions, but does not
+  register an MCP server. Installing the SIF alone does not install skills.
+
+There are three separate checks:
+
+| Check | What it establishes |
+|---|---|
+| `claude mcp get mdclaw_molstar` reports Connected | The configured server can start and connect. |
+| The current agent discovers `open_molstar_probe` | This session has loaded the tool. Plugin installations use a plugin-prefixed tool name. |
+| The molecule appears and Play advances frames | This client can actually render and operate the viewer. |
+
+If registration was added during a session, use the client's MCP reconnect
+control if it lists the server. Remote Control also accepts
+`/mcp reconnect mdclaw_molstar`; check its response. Installed plugin updates
+use `/reload-plugins`. If the tool remains absent, start a new session in the
+same project; restarting the whole desktop app is not the default remedy.
+Keep the original session intact rather than running a second writer with
+`claude --continue`.
+
+Then ask: **“Read `skills/common/visual-qa.md`, discover `open_molstar_probe`,
+and play prod_001 with `stage: "prod"` through MCP. Keep the DCD on this host.”**
+That skill supplies the exact call, preparation/production defaults, and the
+checks needed to distinguish missing tools from missing client rendering.
+
+**Compatibility:** Codex desktop Remote Control playback has been verified
+with this viewer. Claude Code's MCP registration and server operation are
+supported, but they do not guarantee MCP Apps rendering in every Desktop Code,
+SSH, or Remote Control session. Check the actual client surface; Claude Chat
+and Code are distinct. See [Claude's remote-host MCP documentation](https://code.claude.com/docs/en/desktop#use-mcp-servers-set-up-on-the-remote-machine)
+and the [display troubleshooting steps](skills/common/visual-qa.md#when-claude-cannot-find-or-display-the-mcp-viewer).
+Embedding all coordinates in an HTML Artifact is a different delivery method,
+not a fix for a missing MCP viewer, and is not used when data must stay on the host.
+
 ## Install / Deploy
 
 First prepare the scientific software on the machine that will run the
