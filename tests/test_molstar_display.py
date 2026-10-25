@@ -157,3 +157,35 @@ def test_filtered_pdb_drops_terminators_of_removed_water_chains(tmp_path):
     assert len(terminators) == 1
     assert 'ALA' in terminators[0]
     assert 'HOH' not in display.topology_text
+
+
+def test_production_shows_only_solute_and_lipids(tmp_path):
+    top = md.Topology()
+    chain = top.add_chain()
+    groups = []
+    for name, atoms in [('ALA', ['N', 'CA', 'C', 'O']), ('POPC', ['C1', 'C2']), ('NA', ['NA']),
+                        ('CL', ['CL']), ('HOH', ['O', 'H1', 'H2'])]:
+        residue = top.add_residue(name, chain)
+        element = {'NA': md.element.sodium, 'CL': md.element.chlorine}
+        group = [top.add_atom(a, element.get(a, md.element.oxygen if a == 'O' else md.element.hydrogen
+                                             if a.startswith('H') else md.element.nitrogen if a == 'N'
+                                             else md.element.carbon), residue) for a in atoms]
+        for a, b in zip(group, group[1:]):
+            top.add_bond(a, b)
+        groups.append(group)
+    xyz = np.array([[1, 1, 1], [1.15, 1, 1], [1.3, 1, 1], [1.4, 1.1, 1], [2, 2, 2], [2.15, 2, 2],
+                    [.5, .5, .5], [2.5, 2.5, 2.5], [.2, .2, .2], [.25, .2, .2], [.2, .25, .2]], dtype=np.float32)
+    traj = md.Trajectory(np.stack([xyz, xyz]), top, unitcell_lengths=np.full((2, 3), 3.), unitcell_angles=np.full((2, 3), 90.))
+    pdb, dcd = tmp_path / 'ions.pdb', tmp_path / 'ions.dcd'
+    traj[0].save_pdb(str(pdb))
+    traj.save_dcd(str(dcd))
+    prod = DisplayData(pdb, dcd, stage='prod')
+    assert prod.info['atom_count'] == 6
+    assert prod.info['display']['water_removed'] == 3 and prod.info['display']['ions_removed'] == 2
+    assert prod.info['display']['components']['ion'] == []
+    assert len(prod.info['display']['components']['lipid']) == 2
+    assert ' NA ' not in prod.topology_text and ' CL ' not in prod.topology_text
+    for stage in ('solv', 'topo', 'min', 'eq'):
+        kept = DisplayData(pdb, dcd, stage=stage)
+        assert kept.info['atom_count'] == 11, stage
+        assert kept.info['display']['ions_removed'] == 0 and len(kept.info['display']['components']['ion']) == 2

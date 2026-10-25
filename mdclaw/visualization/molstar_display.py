@@ -44,9 +44,13 @@ class DisplayData:
         # Treat virtual sites in known waters as part of the water molecule.
         water_names = {'HOH', 'WAT', 'SOL', 'TIP3', 'TIP3P', 'TIP4', 'TIP4P', 'OPC', 'OPC3', 'TP4', 'TP5'}
         waters = {a.index for a in self.top.atoms if a.residue.is_water or a.residue.name.upper() in water_names}
-        self.keep = np.array([a.index for a in self.top.atoms if not production or a.index not in waters], dtype=int)
+        # Production shows the solute (and lipids): bulk water and monatomic ions are removed.
+        ions = {a.index for a in self.top.atoms if a.index not in waters and a.residue.n_atoms == 1
+                and not (a.residue.is_protein or a.residue.is_nucleic)}
+        hidden = waters | ions if production else set()
+        self.keep = np.array([a.index for a in self.top.atoms if a.index not in hidden], dtype=int)
         if not len(self.keep):
-            raise ValueError('Production display contains no non-water atoms; use stage=solv to inspect water')
+            raise ValueError('Production display contains no solute atoms; use stage=solv to inspect water and ions')
         original_count = self.info['frame_count']
         self.stride = max(1, math.ceil(original_count / max_frames)) if production and max_frames else 1
         self.indices = range(0, original_count, self.stride)
@@ -134,6 +138,7 @@ class DisplayData:
                          display={'stage': stage, 'production': production, 'wrap': 'applied' if wrap and self.periodic else 'no cell' if wrap else 'off',
                                   'fit': fit_info, 'stride': self.stride, 'source_frames': original_count,
                                   'source_atoms': self.top.n_atoms, 'water_removed': len(waters) if production else 0,
+                                  'ions_removed': len(ions) if production else 0,
                                   'components': groups, 'warnings': warnings})
         self.topology_text = self._pdb_text(self.coordinates(0), lengths, angles)
         self.check_unchanged()

@@ -39,7 +39,7 @@ show its components without claiming a workflow stage.
 |---|---|---|
 | Source / protein preparation before solvation | Protein/nucleic acid cartoon; ligand and other non-solvent components as sticks; relevant ions as spheres. Show only components actually present. | `overview` |
 | Solvation, membrane assembly, topology, minimization; checking packing or equilibration of the assembled system | Protein/nucleic acid cartoon; ligand and lipids as sticks; water as a transparent surface; ions as spheres; periodic cell when supported. Preserve the full system. | `system_box` |
-| Production playback / conformational analysis | Protein/nucleic acid cartoon; keep ligand, cofactors, and lipids as sticks. Hide water, including its surface; retain relevant ions. Apply the trajectory procedure below. | `membrane` when lipids are present, otherwise `overview` with solvent hidden |
+| Production playback / conformational analysis | Solute only: protein/nucleic acid cartoon, ligand and cofactors as sticks, plus lipids as sticks when a membrane is present. Hide water (including its surface) and ions. Apply the trajectory procedure below. | `membrane` when lipids are present, otherwise `overview` with solvent hidden |
 | Ligand binding site | Keep the ligand and nearby polymer atoms as sticks. | `ligand_site` |
 | Water/ion placement explicitly requested | Preserve the requested solvent/ions; use a transparent water surface for bulk packing and spheres for ions. | `system_box` for bulk packing; `solvent_ions --show-solvent` only for individual solvent inspection |
 
@@ -50,11 +50,12 @@ can both be inspected. If a surface exceeds the renderer's resource limit,
 report its actual fallback rather than claiming the surface was displayed.
 
 Apply the same content policy in Molstar and PyMOL. The current Molstar HTTP and MCP
-viewers apply the stage representations automatically: polymer cartoon, lipid
-and ligand sticks, ion spheres, and a transparent Gaussian water surface for
-preparation. The `stage` argument selects the table's source stage. Pass it
-explicitly when the source stage is known; auto uses the trajectory's DAG path,
-otherwise prod for DCD and prep for PDB. PyMOL uses the style column above.
+viewers (and the Artifact page) apply the stage representations automatically:
+polymer cartoon, lipid and ligand sticks, and, for preparation, ion spheres and
+a transparent Gaussian water surface. Production removes water and ions. The
+`stage` argument selects the table's source stage. Pass it explicitly when the
+source stage is known; auto uses the trajectory's DAG path, otherwise prod for
+DCD and prep for PDB. PyMOL uses the style column above.
 
 For production playback, long trajectories, PBC correction, or requested
 alignment, follow [trajectory-display.md](trajectory-display.md) before opening
@@ -85,9 +86,15 @@ variable, or a previous conversation. Codex/Claude Code desktop, CLI, and remote
 sessions can expose different tools. Discover available tools before asking the
 user which app they use. Recheck after a connection changes or a display fails.
 
+**Claude Code session (it has the `Artifact` tool):** go straight to the
+**Artifact page** route (2). Claude Code does not render MCP Apps widgets on
+any surface — terminal, Desktop Code tab, or Remote Control — so an
+`open_molstar_probe` call there succeeds without showing a viewer. Use route 1
+in Claude Code only when the user explicitly asks to test the MCP widget.
+
 For an interactive request, choose the first usable route:
 
-1. **Attached MCP viewer:** discover the available `open_molstar_probe` tool
+1. **Attached MCP viewer (Codex desktop and other MCP Apps clients):** discover the available `open_molstar_probe` tool
    (normally under `mdclaw_molstar`; older connections use `mdclaw_molstar_probe`)
    and inspect its current schema. With stage options, pass absolute source paths
    and the known `stage`, keeping wrap on and fitting off unless requested.
@@ -99,7 +106,31 @@ For an interactive request, choose the first usable route:
    Check the displayed stage, wrap, stride and fit state. Treat call success and
    visible rendering separately; if the client reports an error, inspect its
    exact message and source/receipt before choosing another route.
-2. **Reachable browser:** use `serve_molstar` when a browser/preview surface is
+2. **Artifact page (Claude Code):** write the page on the host, then publish it
+   with the Artifact tool in the same turn:
+
+   ```bash
+   mdclaw export_molstar_page \
+     --structure-file /absolute/job/nodes/topo_001/artifacts/system.topology.pdb \
+     --trajectory-file /absolute/job/nodes/prod_001/artifacts/trajectory.dcd \
+     --stage prod --title "CLN025 prod_001" \
+     --output-file /absolute/scratchpad/cln025_prod_001.html
+   ```
+
+   Publish `output_file` with `Artifact` (`file_path` = that path, `icon`
+   `molecule`) and give the user the link. The page applies the same stage
+   presentation, wrap, water removal, sampling and fit as route 1; it embeds
+   the retained display frames, so it needs no port, tunnel or MCP connection
+   and works behind firewalls. Name the title after the system and node.
+   For the prepared full system, pass its assembled PDB with `--stage topo` and
+   no trajectory. Production frames are sampled to fit an 8 MB budget: report
+   the result's `frame_count` and `display.stride`. `molstar_page_too_large`
+   means even sampling cannot fit; lower `--max-frames` for production or use
+   route 3/4. The page puts display coordinates in a private claude.ai page,
+   so skip this route when the user requires the data to stay on the host.
+   Ask the user to confirm the molecule appears and Play advances; if the page
+   shows an error, read its exact text before changing anything.
+3. **Reachable browser:** use `serve_molstar` when a browser/preview surface is
    available and can reach the file host. A browser on the same machine or an
    already established forwarding route qualifies; a host-side localhost URL
    alone does not establish reachability from a remote client. Start the server,
@@ -108,12 +139,15 @@ For an interactive request, choose the first usable route:
    process handle for cleanup. Read
    [the viewer guide](../../docs/developer/molstar-viewer.md) for invocation and
    lifecycle details; read it from the checkout if only skills were installed.
-3. **Static fallback:** if neither route is available or succeeds, state the
+4. **Static fallback:** if no route above is available or succeeds, state the
    concrete reason briefly and render a PyMOL PNG of the requested structure.
    Label it as a static substitute; it does not satisfy trajectory playback.
    If PyMOL also fails, report the error and provide the existing artifact paths.
 
-### When Claude cannot find or display the MCP viewer
+### When the MCP viewer is missing or does not render
+
+In Claude Code, use the Artifact page route (2) instead of this checklist.
+It applies to MCP Apps clients such as Codex, and to an explicit MCP test.
 
 1. Read this page before proposing a different delivery method. Identify the
    execution host, actual checkout/skill path, and display client using facts
@@ -156,26 +190,21 @@ For an interactive request, choose the first usable route:
    capture its error and check the MCP resource/frame requests. Server
    registration alone does not establish MCP Apps support for that surface.
 
-   **Observed failure (2026-10-26):** the user viewed a remote session in
-   Claude Desktop's Code screen. After session reload and permission approval,
-   `open_molstar_probe` succeeded for 188 atoms / 100 frames, but no panel
-   appeared. Client version and UI resource requests were not captured.
-   Report this as an unresolved client-rendering boundary. Do not promise a
-   panel below the tool row or send the user looking for it. Reuse the known
-   client identity and move to client logs/resource requests if accessible;
-   otherwise state that limitation. Re-registration or another restart is
-   not supported by this evidence. Claude's general MCP Apps support is not
-   proof of support for this particular Code/remote route.
+   **Claude Code does not render the MCP viewer (2026-10-26):** Claude Code
+   2.1.310 on floyd, viewed through Remote Control in Claude Desktop's Code
+   screen, completed `open_molstar_probe` for 188 atoms / 100 frames, but the
+   server wrote only 5,411 bytes in total: the ~2.1 MB `ui://` viewer was never
+   requested. Anthropic documents MCP Apps for claude.ai, Claude Desktop chat,
+   Cowork and the mobile apps, not Claude Code. Re-registration, reconnects or
+   restarts do not change this; use the Artifact page route (2) instead.
 
 Use existing connections. Installing/registering an MCP server, restarting the
 agent app, adding SSH forwarding, or publishing a web endpoint is a separate
-setup task, not an automatic fallback. Keep the DCD on its host and transfer
-only topology and requested frames through the supplied viewer. Keep this
-same transfer policy behind firewalls, using the existing supported
-MCP connection. A self-contained HTML/Artifact containing all coordinates is a
-different transfer method, not a streaming fix; when the user requires data to
-stay on the host, keep that requirement. A rendering claim needs actual client
-verification, including for Artifacts. Molstar uses
+setup task, not an automatic fallback. Through the MCP viewer
+and `serve_molstar`, the DCD stays on its host and only topology and requested
+frames travel. The Artifact page instead embeds the retained display frames;
+when the user requires data to stay on the host, do not use it. A rendering
+claim needs actual client verification, including for Artifacts. Molstar uses
 orthographic camera by default. For a UI update, open a new attached viewer;
 existing widgets may retain old code (the current playback UI shows
 `playback up to 60 fps`, an upper target rather than a measured rate).

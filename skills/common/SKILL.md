@@ -1,6 +1,6 @@
 ---
 name: common
-description: "Display existing molecular structures or MD trajectories, and troubleshoot remote Molstar/MCP display: route prepared full-system views, playback and interactive rotation to Molstar when available, and still images to PyMOL. Also supplies shared MDClaw job-loop, output, solvent, chemistry, and handoff conventions for md-* skills."
+description: "Display existing molecular structures or MD trajectories: route prepared full-system views, playback and interactive rotation to Molstar (MCP viewer in Codex, an Artifact page in Claude Code, or a local browser), still images to PyMOL, and troubleshoot remote Molstar display. Also supplies shared MDClaw job-loop, output, solvent, chemistry, and handoff conventions for md-* skills."
 ---
 
 # MDClaw Common Conventions
@@ -10,10 +10,13 @@ For a molecule/trajectory display request (including 「再生して」「回し
 after display. It owns intent selection, current-session capability checks,
 and fallback. Viewing existing files does not start an MD workflow.
 Stage-specific contents and any display-copy processing are selected there too.
-For remote display failures or a missing Molstar tool, read its **How the MCP
-viewer works** and **When Claude cannot find or display the MCP viewer** sections
-before choosing a workaround. The execution host and the user's display client
-are different roles; MCP connection success is not rendering success.
+In Claude Code, Molstar playback is delivered as an Artifact page
+(`export_molstar_page`), because Claude Code does not render MCP viewer widgets.
+For remote display failures or a missing Molstar tool in other clients, read its
+**How the MCP viewer works** and **When the MCP viewer is missing or does not
+render** sections before choosing a workaround. The execution host and the
+user's display client are different roles; MCP connection success is not
+rendering success.
 
 This directory holds the shared pages that the MDClaw workflow skills
 (`md-prepare`, `md-equilibration`, `md-production`, `md-analyze`, `md-study`,

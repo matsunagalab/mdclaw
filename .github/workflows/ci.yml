@@ -55,7 +55,7 @@ jobs:
           node-version: '22'
 
       - name: Molstar playback pacing and buffering
-        run: node --test tests/js/molstar_playback.test.cjs
+        run: node --test tests/js/molstar_playback.test.cjs tests/js/molstar_page.test.cjs
 
       - name: Tests
         run: >

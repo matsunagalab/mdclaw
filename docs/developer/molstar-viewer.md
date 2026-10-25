@@ -1,7 +1,7 @@
 ---
 title: Molstar viewer with on-demand frames
 category: development
-updated: 2026-10-25
+updated: 2026-10-26
 ---
 
 # Mol* viewer
@@ -22,6 +22,38 @@ then explains and uses a static fallback if interactive display is unavailable.
 This is a skill procedure, not automatic app detection inside the Python server.
 It uses existing connections and does not install MCP or set up networking.
 
+## Claude Code: self-contained Artifact page
+
+Claude Code (terminal, Desktop Code tab, Remote Control) does not render MCP
+Apps widgets, so `open_molstar_probe` succeeds there without a viewer. The
+display skill instead runs, on the host that stores the files:
+
+```bash
+mdclaw export_molstar_page --structure-file /abs/system.topology.pdb \
+  --trajectory-file /abs/trajectory.dcd --stage prod \
+  --title "CLN025 prod_001" --output-file /abs/scratch/cln025_prod_001.html
+```
+
+and publishes `output_file` with the Artifact tool. The page reuses the
+viewers' `DisplayData` (stage, wrap, water removal, sampling, optional fit),
+`index.html`/`viewer.css` markup and `mdclawPresentation`; `page.js` plays the
+embedded frames with a 10/20/30/60 fps target (default 30). Data sit in
+non-executable `<script type=...>` blocks with `<` escaped: display JSON, the
+filtered PDB and all retained frames as base64 planar float32 angstroms. Mol*
+5.13.0 loads from jsDelivr with an SRI hash computed from the bundled build
+(identical file), because Artifacts only allow scripts from a few CDNs. The
+output is an Artifact-ready fragment (title, styles, content, scripts) that
+also opens in a browser.
+
+Frames are embedded, so the page size bounds the trajectory. Production
+frames are sampled further to fit `max_bytes` (default 8 MB of coordinates,
+under the 16 MB Artifact limit) and the result reports `frame_count` and
+`display.stride`; preparation stages keep all frames and return
+`molstar_page_too_large` when they cannot fit. Coordinates leave the host in a
+private claude.ai page, so this route is not used when data must stay on the
+host. Verified 2026-10-26 by the user in Claude Desktop's Code screen over
+Remote Control: CLN025 prod_001, 166 solute atoms / 100 frames, 387 KB page.
+
 ## Stage-aware display
 
 Both transports share `DisplayData`: source PDB/DCD files stay unchanged, and
@@ -33,8 +65,9 @@ When source-stage context is known, the agent passes it explicitly.
 
 - Preparation: protein/nucleic cartoon, ligand/lipid sticks, ion spheres,
   transparent Gaussian water surface. Static PDBs also show the unit cell.
-- Production/analyze: remove water from both the topology sent to the client
-  and frame coordinates, keeping protein, ligand, lipids and ions.
+- Production/analyze: remove water and monatomic ions from both the topology
+  sent to the client and frame coordinates, keeping only the solute (protein,
+  nucleic acid, ligand) and lipids. `display.ions_removed` reports the count.
 - `wrap=True` (default): reconstruct whole molecules and image them around
   polymer anchors using each frame's actual cell. Supports orthorhombic and
   triclinic boxes. Missing cells are reported; incomplete connectivity is rejected
@@ -48,7 +81,7 @@ When source-stage context is known, the agent passes it explicitly.
   same rotation/translation. It keeps bounded memory and is done only on request.
 
 The PDB and frame arrays always have the same selected atoms/order. All atoms
-are imaged before production water removal. Chemical names are preserved in the
+are imaged before production water and ion removal. Chemical names are preserved in the
 served PDB; MDTraj/OpenMM name aliases are used only for classification/bond
 connectivity. PDB CONECT is required for unknown components whose bonds cannot
 be determined. The display never writes a new DCD or modifies a DAG node.
@@ -352,7 +385,7 @@ only an origin for localhost. See [preview configuration](https://code.claude.co
   client graphics memory and 12 bytes per atom per displayed frame of bandwidth.
   A 100,000-atom frame is 1.2 MB; streaming does not eliminate that cost.
 - Whole-molecule wrapping is on by default when a cell is available. Production
-  removes water and samples at most 1,000 frames by default; fitting is opt-in.
+  removes water and ions and samples at most 1,000 frames by default; fitting is opt-in.
   HTTP playback targets up to 10 frames/s and MCP playback up to 60 frames/s;
   these are display speeds, not simulation time. Input files and the DAG are
   unchanged. Other trajectory formats and desktop hosts are outside this scope.

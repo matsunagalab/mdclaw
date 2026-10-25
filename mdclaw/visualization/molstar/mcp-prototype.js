@@ -39,7 +39,7 @@ async function mdclawPresentation(plugin, trajectory, info) {
     // or as the cell of a rotated fitted trajectory.
     if ((!info.trajectory_name || info.frame_count === 1) && !display.fit.enabled) await builder.tryCreateUnitcell(model);
     const el = document.getElementById('processing');
-    if (el) el.textContent = `${display.preprocessed ? 'Host-prepared · legacy transport · ' : ''}${display.stage} · wrap: ${display.wrap} · stride ${display.stride} (${info.frame_count}/${display.source_frames} frames) · water removed: ${display.water_removed} atoms · fit: ${display.fit.enabled ? 'sampled average' : 'off'}${display.warnings.length ? ' · ' + display.warnings.join('; ') : ''}`;
+    if (el) el.textContent = `${display.preprocessed ? 'Host-prepared · legacy transport · ' : ''}${display.stage} · wrap: ${display.wrap} · stride ${display.stride} (${info.frame_count}/${display.source_frames} frames) · water removed: ${display.water_removed} atoms${display.ions_removed ? ` · ions removed: ${display.ions_removed}` : ''} · fit: ${display.fit.enabled ? 'sampled average' : 'off'}${display.warnings.length ? ' · ' + display.warnings.join('; ') : ''}`;
     return { model, structure };
 }
 

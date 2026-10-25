@@ -571,6 +571,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "preview_camera_preset_unsupported": "Use a supported camera preset.",
     "preview_node_context_incomplete": "Provide complete node context for the preview.",
     "molstar_input_invalid": "Provide a readable PDB and its matching, finished DCD with the same atom order and count.",
+    "molstar_page_too_large": "Lower max_frames, raise max_bytes (pages over 16 MB cannot be published), or use the MCP viewer / serve_molstar.",
     "molstar_server_failed": "Use a free port or reinstall MDClaw to restore the bundled Molstar assets.",
     "pymol_not_available": "PyMOL is unavailable; run in a runtime that ships it.",
     "pymol_preview_missing_output": "PyMOL preview produced no output; treat as failed.",

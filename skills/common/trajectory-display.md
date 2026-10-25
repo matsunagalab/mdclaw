@@ -59,9 +59,9 @@ remote rendering as pending rather than done.
 1. Resolve the requested production chain/segment, matching topology, atom
    identities, and per-frame cell information. Reuse an existing display copy
    only if its source, selection, stride, PBC treatment, and fitting match.
-2. Preserve protein, nucleic acid, ligand/cofactors, lipids, and relevant ions.
-   For routine production viewing, remove water from the display copy, not just
-   its representation, to reduce host-to-client traffic. `not water` is a
+2. Preserve protein, nucleic acid, ligand/cofactors, and lipids. For production
+   viewing, remove water and monatomic ions from the display copy, not just
+   their representation, to reduce host-to-client traffic. `not water` is a
    starting selection; verify model-specific water/virtual-site residue names
    and component counts. Never silently use concat's default `protein` selection.
 3. For a long overview with no requested sampling interval, retain at most
@@ -111,15 +111,16 @@ cell in a fitted view unless the renderer can carry the transformed vectors.
 
 ## Processing and limits
 
-- `DisplayData` is shared by both Molstar transports. It reads one DCD frame at
-  a time, uses MDTraj whole-molecule imaging with explicit polymer anchors and
-  verified PDB connectivity, then removes water for production. Orthorhombic
-  and triclinic cells are supported. OpenMM's topology parser supplies standard
+- `DisplayData` is shared by both Molstar transports and the Artifact page. It
+  reads one DCD frame at a time, uses MDTraj whole-molecule imaging with explicit
+  polymer anchors and verified PDB connectivity, then removes water and
+  monatomic ions for production. Orthorhombic and triclinic cells are supported. OpenMM's topology parser supplies standard
   terminal/force-field aliases; unknown disconnected residues require a bonded
   PDB with CONECT. Missing cells are reported as skipped, not corrected.
-- Production uniformly samples at most `max_frames`; preparation stages retain
-  all frames and water. Lipids, ligand, and ions remain. The source-frame index
-  is shown beside the display-frame index; it is not a physical time estimate.
+- Production uniformly samples at most `max_frames` and keeps the solute and
+  lipids only; preparation stages retain all frames, water and ions. The
+  source-frame index is shown beside the display-frame index; it is not a
+  physical time estimate.
 - The viewer shows a unit cell for an unfitted static structure. It omits the
   cell for DCD playback rather than showing stale PDB cell dimensions during NPT.
 - A requested fit uses the sampled frames' average and applies the same transform

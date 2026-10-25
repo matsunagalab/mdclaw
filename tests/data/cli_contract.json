@@ -336,6 +336,15 @@
     "requires_node": false,
     "server": "evidence"
   },
+  "export_molstar_page": {
+    "job_dir_is_data": false,
+    "node_type": null,
+    "required_params": [
+      "structure_file"
+    ],
+    "requires_node": false,
+    "server": "visualization"
+  },
   "export_state_pdb": {
     "job_dir_is_data": false,
     "node_type": null,

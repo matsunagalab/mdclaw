@@ -107,13 +107,13 @@ After preparing the runtime, check the entry point from the checkout:
 bin/mdclaw molstar-mcp --help
 ```
 
-Register on the **file/compute host**, where the Codex CLI or Claude Code agent
-runs, not on the PC that connects to it. With a Pixi checkout, register once
-from that checkout directory (choose the command for your agent):
+Register on the **file/compute host**, where the Codex CLI runs, not on the
+PC that connects to it. Claude Code displays Molstar through an Artifact page
+instead and needs no registration (see below). With a Pixi checkout, register
+once from that checkout directory:
 
 ```bash
 codex mcp add mdclaw_molstar --env MDCLAW_RUNTIME=pixi -- "$PWD/bin/mdclaw" molstar-mcp
-claude mcp add --scope user --transport stdio mdclaw_molstar --env MDCLAW_RUNTIME=pixi -- "$PWD/bin/mdclaw" molstar-mcp
 ```
 
 The absolute launcher path preserves the Pixi manifest location even when the
@@ -158,29 +158,17 @@ is missing instead of displaying a sample or another widget's selection.
 Existing `mdclaw_molstar_probe` registrations keep working; this installer does
 not rewrite them or interrupt active connections.
 
-For Claude, register on the host running the agent (floyd for files on floyd),
-then discover `open_molstar_probe` in that **running session**. A separate
-`claude mcp get` reporting Connected confirms startup, not current-session
-tool loading or UI rendering. In an installed plugin the server is named
-`plugin:mdclaw:mdclaw_molstar`; standalone registration uses `mdclaw_molstar`.
-Use the exact name in the client's reconnect control. Remote Control supports
-`/mcp reconnect <name>`; verify the response rather than assuming a newly added
-configuration is loaded. Plugin changes use `/reload-plugins`, with `--force`
-if the response requires it. If the tool is still absent, use a new session in
-the same project; do not run a concurrent `--continue`/`--resume` against an
-active conversation. This does not require restarting the desktop application.
-See [Claude's reconnect documentation](https://code.claude.com/docs/en/remote-control#authorize-a-connector-again-from-your-shell)
-and [plugin reload rules](https://code.claude.com/docs/en/plugins/components#mcp-servers).
-
-An SSH-launched CLI can be viewed through a graphical client. Distinguish
-Desktop's SSH environment, terminal Remote Control, Desktop Chat/Code, and a
-plain terminal. The execution host's environment variables do not identify
-the display client's widget support. Test the native open tool and confirm
-actual rotation/playback before declaring that route working. Server tests
-alone do not prove Claude client rendering. Follow
-[the existing display skill](../../skills/common/visual-qa.md#when-claude-cannot-find-or-display-the-mcp-viewer)
-for troubleshooting; keep host-resident data streaming as the target rather
-than replacing it with an all-frames HTML/Artifact export.
+**Claude Code needs no Molstar MCP registration.** Claude Code (terminal,
+Desktop Code tab, Remote Control) does not render MCP Apps widgets: on
+2026-10-26 Claude Code 2.1.310 on floyd loaded and called `open_molstar_probe`
+successfully, yet never requested the viewer's `ui://` resource, and no panel
+appeared in Claude Desktop's Code screen. The display skill therefore writes a
+self-contained page with `mdclaw export_molstar_page` on the host and publishes
+it with Claude Code's Artifact tool. It uses the installed CLI only, so the
+plugin, Pixi checkout or shared SIF that runs MDClaw is enough. See
+[the display skill](../../skills/common/visual-qa.md#check-the-interactive-route).
+An existing `mdclaw_molstar` registration in Claude Code is harmless; remove it
+with `claude mcp remove mdclaw_molstar -s user` if it is not wanted.
 
 For production use `stage: "prod"`; wrap is on, fit is off, and long previews
 keep at most 1,000 frames by default. The UI targets up to 60 fps with bounded

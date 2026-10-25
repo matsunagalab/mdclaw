@@ -953,12 +953,22 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
   ready URL to stderr; Ctrl-C stops it. Keeps the DCD on the host and reads
   only the requested frame (12 bytes/atom); never serves the whole DCD.
   Defaults to whole-molecule wrap; stage presets retain translucent water for
-  preparation and remove it for production, sampling at most 1,000 frames.
+  preparation and remove water and ions for production, sampling at most
+  1,000 frames.
   Protein-backbone average fitting is opt-in (`fit=True`).
   Binds loopback. Use SSH forwarding for a remote Mac; `public_origin` permits
   an existing authenticated HTTPS proxy's exact origin, without deploying or
   configuring it. No input or DAG changes. See
   [startup, host setup, and limits](molstar-viewer.md).
+- `export_molstar_page(structure_file, trajectory_file=None, output_file=None, stage="auto", wrap=True, max_frames=1000, fit=False, title=None, max_bytes=8000000)`:
+  writes a self-contained Mol* playback page for Claude Code, which publishes
+  it with its Artifact tool (Claude Code does not render the MCP viewer).
+  Same `DisplayData` selection and presentation as `serve_molstar`; embeds the
+  retained display frames, sampling production frames further to fit
+  `max_bytes`, and loads Mol* 5.13.0 from jsDelivr with an SRI hash of the
+  bundled build. Refuses with `molstar_page_too_large` when even sampling
+  cannot fit. Read-only on inputs; no DAG changes. See
+  [the Claude Code section](molstar-viewer.md#claude-code-self-contained-artifact-page).
 - `render_structure_preview(...)`: PyMOL headless PNG rendering for PDB/mmCIF.
   `style="system_box"` is the assembled-system view used from `solv` onward
   (`overview` after `prep`, which has no solvent or cell): protein cartoon

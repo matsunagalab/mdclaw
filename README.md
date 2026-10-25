@@ -15,9 +15,10 @@ inputs, outputs, and status so work can be inspected and resumed later.
 Use it with an agent such as Claude Code or Codex, or call the tools directly.
 
 For interactive structure viewing and MD playback, the display skill selects
-Molstar when a suitable MCP viewer or reachable browser is available; explicit
+Molstar when a suitable MCP viewer, a reachable browser, or (in Claude Code) an
+Artifact page is available; explicit
 still-image requests use PyMOL. Preparation views retain translucent water,
-while production views hide water, retain lipids/ligands, wrap molecules, and
+while production views show only the solute (and lipids), wrap molecules, and
 subsample long trajectories. Fitting is opt-in.
 
 An attached Molstar MCP viewer can stream requested coordinates through Codex
@@ -29,60 +30,34 @@ the printed `viewer_url` and keep the command running while viewing. Mol* is
 bundled. See the [viewer guide](docs/developer/molstar-viewer.md) for MCP setup,
 remote connection alternatives, and host-specific verification limits.
 
-### Molstar from a remote Claude Code session
+### Molstar in Claude Code
 
-The host that stores the MD files runs the MCP server; an MCP Apps-capable
-client renders Molstar. In a supported client, the UI and requested frames use the MCP connection,
-so this route needs neither an extra web port nor a separate SSH tunnel. The
-source DCD stays on the host. An SSH terminal on that host does **not** tell
-you whether the user's app can render an interactive viewer.
+Claude Code (terminal, Desktop Code tab, or Remote Control) does not render
+MCP viewer widgets, so the display skill delivers Molstar as a private
+claude.ai Artifact instead. On the host that stores the MD files:
 
-For data on **floyd**, register the server with **Claude Code on floyd**, not
-with Claude Code on your Mac. Choose the applicable setup:
+```bash
+mdclaw export_molstar_page \
+  --structure-file /absolute/path/topology.pdb \
+  --trajectory-file /absolute/path/trajectory.dcd \
+  --stage prod --title "CLN025 prod_001" --output-file /tmp/cln025_prod.html
+```
 
-- **Installed and enabled mdclaw Claude plugin:** the plugin includes the MCP
-  registration. Its runtime must be available on the execution host.
-- **Repository checkout / Pixi / shared SIF without that plugin:** register
-  once using [the deployment commands](docs/agents/deployment.md#molstar-mcp-display).
-  Repo-local `.claude/skills/` provides the display instructions, but does not
-  register an MCP server. Installing the SIF alone does not install skills.
+The agent then publishes the page with its Artifact tool, and you open the
+link in the Desktop app or a browser to rotate and play the trajectory. The
+page uses the same presentation, molecule wrap, water removal and sampling as
+the MCP viewer, so it needs no MCP registration, port or SSH tunnel and works
+behind firewalls. It embeds the retained display frames (production frames
+are sampled to fit 8 MB), so do not use it when the data must stay on the host.
+Just ask: **“Show prod_001 in Molstar.”** The display skill
+(`skills/common/visual-qa.md`) picks this route in Claude Code.
 
-There are three separate checks:
-
-| Check | What it establishes |
-|---|---|
-| `claude mcp get mdclaw_molstar` reports Connected | The configured server can start and connect. |
-| The current agent discovers `open_molstar_probe` | This session has loaded the tool. Plugin installations use a plugin-prefixed tool name. |
-| The molecule appears and Play advances frames | This client can actually render and operate the viewer. |
-
-If registration was added during a session, use the client's MCP reconnect
-control if it lists the server. Remote Control also accepts
-`/mcp reconnect mdclaw_molstar`; check its response. Installed plugin updates
-use `/reload-plugins`. If the tool remains absent, start a new session in the
-same project; restarting the whole desktop app is not the default remedy.
-Keep the original session intact rather than running a second writer with
-`claude --continue`.
-
-Then ask: **“Read `skills/common/visual-qa.md`, discover `open_molstar_probe`,
-and play prod_001 with `stage: "prod"` through MCP. Keep the DCD on this host.”**
-That skill supplies the exact call, preparation/production defaults, and the
-checks needed to distinguish missing tools from missing client rendering.
-
-**Compatibility:** Codex desktop Remote Control playback has been verified
-with this viewer. **Claude Desktop's Code view over the user's remote connection
-did not display a Molstar panel in the 2026-10-26 trial**, even after the session
-loaded the tool and an authorized call succeeded. The client version and UI
-resource requests were not captured, so this is a failed end-to-end trial,
-not proof that every Claude version lacks support. Treat that route as
-unverified for interactive display; registration alone is insufficient.
-Claude Chat and Code are distinct. The [MCP extension support matrix](https://modelcontextprotocol.io/extensions/client-matrix)
-lists Claude Desktop generally, without establishing this Code/remote route.
-Once calls succeed, investigate client rendering rather than repeating
-registration, permission changes, or session restarts.
-See [Claude's remote-host MCP documentation](https://code.claude.com/docs/en/desktop#use-mcp-servers-set-up-on-the-remote-machine)
-and the [display troubleshooting steps](skills/common/visual-qa.md#when-claude-cannot-find-or-display-the-mcp-viewer).
-Embedding all coordinates in an HTML Artifact is a different delivery method,
-not a fix for a missing MCP viewer, and is not used when data must stay on the host.
+**Compatibility:** Codex desktop Remote Control plays through the MCP viewer
+(no coordinates leave the host). In Claude Code the MCP viewer was registered,
+loaded and called successfully on 2026-10-26, but the client never requested
+its UI, and Anthropic documents MCP Apps for claude.ai, Claude Desktop chat,
+Cowork and mobile only; the Artifact page played the same trajectory in Claude
+Desktop's Code screen. See the [display steps](skills/common/visual-qa.md#check-the-interactive-route).
 
 ## Install / Deploy
 

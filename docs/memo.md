@@ -13,6 +13,19 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-26 — Claude CodeのMolstar表示をArtifactページに、production表示は溶質のみ
+
+本人の指示「Codex向けになっているMolstarのskillをClaude Codeのデスクトップアプリでも同じようにスムーズに」と「productionはイオンを表示せず溶質だけ（脂質があれば脂質も）。Codexも同様、準備・最小化・平衡化は従来どおり」。
+
+- **前項（`15e3c48`「Claude CodeリモートMolstarの表示は未解決」）を訂正**。原因はClaude Code側にある。floydのClaude Code 2.1.310（Remote Control経由でClaude Desktop Code画面から閲覧）で `open_molstar_probe` は成功したが、MCPサーバーのstdout書き込みは起動以来合計5,411 bytes（`/proc/<pid>/io` の wchar）で、約2.1 MBの `ui://` ビューアは一度も要求されていない。公式ドキュメントはMCP Appsの対応面をclaude.ai・Claude Desktopチャット・Cowork・モバイルとし、Claude Code（端末・Desktop Code・Remote Control）は挙げていない。有効化設定も無い。再登録・再接続・再起動では変わらない。
+- 前項の「全座標Artifact化も解決として扱わない」も本人判断で撤回。新ツール `export_molstar_page` が `DisplayData`（stage・wrap・水/イオン除去・間引き・fit）と共通の表現 `mdclawPresentation` で自己完結HTMLを書き、Claude CodeはArtifactツールで公開する。座標は非実行の `<script type=...>` ブロックにbase64で埋め込み（`<` はエスケープ）、Mol* 5.13.0はjsDelivrからSRI付きで読む（同梱ビルドとsha256一致、CORS許可を確認）。production座標は既定8 MBに収まるよう間引き、収まらなければ `molstar_page_too_large`。再生は10/20/30/60 fps目標（既定30、更新時間込み）。表示skillはClaude CodeならArtifact経路へ直行、MCPはCodexと大容量・データ非持ち出し用に残す。
+- 実地: Mol*の `viewportBackgroundColor` は '#rrggbb' 文字列でないと `e.toLowerCase is not a function` で止まる（手作りページの初版で踏んだ）。本人がClaude Desktop Code画面で再生を確認: CLN025 prod_001、166原子・100フレーム、387 KB。
+- production表示から単原子イオンを除去（`display.ions_removed` を報告）。水と同じくデータから外すのでMCP・HTTP・Artifactの全経路に効く。solv/topo/min/eqは水・イオンを従来どおり表示。構造金属（Zn等）も単原子なのでproductionでは消える点は本人へ伝達済み。
+- 検証: ruff clean、関連pytest 438 passed（失敗1件 `test_switch_datasets_in_one_stdio_connection[wrapper]` はfloydのcheckoutにpixi環境が無いため、既存）、JS 14 passed（新 `tests/js/molstar_page.test.cjs` 4件、CIへ追加）。
+- 共有SIF: v0.6.11（GHCR digest `sha256:7067af02…`）を `/data/mdclaw/mdclaw-amd64-1269f3430e65.sif`（sha256 `fb4a2931…`、4,991,414,272 bytes）としてpull。floyd（A6000）・n1（TITAN X Pascal）・n2/n4（1080 Ti）・n5（2080 Ti）でsbatch経由 `test-container.sh --gpu` 各26 passed / 0 failed、OpenMM CUDA・PME/cuFFT・Torch・PythonTorchForceまで実行、PMEエネルギーは全GPUで −130.075944（差3e-8以内）。ドライバ530.30.02/550.54.14。n3はsinfoに無く未検査。パッケージ244ファイルがcheckoutと一致。本人承認で `/data/mdclaw.sif` を張替え、`63e352c` SIFはロールバック用に保持。floydからの対話的 `srun` は全ノードで通信エラー、`sbatch` は可。
+- スモークMD（同SIF、floyd）: 5AWL chain A、ff19SB+OPC、51.6 Å立方、Na⁺12/Cl⁻10、min 5000反復、eq NVT 1 ns+NPT 1 ns（3分26秒）、prod 100 ps NPT 4 fs HMR（32秒）。`/home/yasu/tmp/mdclaw/smoke-0.6.11/study`。
+- Claude Codeのユーザー設定に `mdclaw_molstar`（新SIFのパス直書き）を登録したまま。表示には不要。
+
 ## 2026-10-26 — Claude CodeリモートMolstarの表示は未解決
 
 - `10f6873` でREADME・既存表示skill・AGENTS/CLAUDE・deploymentに仕組みと切り分けを記載し、floydの実checkoutへ反映。登録、会話のtool読込み、実描画は別の確認項目。
@@ -434,6 +447,18 @@ add the correction and say what it overturns.
   - `mdclaw-doctor.sh` に、`scripts/*.sh`・`container/scripts/*.sh` の実行ビットと、`skills/` 全エントリのミラー完全性のチェックを追加（クラウド同期チェックアウトが exec bit と symlink を剥がす事故の検知。実際にこの作業ツリーで追跡 symlink 22 本の消失と 9 ファイルの exec bit 剥落が起きており、`git checkout` で復旧した）。
   - doctor の新チェックが `container/scripts/build-plumed.sh` の exec bit 欠落（git 追跡モードも 100644）を即検出 → `chmod +x` で修正（Dockerfile は `bash` 経由で呼ぶため実害はなかった）。
 - **検証**: 標準テストセット＋deployment＋bin wrapper＋新テストの 387 passed、ruff clean、doctor 動作確認。GHCR には `0.6.8` / `latest` が公開済みで、バージョン 5 箇所の同期も確認した。
+
+## 2026-10-01 — 共有 amd64 SIF を main `63e352c` に、スイート初の全件クリーン、GHCR も更新
+
+同日 2 回目の更新。前段（`a70d16b` + SST2 `ba48461`）の受け入れで挙げた 3 件を別セッションが `bca9e96` で直して push してきたので、それを取り込んで作り直した。ビルド入力で `a70d16b` から動いたのは SST2 ピンだけで、土台のイメージが既に `ba48461` を積んでいるため増分ビルドが成立（`FROM ghcr.io/matsunagalab/mdclaw:a70d16b8a183-sst2ba48461` にパッケージのみ `--no-deps` で差し替え）。`b0eefb5` の `--ligand-charge-method nagl` は `openff-nagl>=0.5` が `a70d16b` 以前から宣言済みで、イメージに 0.6.1 が実在するので新規依存なし。
+
+成果物: `/data/mdclaw/mdclaw-amd64-63e352cf03dc.sif`、5,977,493,504 バイト、sha256 `df5d47f8…`（image `sha256:1b5ef8de…`）。23:18 JST に atomic relink で切り替え、`…-a70d16b8a183-sst2ba48461.sif` はロールバック用に保持。GHCR は `:63e352cf03dc` と `:latest` の両タグが digest `sha256:b3783f68…`、config digest はローカル image id と一致、匿名 manifest 取得 200（public 維持）。`:latest` が `661a80cedc05` から 2 週間ぶりに進んだ。
+
+受け入れ: イメージ・SIF とも `test-container.sh` 26 passed / 0 failed、パッケージ 226 ファイルが `63e352c` と一致（切り替え後に共有パス経由でも再確認）、178 モジュールの import 掃引 0 failed。**インストール済みスイートは 2,644 passed / 0 failed / 149 deselected で `REGRESSION_EXIT 0`** — このシリーズで初めて失敗ゼロ。`bca9e96` が 3 件すべてを潰した: metadynamics の final PDB が `render_simulation_pdb_preserving_resnames` 経由になり（生の `writeFile` が消えたので `EXPECTED` への追加は不要、私が渡したコメントの「EXPECTED に足す」は誤りだった）、FES の許容値が 1e-6 に、`groups_share_molecule` が `n_bonds == 0` で `False` を返すようになった。3 番目はテスト側の追従も必要で、結合なし → intermolecular → 9/22 の半箱長チェックに 3 nm が引っかかるため、箱を先に 4 nm にして目標を 1 nm にする形に直されている（私の報告はその副作用を見落としていた）。
+
+SST2 ピンは `ee4495b` でこちらからコミット・push した（5 箇所すべて）。`docs/developer/container.md` の「bump the three places together」が `MDCLAW_SST2_REVISION` の 2 箇所を数え落としていてドリフトの機構そのものだったので、5 箇所の表に書き換え、「ピンを上げてもイメージは再ビルドされない。amd64 と RIKYU arm64 は別承認で切り替わるので、リビジョンは checkout から推測せずイメージ内の `MDCLAW_SST2_REVISION` を見る」を明記。**RIKYU arm64 イメージは未着手（再ビルド未承認）** なので、向こうは今も `5590f4f` を積んでいる。
+
+残件: 5 箇所のピン一致を検証するテストが無く、それが今回のドリフトを許した機構。ランタイムの `sst2_charge_unscaled_unsupported` は診断であって再発防止ではない。未着手。
 
 ## 2026-10-01 — `--ligand-charge-method {nagl, am1bcc}`: リガンド電荷を AM1-BCC に切り替える CLI オプション（既定は NAGL のまま）
 
