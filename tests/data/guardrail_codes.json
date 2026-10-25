@@ -268,6 +268,8 @@
   "modxna_target_residue_not_found",
   "modxna_terminal_residue_unsupported",
   "modxna_tool_unavailable",
+  "molstar_input_invalid",
+  "molstar_server_failed",
   "mps_task_requires_cuda_platform",
   "mps_tasks_per_gpu_exceeded",
   "multiple_source_roots",

@@ -1,16 +1,22 @@
 ---
 name: common
-description: "Shared MDClaw conventions used by every md-* skill: the canonical job run loop (inspect -> create -> explain -> run), tool output contract, solvent regime routing, chemistry diagnostics, and handoff rules. Read the referenced page when an MDClaw skill points here; this skill is support material, not a workflow entry point."
+description: "Display existing molecular structures or MD trajectories: route prepared full-system views, playback and interactive rotation to Molstar when available, and still images to PyMOL. Also supplies shared MDClaw job-loop, output, solvent, chemistry, and handoff conventions for md-* skills."
 ---
 
 # MDClaw Common Conventions
+
+For a molecule/trajectory display request (including 「再生して」「回して見たい」
+「準備後の全系を見せて」 and 「静止画を見せて」), follow [visual-qa.md](visual-qa.md) directly and stop
+after display. It owns intent selection, current-session capability checks,
+and fallback. Viewing existing files does not start an MD workflow.
+Stage-specific contents and any display-copy processing are selected there too.
 
 This directory holds the shared pages that the MDClaw workflow skills
 (`md-prepare`, `md-equilibration`, `md-production`, `md-analyze`, `md-study`,
 `md-fep`, `md-abfe`, `md-we`, `hpc-run`, and the model-backend skills)
 reference as `skills/common/<page>.md`. It is installed alongside them so
-those references resolve; start from the skill that matches the user's
-request, not from here.
+those references resolve. For work other than display, start from the workflow
+skill that matches the user's request.
 
 | Page | Contents |
 |---|---|
@@ -20,5 +26,6 @@ request, not from here.
 | `solvent-regimes.md` | Routing between explicit water, implicit solvent, vacuum, and membrane preparation. |
 | `implicit-solvent-contract.md` | What the implicit-solvent path supports and refuses. |
 | `chemistry-diagnostics.md` | Diagnosing chemistry guardrail failures during preparation. |
-| `visual-qa.md` | Structure preview and visual quality-assurance conventions. |
+| `visual-qa.md` | Molstar/PyMOL selection by user intent and available display capabilities; optional visual review. |
+| `trajectory-display.md` | Host-side preparation snapshots and trajectory display copies: retain lipids/ligands, subsample long runs, correct PBC where supported, and fit to the average only on request. |
 | `md-handoff.md` | Handoff from source-producing prediction skills (Boltz, MODELLER, BioEmu) to MD preparation. |

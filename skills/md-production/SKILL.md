@@ -150,11 +150,10 @@ binding), this skill does not apply: use the weighted ensemble of
 ## Handoff
 
 1. Verify the `prod` node is `completed`.
-2. Only if the user asked for a visual check, perform Visual QA per
-   `skills/common/visual-qa.md` (render preview, inspect,
-   `register_visual_review`). That page owns the style table; do not pick a
-   style from memory. If severity is `high`, ask the user before using the
-   production output downstream.
+2. For requested playback, rotation, a still image, or a visual check,
+   follow `skills/common/visual-qa.md` for display selection, preview style,
+   and review scope. If a requested review finds high severity, ask the user
+   before using the production output downstream.
 3. Follow the stopping rule in `skills/common/run-loop.md`. If the current
    request requires analysis or a scientific answer, invoke
    `skills/md-analyze/SKILL.md` on this `job_dir`. Otherwise present:

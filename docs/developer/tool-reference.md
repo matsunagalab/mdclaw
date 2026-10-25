@@ -942,6 +942,18 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
 
 ## `visualization/`
 
+- `serve_molstar(structure_file, trajectory_file=None, port=0, public_origin=None, stage="auto", wrap=True, max_frames=1000, fit=False)`:
+  foreground Mol* viewer for PDB and matching DCD; rotation, zoom, playback,
+  and frame seeking in Codex / Claude Code desktop Browser panes. Prints the
+  ready URL to stderr; Ctrl-C stops it. Keeps the DCD on the host and reads
+  only the requested frame (12 bytes/atom); never serves the whole DCD.
+  Defaults to whole-molecule wrap; stage presets retain translucent water for
+  preparation and remove it for production, sampling at most 1,000 frames.
+  Protein-backbone average fitting is opt-in (`fit=True`).
+  Binds loopback. Use SSH forwarding for a remote Mac; `public_origin` permits
+  an existing authenticated HTTPS proxy's exact origin, without deploying or
+  configuring it. No input or DAG changes. See
+  [startup, host setup, and limits](molstar-viewer.md).
 - `render_structure_preview(...)`: PyMOL headless PNG rendering for PDB/mmCIF.
   `style="system_box"` is the assembled-system view used from `solv` onward
   (`overview` after `prep`, which has no solvent or cell): protein cartoon

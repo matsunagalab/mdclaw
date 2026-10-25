@@ -6,12 +6,14 @@ and assembled into ``TOOLS``.
 """
 
 from mdclaw.visualization.preview import render_structure_preview
+from mdclaw.visualization.molstar_viewer import serve_molstar
 from mdclaw.visualization.review import register_visual_review
 
 TOOLS = {
     fn.__name__: fn
     for fn in (
         render_structure_preview,
+        serve_molstar,
         register_visual_review,
     )
 }

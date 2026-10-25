@@ -49,6 +49,23 @@ Markers are configured in `pyproject.toml`:
 
 ## Test Patterns
 
+### Local Molstar viewer
+
+```bash
+pixi run pytest tests/test_molstar_viewer.py tests/test_molstar_display.py -q
+```
+
+The standard CI matrix runs these real PDB/DCD, HTTP, bundled-asset, and CLI
+lifecycle tests without a display or network connection. WebGL rendering
+requires a separate desktop check: PDB rotation, DCD play/pause and looping,
+Previous/Next, and slider endpoints. See the [viewer guide](molstar-viewer.md)
+and [working memo](../memo.md) for host setup and recorded verification.
+Frame-streaming checks verify exact coordinates in angstroms, random and
+concurrent seeking, one-frame-only DCD reads, no read on HEAD, refusal of
+whole-DCD downloads, changed-input rejection, and explicit HTTPS origins.
+Also check the real remote client through its SSH/proxy route; a host-local
+rendering test does not establish HPC-to-Mac or iOS connectivity.
+
 ### MDDB export schema compatibility
 
 ```bash

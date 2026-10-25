@@ -29,6 +29,11 @@ does not reproduce the mass-weighted, periodic OpenMM coordinate used by a
 production distance restraint. For biased runs, use the prod node's
 `collective_variables` artifact as the exact CV record.
 
+For display alignment, follow [trajectory display](../common/trajectory-display.md):
+correct PBC first, fit only on request, and retain ligand/lipid relative positions.
+`fit_trajectory --reference average` already provides iterative mean fitting;
+it does not correct periodic discontinuities.
+
 Prefer DAG-resolved artifacts from the analyze node. For ad-hoc external
 trajectories, explicit file paths are acceptable when the user asks for them.
 `analyze_rmsd`, `analyze_distance`, and `analyze_q_value` include `time_ns` in

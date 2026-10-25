@@ -1,7 +1,7 @@
 ---
 title: MDClaw Working Memo
 category: development
-updated: 2026-10-24
+updated: 2026-10-25
 ---
 
 # Working Memo
@@ -12,6 +12,178 @@ continues; do not rewrite past entries when a later finding contradicts them —
 add the correction and say what it overturns.
 
 ---
+
+## 2026-10-25 — Molstar表示・高速化・skill更新を一括コミット
+
+- 本人指定で今回のMolstar関連37ファイルを一括でコミット対象とした。共有HTTP/MCP表示、段階別表現・wrap・間引き、先読み/キャッシュによる再生高速化、表示skill、同梱Mol*とライセンス、テスト・説明文書を含む。READMEも現在のMCP経由のRemote Control表示を入口へ記載。
+- 最終確認：registry/CLI/guardrail/Slurm、Molstar viewer/display、deployment/docsのpytest **433件成功**。専用SDK環境のMCP **1件成功**、再生JavaScript **10件成功**、Ruffと差分検査成功。実MDの生成物・表示用データ・検証用ファイルはコミットに含めずローカルに保持する。
+
+## 2026-10-25 — 表示skillの段階選択を更新し、MCP再生を高速化
+
+- 既存 `common` skillの表示手順に、準備後の全系＝透明水surface・タンパクcartoon・脂質/リガンドsticks、production＝水除去・脂質保持・wrap既定・最大1,000フレーム・fitは明示時だけ、という選択と旧MCP互換経路を整理。準備全系は実際のsolv/topo成果物を使い、productionの一場面で代用しない。`.agents` / `.claude` は同じ正本へのsymlinkで反映。
+- UI 0.5.1：30 fps上限を60へ。RTTに応じた先読み（最大64フレーム）と並列要求（最大32）、8 MiB/最大256フレームの座標キャッシュで訪問済み座標を再利用（巨大系は最低2フレーム、通信中応答や描画メモリは別）。全DCDを一括取得せず、今回の3,417原子/100フレームは一巡後に約4.1 MBの座標がキャッシュに収まり、以後のループで座標再要求なし。
+- 本人がリモートのFPS変動を報告。再生開始前の短区間バッファ、枯渇時の明示的な補充待ち、ブラウザ描画時計によるペーシングを追加。再生中は必要時だけ目標を下げ、目標を上下させない。座標補間やフレーム飛ばしは行わず、表示に目標/実測fps・update/wait時間・cacheを追加。
+- 決定的時計の試験では、200 ms RTT/10 ms更新で開始バッファ後60 fps（開始時間を含む既定測定窓では56.5）。100〜580 msにRTTを変動させた試験も安定区間のフレーム間隔median/p99とも16.7 ms。更新負荷12/20 msの交互変動では目標30 fpsへ移行。Node 10件成功。
+- 実Molstar＋実MD3,417原子/100フレーム、検証用ホストに200 ms遅延を加えた測定：ウォームアップ後約226秒/12,008更新で平均53.2 fps、間隔median17.2/p95 25.9/p99 29.3 ms。短区間の測定値は変動し、60 fps一定を実証したものではない。通信待ちはほぼ0、cache100/100。以前の約28〜29 fpsは別の3,341原子系/旧UIであり厳密な同条件比較ではない。これは実Remote Control回線の計測ではない。
+- 既存native MCPで同じwrapped production対を再度openし、本人が「早くなりました」、さらに「最初で一回再生してしまえば…他は全然引っかかりません」と確認。初回途中の2〜3秒ごとの引っかかりは以前からあり、本人が今回の改良と無関係として追跡不要と指定。原因を通信/GC等へ断定しない。Codex本体/既存MCPを再起動せず、旧MCP4プロセスは維持。検証専用ブラウザとサーバーは終了。
+- 関連pytest66件成功、任意MCP SDK試験は通常pixiではskip、専用SDK環境で1件成功。docs/deploymentの10件も成功。新しいUIでの高速化は本人確認済み、遠隔の数値fpsは未取得。既存データとDAGは変更せず、コミット・pushなし。
+
+## 2026-10-25 — 溶媒追加後の全系を透明水surfaceで表示、本人確認済み
+
+- 本人が準備直後の全系をMolstarで見るよう依頼。`topo_001/artifacts/system.topology.pdb` を `DisplayData(stage=topo, wrap=True, fit=False)` で処理。タンパク質3,341＋水61,416＋イオン76＝64,833原子を保持し、透明な水Gaussian surface・タンパクcartoon・イオン球・周期セルを表示。
+- 旧MCPのPDB/DCD対契約に合わせ、同じ準備座標1フレームをDCDコンテナへ格納（新しいMDや人工変位ではない）。表示用コピーとsource/output hashは `runs/molstar-md-demo-20261025/display/molstar-preparation-snapshot-20261025/`。全系PDBは6,503,031 bytes。元の準備結果は不変。
+- 処理済み1フレーム表示ではPDB座標をそのまま使い、不要なフレームRPCと再生UIを省略。1フレームならそのPDBのセルが有効なので表示する。共有UI変更は既存MCPのresource読み直しで利用し、Codex本体・MCPを再起動しなかった。Node6件成功（単一構造で構造RPCだけを行う回帰試験を追加）。
+- ネイティブ `open_molstar_probe` で `1ake-preparation-full-system.pdb` / `1ake-preparation-snapshot.dcd` を呼出し、本人が **「透明な水とタンパク質が表示された」** と確認。
+- **前項のtimeoutの解釈を補足**：今回6.5 MBのPDBでも表示できたため、前項の729→314 KBでの改善から固定の転送サイズ上限を推定してはいけない。余分なTERの除去は正しい修正だが、先の応答timeoutの直接原因・消失箇所は未確定のまま。
+
+## 2026-10-25 — 空白Molstar画面の構造応答timeoutを修正、本人が表示を確認
+
+- 前項の呼出し後、本人は「枠だけ出ている」と報告。添付画面は `Waiting for MCP host…` / `Probe failed: tools/call timed out` で、初回の構造応答をUIが受け取れていなかった。呼出し成功を描画成功と同一視しない。
+- 表示用PDBに、水除去後も元のTER（分子鎖の区切り）15,431行が残っていた。原子が残る区間にだけ対応するTERを出し、末尾の保持原子に合わせた残基情報を使うよう修正。水の区切り15,354行を除き、PDBを728,770→314,289 bytesへ縮小。原子レコード・座標・DCDは不変。原子選択後のTERを検査する回帰試験は修正前に失敗（4行、期待1）、修正後に成功。
+- `1ake-md-100ps-prod-wrapped-compact.pdb` と同じDCDを既存ネイティブMCPで呼出し、本人が **「分子が表示された」** と確認。3,417原子・100フレーム、wrapあり・fitなし。Codex本体・MCPの再起動なし。最初の失敗と小さい応答での成功は確認済みだが、Remote Controlの正確なサイズ上限／応答消失箇所は未特定。単なる遅い描画やMolstarの座標処理とは区別する。
+- 関連pytest57件＋任意MCP SDK1件、Ruff成功。出力PDBの原子レコードが旧表示コピーと完全一致することを検査。元シミュレーション結果は保持、修正版は別名で保存し `manifest-compact.json` にハッシュを記録した。今回の本人確認は描画までで、再生の再確認は別途。
+
+## 2026-10-25 — 再起動なしの既存MCPへ処理済み実MDを渡す互換経路
+
+- 本人がCodex本体を再起動せず今の接続へ反映して実MDを表示するよう依頼。現ツールはPython0.2のまま。公式App Serverには `config/mcpServer/reload` があるが、現desktopはstdio接続でこの会話から呼べるreload操作はない。アプリ本体・MCPを終了させず、設定も変更しなかった。
+- 代替として新 `DisplayData` でホスト上に表示用PDB/DCDをフレーム単位で生成。出力は `runs/molstar-md-demo-20261025/display/molstar-prod-wrap-20261025/`。元の全系64,833原子から水を除いた3,417原子・100フレーム、wrapあり・fitなし・stride 1。source/output SHA-256をmanifestへ保存。元データ不変と最初・中間・最後の座標一致を検証。
+- PDB REMARKに表示処理の記録を付け、旧MCPがそのまま渡すPDBから新UIが読み取る。共有表示関数を旧make_htmlが読む `mcp-prototype.js` へ統合（HTTPは同一ファイルをpresentation.jsとして配信）。原子数・フレーム数・component indicesを検査し、画面に `Host-prepared · legacy transport` と処理状態を表示する。サーバー自体のhot reloadや、旧openへの新引数追加ではない。
+- ネイティブopenで上記実MDを呼出し、3,417原子・100フレームとdataset_idを取得。実resource/readでUI0.4.1の新しいmetaを確認。Codex本体PID3475／app-server3569と既存MCP4プロセスの開始時刻は不変。本人へ新画面の処理表示を確認依頼。クライアント側の描画・再生確認は未取得。
+- 関連pytest56件＋任意SDK1件、Node5件（pytestにも含む）、Ruff・diff check成功。旧入力の表示を維持し、不一致の処理記録は拒否。新規skill・CLI・設定項目は追加していない。
+
+## 2026-10-25 — Molstarの既定wrap・ステージ別表現・間引きを実装
+
+- 前項までの未接続部分を共通 `DisplayData` と `presentation.js` で実装。HTTP／MCP双方で分子単位のPBC wrapを既定にし、準備〜平衡化は透明な水surface・タンパクcartoon・脂質／リガンドsticks・イオンを表示。本計算／解析は水を送らず脂質等を保持し、既定で最大1,000フレームの等間隔抽出。元PDB／DCD・DAGを変更せず、DCDはホストで1フレームずつ読む。
+- `stage` を明示でき、autoはDCD側のDAG段階を優先。`wrap=false`、`max_frames=0`（全フレーム）を選べる。`fit=false` が既定で、明示要求時だけタンパク質主鎖の平均構造へ反復fit（最大10回、0.0001 nm）。全保持原子に同じ変換を適用。fit時とDCD再生では誤った固定セルを描かない。
+- OpenMM／MDTrajの結合情報を原子順照合後に統合し、末端水素・HIE等と水の仮想サイトに対応。直方体・三斜晶セルでwhole-molecule imagingを検査。結合不足の非標準残基は明示エラー、セルなしはwrap省略を画面に表示。画面には段階・stride・元フレーム番号・水除去数・fit状態を表示。
+- 関連pytest107件＋任意MCP SDK試験1件成功（Nodeの再生・表現4件を含む）。Ruff・差分検査成功。1AKE実MDの64,833原子・100フレームで準備表示と本計算表示をブラウザ確認。本計算は水61,416原子を除き3,417原子を配信。ホスト処理約13 ms/フレームは3フレームのローカル測定で、実回線のfpsではない。新規SDKのMCP検証画面ではstride 4・25フレームを約29 fpsで再生（200 ms追加遅延、Remote Control実回線ではない）。検証用HTTPホストの接続待ち行列不足によるfetch失敗を、検証ホストの待ち行列拡大で解消。
+- 既存表示skillの参照ページと利用手順を更新。新規skillは追加していない。MCP0.4は新規SDK接続で検証済みだが、現在のネイティブ接続は旧Python0.2。HTML更新だけでは今回のホスト処理は反映されない。旧接続を壊さないUI互換分岐を残し、本体再起動・プロセス強制終了はしていない。既存接続への反映は残件。
+
+## 2026-10-25 — ステージ別表示と表示用トラジェクトリの処理方針
+
+- 本人指定：準備・溶媒／膜充填の確認では水を透明surface、脂質・リガンドを残す。本計算の長い再生では水をsurfaceごと隠し、脂質は残して間引き、PBCを整える。平均構造への反復フィットは「希望したときだけ」と本人回答。
+- `skills/common/visual-qa.md` のstyle表をステージ・目的に基づく表示内容へ拡張。水のないprepと溶媒追加後を区別。`trajectory-display.md` を既存common skillの参照ページとして追加し、元データを保持したホスト上の表示用コピー、通常は約1,000フレームまでの概要用stride、分子を丸ごと保つPBC→水除去→任意fitの順、出典・選択・フレーム数・時間・収束の報告を規定。科学解析への間引きの流用はしない。
+- 既存 `fit_trajectory` は平均構造への反復フィットを持つ。表示用にはprotein and backboneを既定として同じ剛体変換を脂質・リガンドを含む保持全原子へ適用し、膜の向き・全体移動を見る場合は自動fitしない。回転後のbox向きも無視しない。
+- **実装範囲はskill手順の更新**。PyMOL system_boxは透明水surfaceを既に持つ（資源上限超過時のfallbackあり）。concatは選択／stride、fitは平均fitを実装済み。一方、Molstarの段階別プリセット自動適用とトラジェクトリPBC処理の接続は未実装。build時のorthorhombic imaging helperを一般trajectory補正と誤認しない。対応する操作が使えなければ限界を明示する。
+- 文書パス・skill配布／ミラーの10テスト成功。追加参照ページのリンクとCodex／Claude両ミラーの読込も成功。新規skill・CLI・設定項目は追加せず、表示機能や科学計算コードの変更はしていない。
+
+## 2026-10-25 — 既存表示skillにMolstar／PyMOLの自動選択を追加
+
+- 本人指定の「再生・回転はMolstar、静止画はPyMOL」を `skills/common/visual-qa.md` に集約。アプリ名から推測せず、現在の会話のMCPツールとブラウザの到達性を確認し、MCP添付表示→既存の到達可能なブラウザ→理由を示した静止画代替の順で選ぶ。PythonのOS／アプリ検出機能ではなく、エージェントが従う選択手順。
+- 現MCPのPDB＋DCD制約を明記。PDB単独はHTTP経路が使えればMolstar、使えなければ静止画へ。別の既定分子や架空DCDへの置換はしない。新たなMCP登録、SSH、Web公開、アプリ再起動は自動選択に含めない。
+- common skillのdescriptionと冒頭、md-analyzeの表示専用入口、prep／eq／prodの参照、同一内容のAGENTS.md／CLAUDE.mdを更新。表示だけでMD／解析ノードを作らず、単なる表示と画像検査・レビュー登録を区別。テキスト専用モデルでもユーザーへの表示とモデルによる画像検査を分ける。
+- 文書パス・skill配布／ミラーの既存テスト10件成功。MCPあり、ローカルブラウザあり、遠隔localhostのみ、PDB単独、静止画指定、表示要求なしの各分岐を手順と現ツールの対応から点検。これは別アプリでの自動起動実機試験ではない。機能コードは変更せず、既存のCodex／Claudeの相対symlinkから更新が見えることを確認。skillの追加・改名・削除はない。
+
+## 2026-10-25 — 高速化版の新しい画面で、本人が再生改善を確認
+
+- 本人は当初「約0.5秒/フレーム」「fps表示がない」と報告。サーバーのresource/readがディスクの最新HTMLを返すことを一時マーカーで確認し、マーカーは撤去。配信側と既に開いている画面の更新を区別した。Codexのキャッシュが原因という仮説は未確定。
+- サイドバーのRefreshを案内したが、本人のMolstarはサイドバーに存在せず、この手順は不適用。通常版アプリのソースではReload Windowも開発版限定。存在を確認できない更新ボタンを案内しない。
+- `open_molstar_probe({})` を再呼出し、今回新しく添付された実MD（1ake-md-100ps、3,341原子、100フレーム）の画面を見るよう依頼。本人が **「playback up to 30 fps」がある** と回答し、続いて **「結構早くなりましたね」** と改善を確認。Codex本体の再起動・アプリ改変・MCPプロセス強制終了は行っていない。
+- 前項の「新しい表示で反映する」は、既存画面には遡及しないことを明記して補足。30 fpsは目標であり実回線の測定値ではない。今回は遠隔利用での体感改善まで確認済み。機能コードの追加変更はなく、文書だけを訂正。
+
+## 2026-10-25 — MCP再生を先読みで高速化（UI変更のみ）
+
+- 本人が実MDの表示成功を報告し、再生の遅さ・かくつきの改善を依頼。実際のUI JSを実行する時計固定の試験を追加。200 ms MCP往復＋10 ms描画で変更前は2.5 frame/s、最新seekも捨てられることを再現（2件失敗）。逐次通信と描画後200 msの固定待機が主要因。
+- 最大8要求を並行させ、最大32フレームの移動する先読み窓を導入。復号済み座標は8 MiB以内（巨大系は最低2フレーム、通信中の応答やMol*描画分は別）。全トラジェクトリの一括読込はしない。停止・非表示で待機要求を止め、seekは最新を優先。座標補間・フレームの飛ばしはせず、実フレームを30 fps目標で更新。画面に実測更新fpsを表示。
+- 同じ時計固定試験で30 frame/sへ改善。先読み範囲・並行数・pause・ループ・pagehide・seek優先順位を3件のNodeテストで検証。Python viewerテストからNodeがあれば実行する。関連pytest44件成功、Ruff・JS構文・diff check成功。
+- 1AKE実MDのMCP検証用ホストに200 ms遅延を加え、実際のMol*描画で28.6〜28.8 fpsを確認（更新完了数でありGPUの描画周期ではない）。証拠画面 `~/.codex/visualizations/2026/10/24/01a16e11-2738-7d82-aef6-74e12b8d233d/1ake-mcp-smooth-playback.png`。これはRemote Control実回線の計測とは区別する。
+- UI JS 0.3のみ更新し、Python MCPの変更・再起動は不要。実サーバーのmake_htmlがファイルを読み直すため、新しい表示で反映する。ネイティブopenツールを再呼出し、同じ実MDの添付画面を要求済み。古い画面は停止して新しい画面を使う。遠隔側の改善幅は本人の再確認待ち。
+
+## 2026-10-25 — 訂正：Codex本体を再起動せず修正版MCPが有効、実MDの画面を呼出し
+
+- 本人から手順を再質問されたため、ログと実ツールを再確認。16:47:22–23 JSTにこの会話を含む既存threadのMCPがstarting→readyへ遷移していた。Codex本体PID 3475（12:58:26開始）、app-server PID 3569（12:58:32開始）は維持され、本体再起動は起きていない。更新を起こした具体的操作は未特定で、自動更新・特定のユーザー操作とは断定しない。
+- この会話で `open_molstar_probe({})` を再実行し、`1ake-md-100ps.pdb` / `.dcd`、3,341原子、100フレーム、0.2版のdataset_idが返った。実MD用の添付対話画面を呼び出せた。**直前の「既存接続への導入が未完了」という現在地を訂正**。本人の追加設定・アプリ再起動は不要。今後はopen呼出しのPDB/DCD引数で分子を切り替える。
+- 遠隔クライアント上の実MDの描画・再生は本人確認と区別する。実MDのMCP戻り値が合成ではないことは確認済み。一般的な再読込手順を確立したという意味ではない。
+
+## 2026-10-25 — MCP接続中の分子切替を実装／既存Codex接続への導入は未完了
+
+- 本人がCodexを再起動できないと指定。`open_molstar_probe` に `structure_file` / `trajectory_file` を追加し、表示を開くたびにホストの絶対パスで対象を選択できる0.2版へ変更。空引数は起動時の既定値を開く。設定ファイルの書換えやMCP接続の再起動は分子の切替に不要。
+- 表示結果ごとの不透明トークンをUIの `ui/notifications/tool-result` で受け取り、全フレーム要求へ付加。別の分子を開いても既存の画面のPDB・座標は変わらない。UI用ツールはパスを受け取らない。ファイル変更を検出したらその表示だけ拒否し、明示的に開き直すと新トークンを取得できる。DCDハンドルは1フレームの要求中だけ保持し、全DCD転送はしない。
+- `tests/test_molstar_mcp.py` は任意依存 `mcp==1.30.0` 環境で同じstdio接続内の切替、旧表示の保持、不正な入力対・範囲外・未知トークンの拒否、更新済みファイルの開き直しを検証。HTTP viewerと併せ43件成功、Ruff・JS構文検査成功。通常環境でSDKがない場合はMCPテストのみskip。
+- 実ファイルも同じSDK接続で合成1AKE 1,656原子／60フレーム→実MD 3,341原子／100フレームへ切替。最初・最後の座標が異なり各40,092 bytes、旧合成データも引き続き読出し可能。検証用MCPホスト画面で再生がループし、停止・Camera Orthographicを確認。画面記録は `~/.codex/visualizations/2026/10/24/01a16e11-2738-7d82-aef6-74e12b8d233d/1ake-mcp-runtime-switch.png`。この検証用ホストはCodexのRemote Controlではない。
+- **導入の残件**：この会話の実ツールは旧0.1コードのまま、合成データを返す。Pythonファイルの更新は生きているクロージャへ反映されない。公開App Server APIには `config/mcpServer/reload` があるが、既存desktopプロセスはstdio接続、daemon制御socketもなく、利用可能なツールにreloadがない。[公式資料](https://learn.chatgpt.com/docs/app-server)にAPIがあることと、現在の接続から呼べることを区別した。アプリ同梱 `plugins-settings-762b0cdf70d3.js` のRestartは `settings.mcp.restartApp`、説明もelectron app再起動。MCP単独の再接続ボタンだと案内しない。アプリ本体・既存MCPプロセスの強制終了や改変は行わなかった。**修正版の実装・検証は完了、現在のCodex対話画面への実MD表示は未完了**。
+
+## 2026-10-25 — 1AKEの実MD 100 ps完了／実MDのMCP表示は再接続待ち
+
+- `runs/molstar-md-demo-20261025/jobs/main` でsource→prep→solv→topo→min→eq→prod→analyzeの8ノードが完了。1AKE A鎖214残基、タンパク質のみ、pH 7.4。ff19SB＋OPC、0.15 M NaCl、77.66 Å立方体、仮想サイト込み64,833粒子。周期境界の重複水64分子をツールが除去し、トポロジー検査成功。
+- 最小化は最大5,000反復、重原子1,656個への位置拘束k=100。エネルギー−843,668.52→−979,285.02 kJ/mol。50 Kの短いwarmup後、300 KのNVT 10 ps＋300 K／1 barのNPT 10 psを実行。4 fs、HMR、LangevinMiddleIntegrator。今回の環境ではOpenCL Context・実系計算とも成功した（過去のOpenCL不可という機械依存の記録を現環境に流用しない）。
+- 拘束なしNPT本計算100 ps／25,000ステップ、1 ps間隔100フレーム。実時間121.546秒、71.1 ns/day。全100行のエネルギー等は有限、温度297.21〜304.80 K。短い表示実演であり、平衡・収束や科学的結論を主張しない。
+- `concat_trajectory` でタンパク質3,341原子を抽出。表示用PDB／DCDは `nodes/analyze_001/artifacts/1ake-md-100ps.*`、全系DCDはprodに保持。1フレーム40,092 bytes。新規SDKセッションで実MD manifestと1／100フレームの読出し、有限座標・両フレームの差を確認した。
+- 共通HTTPビューアで実MDの描画・再生・停止を確認し、設定画面のCamera=Orthographicも確認。画面は `/Users/yasu/.codex/visualizations/2026/10/24/01a16e11-2738-7d82-aef6-74e12b8d233d/1ake-real-md-orthographic.png`。これはホスト側の検証であり、Remote Controlの実MD画面の確認ではない。
+- `codex mcp add` で既存 `mdclaw_molstar_probe` の設定を実MDのPDB／DCDへ更新した。しかし現在の会話からのツール呼出しは旧プロセスのsynthetic-1ake（1,656原子／60フレーム）を返した。試作が起動時に入力を固定するため、**実MDの対話表示はCodex側のMCP再接続待ち**。再読込用ツールはなく、CLI daemon socketも不在。アプリ本体や他セッションを強制終了していない。
+- viewer・文書パス43テスト、Ruff、JS構文、差分検査成功。カメラ変更は共通HTTP／MCP両方。MCPの合成専用固定文言はファイル名表示へ変更し、実データを合成と表示しないようにした。コミット・pushなし。
+
+## 2026-10-25 — 本人がMCP画面の回転・再生を確認／平行投影を既定に変更
+
+- `open_molstar_probe` の実呼出しに成功した後、本人が「回転再生できます」と報告。以前の「MCP未認識・手元の描画未確認」は今回の接続について解消した。合成1AKEの試作であり、スパコン実機や実MDの確認とは分ける。iOSは今回の対象外。
+- 本人の指定で共通HTTPビューアとMCP試作の初期カメラをorthographic（平行投影）へ変更。Mol* 5.13.0のCanvas3D APIで構造読込前に設定し、JS構文検査に成功。既に開いている画面への遡及適用はしていない。
+- 続けて本人が実MDを依頼。`runs/molstar-md-demo-20261025` に1AKE A鎖・タンパク質のみ・explicitのstudyを作成。実MDの結果と表示は完了後に追記する。
+
+## 2026-10-25 — MCPフレーム配信の最小試作を作成・m4へ登録
+
+- 本人が最小試作とm4へのMCP連携登録を承認。`molstar_mcp_prototype.py` と `molstar/mcp-prototype.js` を追加した。起動時指定の合成1AKE PDB／DCDのみを扱い、HTTP待受け・SSH接続・DCD全体の転送を行わない。通常のviewer実装は変更していない。
+- 公式Python SDK `mcp==1.30.0` を `.validation/molstar/mcp-env` へ分離して導入。既存Pixiの科学計算環境を参照し、通常の依存・lockは変更しない。stdio MCPの `open_molstar_probe` がUI resourceを指定し、UI専用 `molstar_probe_data` が初期PDBまたは1フレームの座標を返す。座標・PDBは `_meta` に入れ、モデル向けcontentには載せない。DCDライブラリのstdout診断をstderrへ移し、プロトコルを壊さないようにした。
+- UI resourceは約2.09 MBでMol*の圧縮JS／CSS／MIT licenceを含むが、構造・軌道は埋め込まない。MCP Apps `ui/initialize` と `tools/call` で通信し、原子数・フレーム番号・要求回数・転送量・往復時間・ホスト読取時間を表示する。毎フレームLLMを起動しない。
+- 公式SDKクライアントで初期化・tools/list・resources/read・起動ツール・構造取得・0／59番フレーム・範囲外60番の拒否に成功。1フレーム19,872 bytes、stdio単体の観測往復約1.3〜1.4 ms。検証用ホストから本物のMCPサーバーへ要求を中継し、Mol*描画・再生（169要求まで）・停止・最終フレーム・ドラッグ回転を確認。画面観測の往復16〜64 msはローカル検証値で、r4の通信速度ではない。ブラウザにMutationObserverのエラーが1件あり、試作JS・Mol* bundleには当該APIがないことを確認したが、発生元は特定していない。描画操作の確認とは分けて記録する。
+- 追加後の文書パス・registry・CLI契約43テスト、Ruff、JS構文、差分検査に成功。検証用HTTPホストは確認後に停止し、m4のstdio MCP登録は保持した。
+- `codex mcp add mdclaw_molstar_probe -- ...` でm4のユーザー設定へ登録し、`codex mcp get` でenabled／stdio／指定コマンド・合成ファイルパスを確認。別cwdからのimportも確認。新MCPはこの会話のツール一覧にまだ反映されていない。ネイティブCodex UIの操作はツールが安全上の理由で拒否したため、設定画面経由の再読込はできず、別経路でその制限を回避していない。
+- **未確認**：Codex自身のMCPアプリ表示、m4→r4のRemote Control、iOS、大容量原子系。r4からm4へ接続した新しい会話で `open_molstar_probe` を呼ぶ手順を[利用ガイド](developer/molstar-viewer.md)に記載した。単独HTML転送へ戻しておらず、研究データの公開・SSH有効化・アプリ再起動はしていない。試作を正式採用する判断はr4確認後。画面は `~/.codex/visualizations/2026/10/24/01a16e11-2738-7d82-aef6-74e12b8d233d/mdclaw-mcp-prototype.png`。
+
+## 2026-10-25 — 既存Remote Control内のツール通信を利用する候補
+
+- 本人が「今回の端末間Remote Controlにトンネル的に送れないか」と再指定。前項で確認したのはlocalhostの自動HTTP転送の制約であり、既存接続上のすべてのデータ伝送が不可能と結論してはいけない。
+- CLI 0.160.0の `codex app-server generate-ts --experimental` で公開プロトコル型を `/tmp/mdclaw-codex-protocol-20261025` へ生成。`mcpServer/tool/call`（threadId／server／tool／arguments）、`mcpServer/resource/read`、構造化結果を返す応答がある。desktop bundleの汎用MCP UI経路でも、hostIdに対応する接続へresource読込・tool呼出しを送るコードを確認。通常のHTTPに加え、ツール呼出しによる1フレーム単位の座標転送は検討候補になる。
+- [公式MCP Apps例](https://developers.openai.com/plugins/build/app-quickstart)はUIから `tools/call` で結果を受けるbridgeを説明する。ただし同ページはUIをChatGPT向けと記載しており、今回のCodex Remote ControlでローカルMCPのUIが表示・操作できることを保証する資料ではない。
+- 候補は「r4のMol* UI → アプリのMCP呼出し → 既存Remote Control → m4のフレームreader → 座標応答」。毎フレームLLMへ指示せず、UIが直接要求する設計。DCDをコピーしない。実デバイスでのUI resource転送、呼出し権限、応答サイズ・速度、WebGLは未検証。まだトンネル完成とは報告しない。新MCP登録・アプリ改変は行っていない。
+
+## 2026-10-25 — 大容量軌道をホストに残す方式へ訂正／Remote Controlの経路調査
+
+- **直下の単独HTML出力の方針を撤回**。本人から「ファイルが大きいのでダウンロードしない。データはスパコン側・ホスト側に置いたままHTMLを表示する」と訂正。`output_html` と埋込処理を削除し、DCD全体をブラウザへ配信する経路も削除した。元ファイルはホストに保持するが、表示用の初期PDBと要求フレームの座標はブラウザへ転送される。
+- MDTrajの低レベルDCD readerで `seek` と `read(n_frames=1)` を使い、要求された1フレームだけを送信。単位はÅ、形式はlittle-endian float32のx／y／z配列、12 bytes/atom。共有readerをロックし、同時要求でフレームが混ざらないようにした。Mol* 5.13.0の公開 `ModelWithCoordinates` transformで座標を更新し、原子順の対応付けはMol*に任せる。入力変更時は409で停止。全軌道の事前ロード・保存・フレームキャッシュは行わない。
+- 関連 **427 tests passed**（viewer 42件）。座標値・単位、ランダム／同時seek、1フレーム限定のread、HEADではreadしないこと、DCD全体へのHTTPアクセス404、入力変更、HTTPS origin制限、CLI終了を確認。Ruff・JS構文・差分検査成功。ホストのBrowserで合成1AKE（1,656原子、60フレーム）の再生・停止・1／60への移動・回転、警告／エラーログなしを確認。1フレーム19,872 bytes。画面は `~/.codex/visualizations/2026/10/24/01a16e11-2738-7d82-aef6-74e12b8d233d/mdclaw-streaming.png`。合成軌道はMD結果ではない。
+- 本人の最初の実機対象は **m4上のCodex＋mdclawへ、r4のCodexからRemote Control接続**。本人は別のSSH接続を追加せず、Codexの既存接続を使うことを希望。m4のloopback TCP 22は接続拒否、m4から `r4.local` の名前解決は失敗した。r4の設定・実機表示は未確認。SSHの有効化や公開先の作成は行っていない。
+- m4のインストール済みChatGPT/Codex desktop **26.1021.22027 (21747)** の `app.asar` を読み取り調査。`.vite/build/main-TK5axOki.js` の `forwardBrowserNavigationUrl` は `qq` を呼び、host判定 `i.Li(c)` が偽ならURLをそのまま返す。`.vite/build/src-9WOUJvYP.js` のexport `Li` は `zi`、その判定は `e?.kind === "ssh"`。`.vite/build/src-Ua8hv5rp.js` の `remoteLocalhostPortForward` もSSHホストだけに生成され、`Ch.start` はSSH `-N -L` を起動する。**自動転送機能はあるが、この版の端末間Remote Control接続は対象外**。アプリ本体は変更していない。
+- [公式Remote connections](https://learn.chatgpt.com/docs/remote-connections)は端末間のsecure relayとホスト側のbrowser／tools利用を説明するが、mdclawが任意のWeb通信を追加する公開APIは確認できない。[Browser](https://learn.chatgpt.com/docs/browser)のローカルプレビュー説明も、r4での操作保証とは区別する。MCP UI等の未検証の別方式を「使える」と断定しない。
+- `public_origin` は既存の本人認証付きHTTPS proxyを使う場合のHost／Origin許可のみで、接続経路・認証を作るものではない。Macの手動SSH転送は利用手順へ記載した代案。**希望された既存Remote Controlだけでのr4表示、およびiOSは未解決・未検証**。前のCloudflare案への返答は要件訂正であり、公開や認証変更への同意ではない。
+
+## 2026-10-25 — リモートCodex向けの単独HTML出力
+
+- 本人が別端末からCodexへリモート接続した場合の表示不具合を報告。想定はスパコンのログインノード上のCodex CLIをMacから操作する構成で、iOSからの利用も希望。前日の確認はホスト側のBrowserだけで、`127.0.0.1` がクライアント自身を指す問題を扱えていなかった。ホスト側にタブを開く操作は、クライアントへの転送確認にはならない。
+- `serve_molstar --output-html viewer.html` を追加。サーバーを起動せず、PDB／DCD／Mol*／MIT licenceを1ファイルへ収めて終了する。Macへ既存のダウンロード・SSH/SFTP経路で渡して開く方式。ログインノードにはGUI・WebGL・Node.js・ポート開放が不要。クライアントへの転送そのものは自動化しない。
+- 既存ファイルは上書きせず、一時ファイルから完成したHTMLだけを作成する。入力の変更検出、ファイル名のHTMLエスケープ、入力bytesと資材の一致を検査。ページは `connect-src 'none'`、スクリプトはSHA-256で固定し、追加通信を使わず埋込データをMol*のrawDataへ渡す。JSの巨大data URLを避け、ソースを直接同梱した。全軌道のコピーなので、大きなDCDではファイルサイズとメモリ消費が増える。
+- 関連413件成功後、最終のHTML資材格納変更についてviewer 28件を再検証。Ruff・JS構文・差分検査成功。合成1AKE DCD（1,656原子、60フレーム）から7,147,188 bytesのHTMLを生成し、限定HTTP配信で再生→52で停止→60へ移動、サーバー停止後の1への移動と回転を確認。初期版では長時間後に検証用タブのクラッシュ表示が出たため、最終版は新規タブで検証した。原因は未確定。
+- **確認の限界**：検証用ブラウザのURLポリシーで `file://` が拒否された。限定HTTP配信による確認は、Macでのファイル直接オープン、Codex Remoteからのダウンロード、スパコン実機の確認の代わりにはならない。生成物は `~/.codex/visualizations/2026/10/24/01a16e11-2738-7d82-aef6-74e12b8d233d/1ake-remote.html`、画面は同ディレクトリの `mdclaw-portable.png`。
+- iOS向けは、生成したHTMLを別の常時稼働Macへ転送し、本人認証付きHTTPSでSafariから開く構成を提案。[Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/setup/secure-private-apps/private-web-app/)または[Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve)が候補。m4でCloudflare Accessを使う案への返答待ち。新たな公開先・DNS・認証・VPNの設定は行っていない。iOS実機とCodex内の埋込表示は未検証。
+
+## 2026-10-24 — Codex／Claude Code用の共通Mol*ビューアを実装
+
+- 本人が共通ビューアの実装を指定し、続けて「Gooseや他のアプリへの対応はまだ不要」と範囲を限定。今回の対象はCodex／Claude CodeのローカルBrowserでのPDB表示とDCD再生。追加ホスト、MCP Apps、skill変更は含めない。
+- `serve_molstar(structure_file, trajectory_file=None, port=0)` をCLIへ登録。起動中にstderrへ `viewer_url` を出し、Ctrl-Cまで前面のプロセスとして配信する。Mol* 5.13.0の公式npm配布からJS／CSSを無改変・gzip圧縮で同梱し、MIT licence・取得元・npm integrity・SHA-256を保存。外部CDN、Node.js、アップロードを不要にした。
+- PDB＋DCDの原子数を起動前に照合し、空／不正データ、複数モデルやaltloc付きPDBとのDCD併用を拒否。原子順の同一性は利用者が対応するトポロジーで保証する。入力やDAGは変更しない。loopback上のランダムなURLから選択ファイルだけを配信し、Host／Origin／配信中の更新を検査する。全DCDをメモリへ読むため、大規模軌道の性能は今回の検証範囲外。
+- ページに回転・ズーム、再生／停止、前後移動、スライダーを実装。連続操作は最後の要求まで処理し、再生ループの重複を防止。Mol*標準の表示設定も利用可能。上流bundleの関数生成に必要なCSP `unsafe-eval` を許可し、外部接続は禁止する。
+- **Codex実機確認**：ローカル配信した公開1AKE PDB（3,816原子）の描画とドラッグ回転に成功。1AKE鎖A（1,656原子）へ人工的な変位を加えた60フレームのDCDで、1→2→1の前後移動、スライダーで60、60→2のループ再生、48での停止と回転を確認した。これは表示確認用の合成軌道で、MD計算結果ではない。確認画面は `~/.codex/visualizations/2026/10/24/01a16e11-2738-7d82-aef6-74e12b8d233d/mdclaw-molstar-dcd.png`。
+- **Claude Code実機は未検証**：インストール済みアプリの現在のRemote ControlセッションにはBrowserがなく、Cmd+Shift+Bでも開かなかった。別セッションへの指示送信や設定変更は行わず、[公式のローカルBrowser／preview仕様](https://code.claude.com/docs/en/desktop#configure-preview-servers)に基づく同じURLの開き方と `launch.json` の例を[利用手順](developer/molstar-viewer.md)へ記載した。Claude内の描画成功を確認したという意味ではない。
+- 関連 **409 tests passed**（viewer 24件を含む）、Ruff・JS構文・差分検査成功。CLI契約とguardrailコードのgoldenを更新し、新テストを通常CIへ追加。配布wheelを作り、viewer資材8ファイルの同梱と、展開wheelからPDB/DCD読込・HTTP配信を確認した。リモートCI、Claudeの実機、大規模データは未検証。コミット・pushは行っていない。
+
+## 2026-10-24 — Mol*の対応候補をローカルLLMアプリへ拡大
+
+- 本人がCodex／Claude Code以外のデスクトップアプリ、特にローカルLLM用にも対応させたいと追加指定。調査範囲を拡大した。各候補は資料確認のみで、インストール・実機検証・製品実装は未実施。
+- **Goose**：内蔵llama.cpp／Ollama等で[ローカル推論](https://goose-docs.ai/blog/2026/04/24/use-goose-with-built-in-local-inference/)が可能。[MCP Apps](https://goose-docs.ai/docs/tutorials/building-mcp-apps/)による会話内の対話UIを公式に説明。ただし同チュートリアルはexperimentalと明記。Mol*のWebGL、座標転送、UI寿命は実機確認が必要。共通MCP Apps接続を検証する最初の候補。
+- **Cherry Studio**：[Ollama接続](https://www.cherryai.com/docs/en/pre-basic/providers/ollama/)と[HTMLの対話プレビュー](https://cherryai.com/docs/en/advanced-basic/chat/artifacts-export/)を公式に確認。HTML出力の候補。任意のローカルURL取得とMol*描画は未確認。
+- **Open WebUI**：[公式Desktop](https://github.com/open-webui/desktop)あり、Early Alpha。ローカル推論も可能。本体に[Artifacts](https://docs.openwebui.com/features/chat-conversations/chat-features/code-execution/artifacts/)と[ツール応答のHTML埋込](https://docs.openwebui.com/features/extensibility/plugin/development/rich-ui/)がある。Web版とDesktop版の両方を候補にできるが、sandbox／CSP設定による読み込み制約を実機確認する。
+- **Jan**：[v0.8.3発表](https://dev.jan.ai/changelog/2026-06-24-jan-v0.8.3)に実験的HTMLプレビューあり。ただし通信をCSPで遮断し、初期状態は無効。その仕様ではlocalhost読込方式をそのまま流用できず、小さい自己完結HTMLまたは外部ブラウザを検討する。**LM Studio**の[MCPツール](https://lmstudio.ai/docs/app/mcp)と別アプリ[Bionic](https://lmstudio.ai/docs/bionic)のローカルモデル／ファイル作業は確認できたが、今回参照した公式資料だけではMol*のアプリ内埋込対応を確定できない。
+- 設計案を更新：Mol*ビューアとPDB/DCD等の読込を共通化し、(1) localhost URL、(2) HTMLプレビュー、(3) 必要なホスト向けMCP Apps接続を使い分ける。MCP接続部分を足す場合もMDClawの計算コアはCLIのまま。大きな座標列・Mol* bundleをLLMの回答やコンテキストへ流し込まず、ビューアが対象データを直接読む。埋込非対応では同じビューアを外部ブラウザで開ける設計を検討する。最初の検証候補はCodex／Claude Codeに加えてGoose、次にCherry Studio／Open WebUI。全候補への対応保証や実装の承認を意味しない。
+
+## 2026-10-24 — デスクトップアプリ内のMol*表示を調査
+
+- 本人の希望は、Codex／Claude Codeのデスクトップアプリ内で構造とトラジェクトリを直接回転・再生して確認すること。今回は調査のみ。推奨案はMol* v5のローカルWebビューアをアプリ内ブラウザに開く方式。PyMOLの既存PNG生成と併用できる。
+- **Codex実機確認**：公式Viewer 5.13.0で公開構造1AKEを読み込み、ドラッグ前後の立体構造の向きの変化を確認。公式Villin例のXTCは500フレームを再生し、463→217フレームへの変化と停止を確認した。[再現用Villin例](https://molstar.org/viewer/?snapshot-url=https%3A%2F%2Fmolstar.org%2Fdemos%2Fstates%2Fvillin-md.molx&snapshot-url-type=molx)。ローカルmdclawのPDB/DCD、Claude Code実機、大規模トラジェクトリの性能は未検証。
+- [Codex Browser](https://learn.chatgpt.com/docs/browser)と[Claude Code Desktop](https://code.claude.com/docs/en/desktop#preview-your-app)はローカルWebサーバーのアプリ内表示を公式に説明している。Claude Codeは必要に応じて `.claude/launch.json` で起動できる。SSHセッションは別途転送を考慮する。
+- [Mol*対応形式](https://molstar.org/docs/v5/plugin/file-formats/)：構造PDB/mmCIF/GRO、トポロジーPRMTOP/PSF/TOP、座標DCD/XTC/TRR/NetCDF。座標には原子数・順序の一致する構造またはトポロジーを組み合わせる。現checkoutの `simulation/production.py` は対応する `topology.pdb` とDCDを使うので形式変換は必須ではない。
+- 最小実装案：対象ファイルとMol*資材だけを127.0.0.1から配信し、PDB単独またはPDB+DCDを自動読込するページを開く。外部アップロード不要の構成にできる。大きな系では表示用コピーの原子選択・フレーム間引き、周期境界の処理・重ね合わせを検討する。原本は保持し、処理とフレーム対応を記録する。`analyze/fit.py` に重ね合わせの既存実装あり。追加CLI等の名称・仕様は未決定。
+- 会話内UIの[MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview)は別の実装経路。MCP接続対応とUI表示対応は区別する。[OpenAI quickstart](https://developers.openai.com/plugins/build/app-quickstart)はツールをChatGPT／Codex向け、埋込UIをChatGPT向けと説明し、Claude Desktopの対応もClaude CodeのCode画面への対応保証ではない。今回の用途では前提にしない。
+- 既存の[RenhaoL/molstar-mcp](https://github.com/RenhaoL/molstar-mcp)は自然言語操作の参考になるが、READMEでは別ブラウザ＋WebSocket方式。記載の主機能は構造表示・残基強調等で、ローカルMDトラジェクトリ対応は未確認。導入していない。Mol* v6のPrism／assistantも見つかったが、[公式の版一覧](https://molstar.org/docs/versions/)で開発中と明記されているため、v5を実装検討の基準にする。
+- 製品コード・依存・skill・アプリ設定の変更なし。確認したのは公開データのみ。
 
 ## 2026-10-24 — 公式MDDBスキーマ検証をexport実行時にも適用
 

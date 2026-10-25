@@ -166,10 +166,9 @@ use the HPacker-based `create_mutated_structure` branch in
    create, explain, and run `topo`; let `build_amber_system` resolve the
    completed `solv` parent for explicit/membrane or `prep` parent for
    implicit/vacuum. Never pass a free-standing raw PDB.
-8. Do not render previews of the completed structural nodes (`source`,
-   `prep`, `solv`, `topo`) unless the user asked for a visual check. If they
-   did, follow `skills/common/visual-qa.md` and register it with
-   `register_visual_review`.
+8. For a requested display (rotation, playback, or still image) or visual
+   check of completed structural nodes, follow `skills/common/visual-qa.md`.
+   It selects the display and distinguishes viewing from a registered review.
    Visual QA is only an obvious-accident check; never infer force-field,
    protonation, parameter, or chemistry correctness from the image. If a
    high-severity visual accident is reported, ask the user before moving to the

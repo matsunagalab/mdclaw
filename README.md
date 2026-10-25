@@ -14,6 +14,21 @@ tools** (the programs that perform the calculations). It records each step's
 inputs, outputs, and status so work can be inspected and resumed later.
 Use it with an agent such as Claude Code or Codex, or call the tools directly.
 
+For interactive structure viewing and MD playback, the display skill selects
+Molstar when a suitable MCP viewer or reachable browser is available; explicit
+still-image requests use PyMOL. Preparation views retain translucent water,
+while production views hide water, retain lipids/ligands, wrap molecules, and
+subsample long trajectories. Fitting is opt-in.
+
+An attached Molstar MCP viewer can stream requested coordinates through Codex
+Remote Control, without a separate SSH tunnel or downloading the DCD file.
+For a local or already reachable browser, run
+`pixi run mdclaw serve_molstar --structure-file /absolute/path/topology.pdb`
+and add `--trajectory-file /absolute/path/trajectory.dcd` for playback. Open
+the printed `viewer_url` and keep the command running while viewing. Mol* is
+bundled. See the [viewer guide](docs/developer/molstar-viewer.md) for MCP setup,
+remote connection alternatives, and host-specific verification limits.
+
 ## Install / Deploy
 
 First prepare the scientific software on the machine that will run the

@@ -1,0 +1,20 @@
+{
+  "package": "molstar",
+  "version": "5.13.0",
+  "source": "https://registry.npmjs.org/molstar/-/molstar-5.13.0.tgz",
+  "integrity": "sha512-pMXXhPGkbjYeZwPbHSTvQmUJ+wXpLVphDF0n90piy1OtYrUCCr6Z3MFqWjV6Kjcd44hU0U2myQMnPulb4MC1FQ==",
+  "files": {
+    "molstar.js": {
+      "sha256": "13b85d8dd4e1f2722c1ce7045361ae5a4a1f5a4b6fedb967d021b2b72831a8b1",
+      "bytes": 5268685,
+      "gzip_sha256": "b1b64d53ad3390f5b17148b2162f37b6fafb560fd6f59b9ab44fca7a2ef60816",
+      "gzip_bytes": 1508339
+    },
+    "molstar.css": {
+      "sha256": "22fbf73b75c11ef57687d08437c95dbfe8430ea895264f6da2b9b01e28bacc49",
+      "bytes": 72904,
+      "gzip_sha256": "117934f80d48351f28d5bbd14286225245739a1e0418a0e9dae7155ad5b3050e",
+      "gzip_bytes": 16540
+    }
+  }
+}

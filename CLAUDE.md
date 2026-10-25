@@ -44,6 +44,13 @@ ForceField XML.
 
 Longer form: `docs/developer/architecture.md` (Mental Model).
 
+## Molecular Display
+
+For requests to show a molecule, play a trajectory, rotate interactively, or
+create a still image, follow `skills/common/visual-qa.md`. It selects Molstar
+or PyMOL using the request and current-session capabilities, including remote
+connections. Display-only requests use existing results without starting MD.
+
 ## Where Things Live
 
 - `mdclaw/`: Python package and CLI dispatch. Each tool server is a

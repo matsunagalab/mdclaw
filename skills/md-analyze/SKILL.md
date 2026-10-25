@@ -5,6 +5,11 @@ description: "Molecular dynamics trajectory analysis using MDClaw CLI tools. Rou
 
 # MD Analyze
 
+For display-only requests (trajectory playback, interactive rotation, or a
+still image), follow `skills/common/visual-qa.md` and stop after display;
+reuse display-ready artifacts. If PBC correction, subsampling, or requested
+fitting is needed, follow its trajectory-display procedure for derived artifacts.
+
 Follow `skills/common/preamble.md`, `skills/common/run-loop.md` (the canonical
 node loop), and `skills/common/tool-output.md` for error handling.
 Use `mdclaw inspect_job --job-dir <job_dir>` to confirm the job state
@@ -126,9 +131,9 @@ and `--node-id`.
 ## Structure Preview and Visual QA
 
 The structure-preview and visual-review procedure is shared across all stages.
-Follow `skills/common/visual-qa.md` when the user asks for a structural
-snapshot or a visual check. Do not render one on your own judgement that an
-artifact "would benefit" from it — previews are large images and go unused
+Follow `skills/common/visual-qa.md` when the user asks for playback, interactive
+rotation, a structural snapshot, or a visual check. Do not render one on your
+own judgement that an artifact "would benefit" from it — previews are large images and go unused
 unless someone asked to look at them.
 
 For residue, bond, charge, or historical-status discrepancies, follow

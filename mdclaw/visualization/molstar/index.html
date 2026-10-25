@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="mdclaw-ui-version" content="0.5.1">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MDClaw · Mol*</title>
+  <link rel="stylesheet" href="molstar.css">
+  <link rel="stylesheet" href="viewer.css">
+  <script src="molstar.js" defer></script>
+  <script src="presentation.js" defer></script>
+  <script src="viewer.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="heading"><strong>MDClaw <span>Mol*</span></strong><span id="files"></span></div>
+    <div id="status" role="status">Loading viewer…</div>
+    <div id="processing" role="status"></div>
+    <nav id="playback" aria-label="Trajectory playback" hidden>
+      <button id="previous" type="button" aria-label="Previous frame">◀</button>
+      <button id="play" type="button">Play</button>
+      <button id="next" type="button" aria-label="Next frame">▶</button>
+      <input id="frame" type="range" min="1" max="1" value="1" aria-label="Trajectory frame">
+      <output id="frame-label" for="frame"></output>
+    </nav>
+  </header>
+  <main id="viewer" aria-label="Molecular structure"></main>
+</body>
+</html>

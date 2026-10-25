@@ -37,6 +37,11 @@ Key parameters:
 - `stride`: keep every Nth frame.
 - `chunk`: frames per streaming read; this controls peak memory.
 
+For a **display copy**, follow [trajectory display](../common/trajectory-display.md)
+instead of blindly applying the protein-only example: production views keep
+lipids and ligands, long overviews use a stated stride, and PBC correction must
+be handled separately before stripping. Concat itself does not perform imaging.
+
 Outputs under `nodes/<analyze_node_id>/artifacts/` include combined DCD, reference
 PDB, selection JSON, and combined energy CSV when every source has energy data.
 When the production lineage also records `timestep_fs`, concat writes

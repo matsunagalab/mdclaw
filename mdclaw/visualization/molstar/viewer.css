@@ -1,0 +1,17 @@
+html, body { margin: 0; height: 100%; background: #fff; color: #20332e; font: 14px system-ui, sans-serif; }
+body { display: flex; flex-direction: column; }
+header { padding: 12px 16px; border-bottom: 1px solid #dbe4df; }
+.heading { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+strong { font-size: 18px; white-space: nowrap; }
+strong span { font-weight: 400; color: #567065; }
+#files { overflow-wrap: anywhere; }
+#status { margin-top: 6px; color: #567065; }
+#status.error { color: #a72121; white-space: pre-wrap; }
+#viewer { position: relative; flex: 1; min-height: 250px; }
+nav { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+nav[hidden] { display: none; }
+button { border: 1px solid #b7ccc0; border-radius: 5px; padding: 6px 12px; background: #f4f8f5; color: #20332e; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+button:focus-visible, input:focus-visible { outline: 2px solid #16794c; outline-offset: 2px; }
+#frame { flex: 1; min-width: 50px; accent-color: #16794c; }
+#frame-label { white-space: nowrap; font-variant-numeric: tabular-nums; }

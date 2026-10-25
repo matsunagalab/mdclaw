@@ -786,6 +786,15 @@
     "requires_node": false,
     "server": "research"
   },
+  "serve_molstar": {
+    "job_dir_is_data": false,
+    "node_type": null,
+    "required_params": [
+      "structure_file"
+    ],
+    "requires_node": false,
+    "server": "visualization"
+  },
   "set_policy": {
     "job_dir_is_data": false,
     "node_type": null,
