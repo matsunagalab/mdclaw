@@ -4,6 +4,8 @@ import importlib.util
 import importlib.metadata
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 import yaml
@@ -100,3 +102,28 @@ def test_cuda118_build_uses_matching_sources_and_replacement_dependencies():
     openmm = next(p for n, p in locked_records().items() if n == "openmm")
     version = openmm["conda"].rsplit("/", 1)[-1].rsplit("-", 2)[1]
     assert f"ARG OPENMM_VERSION={version}" in dockerfile
+
+
+@pytest.mark.parametrize("existing_loader", [False, True])
+def test_cuda_links_preserve_the_system_opencl_loader(tmp_path, existing_loader):
+    dockerfile = (ROOT / "container/Dockerfile").read_text()
+    source = dockerfile.split("python - <<'PY_LINK_CUDA'\n", 1)[1].split("\nPY_LINK_CUDA", 1)[0]
+    wheel_lib = tmp_path / "lib/python3.12/site-packages/nvidia/cuda_runtime/lib"
+    wheel_lib.mkdir(parents=True)
+    for name in ("libcudart.so.11.0", "libOpenCL.so.1"):
+        (wheel_lib / name).write_text("wheel library")
+    loader = tmp_path / "lib/libOpenCL.so.1"
+    if existing_loader:
+        loader.write_text("system ICD loader")
+    command = [sys.executable, "-c", f"import sys; sys.prefix = {str(tmp_path)!r}\n" + source]
+    result = subprocess.run(command, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "lib/libcudart.so.11.0").resolve() == wheel_lib / "libcudart.so.11.0"
+    assert loader.exists() == existing_loader
+    if existing_loader:
+        assert not loader.is_symlink()
+        assert loader.read_text() == "system ICD loader"
+    # CUDA collisions must still fail instead of replacing retained libraries.
+    result = subprocess.run(command, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "Unexpected pre-existing CUDA library" in result.stderr

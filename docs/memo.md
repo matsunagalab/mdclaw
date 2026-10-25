@@ -13,6 +13,11 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-25 — CUDA wheelのOpenCL loader衝突を修正（0.6.11）
+
+- `50acb84` / `v0.6.10` の3環境CIは成功。Container run `40185445509` は空dist-info問題を通過したが、CUDA runtime wheelにも入っている `libOpenCL.so.1` を既存CondaのICD loaderと同名でリンクしようとして停止し、公開されなかった。
+- CUDA用リンク作成から `libOpenCL.so*` を除外し、既存のvendor-neutral OpenCL loaderを保持する。CUDAライブラリ自体の衝突は引き続きエラーとする。実際のDockerfileのコードを一時prefixで実行する2ケースで、修正前の失敗、修正後の既存loader保持・CUDAリンク成功・再衝突拒否を検証した。版を0.6.11へ同期し再ビルドする。
+
 ## 2026-10-25 — コンテナ再ビルドで残存dist-infoを検出し修正（0.6.10）
 
 - `7b3083e` とタグ `v0.6.9` をpush。3環境のCIはすべて成功したが、配布Container run `40184852231` はPyTorch置換時に `Cannot uninstall torch None / no RECORD file` で失敗し、イメージは公開されなかった。

@@ -75,6 +75,10 @@ from pathlib import Path
 import sys
 prefix = Path(sys.prefix)
 for library in (prefix / "lib/python3.12/site-packages/nvidia").glob("*/lib/*.so*"):
+    # The CUDA runtime wheel also bundles an OpenCL loader. Keep the lock's
+    # vendor-neutral ICD loader; it is not a CUDA library to replace/link.
+    if library.name.startswith("libOpenCL.so"):
+        continue
     target = prefix / "lib" / library.name
     if target.exists() or target.is_symlink():
         raise RuntimeError(f"Unexpected pre-existing CUDA library: {target}")
