@@ -80,6 +80,45 @@ assert '\u2014' in path.read_text()
 print('UTF-8 mode active and locale-independent')
 "
 
+# Verify the installed MCP transport from /tmp, including clean stdio, assets,
+# and exact DCD coordinates. No GUI, source checkout or validation venv needed.
+check "Molstar MCP initialization, UI and frame streaming" python - <<'PY_MOLSTAR'
+import base64
+from pathlib import Path
+import sys
+import tempfile
+import anyio
+import numpy as np
+from mdtraj.formats import DCDTrajectoryFile
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+async def check(directory):
+    root = Path(directory)
+    pdb, dcd = root / 'probe.pdb', root / 'probe.dcd'
+    pdb.write_text('ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\nEND\n')
+    xyz = np.array([[[0, 0, 0]], [[1, 2, 3]]], dtype=np.float32)
+    with DCDTrajectoryFile(str(dcd), 'w') as out:
+        out.write(xyz)
+    params = StdioServerParameters(command=sys.executable, args=['-m', 'mdclaw._cli', 'molstar-mcp'])
+    with anyio.fail_after(30):
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as client:
+                await client.initialize()
+                result = await client.call_tool('open_molstar_probe', {
+                    'structure_file': str(pdb), 'trajectory_file': str(dcd)})
+                assert not result.isError
+                token = result.structuredContent['dataset_id']
+                frame = await client.call_tool('molstar_probe_data', {
+                    'kind': 'frame', 'index': 1, 'dataset_id': token})
+                assert not frame.isError and not frame.content
+                assert base64.b64decode(frame.meta['mdclaw']['coordinates']) == xyz[1].T.astype('<f4').tobytes()
+                html = (await client.read_resource('ui://mdclaw/molstar-probe.html')).contents[0].text
+                assert 'playback up to 60 fps' in html and 'buffering' in html
+with tempfile.TemporaryDirectory() as directory:
+    anyio.run(check, directory)
+PY_MOLSTAR
+
 # --- Python imports ---
 echo ""
 echo "[Python Imports]"

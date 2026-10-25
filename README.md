@@ -71,10 +71,21 @@ The `export PATH` command makes `mdclaw` available in the current terminal.
 For future terminals, add this checkout's **absolute `bin/` path** to your
 shell startup file.
 
-The doctor command checks OpenMM and AmberTools and reports usable GPU
+The doctor command checks OpenMM, AmberTools and Molstar MCP and reports usable GPU
 platforms and optional features. Resolve any `[fail]` messages before running
 calculations. Missing optional features only affect workflows that need them;
 CPU-only machines can prepare systems and run short checks.
+
+For the interactive MCP viewer, the SDK is included in this Pixi environment.
+From the checkout, register it once on the host running Codex:
+
+```bash
+codex mcp add mdclaw_molstar --env MDCLAW_RUNTIME=pixi -- "$PWD/bin/mdclaw" molstar-mcp
+```
+
+Select the molecule after connecting; no example trajectory is needed at server
+startup. For Claude plugin registration, SIF and other runtimes, follow
+[Molstar MCP deployment](docs/agents/deployment.md#molstar-mcp-display).
 
 ### On A Compute Server: SIF
 

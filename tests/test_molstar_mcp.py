@@ -1,19 +1,20 @@
-"""Optional MCP SDK integration: switch real PDB/DCD pairs in one connection."""
+"""Standard-runtime MCP integration: initialize and switch real PDB/DCD pairs."""
 
 import base64
 from pathlib import Path
 import sys
+import os
 
 import anyio
 import numpy as np
 import pytest
 
-pytest.importorskip("mcp")
-from mcp import ClientSession, StdioServerParameters  # noqa: E402
-from mcp.client.stdio import stdio_client  # noqa: E402
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 
-def test_switch_datasets_in_one_stdio_connection(tmp_path):
+@pytest.mark.parametrize("launch", ["legacy", "cli", "wrapper"])
+def test_switch_datasets_in_one_stdio_connection(tmp_path, launch):
     from mdtraj.formats import DCDTrajectoryFile
 
     pairs = []
@@ -28,16 +29,33 @@ def test_switch_datasets_in_one_stdio_connection(tmp_path):
         pairs.append((pdb, dcd, xyz))
 
     async def check():
-        params = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", "mdclaw.visualization.molstar_mcp_prototype",
-                  "--structure-file", str(pairs[0][0]), "--trajectory-file", str(pairs[0][1])],
-            cwd=str(Path(__file__).resolve().parents[1]),
-        )
+        root = Path(__file__).resolve().parents[1]
+        env = {**os.environ}
+        # Test from a caller workspace, not from the repository cwd. The
+        # wrapper must activate the same installed runtime without a shell.
+        if launch == "wrapper":
+            command, args = str(root / "bin/mdclaw"), ["molstar-mcp"]
+            env.pop("CLAUDE_PLUGIN_ROOT", None)
+            env["MDCLAW_RUNTIME"] = "pixi"
+        else:
+            command = sys.executable
+            args = ["-m", "mdclaw.visualization.molstar_mcp_prototype"] if launch == "legacy" else ["-m", "mdclaw._cli", "molstar-mcp"]
+            env["PYTHONPATH"] = str(root)
+        if launch == "legacy":
+            args += ["--structure-file", str(pairs[0][0]), "--trajectory-file", str(pairs[0][1])]
+        params = StdioServerParameters(command=command, args=args, cwd=str(tmp_path), env=env)
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as client:
                 await client.initialize()
-                first = await client.call_tool("open_molstar_probe", {})
+                tools = (await client.list_tools()).tools
+                assert {t.name for t in tools} == {"open_molstar_probe", "molstar_probe_data"}
+                if launch != "legacy":
+                    missing = await client.call_tool("open_molstar_probe", {})
+                    assert missing.isError and "structure_file" in missing.content[0].text
+                    missing = await client.call_tool("molstar_probe_data", {"kind": "structure"})
+                    assert missing.isError
+                first = await client.call_tool("open_molstar_probe", {} if launch == "legacy" else {
+                    "structure_file": str(pairs[0][0]), "trajectory_file": str(pairs[0][1])})
                 assert not first.isError
                 first_id = first.structuredContent["dataset_id"]
                 args = {"structure_file": str(pairs[1][0]), "trajectory_file": str(pairs[1][1])}
@@ -93,10 +111,16 @@ def test_switch_datasets_in_one_stdio_connection(tmp_path):
                 assert not reopened.isError
                 assert reopened.structuredContent["dataset_id"] != second_id
                 default = await client.call_tool("open_molstar_probe", {})
-                assert default.structuredContent["dataset_id"] == first_id
+                if launch == "legacy":
+                    assert default.structuredContent["dataset_id"] == first_id
+                else:
+                    assert default.isError  # Never select another widget's molecule implicitly.
                 html = (await client.read_resource("ui://mdclaw/molstar-probe.html")).contents[0].text
                 assert "ui/notifications/tool-result" in html
                 assert "mode: 'orthographic'" in html
+                assert "playback up to 60 fps" in html
+                assert "buffering" in html
+                assert "frameRtt" in html
                 assert str(pairs[1][0]) not in html
 
     anyio.run(check)

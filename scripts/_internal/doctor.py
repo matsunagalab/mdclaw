@@ -88,6 +88,22 @@ def report_optional_features():
           "mdclaw check_model_backend --model bioemu (or boltz).")
 
 
+def check_molstar():
+    """Require the MCP SDK and bundled viewer in the selected runtime."""
+    try:
+        module = importlib.import_module("mdclaw.visualization.molstar_mcp_prototype")
+        html = module.make_html()
+        if "startMolstarProbe" not in html or "playback up to 60 fps" not in html:
+            raise RuntimeError("bundled playback UI is missing")
+        module.build_server()  # Registration must not need a molecule at startup.
+        print("[ok] Molstar: MCP server and bundled playback UI (client WebGL not tested)")
+        return True
+    except Exception as exc:
+        print(f"[fail] Molstar MCP: {exc}")
+        print("Next: run pixi install --locked, or update the selected MDClaw image.")
+        return False
+
+
 def report_version_sync():
     root = Path(__file__).resolve().parents[2]
     try:
@@ -116,12 +132,13 @@ def main():
     report_version_sync()
     openmm_ok = check_openmm()
     amber_ok = check_ambertools()
+    molstar_ok = check_molstar()
     report_optional_features()
-    if not (openmm_ok and amber_ok):
+    if not (openmm_ok and amber_ok and molstar_ok):
         print("Next: repair the selected environment or select a working runtime, "
               "then rerun scripts/mdclaw-doctor.sh.")
         return 1
-    print("[ok] Core runtime checks passed (OpenMM and AmberTools).")
+    print("[ok] Core runtime checks passed (OpenMM, AmberTools and Molstar MCP).")
     return 0
 
 

@@ -52,7 +52,8 @@ Markers are configured in `pyproject.toml`:
 ### Local Molstar viewer
 
 ```bash
-pixi run pytest tests/test_molstar_viewer.py tests/test_molstar_display.py -q
+pixi run --locked pytest tests/test_molstar_viewer.py tests/test_molstar_display.py tests/test_molstar_mcp.py -q
+node --test tests/js/molstar_playback.test.cjs
 ```
 
 The standard CI matrix runs these real PDB/DCD, HTTP, bundled-asset, and CLI

@@ -4,6 +4,7 @@ Usage:
     mdclaw --list                          # List all tools
     mdclaw --list-json [tool]              # Machine-readable tool contract
     mdclaw --version                       # Show version
+    mdclaw molstar-mcp                     # Serve the Molstar MCP UI over stdio
     mdclaw <tool> --help                   # Tool-specific help
     mdclaw <tool> [--param value ...]      # Run a tool
     mdclaw <tool> --json-input '{...}'     # Pass all params as JSON
@@ -694,7 +695,8 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
         ),
         epilog=(
             "Stages and their tools: mdclaw --workflow | all tools: mdclaw --list | "
-            "one tool's parameters: mdclaw --list-json <tool> | mdclaw <tool> --help"
+            "one tool's parameters: mdclaw --list-json <tool> | mdclaw <tool> --help | "
+            "Molstar MCP service: mdclaw molstar-mcp"
         ),
     )
     parser.add_argument("--version", action="version", version=f"mdclaw {__version__}")
@@ -1607,6 +1609,13 @@ def _workflow_text(tools: dict[str, dict]) -> str:
 
 
 def main(argv: list[str] | None = None) -> None:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    # A persistent protocol transport, not a scientific tool invocation.
+    # Bypass discovery, JSON result envelopes and stdout capture entirely.
+    if raw_argv[:1] == ["molstar-mcp"]:
+        from mdclaw.visualization.molstar_mcp_prototype import main as mcp_main
+        mcp_main(raw_argv[1:])
+        return
     _configure_logging()
 
     tools = _discover_tools()
@@ -1614,7 +1623,6 @@ def main(argv: list[str] | None = None) -> None:
     # Catch any name the CLI does not have before argparse sees it, so the
     # agent gets a structured code on stdout instead of an "invalid choice"
     # dump on stderr.
-    raw_argv = list(sys.argv[1:] if argv is None else argv)
     subcommand = _detect_subcommand(raw_argv)
     if subcommand is not None and subcommand not in tools:
         _json_error_and_exit(_missing_tool_error(subcommand, tools))

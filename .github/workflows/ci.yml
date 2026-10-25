@@ -50,6 +50,13 @@ jobs:
       - name: Lint
         run: pixi run --frozen ruff check mdclaw/ tests/ scripts/_internal/doctor.py scripts/install-modeller-arm64.py container/scripts/test-gpu.py container/scripts/remove-conda-gpu-stack.py
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Molstar playback pacing and buffering
+        run: node --test tests/js/molstar_playback.test.cjs
+
       - name: Tests
         run: >
           pixi run --frozen pytest
@@ -57,6 +64,7 @@ jobs:
           tests/test_guardrail_code_registry.py tests/test_slurm_server.py
           tests/test_molstar_viewer.py
           tests/test_molstar_display.py
+          tests/test_molstar_mcp.py
           tests/test_mddb_export.py
           tests/test_deployment_scripts.py tests/test_docs_paths.py
           tests/test_bin_wrapper.py tests/test_runtime_selection.py

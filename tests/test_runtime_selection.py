@@ -282,6 +282,7 @@ def test_optional_features_do_not_fail_core_readiness(monkeypatch):
     monkeypatch.setattr(module, 'report_version_sync', lambda: None)
     monkeypatch.setattr(module, 'check_openmm', lambda: True)
     monkeypatch.setattr(module, 'check_ambertools', lambda: True)
+    monkeypatch.setattr(module, 'check_molstar', lambda: True)
 
     def missing(*args):
         raise ImportError('optional dependency absent')
@@ -289,3 +290,33 @@ def test_optional_features_do_not_fail_core_readiness(monkeypatch):
     monkeypatch.setattr(module.importlib, 'import_module', missing)
     monkeypatch.setattr(module.shutil, 'which', lambda *a: None)
     assert module.main() == 0
+
+
+def test_missing_molstar_fails_readiness(monkeypatch):
+    module = _probe_module()
+    monkeypatch.setattr(module, 'report_version_sync', lambda: None)
+    monkeypatch.setattr(module, 'check_openmm', lambda: True)
+    monkeypatch.setattr(module, 'check_ambertools', lambda: True)
+    monkeypatch.setattr(module, 'check_molstar', lambda: False)
+    monkeypatch.setattr(module, 'report_optional_features', lambda: None)
+    assert module.main() == 1
+
+
+@pytest.mark.parametrize('runtime', ['pixi', 'conda', 'singularity', 'apptainer', 'docker'])
+def test_mcp_uses_selected_runtime_and_docker_keeps_stdin(deployment, runtime):
+    _, _, run = deployment
+    proc, calls = run('bin/mdclaw', 'molstar-mcp', MDCLAW_RUNTIME=runtime)
+    assert proc.returncode == 0, proc.stderr
+    name, args = calls[-1]
+    assert name == runtime
+    assert args[-1] == 'molstar-mcp'
+    if runtime == 'docker':
+        assert '-i' in args
+        assert '-t' not in args and '-it' not in args
+
+
+def test_plugin_mcp_launches_without_machine_specific_files():
+    plugin = json.loads((ROOT / '.claude-plugin/plugin.json').read_text())
+    server = plugin['mcpServers']['mdclaw_molstar']
+    assert server['command'] == '${CLAUDE_PLUGIN_ROOT}/bin/mdclaw'
+    assert server['args'] == ['molstar-mcp']

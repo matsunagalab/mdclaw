@@ -942,6 +942,11 @@ Absolute binding free energy of a ligand (`fep/abfe.py`, `fep/decouple.py`,
 
 ## `visualization/`
 
+`mdclaw molstar-mcp` starts the persistent stdio MCP service in the selected
+runtime. It is a transport entry point, not a DAG tool or JSON-result command.
+It starts without files; `open_molstar_probe` selects an absolute host PDB and
+optional DCD after connection. See [deployment](../agents/deployment.md#molstar-mcp-display).
+
 - `serve_molstar(structure_file, trajectory_file=None, port=0, public_origin=None, stage="auto", wrap=True, max_frames=1000, fit=False)`:
   foreground Mol* viewer for PDB and matching DCD; rotation, zoom, playback,
   and frame seeking in Codex / Claude Code desktop Browser panes. Prints the

@@ -178,15 +178,21 @@ browser is controlled by Codex/Claude, not by MDClaw.
 
 ## MCP prototype: use the existing Remote Control tool channel
 
-The throwaway [MCP server](../../mdclaw/visualization/molstar_mcp_prototype.py)
-and [UI](../../mdclaw/visualization/molstar/mcp-prototype.js) test a different
+The [MCP server](../../mdclaw/visualization/molstar_mcp_prototype.py)
+and [UI](../../mdclaw/visualization/molstar/mcp-prototype.js) provide another
 path: the UI calls a host-side MCP tool for each frame. No HTTP listener or
 SSH tunnel is started by this server. Its `ui://` HTML resource embeds only
 viewer code, not the PDB or DCD. Topology and coordinates arrive through MCP
 tool-result metadata. `open_molstar_probe` accepts `structure_file` and
 `trajectory_file` (absolute host paths; trajectory is optional). Each call can
 select a different pair without restarting the server or MCP connection.
-Omitting both opens the startup default.
+A standard server starts without a selected molecule. Omitting both opens a
+startup default only if one was explicitly supplied on the command line.
+
+From MDClaw 0.6.9, use `mdclaw molstar-mcp` in the normal runtime.
+The SDK is a locked dependency; see [standard deployment](../agents/deployment.md#molstar-mcp-display)
+for Pixi, plugin registration and SIF commands. The historical module/tool
+names remain compatible; no validation venv is required.
 
 Each opening result contains a dataset token. The UI binds to that result
 through `ui/notifications/tool-result` and includes the token in every data
@@ -226,7 +232,9 @@ needed for this UI-only change. The user's earlier report of faster 30 fps
 playback was followed by a report of uneven speed over Remote Control; local
 verification results below do not establish performance on that actual link.
 
-On the current m4 checkout, `mdclaw_molstar_probe` is registered in Codex using
+### Historical prototype registration (not a new installation procedure)
+
+On the original m4 checkout, `mdclaw_molstar_probe` was registered in Codex using
 an isolated `.validation/molstar/mcp-env` environment with `mcp==1.30.0` and the
 existing scientific environment. The optional SDK has not been added to
 MDClaw's normal dependencies. The initial probe used synthetic 1AKE motion.
@@ -359,11 +367,14 @@ and slider endpoints using WebGL. A synthetic trajectory tests display
 behaviour only; it is not an MD result. Host verification results are in
 [the working memo](../memo.md).
 
-With the optional `mcp==1.30.0` SDK available, run
-`python -m pytest tests/test_molstar_mcp.py -q`. This launches one stdio server
-and keeps one client connection while switching datasets, reading old and new
-frames, rejecting invalid pairs/tokens, and reopening changed files. The test
-is skipped when the optional SDK is absent. It does not test Codex deployment.
+Run `pixi run --locked pytest tests/test_molstar_mcp.py -q`. The required SDK
+must be installed; absence fails rather than skips this test. It exercises the
+legacy startup pair, standard CLI without initial files, and runtime wrapper
+from another working directory. It initializes the real stdio protocol, reads
+the bundled UI, switches datasets, checks exact frames and rejects invalid
+pairs/tokens. CI runs it on all three Pixi platforms; the container CPU smoke
+test also checks the installed MCP service. These protocol tests do not prove
+client WebGL rendering on an untested desktop application.
 
 `node --test tests/js/molstar_playback.test.cjs` runs the actual UI code with
 mocked Molstar updates and a deterministic clock. It covers ordered playback,

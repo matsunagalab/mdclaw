@@ -13,6 +13,15 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-25 — Molstar MCPを標準runtimeへ統合（0.6.9）
+
+- 本人がpixiと標準deployへの組込み、別マシンへの導入、テスト・コミット・pushを指定。`mcp==1.30.0` を必須依存へ追加し、pixi.lockをLinux x86-64/ARM64・macOS ARM64の3対象で更新。既存依存の更新は避け、追加SDKの依存だけを解決した。package/plugin/Piの版を0.6.9へ同期。
+- `mdclaw molstar-mcp` を既存runtime経由のstdioサービス入口にした。CLIの通常JSON出力・heartbeat・stdout captureを経由しない。分子未指定で起動・初期化でき、接続後の `open_molstar_probe` でPDB/任意DCDを選ぶ。旧モジュール・tool名・起動時データ指定は互換を維持。現在のCodex/旧MCPを停止・再登録していない。
+- Claude pluginに相対rootから起動するMCP設定を同梱。Codexと明示Pixi環境にはホスト側の一度きりの登録コマンドを標準deploymentへ追加。plugin cacheと利用者のPixi checkoutが別になる場合、後者への明示登録を使うと記載。SIFは0.6.9以降、ファイルは明示mount配下。Docker wrapperはMCPのときだけstdinを保持し、TTYは付けない。
+- doctorへSDK/資材/初期化の検査を追加。任意SDK skipを撤廃し、既存legacy・標準CLI・別cwdからのPixi wrapperで実stdio/分子切替/UI/正確な座標を検査する3ケースを通常CIへ追加。CIはNode 22を用意して再生10ケースも必ず実行。コンテナCPU smokeへインストール済みパッケージのMCP初期化・UI・DCDフレーム検査を追加。
+- ローカル検証：`pixi install --locked`、Ruff、関連pytest **502件成功**、doctor成功。wheelをビルドして一時ディレクトリへ展開し、元checkoutではなくwheelをimportしたことを確認して、MCP初期化・UI・DCD座標を検証。専用 `.validation` venvは不要。クライアント描画・Remote Control性能は前項の確認を引き継ぎ、別マシンでの新しい実描画は未確認。
+- イメージはこの変更を含めたビルド・CPU smoke・GHCR公開で更新する。開始前の既存SIF/共有GPU環境を置換しない。CI・公開結果は続報で記録する。
+
 ## 2026-10-25 — Molstar表示・高速化・skill更新を一括コミット
 
 - 本人指定で今回のMolstar関連37ファイルを一括でコミット対象とした。共有HTTP/MCP表示、段階別表現・wrap・間引き、先読み/キャッシュによる再生高速化、表示skill、同梱Mol*とライセンス、テスト・説明文書を含む。READMEも現在のMCP経由のRemote Control表示を入口へ記載。

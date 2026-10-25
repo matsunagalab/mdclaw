@@ -1,6 +1,6 @@
 [project]
 name = "mdclaw"
-version = "0.6.8"
+version = "0.6.9"
 description = "MDClaw - skills and CLIs for vibe-MD simulations and autonomous scientific investigation"
 readme = "README.md"
 license = "MIT"
@@ -28,6 +28,8 @@ dependencies = [
     # HTTP & networking
     "httpx>=0.28.1",
     "requests>=2.31.0",
+    # Molstar MCP Apps transport; installed by Pixi, pip/conda and image builds.
+    "mcp==1.30.0",
 
     # Utilities
     "python-dotenv>=1.0.0",

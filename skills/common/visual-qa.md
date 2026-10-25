@@ -70,7 +70,8 @@ user which app they use. Recheck after a connection changes or a display fails.
 
 For an interactive request, choose the first usable route:
 
-1. **Attached MCP viewer:** discover `mdclaw_molstar_probe.open_molstar_probe`
+1. **Attached MCP viewer:** discover the available `open_molstar_probe` tool
+   (normally under `mdclaw_molstar`; older connections use `mdclaw_molstar_probe`)
    and inspect its current schema. With stage options, pass absolute source paths
    and the known `stage`, keeping wrap on and fitting off unless requested.
    With an older schema, first use the **existing-connection compatibility path**

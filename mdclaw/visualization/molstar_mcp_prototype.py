@@ -1,7 +1,8 @@
-"""Throwaway probe: Mol* UI -> MCP tool -> one host-side DCD frame.
+"""Molstar MCP Apps server: UI -> MCP tool -> one host-side coordinate frame.
 
-Run with the optional mcp==1.30.0 SDK in an isolated environment. Each open
-call selects a PDB/DCD pair without reconnecting; no HTTP listener is opened.
+Run with `mdclaw molstar-mcp` in the standard MDClaw runtime. Select files
+with open_molstar_probe after connecting; no HTTP listener is opened.
+The historical module/tool names remain compatible with existing connections.
 """
 
 from __future__ import annotations
@@ -82,9 +83,11 @@ class _Dataset(DisplayData):
         return {**data, "dataset_id": self.id}, size
 
 
-def build_server(pdb: str, dcd: str | None = None):
-    default = _Dataset(pdb, dcd)
-    datasets = {default.id: default}
+def build_server(pdb: str | None = None, dcd: str | None = None):
+    if dcd and not pdb:
+        raise ValueError("trajectory_file requires structure_file")
+    default = _Dataset(pdb, dcd) if pdb else None
+    datasets = {default.id: default} if default else {}
     server = Server("mdclaw-molstar-prototype", version="0.4.0")
     requests = 0
     annotations = types.ToolAnnotations(readOnlyHint=True, destructiveHint=False,
@@ -134,6 +137,8 @@ def build_server(pdb: str, dcd: str | None = None):
     async def call_tool(name: str, arguments: dict):
         nonlocal requests
         if name == "open_molstar_probe":
+            if not arguments.get("structure_file") and default is None:
+                raise ValueError("Choose a molecule with an absolute structure_file path; trajectory_file is optional")
             if arguments.get("trajectory_file") and not arguments.get("structure_file"):
                 raise ValueError("trajectory_file requires structure_file")
             for key in ("structure_file", "trajectory_file"):
@@ -141,7 +146,7 @@ def build_server(pdb: str, dcd: str | None = None):
                     raise ValueError("Use absolute host paths")
             options = {key: arguments[key] for key in ("stage", "wrap", "max_frames", "fit") if key in arguments}
             if arguments.get("structure_file") or options:
-                selected = _Dataset(arguments.get("structure_file", str(default.pdb)),
+                selected = _Dataset(arguments.get("structure_file") or str(default.pdb),
                                     arguments.get("trajectory_file") if arguments.get("structure_file") else default.dcd,
                                     **options)
                 selected = next((item for item in datasets.values()
@@ -158,7 +163,7 @@ def build_server(pdb: str, dcd: str | None = None):
             raise ValueError("Unknown tool")
         # No token is the startup default, for older UI instances only. Never
         # use a mutable global 'current molecule' shared by multiple widgets.
-        selected = datasets.get(arguments.get("dataset_id", default.id))
+        selected = datasets.get(arguments.get("dataset_id", default.id if default else None))
         if selected is None:
             raise ValueError("Unknown dataset; call open_molstar_probe again")
         start = time.perf_counter()
@@ -173,11 +178,13 @@ def build_server(pdb: str, dcd: str | None = None):
     return server
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--structure-file", required=True)
+    parser.add_argument("--structure-file", help="Optional startup structure; normally selected after connecting")
     parser.add_argument("--trajectory-file")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.trajectory_file and not args.structure_file:
+        parser.error("--trajectory-file requires --structure-file")
     # DCD's native library writes diagnostics to fd 1. Keep those off MCP stdout.
     protocol_stdout = os.fdopen(os.dup(1), "w", encoding="utf-8", buffering=1)
     os.dup2(2, 1)

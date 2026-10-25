@@ -258,7 +258,11 @@ case "$RUNTIME" in
         while IFS= read -r _dir; do
             [ -n "$_dir" ] && ARG_MOUNT+=(-v "${_dir}:${_dir}")
         done < <(_mdclaw_arg_bind_dirs "$CWD" "$PKG_ROOT" "$@")
-        exec docker run --rm --pull=never ${GPU[@]+"${GPU[@]}"} ${USER_ARGS[@]+"${USER_ARGS[@]}"} \
+        # MCP is a bidirectional stdio service. Keep stdin open, without a TTY
+        # (a TTY would merge protocol stdout with diagnostics).
+        STDIN_ARGS=()
+        case " $* " in *" molstar-mcp "*) STDIN_ARGS=(-i) ;; esac
+        exec docker run --rm --pull=never ${STDIN_ARGS[@]+"${STDIN_ARGS[@]}"} ${GPU[@]+"${GPU[@]}"} ${USER_ARGS[@]+"${USER_ARGS[@]}"} \
             -v "${CWD}:${CWD}" ${PKG_MOUNT[@]+"${PKG_MOUNT[@]}"} ${ARG_MOUNT[@]+"${ARG_MOUNT[@]}"} -w "${CWD}" \
             -e PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
             "$DOCKER_IMAGE" "$@"

@@ -94,6 +94,75 @@ history. The source-built extras (openmm-torch with PythonTorchForce, PLUMED)
 are not conda-installable and still follow
 `docs/developer/conda-env-parity-plan.md`.
 
+## Molstar MCP Display
+
+MDClaw 0.6.9 includes the MCP SDK and the same bundled viewer used for remote
+playback. `pixi install --locked` installs these with the normal runtime; no
+validation directory, separate venv, Node.js or startup molecule is needed.
+The installed package and rebuilt container include the same transport.
+
+After preparing the runtime, check the entry point from the checkout:
+
+```bash
+bin/mdclaw molstar-mcp --help
+```
+
+Register on the **file/compute host**, where the Codex CLI or Claude Code agent
+runs, not on the PC that connects to it. With a Pixi checkout, register once
+from that checkout directory (choose the command for your agent):
+
+```bash
+codex mcp add mdclaw_molstar --env MDCLAW_RUNTIME=pixi -- "$PWD/bin/mdclaw" molstar-mcp
+claude mcp add --scope user --transport stdio mdclaw_molstar --env MDCLAW_RUNTIME=pixi -- "$PWD/bin/mdclaw" molstar-mcp
+```
+
+The absolute launcher path preserves the Pixi manifest location even when the
+agent starts from another working directory. If using the Claude plugin's
+bundled `mdclaw_molstar` server, do not register a duplicate; its manifest uses
+the existing runtime selector. A plugin cache is a separate checkout: for a
+workstation's existing Pixi checkout, use the explicit registration above and
+disable the plugin's duplicate server, or prepare Pixi in the plugin checkout.
+The manifest follows [Claude's bundled MCP server format](https://code.claude.com/docs/en/mcp).
+Codex's explicit registration also works when the client does not import that
+plugin component. UI rendering needs an MCP Apps-capable client; registering
+tools alone does not establish that its current screen can render WebGL.
+
+For a shared SIF (0.6.9 or newer) without a checkout, register the installed CLI
+instead. Replace the two absolute paths before running on the compute host:
+
+```bash
+codex mcp add mdclaw_molstar -- singularity exec \
+  --bind /absolute/work:/absolute/work --pwd /absolute/work \
+  --env PYTHONPATH= --env PYTHONHOME= \
+  /absolute/images/mdclaw.sif mdclaw molstar-mcp
+```
+
+Use `apptainer` in place of `singularity` when appropriate. Viewer preparation
+runs on the CPU; WebGL runs on the client, so this display-only command does not
+need `--nv`. Keep requested files within mounted directories. For Docker use
+`docker run --rm -i` with the work directory mounted at the same absolute path;
+never allocate a TTY to the stdio server. The normal `bin/mdclaw` runtime wrapper
+also selects Pixi/Conda/Singularity/Apptainer/Docker and preserves MCP stdin.
+Existing older images lack the SDK: update the image rather than installing
+packages into a running shared image.
+
+Open a session that has loaded the registration, or use that client's MCP-only
+reconnect action if available. No Codex application restart is needed for
+subsequent molecule switches or UI-only updates: call `open_molstar_probe` with
+absolute `structure_file` and optional `trajectory_file` paths. A new server
+starts with no chosen molecule, so an empty open request reports which input
+is missing instead of displaying a sample or another widget's selection.
+Existing `mdclaw_molstar_probe` registrations keep working; this installer does
+not rewrite them or interrupt active connections.
+
+For production use `stage: "prod"`; wrap is on, fit is off, and long previews
+keep at most 1,000 frames by default. The UI targets up to 60 fps with bounded
+lookahead/cache; it never downloads the source DCD as a file. For preparation,
+select the actual assembled PDB with `stage: "topo"`. Ask the agent to use
+Molstar and confirm the displayed stage/processing status. See the
+[viewer guide](../developer/molstar-viewer.md) for source/stride semantics,
+measured limits and existing-connection compatibility.
+
 ## Other Runtime Options
 
 ### Conda Runtime (Legacy)
@@ -199,10 +268,12 @@ Doctor reports only the selected runtime's readiness:
 - OpenMM: a real Context, energy calculation and one integration step on each
   registered platform. A GPU plugin that cannot run is reported as unavailable.
 - AmberTools: `pdb4amber --help` and `cpptraj -h` must actually start.
+- Molstar: MCP SDK/server startup and bundled playback UI; client WebGL remains
+  a separate display check.
 - Optional features: Torch force and PLUMED import checks, HOLE executable
   discovery, and commands to check separately installed model backends.
 
-CLI or core OpenMM/AmberTools failures return a nonzero exit status. A usable
+CLI or core OpenMM/AmberTools/Molstar failures return a nonzero exit status. A usable
 CPU platform is sufficient for core checks; absent GPU/optional features are
 reported separately and do not fail them. This is not a full validation of
 all scientific workflows. It does not install/pull images, and never diagnoses
