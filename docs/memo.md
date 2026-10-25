@@ -1,7 +1,7 @@
 ---
 title: MDClaw Working Memo
 category: development
-updated: 2026-10-25
+updated: 2026-10-26
 ---
 
 # Working Memo
@@ -12,6 +12,14 @@ continues; do not rewrite past entries when a later finding contradicts them —
 add the correction and say what it overturns.
 
 ---
+
+## 2026-10-26 — Claude CodeリモートMolstarの表示は未解決
+
+- `10f6873` でREADME・既存表示skill・AGENTS/CLAUDE・deploymentに仕組みと切り分けを記載し、floydの実checkoutへ反映。登録、会話のtool読込み、実描画は別の確認項目。
+- floydの登録済みSIFを実MCP SDKで検査。実prod_001は188原子・100フレーム、wrap適用、fitなし。UI資材と先頭/末尾座標の取得に成功。これはサーバー側の検査であり、Claudeの描画成功ではない。
+- 本人のセッション再開でtoolが読み込まれ、autoモードへの変更でpermission拒否も解消。呼出しは成功したが、本人のClaude Desktop Code画面にMolstarパネルは出ない。クライアント版とUI resource要求は未取得。全Claude版の非対応とは断定せず、この接続の描画を未解決と記録する。
+- `1a86475` でREADMEと表示skillを訂正。「ツール行の下に出るはず」と案内せず、既知のアプリ名を再質問しない。呼出し成功後は表示クライアントの調査へ進む。文書/deploy検査10件成功。Codex Remote Controlの表示成功とは区別する。
+- 以前の「Claudeも登録すれば表示できる」という説明は保証過剰だった。共有SIFの張替え・設定の権限緩和・ネットワーク公開は行わず、全座標Artifact化も解決として扱わない。floydの既存memo変更は保持する。
 
 ## 2026-10-25 — Molstar MCP標準deployのCI・配布完了（0.6.11）
 
