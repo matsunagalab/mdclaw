@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/setup-container.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/setup-container.sh\""
           }
         ]
       }
