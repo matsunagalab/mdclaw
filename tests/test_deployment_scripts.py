@@ -31,6 +31,9 @@ def test_release_versions_stay_in_sync():
         ".claude-plugin/plugin.json": json.loads(
             (REPO_ROOT / ".claude-plugin" / "plugin.json").read_text()
         )["version"],
+        ".codex-plugin/plugin.json": json.loads(
+            (REPO_ROOT / ".codex-plugin" / "plugin.json").read_text()
+        )["version"],
         "package.json": json.loads((REPO_ROOT / "package.json").read_text())["version"],
     }
     marketplace = json.loads((REPO_ROOT / ".claude-plugin" / "marketplace.json").read_text())

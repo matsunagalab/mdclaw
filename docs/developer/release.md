@@ -11,6 +11,7 @@ in sync.
 | `mdclaw/__init__.py` | `__version__` |
 | `pyproject.toml` | `version` |
 | `.claude-plugin/plugin.json` | `version` |
+| `.codex-plugin/plugin.json` | `version` (Claude manifest + Codex-only Molstar MCP) |
 | `.claude-plugin/marketplace.json` | `metadata.version` and `plugins[0].version` |
 | `package.json` | `version` |
 

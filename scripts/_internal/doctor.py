@@ -115,7 +115,7 @@ def report_version_sync():
         versions["mdclaw/__init__.py"] = re.search(
             r'__version__\s*=\s*"([^"]+)"',
             (root / "mdclaw/__init__.py").read_text()).group(1)
-        for name in (".claude-plugin/plugin.json", "package.json"):
+        for name in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json", "package.json"):
             versions[name] = json.loads((root / name).read_text())["version"]
         marketplace = json.loads((root / ".claude-plugin/marketplace.json").read_text())
         versions["marketplace metadata"] = marketplace["metadata"]["version"]

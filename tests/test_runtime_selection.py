@@ -316,7 +316,16 @@ def test_mcp_uses_selected_runtime_and_docker_keeps_stdin(deployment, runtime):
 
 
 def test_plugin_mcp_launches_without_machine_specific_files():
-    plugin = json.loads((ROOT / '.claude-plugin/plugin.json').read_text())
+    plugin = json.loads((ROOT / '.codex-plugin/plugin.json').read_text())
     server = plugin['mcpServers']['mdclaw_molstar']
     assert server['command'] == '${CLAUDE_PLUGIN_ROOT}/bin/mdclaw'
     assert server['args'] == ['molstar-mcp']
+
+
+def test_molstar_mcp_ships_with_the_codex_plugin_only():
+    """Claude Code shows Molstar as an Artifact page; only Codex gets the MCP viewer."""
+    claude = json.loads((ROOT / '.claude-plugin/plugin.json').read_text())
+    codex = json.loads((ROOT / '.codex-plugin/plugin.json').read_text())
+    assert 'mcpServers' not in claude
+    assert not (ROOT / '.mcp.json').exists(), 'Claude Code would load a root .mcp.json'
+    assert {k: v for k, v in codex.items() if k != 'mcpServers'} == claude

@@ -1,0 +1,26 @@
+{
+  "name": "mdclaw",
+  "version": "0.6.12",
+  "description": "Skills and CLIs for vibe-MD simulations and autonomous scientific investigation in the Amber/OpenMM ecosystem",
+  "author": {
+    "name": "matsunagalab"
+  },
+  "repository": "https://github.com/matsunagalab/mdclaw",
+  "license": "MIT",
+  "keywords": [
+    "molecular-dynamics",
+    "amber",
+    "openmm",
+    "md-simulation",
+    "computational-biology"
+  ],
+  "skills": "./skills/",
+  "mcpServers": {
+    "mdclaw_molstar": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/mdclaw",
+      "args": [
+        "molstar-mcp"
+      ]
+    }
+  }
+}

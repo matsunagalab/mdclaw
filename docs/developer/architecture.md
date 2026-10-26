@@ -90,6 +90,7 @@ Important boundaries:
 | `.agents/skills/` | Generic Agent Skills discovery surface, normally symlinked to `skills/`. |
 | `.claude/skills/` | Repo-local Claude Code skill discovery surface, normally symlinked to `skills/`. |
 | `.claude-plugin/` | Claude plugin marketplace metadata. |
+| `.codex-plugin/` | Codex plugin manifest (adds the Molstar MCP server). |
 | `hooks/` | Plugin lifecycle hooks, including packaged runtime setup. |
 | `bin/mdclaw` | Runtime wrapper that selects conda, SIF, Docker, or local CLI. |
 | `mdclaw/` | Python package: CLI dispatch, one `mdclaw/<tool>/` package per tool server, and shared state helpers. |

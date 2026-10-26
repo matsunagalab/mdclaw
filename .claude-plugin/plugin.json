@@ -14,11 +14,5 @@
     "md-simulation",
     "computational-biology"
   ],
-  "skills": "./skills/",
-  "mcpServers": {
-    "mdclaw_molstar": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/mdclaw",
-      "args": ["molstar-mcp"]
-    }
-  }
+  "skills": "./skills/"
 }

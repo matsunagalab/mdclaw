@@ -5,6 +5,7 @@
 #   - mdclaw/__init__.py            __version__
 #   - pyproject.toml                [project].version
 #   - .claude-plugin/plugin.json    version
+#   - .codex-plugin/plugin.json     version (Claude manifest + Codex-only MCP)
 #   - .claude-plugin/marketplace.json  metadata.version and plugins[0].version
 #   - package.json                  version
 #
@@ -77,6 +78,7 @@ def sub_json_version(path: Path, count: int) -> None:
 # plugin.json has one version; package.json has one; marketplace.json has two
 # (metadata.version and plugins[0].version), both of which must move together.
 sub_json_version(root / ".claude-plugin" / "plugin.json", count=1)
+sub_json_version(root / ".codex-plugin" / "plugin.json", count=1)
 sub_json_version(root / "package.json", count=1)
 sub_json_version(root / ".claude-plugin" / "marketplace.json", count=2)
 

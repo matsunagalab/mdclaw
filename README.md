@@ -114,7 +114,8 @@ codex mcp add mdclaw_molstar --env MDCLAW_RUNTIME=pixi -- "$PWD/bin/mdclaw" mols
 ```
 
 Select the molecule after connecting; no example trajectory is needed at server
-startup. For Claude plugin registration, SIF and other runtimes, follow
+startup. The Codex plugin bundles this server (Claude Code needs none). For SIF
+and other runtimes, follow
 [Molstar MCP deployment](docs/agents/deployment.md#molstar-mcp-display).
 
 ### On A Compute Server: SIF
@@ -377,6 +378,7 @@ files identical. See the [architecture](docs/developer/architecture.md),
 | `.agents/skills/` | Generic Agent Skills discovery entries, symlinked to `skills/`. |
 | `.claude/skills/` | Repo-local Claude Code skill discovery entries, symlinked to `skills/`. |
 | `.claude-plugin/` | Claude plugin marketplace metadata. |
+| `.codex-plugin/` | Codex plugin manifest (adds the Molstar MCP server). |
 | `hooks/` | Plugin lifecycle hooks, including packaged runtime setup. |
 | `bin/mdclaw` | Runtime wrapper used by plugin and local deployments. |
 | `pixi.toml`, `pixi.lock` | Locked definition of the scientific runtime (dev env and container Stage 1). |

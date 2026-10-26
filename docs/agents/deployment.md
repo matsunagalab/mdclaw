@@ -117,17 +117,20 @@ codex mcp add mdclaw_molstar --env MDCLAW_RUNTIME=pixi -- "$PWD/bin/mdclaw" mols
 ```
 
 The absolute launcher path preserves the Pixi manifest location even when the
-agent starts from another working directory. If using the Claude plugin's
-bundled `mdclaw_molstar` server, do not register a duplicate; its manifest uses
-the existing runtime selector. A plugin cache is a separate checkout: for a
+agent starts from another working directory. **Only the Codex plugin bundles
+the `mdclaw_molstar` server:** `.codex-plugin/plugin.json` is the Claude
+manifest plus `mcpServers`, and Codex reads it in preference to
+`.claude-plugin/plugin.json`. The Claude plugin, Pi and repository-local skills
+ship no MCP server; Claude Code shows Molstar as an Artifact page. Checked
+2026-10-26 by installing the plugin into empty homes: Codex CLI 0.163.0 lists
+`mdclaw_molstar`, Claude Code 2.1.310 reports no MCP servers. If using the
+Codex plugin's bundled server, do not register a duplicate; it uses the
+existing runtime selector. A plugin cache is a separate checkout: for a
 workstation's existing Pixi checkout, use the explicit registration above and
 disable the plugin's duplicate server, or prepare Pixi in the plugin checkout.
-The manifest follows [Claude's bundled MCP server format](https://code.claude.com/docs/en/mcp).
-Repository-local `.claude/skills/` exposes instructions without installing that
-plugin or its MCP configuration. A SIF supplies the server executable without
-installing agent skills; keep the checkout or installed skills available too.
-Codex's explicit registration also works when the client does not import that
-plugin component. UI rendering needs an MCP Apps-capable client; registering
+A SIF supplies the server executable without installing agent skills; keep the
+checkout or installed skills available too. Codex's explicit registration also
+works when the client does not import that plugin component. UI rendering needs an MCP Apps-capable client; registering
 tools alone does not establish that its current screen can render WebGL.
 
 For a shared SIF (0.6.11 or newer) without a checkout, register the installed CLI
@@ -445,6 +448,7 @@ tools strip symlinks — restore them with `git checkout -- .agents .claude`.
 | `.claude/skills/<name>` | Repo-local Claude Code skill discovery entries, symlinked to `skills/<name>`. | Tracked symlinks; can be regenerated |
 | `.codex/skills/<name>` | Optional Codex discovery entries created by `npx skills add`. | Regeneratable local mirror |
 | `.claude-plugin/` | Claude plugin marketplace metadata. | Tracked distribution metadata |
+| `.codex-plugin/` | Codex plugin manifest: the Claude manifest plus the Molstar MCP server. | Tracked distribution metadata |
 | `hooks/hooks.json` | Claude plugin lifecycle hooks. SessionStart prepares the packaged MD runtime. | Tracked plugin hook |
 | `bin/mdclaw` | Runtime wrapper. Uses the shared runtime selection described above. | Tracked executable |
 | `container/` | Docker image and Singularity/Apptainer SIF build assets for the packaged MD runtime. | Tracked runtime build |

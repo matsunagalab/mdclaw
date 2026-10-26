@@ -156,11 +156,11 @@ It applies to MCP Apps clients such as Codex, and to an explicit MCP test.
    and a terminal with no graphical client. Desktop's Chat and Code tabs are
    also different clients; support on one surface is not proof for another.
 2. Separate **configured**, **loaded in this session**, and **visibly rendered**.
-   `claude mcp get mdclaw_molstar` reporting Connected checks a connection from
-   that command; it does not add tools to an already running agent or confirm
-   widget rendering. Discover deferred tools by `open_molstar_probe`, including
-   the plugin namespace `mcp__plugin_mdclaw_mdclaw_molstar__open_molstar_probe`.
-   Repository-local skills work even without an installed Claude plugin.
+   `codex mcp list` (or `claude mcp get mdclaw_molstar`) reporting the server
+   checks configuration from that command; it does not add tools to an already
+   running agent or confirm widget rendering. Discover deferred tools by
+   `open_molstar_probe`. Only the Codex plugin bundles the server; the Claude
+   plugin and repository-local skills do not register it.
 3. If configured but absent, use the current client's MCP reconnect control
    when it lists the server. Remote Control accepts `/mcp reconnect <name>`;
    report its actual response. For an installed/updated plugin, use

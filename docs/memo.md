@@ -13,6 +13,14 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-26 — Molstar MCPはCodexプラグインだけに同梱
+
+本人「Codexの時だけはpluginとして入った方がいいけど、Codex以外は外れるように」。
+
+- `.claude-plugin/plugin.json` から `mcpServers` を外し、`.codex-plugin/plugin.json`（Claude manifestと同一＋`mcpServers`）を追加。テストで両者の一致とルート `.mcp.json` 不在を固定し、版同期（bump-version・doctor・test）とrelease手順に追加。
+- 空のホームへの実インストールで確認（追跡ファイルのみを書き出したcheckout）: Codex CLI 0.163.0 は `.codex-plugin` を優先して読み `codex mcp list` に `mdclaw_molstar`（`.claude-plugin` 側にMCPが無くても）、Claude Code 2.1.310 は `claude mcp list` が「No MCP servers configured」。変更前はClaude Codeにも `plugin:mdclaw:mdclaw_molstar` が入っていた。OpenAIの公式文書は `.codex-plugin` と `.claude-plugin` の優先順位を明記していないため、この実測が根拠。`claude plugin validate` の警告3件（ルートCLAUDE.md、hooksのクォート、アイコン）は変更前から存在。
+- Codexでの `${CLAUDE_PLUGIN_ROOT}` 展開とプラグイン経由MCPの実起動は未検証（従来どおり）。checkoutを直接marketplaceにすると未追跡の大容量ファイル（SIFバックアップ等）までプラグインキャッシュへ複写されるので、検証は追跡ファイルの書き出しで行う。
+
 ## 2026-10-26 — v0.6.12リリース、共有SIFをv0.6.12へ
 
 - `c8ddca1` / `v0.6.12`（`export_molstar_page` とproductionの溶質のみ表示を含む）。タグpushは本人が実行（エージェントの公開操作はauto modeで拒否）。CI 2本とContainer run `40209537331`（37分34秒）が成功。GHCR `:0.6.12` と `:latest` はともに `sha256:56560ab9…`。
