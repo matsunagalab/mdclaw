@@ -13,6 +13,12 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-26 — v0.6.12リリース、共有SIFをv0.6.12へ
+
+- `c8ddca1` / `v0.6.12`（`export_molstar_page` とproductionの溶質のみ表示を含む）。タグpushは本人が実行（エージェントの公開操作はauto modeで拒否）。CI 2本とContainer run `40209537331`（37分34秒）が成功。GHCR `:0.6.12` と `:latest` はともに `sha256:56560ab9…`。
+- digest指定でpullし `/data/mdclaw/mdclaw-amd64-c8ddca1a8875.sif`（4,991,426,560 bytes、sha256 `5f28eff0…`）。floyd（A6000）・n1（TITAN X Pascal）・n2/n4（1080 Ti）・n5（2080 Ti）でsbatch経由 `test-container.sh --gpu` 各26 passed / 0 failed、CUDA 4項目（OpenMM力・PME/cuFFT・Torch・PythonTorchForce）を全ノードで実行、PMEエネルギーは前回と同じ −130.075944。同ジョブでSIF内の `mdclaw export_molstar_page` がCLN025 prod_001から166原子・100フレーム・イオン22除去・386,938 bytesのページを出力。n3は未検査（sinfoに無い）。
+- `/data/mdclaw.sif` をv0.6.12へatomicに張替え。v0.6.11（`1269f3430e65`）と `63e352c` のSIFはロールバック用に保持。ログは `/data/mdclaw/accept-0.6.12/`。
+
 ## 2026-10-26 — Claude CodeのMolstar表示をArtifactページに、production表示は溶質のみ
 
 本人の指示「Codex向けになっているMolstarのskillをClaude Codeのデスクトップアプリでも同じようにスムーズに」と「productionはイオンを表示せず溶質だけ（脂質があれば脂質も）。Codexも同様、準備・最小化・平衡化は従来どおり」。
