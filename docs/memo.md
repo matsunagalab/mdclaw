@@ -13,6 +13,29 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-29 — 膜 patch を GPU で新しく作ると壊れる既存の不具合を直した: CUDA は力を固定小数点で足すので、重なった原子の steepest descent が進まなかった。CPU でやり直す（`relax.py`）
+
+ユーザー依頼「元からある不具合を直して」（SIF の受け入れで見つけた `test_pipeline_membrane_dag::test_step3_embed_in_membrane` の GPU での失敗）。調べた場所は `/data1/rkp00079/rku00161/mdclaw-validation/membrane-cuda-20261029/`。
+
+- **切り分け**
+  - 落ちていたのは平衡化の前で、packmol-memgen が詰めた直後の POPC patch に `build_amber_system` をかけた段階。緩和後のエネルギーが 6.52e11 kJ/mol（`built_system_energy_implausible`）で、patch はキャッシュに保存されなかった。
+  - 同じ patch を、5 通りで組んで比べた（probe、Slurm 241520）。CPU は通り、CUDA は single / mixed / double と platform の自動選択のどれでも同じ値で落ちた。精度の問題ではない。
+  - CPU で緩和したあとの位置では、力ごとのエネルギーが CPU と CUDA で一致した（probe2）。力の計算そのものは正しい。
+  - 緩和を始める前の値（probe4）
+    - E0 は両方とも 5.78e11 kJ/mol。
+    - 最大の力は CPU が 1.6e14、CUDA が 3.7e9 kJ/mol/nm。CUDA の値は 64-bit 固定小数点（2^32 / kJ/mol/nm）で頭打ちになっていて、向きの情報が失われている。
+    - capped steepest descent は、CUDA では 15 ステップ試みて受け入れ 0。L-BFGS は 6.5e11 に上がり、もう一度試しても同じだった。CPU では 26 ステップで -1.18e5 まで下がった。
+- **修正**（`mdclaw/simulation/relax.py`）
+  - CPU / Reference 以外の platform で descent を走らせ、受け入れが 0、または最大の力が 1e9 以上（`GPU_SATURATED_FORCE_KJ_MOL_NM`）のときは、System の写しを CPU の platform に作ってやり直す。拘束のある系では、これまでどおり拘束をばねにした写しを使う。座標は元の Context に射影して戻し、L-BFGS は元の platform のまま続ける。
+  - report に `cpu_fallback`（`platform`、`from_platform`、`steps`、`accepted`）を残す。
+  - descent の本体は `_descent_pass` に分け、`_spring_context` には platform を指定できる引数を足した。
+- **テスト**
+  - `tests/test_relax.py` に 2 件足した。CUDA を名乗り、力を反転して頭打ちにした代役の Context で、CPU でのやり直しが重なりをほどくこと。CPU の Context ではやり直しが起きないこと。
+  - `test_relax.py` と `test_md_helpers.py` の 131 件が passed。ruff は clean。
+  - GPU ジョブ（Slurm 241527、c167）で `test_pipeline_membrane_dag.py` が 5 passed（152 s）。patch はキャッシュに保存された（`packmol-memgen+equilibrate`、平衡化まで実行）。同じテストを CPU で流すと 45 分かかる。
+- **影響**: キャッシュに当たらない膜を GPU ジョブの中で組むと、これまでは必ず落ちていた（修正前の `82bc431` と旧 v4fix SIF でも同じ）。同じ緩和の処理（`minimize_robustly`）は、`run_minimization` と `build_openmm_system` も使っているので、詰め直後の溶媒の重なりが大きいほかの系にも効く。
+- 共有 SIF（`6d252ca`）にはこの修正がまだ入っていない。
+
 ## 2026-10-29 — RIKYU の共有 SIF を `/data1/rkp00079/mdclaw.sif` に（main `6d252ca` から一からビルド）。旧パスは別名のまま使える。GPU で膜 patch を新規に作ると壊れる既存の不具合を見つけた
 
 ユーザー依頼「修正後に SIF を更新」「名前をシンプルに、例えば mdclaw.sif。RIKYU.md の案内も更新」。
