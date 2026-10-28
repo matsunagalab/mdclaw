@@ -452,6 +452,40 @@ signature, update the relevant section here and the matching skill examples.
 
 - `inspect_openmm_platforms(...)`: lightweight OpenMM platform inventory and
   atom-count feasibility guidance before local explicit-water runs.
+- Run guard (`mdclaw/simulation/run_guard.py`, not a tool): every MD stage
+  tool in node mode (`run_minimization`, `run_equilibration`,
+  `run_production`, `run_metadynamics`, `run_sst2`, `run_fep`,
+  `add_boresch_restraint`) calls `md_preflight` after its argument and DAG
+  checks and right before `begin_node`; a refusal leaves a pending node
+  pending (`metadata.last_refusal`). `md_outside_allocation`: the host is a
+  Slurm cluster (see `MDCLAW_ALLOW_LOCAL_MD` in `configuration.md` for the
+  detection and the escape) and `SLURM_JOB_ID` is unset; `next_action` is the
+  node's exact `submit_job --job-dir --node-id --job-name --gpus 1 --script
+  '<the call, --platform CUDA, no --device-index>'` (plus the policy's
+  `max_time_limit`), or `wait_node` when the node is already queued/running
+  (that node is not touched). `platform_unavailable`: the named platform
+  (with `--device-index`) cannot create a Context in this process; the
+  result lists the usable platforms and the rerun command.
+  `gpu_allocated_platform_unavailable`: inside a job Slurm gave GPUs
+  (`SLURM_JOB_GPUS` / `SLURM_STEP_GPUS` / `SLURM_GPUS_ON_NODE` /
+  `CUDA_VISIBLE_DEVICES`) no GPU platform works (a container without
+  `--nv`), so `auto` would run on the CPU; an explicit `CPU` is left alone.
+  Inside its own job the queued node would be failed by the job's end
+  anyway, so there it is failed with that code and the branch command.
+  MDDataBench v5 qwen3.6-35b: 97 attempts integrated on the login node, 21
+  sealed a node on a missing CUDA. `run_rounds --executor local` refuses
+  `md_outside_allocation` before any segment (`--executor mps` only submits).
+  The non-node calls inside `embed_in_membrane` (lipid-patch min/eq) are
+  not checked.
+- Declared conditions at run time: when `validate_node_execution_context`
+  fails only on `condition_mismatch` and every mismatched key is a flag of
+  the tool that the call did not already set to the declared value,
+  `context_refusal` keeps the node pending and `next_action` is the same
+  command with the declared values (`--nvt-time-ns 0.5`, replacing
+  `--nvt-steps`; the `submit_job` form on a login node; `rerun_command`
+  holds the bare rerun). Other context failures keep their old result
+  (36 eq/prod nodes of MDDataBench v5 qwen were sealed for a declared
+  length the bare command did not pass).
 - `export_state_pdb(...)`: export a PDB by combining atom/residue records from
   `topology.pdb` with positions from `state.xml`. Useful for report artifacts
   and MDPrepBench `minimized_structure.pdb` submissions.
@@ -1238,7 +1272,10 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
   or fails). A node whose record names another live process — a duplicate
   Slurm job, 010_membrane_6kux r3 of campaign v4 — is refused with
   `node_already_running` (the CLI maps `NodeAlreadyRunningError` to it and
-  does not fail the node); a dead owner's node is taken over; a record this
+  neither fails the node nor records a failure on it; `run_equilibration`
+  and `run_minimization`, whose `begin_node` sits inside their generic
+  `except`, re-raise it and `NodeSealedError` instead of failing the node);
+  a dead owner's node is taken over; a record this
   process or one of its ancestors wrote (an in-process rounds driver, also
   when it runs the tool through the launcher) is kept. Slurm's terminal
   report of a job other than the owner's never seals a `running` node.

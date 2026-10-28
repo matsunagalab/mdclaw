@@ -708,6 +708,7 @@ def add_boresch_restraint(
         ``abfe_restraint_unstable``, ``abfe_ligand_too_small``,
         ``abfe_receptor_missing``, ``fep_protocol_invalid``.
     """
+    _call = dict(locals())
     import numpy as np
     import openmm
     from openmm.app import PDBFile
@@ -715,6 +716,7 @@ def add_boresch_restraint(
     from mdclaw._node import fail_tool
     from mdclaw.fep.build import fastest_platform_name
     from mdclaw.simulation._base import resolve_platform_name
+    from mdclaw.simulation.run_guard import context_refusal, md_preflight
 
     result: dict = {"success": False, "tool": "add_boresch_restraint", "errors": [], "warnings": []}
     node_mode = bool(job_dir and node_id)
@@ -734,19 +736,17 @@ def add_boresch_restraint(
 
     parent_topo_id = None
     if node_mode:
-        from mdclaw._node import fail_node_from_result, validate_node_execution_context
+        from mdclaw._node import validate_node_execution_context
         from mdclaw.node.inputs import _resolve_md_restart, _resolve_topology_files
         from mdclaw.node.io import _read_artifact_from_node
 
-        ctx = validate_node_execution_context(
-            job_dir, node_id, "topo",
-            actual_conditions={"restraint_lambdas": restraint_lambdas, "sampling_time_ps": sampling_time_ps,
-                               "frame_interval_ps": frame_interval_ps, "temperature_kelvin": temperature_kelvin,
-                               "k_distance": k_distance, "k_angle": k_angle, "platform": platform,
-                               "random_seed": random_seed, "output_name": output_name})
+        actual = {"restraint_lambdas": restraint_lambdas, "sampling_time_ps": sampling_time_ps,
+                  "frame_interval_ps": frame_interval_ps, "temperature_kelvin": temperature_kelvin,
+                  "k_distance": k_distance, "k_angle": k_angle, "platform": platform,
+                  "random_seed": random_seed, "output_name": output_name}
+        ctx = validate_node_execution_context(job_dir, node_id, "topo", actual_conditions=actual)
         if not ctx["success"]:
-            return fail_node_from_result(job_dir, node_id, {"success": False, "error_type": "ValidationError", **ctx},
-                                         default_error="add_boresch_restraint node execution context invalid")
+            return context_refusal(add_boresch_restraint, _call, job_dir, node_id, ctx, actual, keep_pending=True)
         triple = _resolve_topology_files(job_dir, node_id)
         restart = _resolve_md_restart(job_dir, node_id)
         parent_topo_id = triple.get("topology_resolved_from_node_id")
@@ -774,6 +774,11 @@ def add_boresch_restraint(
     if node_mode:
         from mdclaw._node import begin_node
 
+        # The selection run integrates the complex (200 ps by default):
+        # refused before begin_node where MD must not run.
+        refusal = md_preflight(add_boresch_restraint, _call, job_dir, node_id)
+        if refusal is not None:
+            return refusal
         out_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
         begin_node(job_dir, node_id)

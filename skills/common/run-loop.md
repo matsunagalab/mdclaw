@@ -123,7 +123,9 @@ DAG handoff instead of claiming a scientific answer.
    follow `skills/hpc-run/SKILL.md` and use `submit_job` (one node per GPU) or
    `submit_mps_job` (replicates of a small system sharing one GPU), which own
    the sbatch script and the `--dependency` flag. Do not hand-write sbatch
-   files.
+   files. Run on the login node, a stage tool refuses with
+   `code=md_outside_allocation` (nothing ran, the node stays pending) and its
+   `next_action` is the `submit_job` command for that node: run it.
 
 5. **Report what ran, before moving on.**
 

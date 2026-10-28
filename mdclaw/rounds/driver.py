@@ -904,6 +904,19 @@ def run_rounds(
                 message=f"scheme {scheme_id!r} was {closed_note}; nothing of it runs again "
                         "(analyze it, or setup_rounds with a new scheme_id)",
             )
+        if executor == "local":
+            # The local executor integrates every segment in this process: on
+            # a login node that is MD outside an allocation. Refused here,
+            # before a segment is touched (the stage tool would refuse each
+            # one with md_outside_allocation).
+            from mdclaw.simulation.run_guard import rounds_outside_allocation
+
+            refusal = rounds_outside_allocation(job_dir, scheme_id, max_rounds=max_rounds,
+                                                max_aggregate_ns=max_aggregate_ns,
+                                                max_wall_hours=max_wall_hours)
+            if refusal is not None:
+                return {**refusal, "job_dir": job_dir, "scheme_id": scheme_id, "rounds_completed": 0,
+                        "segments_run": 0}
         driver = _Driver(job_dir, scheme, executor=executor, platform=platform, device_index=device_index,
                          mps_tasks_per_gpu=mps_tasks_per_gpu, mps_gpus=mps_gpus,
                          mps_segments_per_task=mps_segments_per_task, mps_max_jobs=mps_max_jobs,

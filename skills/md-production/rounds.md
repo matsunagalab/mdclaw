@@ -68,7 +68,9 @@ mdclaw submit_job --job-name rep --gpus 1 --time-limit 24:00:00 \
   --script "mdclaw run_rounds --job-dir $JOB --scheme-id rep --max-wall-hours 23 --platform CUDA"
 ```
 
-This runs the replicas one after another on one GPU. Small systems (the
+This runs the replicas one after another on one GPU (on the login node the
+local executor refuses with `md_outside_allocation` and names this command).
+Small systems (the
 size table of `skills/hpc-run/submit-mps.md`) pack under MPS with
 `--executor mps`: the driver runs on the login node (`nohup` / `tmux`; it
 only submits, waits and plans) and each round goes out as `submit_mps_job`
