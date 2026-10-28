@@ -136,8 +136,8 @@ choice, not a "legacy artifact format" toggle.
 - Ligands: neutral SMILES are protonated to a pH-appropriate state via
   Dimorphite-DL (defaults to the same `--ph` as the protein). Override with
   `--ligand-ph`, disable with `--no-protonate-ligands`, or force a specific
-  state by passing a charged SMILES (`[O-]`/`[NH3+]`) or a known `net_charge`
-  (used to select the matching protonation state)
+  state by passing a charged SMILES (`[O-]`/`[NH3+]`) or a known net charge
+  (`--ligand-net-charges '{"AMH": 0}'`, used to select the matching state)
 
 ---
 

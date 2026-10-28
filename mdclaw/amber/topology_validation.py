@@ -73,13 +73,19 @@ def _validate_final_disulfides(
     system: Any,
     disulfide_bonds: Optional[list[dict[str, Any]]],
     manual_added_count: int,
+    positions: Any = None,
 ) -> dict[str, Any]:
     """Validate disulfides against final topology and System, not patch logs."""
     from mdclaw.amber.disulfide_contract import (
         DisulfidePlanError, resolve_disulfides, sulfur_chemistry_errors,
+        unbonded_disulfide_geometry_errors,
     )
     topology_pairs = _sg_sg_topology_bond_pairs(topology)
     errors = sulfur_chemistry_errors(topology)
+    unbonded_geometry = (
+        unbonded_disulfide_geometry_errors(topology, positions, disulfide_bonds)
+        if positions is not None else [])
+    errors.extend(f"unbonded_disulfide_geometry: {item}" for item in unbonded_geometry)
     try:
         expected_pairs = {tuple(sorted((a.index, b.index)))
                           for a, b in resolve_disulfides(topology, disulfide_bonds)}
@@ -120,6 +126,7 @@ def _validate_final_disulfides(
         "status": status,
         "expected_count": expected_count,
         "chemistry_errors": errors,
+        "unbonded_disulfide_geometry": unbonded_geometry,
         "missing_topology_pairs": sorted(missing_topology),
         "missing_system_pairs": sorted(missing_system),
         "requested_atom_pairs": sorted(expected_pairs),
@@ -231,6 +238,7 @@ def _build_topology_validation_report(
     manual_disulfide_added_count: int,
     amber_variant_restore: Optional[dict[str, Any]],
     non_authoritative_notes: list[str],
+    positions: Any = None,
 ) -> dict[str, Any]:
     """Build an agent-facing validation report from final artifacts."""
     topology_atom_count = int(topology.getNumAtoms())
@@ -269,6 +277,7 @@ def _build_topology_validation_report(
         system=system,
         disulfide_bonds=disulfide_bonds,
         manual_added_count=manual_disulfide_added_count,
+        positions=positions,
     )
     protonation_variants = _validate_final_protonation_variants(
         topology=topology,

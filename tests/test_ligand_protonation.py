@@ -14,6 +14,9 @@ from mdclaw.structure.ligand_chemistry import (
     _protonate_smiles_dimorphite,
     _select_protonation_state,
     _smiles_has_explicit_charge,
+    choose_protonation_state,
+    ligand_protonation_next_action,
+    smiles_skeleton,
 )
 
 
@@ -41,12 +44,29 @@ class TestSelectProtonationState:
         assert charge is None
         assert meta == []
 
-    def test_no_expected_charge_picks_dominant_first(self):
+    def test_no_expected_charge_and_different_charges_is_ambiguous(self):
+        """Dimorphite-DL's order is not a ranking (5OH3 9V2: 0 in one run, -1 in another)."""
         candidates = [("A", -1), ("B", 0)]
         smiles, charge, meta = _select_protonation_state(candidates, expected_net_charge=None)
-        assert smiles == "A"
-        assert charge == -1
+        assert smiles is None and charge is None
         assert meta == [{"smiles": "A", "charge": -1}, {"smiles": "B", "charge": 0}]
+        assert choose_protonation_state(candidates, None)["status"] == "ambiguous"
+
+    def test_no_expected_charge_and_one_charge_selects(self):
+        candidates = [("A", -1), ("B", -1), ("A", -1)]
+        choice = choose_protonation_state(candidates, None)
+        assert choice["status"] == "selected" and choice["smiles"] == "A"
+        assert len(choice["candidates"]) == 2
+
+    def test_unreachable_charge_is_reported(self):
+        assert choose_protonation_state([("A", -1)], 1)["status"] == "unreachable"
+        assert choose_protonation_state([], None)["status"] == "empty"
+
+    def test_next_action_names_each_charge(self):
+        action = ligand_protonation_next_action(
+            "9V2", [{"smiles": "X", "charge": 0}, {"smiles": "Y", "charge": -1}])
+        assert """--ligand-net-charges '{"9V2": 0}'""" in action
+        assert """--ligand-net-charges '{"9V2": -1}'""" in action
 
     def test_expected_charge_selects_matching_candidate(self):
         candidates = [("A", -1), ("B", 0)]
@@ -94,3 +114,18 @@ class TestDimorphiteProtonation:
 
         monkeypatch.setattr(builtins, "__import__", fake_import)
         assert _protonate_smiles_dimorphite("CC(=O)O", ph=7.4) == []
+
+
+class TestSmilesSkeleton:
+    def setup_method(self):
+        pytest.importorskip("rdkit")
+
+    def test_protonation_states_share_a_skeleton(self):
+        assert smiles_skeleton("NCC1CCC(CC1)C(O)=O") == smiles_skeleton("[NH3+]CC1CCC(CC1)C([O-])=O")
+        assert smiles_skeleton("C1=CC=CC=C1O") == smiles_skeleton("c1ccccc1O")
+
+    def test_bond_orders_are_part_of_the_skeleton(self):
+        oleate = "CCCCCCCC/C=C\\CCCCCCCC(=O)O"
+        stearate = "CCCCCCCCCCCCCCCCCC(=O)[O-]"
+        assert smiles_skeleton(oleate) != smiles_skeleton(stearate)
+        assert smiles_skeleton("not a smiles") is None

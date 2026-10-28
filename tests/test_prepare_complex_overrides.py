@@ -351,7 +351,8 @@ class TestDisulfideOverride:
         assert cn["disulfide_bonds"]["source"] == "auto_detected"
         assert len(cn["disulfide_bonds"]["pairs"]) == 1
 
-    def test_empty_override_disables_disulfides(self, mini_pdb, monkeypatch, tmp_path):
+    def test_empty_override_with_a_bonded_deposit_pair_is_refused(self, mini_pdb, monkeypatch, tmp_path):
+        """'[]' no longer drops the deposit's bonded A10-A20 without a word."""
         _short_circuit_heavy_steps(monkeypatch)
         result = prepare_complex(
             structure_file=str(mini_pdb),
@@ -359,22 +360,40 @@ class TestDisulfideOverride:
             select_chains=["A"],
             disulfide_pairs=[],
         )
-        assert result["disulfide_source"] == "user_override"
-        assert result["disulfide_bonds"] == []
-        # No confirmation block expected when both lists are empty
-        assert "confirmation_needed" not in result
+        assert result["code"] == "detected_disulfides_suppressed"
+        assert result["context"]["suppressed_disulfides"] == ["A:10-A:20"]
+        action = result["next_action"]
+        assert "omit --disulfide-pairs" in action
+        assert '"form_bond": false' in action and '"resnum": 10' in action
 
-    def test_user_list_replaces_auto_detection(self, mini_pdb, monkeypatch, tmp_path):
+    def test_pair_named_with_form_bond_false_stays_reduced(self, mini_pdb, monkeypatch, tmp_path):
         _short_circuit_heavy_steps(monkeypatch)
-        user_pair = {"cys1": {"chain": "A", "resnum": 5}, "cys2": {"chain": "A", "resnum": 45}}
+        reduced = {"cys1": {"chain": "A", "resnum": 10}, "cys2": {"chain": "A", "resnum": 20},
+                   "form_bond": False}
         result = prepare_complex(
             structure_file=str(mini_pdb),
             output_dir=str(tmp_path / "out"),
             select_chains=["A"],
-            disulfide_pairs=[user_pair],
+            disulfide_pairs=[reduced],
+        )
+        assert result.get("code") != "detected_disulfides_suppressed"
+        assert result["disulfide_source"] == "user_override"
+        assert result["disulfide_bonds"][0]["form_bond"] is False
+
+    def test_user_list_replaces_auto_detection(self, mini_pdb, monkeypatch, tmp_path):
+        _short_circuit_heavy_steps(monkeypatch)
+        user_pair = {"cys1": {"chain": "A", "resnum": 5}, "cys2": {"chain": "A", "resnum": 45}}
+        # The deposit's bonded A10-A20 must be named too; kept reduced here.
+        reduced = {"cys1": {"chain": "A", "resnum": 10}, "cys2": {"chain": "A", "resnum": 20},
+                   "form_bond": False}
+        result = prepare_complex(
+            structure_file=str(mini_pdb),
+            output_dir=str(tmp_path / "out"),
+            select_chains=["A"],
+            disulfide_pairs=[user_pair, reduced],
         )
         assert result["disulfide_source"] == "user_override"
-        assert len(result["disulfide_bonds"]) == 1
+        assert len(result["disulfide_bonds"]) == 2
         out = result["disulfide_bonds"][0]
         assert out["cys1"]["resnum"] == 5
         assert out["cys2"]["resnum"] == 45

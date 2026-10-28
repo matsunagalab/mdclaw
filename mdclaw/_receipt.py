@@ -271,7 +271,10 @@ def _facts_prep(result: dict) -> dict:
         cys1, cys2 = pair.get("cys1") or {}, pair.get("cys2") or {}
         if cys1.get("resnum") and cys2.get("resnum"):
             label = f"{cys1.get('chain', '')}{cys1['resnum']}-{cys2.get('chain', '')}{cys2['resnum']}"
-            if pair.get("geometry") == "overlap":
+            if pair.get("form_bond") is False:
+                # Named by the caller to stay reduced: not a bond.
+                label += " (kept reduced)"
+            elif pair.get("geometry") == "overlap":
                 # The deposit overlaps the two sulfurs; the bond is still formed.
                 label += f" (overlap {pair.get('distance_angstrom')} A)"
             disulfides.append(label)

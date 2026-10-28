@@ -1223,6 +1223,20 @@ def _run_openmmforcefields_build(
         result["code"] = "disulfide_chemistry_conflict"
         result["errors"].append(str(exc))
         return result
+    from mdclaw.amber.disulfide_contract import unbonded_disulfide_geometry_errors
+
+    geometry_errors = unbonded_disulfide_geometry_errors(
+        omm_topology, omm_positions, disulfide_bonds)
+    if geometry_errors:
+        result["code"] = "unbonded_disulfide_geometry"
+        result["errors"].append(
+            "Cysteine sulfurs at bonding distance without an S-S bond: "
+            + "; ".join(geometry_errors))
+        result["next_action"] = (
+            "The prep this topology reads left a disulfide unformed. Create a new prep "
+            "node with --disulfide-pairs naming these pairs (or with form_bond false to "
+            "keep them reduced on purpose), then rebuild solv and topo from it.")
+        return result
 
     # --- 4. Set unit cell for explicit solvent ---------------------------
     if not box_dimensions:
@@ -1891,6 +1905,7 @@ def _run_openmmforcefields_build(
         manual_disulfide_added_count=manual_disulfide_added_count,
         amber_variant_restore=amber_variant_restore,
         non_authoritative_notes=result["topology_notes"],
+        positions=final_positions,
     )
     topology_validation["input_conservation"] = input_conservation
     disulfide_notes = topology_validation["disulfides"].get(

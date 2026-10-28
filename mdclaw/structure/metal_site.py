@@ -84,7 +84,7 @@ def detect_metal_sites(structure_path: Path,
     of them plus a second zinc shared between all three at Cys270, and without
     the filter every copy's cysteines would be assigned.
     """
-    selected = set(select_chains) if select_chains else None
+    selected = set(select_chains) if select_chains is not None else None
     try:
         import gemmi
     except ImportError:

@@ -219,6 +219,10 @@ def _reconcile_cyx_cys_in_pdb(
     target_cyx: set = set()
     unresolved: list = []
     for bond in disulfide_bonds:
+        # A pair named with form_bond false is kept reduced: its cysteines
+        # stay CYS (a CYX with no partner fails at the topology).
+        if bond.get("form_bond") is False:
+            continue
         for key in ("cys1", "cys2"):
             entry = bond.get(key) or {}
             chain = entry.get("chain")
@@ -331,6 +335,36 @@ DISULFIDE_METAL_ELEMENTS = frozenset({
 METAL_SULFUR_ANGSTROM = 3.5
 
 
+def close_sulfur_pairs(sulfurs: dict, metals, cutoff: float) -> List[tuple]:
+    """Cysteine sulfur pairs within ``cutoff`` A that no metal bridges.
+
+    ``sulfurs`` maps a residue key to an ``(x, y, z)`` position in A and
+    ``metals`` is an iterable of positions. Returns ``(key1, key2, distance)``
+    sorted by distance. Two sulfurs this close are either a disulfide or two
+    ligands of one metal (``METAL_SULFUR_ANGSTROM`` of both); the second is
+    never a bond and is left out, as detection leaves it out.
+    """
+    metals = [tuple(float(v) for v in pos) for pos in metals or []]
+    items = [(key, tuple(float(v) for v in pos)) for key, pos in sulfurs.items()]
+
+    def dist(a, b):
+        return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2) ** 0.5
+
+    found = []
+    for i, (key1, pos1) in enumerate(items):
+        for key2, pos2 in items[i + 1:]:
+            if abs(pos1[0] - pos2[0]) > cutoff:
+                continue
+            distance = dist(pos1, pos2)
+            if distance > cutoff:
+                continue
+            if any(dist(m, pos1) <= METAL_SULFUR_ANGSTROM and dist(m, pos2) <= METAL_SULFUR_ANGSTROM
+                   for m in metals):
+                continue
+            found.append((key1, key2, round(distance, 2)))
+    return sorted(found, key=lambda item: item[2])
+
+
 def _pair_key(pair: dict) -> frozenset:
     """A disulfide identified by its two ends, unordered.
 
@@ -406,7 +440,8 @@ def _merge_disulfide_pairs(
     """
     _key = _pair_key
 
-    selected = set(select_chains) if select_chains else None
+    # An empty selection selects nothing; only None means "every chain".
+    selected = set(select_chains) if select_chains is not None else None
 
     def _passes_chain_filter(pair: dict) -> bool:
         if selected is None:

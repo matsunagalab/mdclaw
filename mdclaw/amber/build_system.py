@@ -1578,6 +1578,8 @@ def build_amber_system(
                 result["code"] = (
                     om_result.get("code") or "openmmforcefields_build_failed"
                 )
+            if om_result.get("next_action") and not result.get("next_action"):
+                result["next_action"] = om_result["next_action"]
             logger.error(
                 "openmmforcefields build failed: %s",
                 "; ".join(om_result.get("errors", [])) or "(no error message)",
