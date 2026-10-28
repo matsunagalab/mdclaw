@@ -23,9 +23,9 @@ membrane. It controls prep-time component disposition, including retained ions; 
 | Parameter | Default | User cues to override |
 |---|---|---|
 | Protein force field | `ff19SB` | "ff14SB" |
-| Water model | `opc` | "tip3p", "spce", "tip4p-ew" |
+| Water model | `opc`, always passed as `--water-model` at solvation (required) | "tip3p", "spce", "tip4p-ew" |
 | Buffer distance | `15 Å` | "buffer 20", "20A" |
-| Box | cubic | "octahedral", "truncated octahedron" |
+| Box | cubic | "rectangular" or an elongated-solute warning: `--no-cubic` (no octahedron) |
 | Temperature | `300 K` | user value (give it to `run_equilibration`; production inherits it) |
 | Pressure | `1 bar` | user value |
 | Ensemble | NPT for prod, NVT/NPT for eq | |
@@ -44,15 +44,15 @@ Ion placement belongs to `solvate_structure` / `embed_in_membrane`; do not searc
 | `physiological salt` | `--salt --saltcon 0.15` |
 | `150 mM KCl` | `--salt --saltcon 0.15 --salt-c K+ --salt-a Cl-` |
 | explicit `no salt` / `counterions only` / `neutralised only, no bulk salt` | `--salt --saltcon 0` |
-| `no ions` (neutral solute only) | `--no-salt`; a charged solute then fails the topology with `system_net_charge_without_ions` |
+| `no ions` (neutral solute only) | `--no-salt`; a charged solute is refused at solvation (`solvation_charged_without_ions`) |
 
 Never turn `neutralised` alone into `--saltcon 0`: the 0.15 M NaCl default still
 applies. With `--salt`, counterions come from prepared, protonated Amber residue
 names plus `charge_pdb_delta` corrections for ligands, nucleic acids, lipids,
 and metals. Charge 0 means zero *counterions*; only `--saltcon 0` means no bulk pairs.
 
-`--no-salt` skips bulk salt and counterions; a charged topology is rejected as
-`neutralization_charge_mismatch`. `--salt-override` allows neutralization to
+`--no-salt` skips bulk salt and counterions, so it is refused before any work
+when the solute is charged. `--salt-override` allows neutralization to
 exceed `--saltcon`; otherwise MDClaw tries the target, then retries once only for that condition.
 
 Verify CLI JSON: `solute_net_charge_e` is the solute charge used for

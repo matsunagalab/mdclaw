@@ -190,12 +190,36 @@ signature, update the relevant section here and the matching skill examples.
 
 ## `solvation/`
 
+- Both solvation tools share the preflight in `mdclaw/solvation/preflight.py`,
+  run before `begin_node` so a refusal leaves the node pending:
+  `water_model` has no default and an omitted one is taken from the node's
+  declared `--conditions` (`water_model`), else refused `water_model_required`
+  (`parameters.water_model_source` / `metadata.water_model_source`:
+  `argument` or `node_conditions`); `--no-salt` on a solute whose
+  packmol-memgen-style charge (residue table plus the nucleic/lipid/metal/ligand
+  `charge_pdb_delta` corrections, `estimate_solute_charge`, recorded as
+  `solute_charge_estimate`) is not zero is refused
+  `solvation_charged_without_ions` in node mode and warned about outside it.
 - `solvate_structure(...)`: explicit water box generation. In node mode the PDB
   resolves from the nearest prep ancestor. It first tries the requested salt
   concentration and records a warning if it must rerun packmol-memgen with
   `--salt_override` to satisfy neutralization. Results expose the prepared
-  `solute_net_charge_e` and output-PDB `ion_counts` at top level.
-- `embed_in_membrane(...)`: membrane embedding and solvation.
+  `solute_net_charge_e` and output-PDB `ion_counts` at top level. Before
+  packing, `box_advisory` predicts packmol-memgen's cubic and rectangular
+  boxes and atom counts from the solute (principal extents and ratio included);
+  an elongated solute (extent ratio >= 1.5) in a cubic box whose rectangular
+  box would hold >= 30 % fewer atoms adds a warning naming `--no-cubic`, and a
+  finished system of 500k atoms or more adds one to run topo and min through
+  `submit_job`. Node-mode warnings are now recorded on the solv node.
+- `embed_in_membrane(...)`: membrane embedding and solvation. The patch cache
+  is probed before orientation: a patch-tile miss with
+  `membrane_cache_mode="read-only"` is refused `membrane_patch_cache_miss`, and
+  an `auto`-mode miss is refused the same way in node mode outside a Slurm job
+  (`SLURM_JOB_ID` unset) unless `allow_patch_build=True`
+  (`--allow-patch-build`). The refusal's `next_action` names the arguments of
+  the closest cached patch (`cached_patch_alternatives` in
+  `patch_membrane.py`), and `membrane_patch_cache.cached_alternatives` lists up
+  to three.
   Optional `disulfide_bonds` and `ligand_chemistry` describe standalone inputs;
   node mode resolves chemistry from the same nearest prep as `merged_pdb`.
   Patch-tile charge evaluation builds a force-field System with that bond plan,

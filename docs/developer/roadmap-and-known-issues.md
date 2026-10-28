@@ -108,7 +108,13 @@ and r2. The skill never suggests the flag. Proposed fix: refuse or warn before
 available, with a hint naming the default; or drop the legacy backend from the
 CLI surface and keep it as an internal fallback.
 
-### Uncached Membrane Patch Build Runs on a CPU-only Login Node (fix candidate)
+### Uncached Membrane Patch Build Runs on a CPU-only Login Node (addressed 2026-10-29)
+
+Addressed with a variant of item 1 below: the cache is probed before
+orientation, and a miss is refused `membrane_patch_cache_miss` in node mode
+outside a Slurm job (not on a GPU check) unless `--allow-patch-build`; the
+refusal names the arguments of the closest cached patch and the measured build
+time (v5 campaigns: cached 77-121 s, cold 1137-1412 s). Item 3 stays open.
 
 Observed 2026-09-15 in the glm-5.3-flash campaign, 002_membrane_5zk3 r1. The
 agent passed `--dist-wat 10.0` (default and cached value 17.5); `dist_wat` is in
