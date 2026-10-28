@@ -29,6 +29,8 @@ from mdclaw.simulation.integrator_plan import _resolve_equilibration_stage_steps
 from mdclaw.simulation.restraints import RESTRAINT_SELECTIONS, select_restraint_atoms  # noqa: E402
 from mdclaw.simulation.restart import _close_reporter_stream, _load_state_into_simulation, _resolve_restart_node_id_for_run, _restart_node_type_for_run, _restart_random_seed, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
 from mdclaw.simulation.nan_retry import is_nan_failure, run_with_halved_timestep  # noqa: E402
+from mdclaw.node.lifecycle import NodeAlreadyRunningError, NodeSealedError  # noqa: E402
+from mdclaw.simulation.run_guard import context_refusal, md_preflight  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _effective_pressure_bar, _integrator_signature, _load_xml_topology_inputs, _system_signature, _validate_xml_system_contract  # noqa: E402
 
 
@@ -171,6 +173,7 @@ def run_equilibration(
           - errors: list[str]
           - warnings: list[str]
     """
+    _call = dict(locals())
     _restart_from_node_id = None
     _restart_from_node_type = None
     _chain_identity_map_file = None
@@ -384,37 +387,33 @@ def run_equilibration(
         )
 
     if job_dir and node_id:
-        _ctx = validate_node_execution_context(
-            job_dir,
-            node_id,
-            "eq",
-            actual_conditions={
-                "temperature_kelvin": temperature_kelvin,
-                "pressure_bar": pressure_bar,
-                # The ensemble the equilibration ends in (what the prod node
-                # inherits); declared as "NPT" or "NVT" by agents.
-                "ensemble": ("NPT" if (pressure_bar is not None and pressure_bar > 0
-                                       and not implicit_solvent
-                                       and (effective_npt_time_ns or 0) > 0) else "NVT"),
-                "nvt_steps": nvt_steps,
-                "npt_steps": npt_steps,
-                "nvt_time_ns": effective_nvt_time_ns,
-                "npt_time_ns": effective_npt_time_ns,
-                "requested_nvt_time_ns": requested_nvt_time_ns,
-                "requested_npt_time_ns": requested_npt_time_ns,
-                "restraint_atoms": restraint_atoms,
-                "restraint_force_constant": restraint_force_constant,
-                "is_membrane": is_membrane,
-                "implicit_solvent": implicit_solvent,
-                "platform": platform,
-                "device_index": device_index,
-                "random_seed": random_seed,
-                "hmr": hmr,
-                "timestep_fs": timestep_fs,
-            },
-        )
+        _actual = {
+            "temperature_kelvin": temperature_kelvin,
+            "pressure_bar": pressure_bar,
+            # The ensemble the equilibration ends in (what the prod node
+            # inherits); declared as "NPT" or "NVT" by agents.
+            "ensemble": ("NPT" if (pressure_bar is not None and pressure_bar > 0
+                                   and not implicit_solvent
+                                   and (effective_npt_time_ns or 0) > 0) else "NVT"),
+            "nvt_steps": nvt_steps,
+            "npt_steps": npt_steps,
+            "nvt_time_ns": effective_nvt_time_ns,
+            "npt_time_ns": effective_npt_time_ns,
+            "requested_nvt_time_ns": requested_nvt_time_ns,
+            "requested_npt_time_ns": requested_npt_time_ns,
+            "restraint_atoms": restraint_atoms,
+            "restraint_force_constant": restraint_force_constant,
+            "is_membrane": is_membrane,
+            "implicit_solvent": implicit_solvent,
+            "platform": platform,
+            "device_index": device_index,
+            "random_seed": random_seed,
+            "hmr": hmr,
+            "timestep_fs": timestep_fs,
+        }
+        _ctx = validate_node_execution_context(job_dir, node_id, "eq", actual_conditions=_actual)
         if not _ctx["success"]:
-            return {"success": False, "error_type": "ValidationError", **_ctx}
+            return context_refusal(run_equilibration, _call, job_dir, node_id, _ctx, _actual)
 
     # The XML triple is the only supported topology contract on the run
     # side. ``state_xml_file`` is optional (built-in to ``build_amber_system``
@@ -515,6 +514,11 @@ def run_equilibration(
     IMPLICIT_MODELS = {
         "HCT": HCT, "OBC1": OBC1, "OBC2": OBC2, "GBn": GBn, "GBn2": GBn2,
     }
+    # Where and on which platform the run may integrate: refused before
+    # begin_node, so the node stays pending for the corrected command.
+    _refusal = md_preflight(run_equilibration, _call, job_dir, node_id)
+    if _refusal is not None:
+        return _refusal
     try:
         # Set up output directory
         _node_mode = job_dir and node_id
@@ -1299,6 +1303,12 @@ def run_equilibration(
 
         result["success"] = True
 
+    except (NodeAlreadyRunningError, NodeSealedError):
+        # begin_node refused: another live run owns the node, or it is sealed.
+        # Nothing ran here; failing the node would seal it under its owner
+        # (021_antibody_3eoa cli_sif r1 of MDDataBench v5: a second
+        # run_equilibration on a node its Slurm job was running failed it).
+        raise
     except _ModernSystemContractError as exc:
         logger.error("Equilibration aborted by modern-system contract: %s", exc)
         result["errors"].append(str(exc))

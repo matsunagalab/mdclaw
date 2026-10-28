@@ -34,6 +34,7 @@ from mdclaw.simulation._base import (  # noqa: E402
     _node_artifact_path,
     _resolve_topology_run_settings,
 )
+from mdclaw.simulation.run_guard import context_refusal, md_preflight  # noqa: E402
 from mdclaw.simulation.xml_contract import WORKING_DIR  # noqa: E402
 
 SAMPLING_METHOD = "sst2"
@@ -389,6 +390,7 @@ def run_sst2(
         dict with ``success``, ``output_dir``, artifact paths,
         ``tempering`` (rung occupancy, moves, weights) and errors.
     """
+    _call = dict(locals())
     result: dict = {
         "success": False,
         "sampling_method": SAMPLING_METHOD,
@@ -433,32 +435,30 @@ def run_sst2(
             result["code"] = _inputs.get("input_resolution_code") or "input_resolution_blocked"
             from mdclaw._node import fail_node_from_result
             return fail_node_from_result(job_dir, node_id, result)
-        _ctx = validate_node_execution_context(
-            job_dir, node_id, "prod",
-            actual_conditions={
-                "sampling_method": SAMPLING_METHOD,
-                "simulation_time_ns": simulation_time_ns,
-                "temperature_kelvin": float(reference_temperature_kelvin)
-                if reference_temperature_kelvin is not None
-                else (float(temperatures_kelvin[0]) if temperatures_kelvin else None),
-                "temperatures_kelvin": [float(t) for t in temperatures_kelvin]
-                if temperatures_kelvin else None,
-                "pressure_bar": pressure_bar,
-                "ensemble": "NPT" if (pressure_bar is not None and pressure_bar > 0) else "NVT",
-                "timestep_fs": timestep_fs,
-                "output_frequency_ps": output_frequency_ps,
-                "exchange_interval_ps": exchange_interval_ps,
-                "solute_selection": solute_selection,
-                "scale_nonbonded": scale_nonbonded,
-                "move": move,
-                "platform": platform,
-                "device_index": device_index,
-                "hmr": hmr,
-                "random_seed": random_seed,
-            },
-        )
+        _actual = {
+            "sampling_method": SAMPLING_METHOD,
+            "simulation_time_ns": simulation_time_ns,
+            "temperature_kelvin": float(reference_temperature_kelvin)
+            if reference_temperature_kelvin is not None
+            else (float(temperatures_kelvin[0]) if temperatures_kelvin else None),
+            "temperatures_kelvin": [float(t) for t in temperatures_kelvin]
+            if temperatures_kelvin else None,
+            "pressure_bar": pressure_bar,
+            "ensemble": "NPT" if (pressure_bar is not None and pressure_bar > 0) else "NVT",
+            "timestep_fs": timestep_fs,
+            "output_frequency_ps": output_frequency_ps,
+            "exchange_interval_ps": exchange_interval_ps,
+            "solute_selection": solute_selection,
+            "scale_nonbonded": scale_nonbonded,
+            "move": move,
+            "platform": platform,
+            "device_index": device_index,
+            "hmr": hmr,
+            "random_seed": random_seed,
+        }
+        _ctx = validate_node_execution_context(job_dir, node_id, "prod", actual_conditions=_actual)
         if not _ctx["success"]:
-            return {"success": False, "error_type": "ValidationError", **_ctx}
+            return context_refusal(run_sst2, _call, job_dir, node_id, _ctx, _actual)
         result["warnings"].extend(_ctx.get("warnings") or [])
     else:
         if hmr is None or timestep_fs is None:
@@ -476,6 +476,11 @@ def run_sst2(
                 return fail_node_from_result(job_dir, node_id, result)
             return result
 
+    # Where and on which platform the run may integrate: refused before
+    # begin_node, so the node stays pending for the corrected command.
+    _refusal = md_preflight(run_sst2, _call, job_dir, node_id)
+    if _refusal is not None:
+        return _refusal
     if _node_mode:
         from mdclaw._node import begin_node
         out_dir = Path(job_dir) / "nodes" / node_id / "artifacts"

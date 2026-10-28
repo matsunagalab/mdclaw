@@ -457,7 +457,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "openmmforcefields_build_failed": "System build failed; inspect the structured error before retrying.",
     "glycam_prepareforleap_failed": "cpptraj prepareforleap failed; inspect the glycan linkage inputs.",
     "glycam_topology_normalization_failed": "GLYCAM topology normalization failed; inspect the structured error.",
-    "node_execution_context_invalid": "Follow next_action: run or wait for the blocking parent, or branch a new node.",
+    "node_execution_context_invalid": "Follow next_action: rerun the same pending node with the values its --conditions declare, run or wait for the blocking parent, or branch a new node.",
     "production_exceeds_time_limit": "At the throughput its ancestor measured, this production does not fit the job's --time-limit; split it into the prod nodes the message sizes (this node shorter, the rest with --continue-from) or submit with a longer --time-limit.",
     "production_time_limit": "The job ended before a single production step ran; submit the node again in a job with a longer --time-limit.",
     "ligand_protonation_charge_unreachable": "Requested ligand protonation/charge is unreachable; adjust the target state.",
@@ -466,6 +466,9 @@ GUARDRAIL_CODES: dict[str, str] = {
     "openmm_import_failed": "OpenMM import failed; run in a runtime with OpenMM installed.",
     "openmm_version_too_old": "Upgrade OpenMM to the required minimum version.",
     "openmm_platform_inspection_failed": "Platform inspection failed; report the runtime/GPU state.",
+    "md_outside_allocation": "MD stages integrate only inside a Slurm job on this cluster; nothing ran and the node is still pending. Run the submit_job command in next_action (or wait_node when the node is already queued or running); do not rerun the stage on the login node.",
+    "platform_unavailable": "The requested OpenMM platform cannot create a Context in this process; nothing ran and the node is still pending. Rerun with a platform the result lists as usable, or submit the node to a GPU job whose container has --nv.",
+    "gpu_allocated_platform_unavailable": "Slurm gave the job GPUs but OpenMM cannot use them (a container started without --nv); nothing ran. Give the container the GPU (configure_container --extra-flags=--nv) and submit again, on a new node when this one was sealed.",
     "unknown_gpu_type": "GPU type is unknown; report the platform for scheduling.",
 
     # --- state / restart ---

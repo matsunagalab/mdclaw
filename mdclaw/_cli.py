@@ -911,14 +911,20 @@ def _record_cli_node_failure(
         # ``fail_node_from_result`` path: prepare_complex refusing at the
         # split) - is a corrected invocation of the same pending node, not a
         # failed attempt. Recording it here without ``keep_pending`` would
-        # seal the node the tool deliberately left open.
-        if read_node(job_dir, node_id).get("status") == "pending" and (
+        # seal the node the tool deliberately left open. A refusal that names
+        # the node's status as queued or running left a node another run owns
+        # untouched (an MD stage refused on the login node while its Slurm job
+        # holds it): sealing it here would fail that job's node.
+        status = read_node(job_dir, node_id).get("status")
+        if status == "pending" and (
             result.get("node_status") == "pending"
             or (
                 result.get("error_type") == "ValidationError"
                 and result.get("recoverable") is True
             )
         ):
+            return
+        if status in ("queued", "running") and result.get("node_status") == status:
             return
 
         record_node_failure(
@@ -2041,7 +2047,9 @@ def main(argv: list[str] | None = None) -> None:
         )
         if sealed_here:
             error_out.setdefault("context", {})["node_failed_by_cli"] = True
-        if requires_node or sealed_here:
+        # Recording a failure on a node another live run owns would seal it
+        # under that run (the owner is still integrating); this run did nothing.
+        if (requires_node or sealed_here) and not isinstance(e, NodeAlreadyRunningError):
             _record_cli_node_failure(
                 job_dir=effective_job_dir,
                 node_id=effective_node_id,
