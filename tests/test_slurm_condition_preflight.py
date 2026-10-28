@@ -97,12 +97,15 @@ def test_other_nodes_and_other_tools_are_not_applicable(job):
     # a prod node run by another literal tool
     other = command(job).replace("run_production", "run_sst2")
     assert production_preflight(other, str(job), "prod_001")["status"] == "not_applicable"
-    # the eq submission carries no "preflight skipped" warning
+    # the eq submission gets its own condition check (npt_time_ns depends on
+    # the topology's timestep: deferred while no completed topo is known)
+    # and no "preflight skipped" warning
     with patch("mdclaw.slurm._base.run_command") as run:
         run.return_value.stdout = "Submitted batch job 4242\n"
         run.return_value.returncode = 0
         result = submit_job(eq_command, job_dir=str(job), node_id="eq_001")
-    assert result["condition_preflight"]["status"] == "not_applicable"
+    assert result["condition_preflight"]["status"] == "checked"
+    assert result["condition_preflight"]["deferred_conditions"] == ["npt_time_ns"]
     assert not any("preflight skipped" in w for w in result.get("warnings") or [])
 
 
@@ -170,14 +173,38 @@ def test_004_prod_under_topo_is_refused_before_sbatch(tmp_path):
 
 
 def test_pending_parent_chain_passes_the_structural_preflight(tmp_path):
+    """A chain is submitted before its parents ran: a parent queued as a
+    Slurm job passes, and the afterok on its job is added when missing."""
     from mdclaw._node import create_node
+    from mdclaw.slurm.node_sync import _stamp_slurm_on_node
 
     jd = _dag(tmp_path)
     create_node(str(jd), "prod", parent_node_ids=["eq_001"])  # eq_001 is pending
+    _stamp_slurm_on_node(str(jd), "eq_001", "5150", script_file="x.sbatch",
+                         stdout_log="x.out", stderr_log="x.err", parent_job_id="5150")
     with patch("mdclaw.slurm._base.check_external_tool", return_value=False) as check:
         result = submit_job(_run(jd, "prod_001"), job_dir=str(jd), node_id="prod_001")
-    check.assert_called_once_with("sbatch")  # nothing structural blocked
+    assert check.call_args_list[-1].args == ("sbatch",)  # nothing structural blocked
+    assert result["code"] == "tool_not_available"
     assert result["condition_preflight"]["status"] == "checked"
+    assert result["dependency"] == "afterok:5150"
+    assert result["dependency_added"] == [{"node_id": "eq_001", "slurm_job_id": "5150"}]
+
+
+def test_parent_never_submitted_is_refused_before_sbatch(tmp_path):
+    """glm 026_complex_1ava r1: eq ran while its min was still running and
+    was refused inside the job (parent_not_completed)."""
+    from mdclaw._node import create_node
+
+    jd = _dag(tmp_path)
+    create_node(str(jd), "prod", parent_node_ids=["eq_001"])  # eq_001 and min_001 pending, no jobs
+    with patch("mdclaw.slurm._base.check_external_tool", return_value=True), \
+            patch("mdclaw.slurm._base.run_command") as run:
+        result = submit_job(_run(jd, "prod_001"), job_dir=str(jd), node_id="prod_001")
+    assert result["code"] == "parent_not_submitted"
+    assert "min_001, then eq_001, then prod_001" in result["next_action"]
+    assert "--node-id min_001" in result["next_action"]
+    run.assert_not_called()
 
 
 def test_tool_of_another_stage_is_refused(tmp_path):

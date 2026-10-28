@@ -24,7 +24,7 @@ from mdclaw._common import (
     create_validation_error,
 )
 
-from mdclaw.slurm._base import _DIR_ARG_PATTERN, _FILE_ARG_PATTERN, _SLURM_JOB_ID_RE, logger
+from mdclaw.slurm._base import _SLURM_JOB_ID_RE, logger
 
 
 def _validate_sbatch_directive_value(field: str, value: Any) -> Optional[dict]:
@@ -319,15 +319,127 @@ def _extract_bind_paths(command: str) -> list[str]:
     """Extract directories from --*-file and --*-dir arguments in a command.
 
     Returns unique, resolved parent directories of referenced files/dirs.
+    The command is split as the shell would split it: until 2026-10 a
+    ``\\S+`` pattern kept the quotes of ``--job-dir '/data1/x'``, so the
+    container was asked to bind ``<cwd>/'/data1/x'`` and died at start
+    (``mount source ... doesn't exist``; 4 MDDataBench v5 attempts). Values
+    the shell expands (``$JD``) are left out: only the job knows them.
     """
+    from mdclaw.slurm.paths import bind_path_of, command_path_arguments
+
     paths: set[str] = set()
-    for m in _FILE_ARG_PATTERN.finditer(command):
-        p = Path(m.group(1)).resolve()
-        paths.add(str(p.parent))
-    for m in _DIR_ARG_PATTERN.finditer(command):
-        p = Path(m.group(1)).resolve()
-        paths.add(str(p))
+    for flag, value in command_path_arguments(command):
+        bound = bind_path_of(flag, value)
+        if bound:
+            paths.add(bound)
     return sorted(paths)
+
+
+def container_bind_sources(command: str, container: dict, output_dir: str) -> list[str]:
+    """The host paths ``_build_singularity_command`` binds for ``command``
+    (runtime-only binds such as the MPS pipe directory aside)."""
+    from mdclaw.slurm.paths import bind_source
+
+    sources: set[str] = {str(Path(output_dir).resolve())}
+    sources.update(_extract_bind_paths(command))
+    sources.update(bind_source(entry) for entry in container.get("bind_paths", []) or [] if entry)
+    sources.add(str(Path.cwd().resolve()))
+    if container.get("source_mode") == "overlay" and container.get("source_root"):
+        sources.add(str(Path(container["source_root"]).resolve()))
+    sources.discard("")
+    return sorted(sources)
+
+
+def container_bind_error(commands_and_dirs: list[tuple[str, str]], container: dict,
+                         warnings: Optional[list] = None) -> Optional[dict]:
+    """``container_bind_missing`` when a path the container must bind does not
+    exist here: the runtime refuses to start the container on the node
+    (``FATAL: ... mount source ... doesn't exist``). A missing ``--*-dir``
+    output directory of the command whose parent exists is created instead
+    (the tool would create it, but only after the container started)."""
+    from mdclaw.slurm.paths import bind_path_of, bind_source, command_path_arguments, unshared_reason
+
+    configured = {bind_source(entry) for entry in container.get("bind_paths", []) or [] if entry}
+    for command, output_dir in commands_and_dirs:
+        for flag, value in command_path_arguments(command):
+            if not flag.endswith("dir") or flag in {"--job-dir", "--study-dir"}:
+                continue
+            bound = bind_path_of(flag, value)
+            if not bound or Path(bound).exists():
+                continue
+            parent = Path(bound).parent
+            if parent.is_dir() and unshared_reason(parent) is None:
+                try:
+                    Path(bound).mkdir(parents=False, exist_ok=True)
+                except OSError:
+                    continue
+                if warnings is not None:
+                    warnings.append(f"Created {bound} ({flag} of the script) so the container can bind it.")
+        for source in container_bind_sources(command, container, output_dir):
+            if Path(source).exists():
+                continue
+            from_config = source in configured
+            message = (f"the container would bind {source}, which does not exist on this host"
+                       + (" (configured with configure_container --bind-paths)" if from_config
+                          else " (named by an argument of the script)"))
+            error = create_validation_error(
+                "container.bind_paths" if from_config else "script",
+                message + "; the container cannot start without it",
+                expected="existing directories on shared storage",
+                actual=source,
+                code="container_bind_missing",
+                context_extra={"bind_source": source},
+            )
+            if from_config:
+                kept = [entry for entry in container.get("bind_paths", []) if Path(bind_source(entry)).exists()]
+                error["next_action"] = (
+                    "mdclaw configure_container --bind-paths " + " ".join(shlex.quote(k) for k in kept)
+                    if kept else "mdclaw configure_container --bind-paths '' (drop the missing bind)")
+            else:
+                error["next_action"] = (f"Fix the path {source} in --script (check it for a typo), or "
+                                        "create it on shared storage first, then resubmit")
+            return error
+    return None
+
+
+_GPU_PASSTHROUGH_FLAGS = {"--nv", "--nvccli", "--rocm"}
+
+
+def ensure_gpu_passthrough(container: Optional[dict], gpus: int, gres: Optional[str],
+                           warnings: list) -> None:
+    """Add ``--nv`` for this submission when a GPU job's Singularity/Apptainer
+    flags lack it: without it the container sees no GPU and OpenMM fails with
+    ``There is no registered Platform called "CUDA"`` (3 MDDataBench v5
+    attempts ran ``configure_container --extra-flags ""``)."""
+    if not container:
+        return
+    if not ((gpus or 0) > 0 or (gres and "gpu" in str(gres).lower())):
+        return
+    runtime = Path(str(container.get("runtime_resolved") or container.get("runtime") or "singularity")).name
+    if not runtime.startswith(("singularity", "apptainer")):
+        return
+    flags = container.get("extra_flags") or ""
+    try:
+        tokens = shlex.split(flags)
+    except ValueError:
+        return
+    if _GPU_PASSTHROUGH_FLAGS & set(tokens):
+        return
+    container["extra_flags"] = f"{flags} --nv".strip()
+    warnings.append(
+        f"container_gpu_flag_added: this job requests a GPU but the container flags ({flags!r}) lack "
+        "--nv, without which the container sees no GPU; --nv was added for this submission. Store it "
+        "with: mdclaw configure_container --extra-flags=--nv")
+
+
+def normalize_partition(partition: Optional[str], warnings: list) -> Optional[str]:
+    """``gpu*`` (sinfo's mark of the default partition) -> ``gpu``."""
+    if partition and str(partition).strip().endswith("*"):
+        cleaned = str(partition).strip().rstrip("*")
+        warnings.append(f"Partition {partition!r}: the '*' is sinfo's mark of the default partition, "
+                        f"not part of its name; submitting to {cleaned!r}.")
+        return cleaned
+    return partition
 
 
 CONTAINER_SOURCE_MODES = ("image", "overlay")
@@ -423,7 +535,8 @@ _RUNTIME_FALLBACK_PATH = ["/usr/local/bin", "/usr/bin", "/bin"]
 _RUNTIME_CANDIDATES = ("singularity", "apptainer")
 
 
-def resolve_container_runtime(container: dict, warnings: Optional[list] = None) -> Optional[dict]:
+def resolve_container_runtime(container: dict, warnings: Optional[list] = None,
+                              notes: Optional[list] = None) -> Optional[dict]:
     """Resolve the container runtime binary a job will execute, as an absolute
     path, and store it as ``container["runtime_resolved"]``.
 
@@ -442,13 +555,16 @@ def resolve_container_runtime(container: dict, warnings: Optional[list] = None) 
     the launcher's host PATH read from /proc, see ``host_search_path``), else
     the current PATH, with the usual system directories appended.
 
-    Outside an image an unresolvable runtime is only a warning (login nodes
-    without apptainer submit to compute nodes that have it) and the bare word
-    stays in the script; inside an image it is a refusal, because the job
-    would inherit the image's PATH.
+    An unresolvable runtime name is not a refusal: login nodes without
+    apptainer submit to compute nodes that have it, and from inside an image
+    the host's binaries are not visible at all; the bare word stays in the
+    script, whose preamble sources the node's login profile first. A
+    configured absolute path that does not exist is refused outside an
+    image; inside one it cannot be checked and is used as given.
 
     Returns None on success, or a structured error dict. ``warnings`` (a
-    list) receives the soft case.
+    list) receives the soft case outside an image; inside an image, where it
+    is the expected case, the note goes to ``notes`` when given.
     """
     if warnings is None:
         warnings = []
@@ -478,40 +594,64 @@ def resolve_container_runtime(container: dict, warnings: Optional[list] = None) 
         if found:
             container["runtime_resolved"] = os.path.abspath(found)
             return None
-    hints = [
-        "Configure the binary once: mdclaw configure_container --runtime /abs/path/to/singularity, "
-        "or export MDCLAW_SLURM_PATH=\"$PATH\" from a host shell before the submitting mdclaw call.",
-    ]
-    if inside_image:
-        hints.insert(0, (
-            "This mdclaw runs inside a container image; the host PATH could not be read from the "
-            "launcher process, so the job would inherit the image's PATH, which has no container runtime."
-        ))
     where = ("MDCLAW_SLURM_PATH" if environment.get("MDCLAW_SLURM_PATH")
              else "host PATH read from the launcher" if derived else "PATH")
     if configured and os.path.isabs(configured):
+        if inside_image:
+            # The host's binaries are not mounted in the image: the path the
+            # agent took from a host shell cannot be checked here, and
+            # refusing it sent agents round in a loop (glm 033/063, kimi 023
+            # of MDDataBench v5). The job runs it as given.
+            container["runtime_resolved"] = configured
+            (notes if notes is not None else warnings).append(
+                f"Container runtime {configured} is not visible from inside this image, so it was not "
+                "checked; the job script runs it as configured.")
+            return None
         # An explicit absolute runtime that does not exist is a configuration
         # error; the script preamble cannot repair a wrong absolute path.
-        return {
-            "success": False,
-            "code": "container_runtime_not_found",
-            "message": f"configured container runtime {configured!r} is not an executable file",
-            "hints": ["Fix it with: mdclaw configure_container --runtime /abs/path/to/singularity "
-                      "(or a bare command name to resolve it on the compute node)."],
-            "next_action": "mdclaw configure_container --runtime /abs/path/to/singularity",
-            "errors": [f"container runtime not found: {configured}"],
-            "recoverable": True,
-        }
+        return runtime_not_found_error(configured)
     # Not resolvable here: the sbatch script calls the runtime by name and its
     # preamble (_container_runtime_preamble) restores the node's login PATH
     # first, so a submission from inside the image still runs.
     container.pop("runtime_resolved", None)
-    warnings.append(
-        f"No container runtime ({', '.join(tried)}) resolvable on {where} here"
-        + (" (submitting from inside the image)" if inside_image else "")
-        + f"; the sbatch script calls '{candidates[0]}' by name after sourcing /etc/profile on the node."
-    )
+    if inside_image:
+        # The normal case of a submission from inside the image, not a fault:
+        # an agent read the former warning as one and cancelled its own job
+        # (kimi-k3 023_antibody_3wd5 r3, MDDataBench v5).
+        note = (
+            f"Container runtime: {', '.join(tried)} is not on the search path visible inside this image "
+            f"({where}); that is expected when submitting from inside the image. The job script calls "
+            f"'{candidates[0]}' by name after sourcing /etc/profile on the compute node. The job is "
+            "submitted as usual: do not cancel it. Only if its stderr log shows "
+            f"'{candidates[0]}: command not found', pin the host binary with mdclaw configure_container "
+            "--runtime set to the path `command -v singularity` prints in a host shell (accepted "
+            "unchecked from inside the image)."
+        )
+        (notes if notes is not None else warnings).append(note)
+    else:
+        warnings.append(
+            f"No container runtime ({', '.join(tried)}) resolvable on {where} here; the sbatch script "
+            f"calls '{candidates[0]}' by name after sourcing /etc/profile on the node."
+        )
     return None
+
+
+def runtime_not_found_error(runtime: str) -> dict:
+    """``container_runtime_not_found`` for an absolute runtime path that is
+    not an executable file on this host. The fix is never the same path
+    again (the former hint recommended ``--runtime /abs/path/to/singularity``
+    to agents whose ``--runtime /abs/path`` had just been refused)."""
+    return {
+        "success": False,
+        "code": "container_runtime_not_found",
+        "message": f"container runtime {runtime!r} is not an executable file on this host",
+        "hints": ["A bare command name is resolved on the compute node: the job script sources "
+                  "/etc/profile before calling it."],
+        "next_action": ("mdclaw configure_container --runtime singularity (or apptainer), or the absolute "
+                        "path `command -v singularity` prints on this host"),
+        "errors": [f"container runtime not found: {runtime}"],
+        "recoverable": True,
+    }
 
 
 

@@ -170,7 +170,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "metadynamics_scope_unsupported": "Create the analyze node with analysis_data_scope 'production_chain' (or 'segment') and the run_metadynamics prod nodes as parents.",
     "metadynamics_states_invalid": "Pass --state-a LO HI and --state-b LO HI in nm: two disjoint ranges of the coordinate inside the biased range, each with the upper edge above the lower.",
 
-    "container_runtime_not_found": "Export MDCLAW_SLURM_PATH=\"$PATH\" from a host shell before submitting from inside the image, or run `mdclaw configure_container --runtime /abs/path/to/singularity`, then resubmit the same (still pending) node.",
+    "container_runtime_not_found": "The configured absolute --runtime is not an executable file on this host; store a bare name instead (mdclaw configure_container --runtime singularity, resolved on the compute node) or the path `command -v singularity` prints here, then resubmit the same (still pending) node.",
 
     # --- node / DAG context ---
     "node_context_required": "Create the node, then run it with both --job-dir and --node-id.",
@@ -559,7 +559,15 @@ GUARDRAIL_CODES: dict[str, str] = {
     "invalid_slurm_job_id": "Provide a valid SLURM job id.",
     "slurm_node_unavailable": "SLURM node/tooling is unavailable; check the cluster runtime.",
     "slurm_status_unavailable": "Retry if Slurm is unavailable; if records expired, inspect DAG and logs separately.",
-    "slurm_node_already_submitted": "This node was already submitted; do not resubmit while that job is alive. If the job is dead (check_job reports slurm_job_vanished or a failure before the tool ran), free the node with: mdclaw update_workflow_state --job-dir <job_dir> --node-id <node_id> --clear-slurm-metadata",
+    "slurm_node_already_submitted": "This node was already submitted; follow next_action, which names the recorded job's state: wait for a live job, free a node whose job died before the tool started (update_workflow_state --clear-slurm-metadata), or record and replace one that died while running.",
+    "script_arguments_invalid": "The CLI would refuse a command of --script when the job starts; resubmit with the corrected_command (next_action) or fix the arguments argparse names (mdclaw --list-json <tool>).",
+    "script_placeholder_unfilled": "--script (or --dependency) still holds example text such as '...', <job_dir> or <job>; replace it with real values (next_action gives the filled command when they are known) and resubmit.",
+    "parent_not_submitted": "A parent of this node is unfinished and has no Slurm job to wait for; submit (or finish) the parents first, in the order next_action gives, then this node.",
+    "parent_dependency_missing": "--dependency does not wait for a queued parent's job and could not be extended automatically; resubmit with the afterok next_action names.",
+    "dependency_not_parent_job": "--dependency names the job of a node that is not this node's ancestor; resubmit with the parents' jobs (next_action).",
+    "dependency_unsatisfiable": "An afterok job already failed or was cancelled (or completed without completing its node), so this job could never start; recover that node first (next_action), then resubmit.",
+    "submission_path_not_shared": "A path the job needs is not visible from a compute node (host-local /tmp, a memory filesystem, or missing); use a path on the cluster's shared filesystem (next_action).",
+    "container_bind_missing": "The container would bind a path that does not exist here and could not start; fix the path in --script or the configured bind_paths (next_action), then resubmit.",
     "slurm_job_still_active": "The node's SLURM job is still in the queue; cancel it (mdclaw cancel_job --job-id <id>) before clearing its metadata.",
     "slurm_job_vanished": "The job left the queue and the site keeps no record (accounting disabled). Read the job's stderr log, fix the cause, then run update_workflow_state --clear-slurm-metadata on each stranded node and resubmit it.",
     "slurm_node_submission_in_progress": "Submission is in progress; wait before resubmitting.",

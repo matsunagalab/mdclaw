@@ -89,6 +89,12 @@ Notes:
   deliberate test, or a workstation that only looks like a cluster. Refusals
   do not mention it: an agent should submit, not bypass. The test suite sets
   it in `tests/conftest.py`.
+- `MDCLAW_ALLOW_LOCAL_SUBMIT_PATHS=1` lets `submit_job` / `submit_array_job` /
+  `submit_mps_job` accept job, output and script paths under `/tmp`,
+  `/var/tmp`, `/dev/shm` or on a memory filesystem, which a compute node
+  normally cannot see (`submission_path_not_shared`). Set it only on a
+  single-machine Slurm, where jobs run on the submitting host; the test
+  suite sets it because pytest's `tmp_path` lives under `/tmp`.
 - `MDCLAW_SST2_HOME` is a development override for `run_sst2`: a checkout of
   the matsunagalab/SST2 fork (branch `mdclaw`) whose `src` (and optional
   `.pylib` side-install for `pdb_numpy`) go on the driver's `PYTHONPATH`

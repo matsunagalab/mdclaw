@@ -35,12 +35,13 @@ singularity exec --bind <detected-host-resources> \
 The sbatch script calls the container runtime by its absolute path, resolved
 at submission on the worker search path: `MDCLAW_SLURM_PATH` when set,
 otherwise, from inside the image, the host PATH of the launcher process (read
-from `/proc`, so nothing needs to be exported in the usual case). A submission
-whose search path has no `singularity` / `apptainer` is refused with
-`container_runtime_not_found` instead of dying on the compute node with
-`singularity: command not found`; then export `MDCLAW_SLURM_PATH="$PATH"` from
-a host shell or pin the binary once with
-`mdclaw configure_container --runtime /abs/path/to/singularity`.
+from `/proc`, so nothing needs to be exported in the usual case). When none of
+them shows a runtime, the script calls it by name after sourcing the node's
+`/etc/profile`, and the result says so in `notes`: expected from inside the
+image, not an error, so leave the job queued. Only if its stderr log shows
+`singularity: command not found`, pin the host binary once with
+`mdclaw configure_container --runtime <path from command -v singularity>`
+(accepted unchecked from inside the image).
 
 The CLI resolves clients in that search path and, when invoking `sbatch` from
 inside the image, hands the job the host environment: bind lists and other

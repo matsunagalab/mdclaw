@@ -39,6 +39,9 @@ from mdclaw._common import (
 from mdclaw.slurm import _base
 from mdclaw.slurm._base import _SUBMITTED_BATCH_JOB_RE
 from mdclaw.slurm.config import (
+    container_bind_error,
+    ensure_gpu_passthrough,
+    normalize_partition,
     resolve_container_runtime,
     MPS_MAX_TASKS_PER_GPU,
     MPS_RECOMMENDED_MAX_TASKS_PER_GPU,
@@ -60,10 +63,9 @@ from mdclaw.slurm.node_sync import (
     _rollback_slurm_stamp_on_node,
     _stamp_slurm_on_node,
     _try_scancel_submitted_job,
-    _validate_node_ready_for_slurm_submit,
 )
 from mdclaw.slurm.sbatch import _generate_mps_sbatch_script, _mps_task_log_paths
-from mdclaw.slurm.submit import _check_container_command
+from mdclaw.slurm.submit import _check_container_command, preflight_tasks, tasks_path_error
 from mdclaw.slurm.tracker import _append_job_record
 
 
@@ -250,30 +252,14 @@ def submit_mps_job(
         )}
 
     normalized_tasks: list[dict] = []
-    for idx, task in enumerate(tasks):
-        jd = Path(task["job_dir"]).resolve()
-        nid = task["node_id"]
-        node_error = _validate_node_ready_for_slurm_submit(str(jd), nid)
-        if node_error:
-            node_error["message"] = f"tasks[{idx}]: {node_error.get('message', '')}"
-            return {**result, **node_error}
-        from mdclaw.slurm.preflight import node_structure_preflight, production_preflight
-
-        structure_error = node_structure_preflight(str(task["command"]), str(jd), nid)
-        if structure_error:
-            structure_error["message"] = f"tasks[{idx}]: {structure_error['message']}"
-            return {**result, **structure_error}
-        preflight = production_preflight(str(task["command"]), str(jd), nid)
-        result.setdefault("condition_preflight", []).append({"task_index": idx, **preflight})
-        if preflight["status"] == "failed":
-            return {**result, "code": preflight["code"], "errors": preflight["errors"]}
-        if preflight["status"] == "skipped":
-            result["warnings"].append(
-                f"tasks[{idx}]: production condition preflight skipped; runtime validation required."
-            )
+    task_error = preflight_tasks(tasks, result, time_limit=time_limit, dependency=dependency)
+    if task_error:
+        return {**result, **task_error}
+    dependency = result.get("dependency", dependency)
+    for task in tasks:
         normalized_tasks.append({
-            "job_dir": str(jd),
-            "node_id": nid,
+            "job_dir": str(Path(task["job_dir"]).resolve()),
+            "node_id": task["node_id"],
             "command": str(task["command"]),
         })
 
@@ -282,6 +268,9 @@ def submit_mps_job(
     result["job_name"] = job_name
 
     out_dir = Path(output_dir) if output_dir else Path.cwd()
+    path_error = tasks_path_error(normalized_tasks, out_dir)
+    if path_error:
+        return {**result, **path_error}
     ensure_directory(out_dir)
     out_dir = out_dir.resolve()
     result["output_dir"] = str(out_dir)
@@ -314,6 +303,7 @@ def submit_mps_job(
     config = _load_cluster_config()
     policy = _get_policy(config)
     defaults = policy.get("defaults", {})
+    partition = normalize_partition(partition, result["warnings"])
 
     if not partition and defaults.get("partition"):
         partition = defaults["partition"]
@@ -392,9 +382,17 @@ def submit_mps_job(
         container_error = resolve_container_source(container)
         if container_error:
             return {**result, **container_error}
-        runtime_error = resolve_container_runtime(container, warnings=result.setdefault("warnings", []))
+        runtime_error = resolve_container_runtime(container, warnings=result.setdefault("warnings", []),
+                                                  notes=result.setdefault("notes", []))
         if runtime_error:
             return {**result, **runtime_error}
+        ensure_gpu_passthrough(container, gpus, gres, result["warnings"])
+        bind_error = container_bind_error([(t["command"], t["job_dir"]) for t in normalized_tasks],
+                                          container, result["warnings"])
+        if bind_error:
+            return {**result, **bind_error}
+    if not result.get("notes"):
+        result.pop("notes", None)
     uncontained = uncontained_mdclaw_warning(
         [t["command"] for t in normalized_tasks], container, environment)
     if uncontained:
