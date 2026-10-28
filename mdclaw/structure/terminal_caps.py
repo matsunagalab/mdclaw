@@ -184,6 +184,138 @@ def _resolve_terminal_cap_settings(
     return n_cap, c_cap
 
 
+# How many unobserved terminal residues --build-terminal-missing-residues
+# rebuilds at a component end without a range to bound it.
+_TERMINAL_BUILD_LIMIT = 10
+
+
+def _sequence_positions(structure_file) -> dict[str, dict]:
+    """``{label: {"positions": {(num, icode): seq_id}, "first": int, "last": int}}``.
+
+    The polymer sequence of each label chain, observed or not: mmCIF
+    ``_pdbx_poly_seq_scheme`` (which numbers unobserved residues too), or for
+    PDB the SEQRES alignment gemmi makes (observed residues only). A chain
+    without a sequence record is absent: its native ends are unknown.
+    """
+    import gemmi
+
+    path = Path(structure_file)
+    out: dict[str, dict] = {}
+    if path.suffix.lower() in (".cif", ".mmcif"):
+        block = gemmi.cif.read(str(path)).sole_block()
+        table = block.find("_pdbx_poly_seq_scheme.", [
+            "asym_id", "seq_id", "pdb_seq_num", "?pdb_ins_code"])
+        for row in table:
+            try:
+                seq_id = int(row[1])
+                number = int(row[2])
+            except ValueError:
+                continue
+            icode = row[3].strip().strip("'\"") if row.has(3) else ""
+            icode = "" if icode in {".", "?"} else icode
+            entry = out.setdefault(row[0], {"positions": {}, "first": seq_id, "last": seq_id})
+            entry["positions"].setdefault((number, icode), seq_id)
+            entry["first"] = min(entry["first"], seq_id)
+            entry["last"] = max(entry["last"], seq_id)
+        if out:
+            return out
+        structure = gemmi.make_structure_from_block(block)
+    else:
+        structure = gemmi.read_pdb(str(path))
+    structure.setup_entities()
+    structure.assign_label_seq_id()
+    for subchain in structure[0].subchains():
+        entity = structure.get_entity_of(subchain)
+        if entity is None or not entity.full_sequence:
+            continue
+        positions = {(r.seqid.num, str(r.seqid.icode).strip()): r.label_seq
+                     for r in subchain if r.label_seq}
+        if positions:
+            out[subchain.subchain_id()] = {
+                "positions": positions, "first": 1, "last": len(entity.full_sequence)}
+    return out
+
+
+def native_terminus_caps(structure_file, split_result, *, n_cap, c_cap,
+                         build_terminal_missing_residues=False) -> list[dict]:
+    """Requested caps that would sit on a polymer's own end.
+
+    A cap replaces a charged terminus with an amide that stands in for the
+    rest of a chain; on the polymer's real end there is no rest. Campaign v5
+    capped 1AA3 268-330 and 1ARD 102-130 (each the whole deposited entity) in
+    8 attempts, unasked. A terminus is native when nothing of the entity's
+    sequence lies beyond it -- the component's first (last) residue, or the
+    residue a terminal build reaches, is the first (last) sequence position.
+    A terminus a residue range cut inside the sequence, or one beyond which
+    the deposit leaves residues unobserved, is not native and may be capped.
+    Returns ``{"terminus", "cap", "chain", "label", "residue", "file"}`` per
+    refused end; a chain without a sequence record is never refused.
+    """
+    if not (n_cap or c_cap):
+        return []
+    try:
+        sequences = _sequence_positions(structure_file)
+    except Exception as exc:  # noqa: BLE001 - an unreadable sequence refuses nothing
+        logger.warning(f"Could not read the polymer sequence of {structure_file}: {exc}")
+        return []
+    infos = {str(info.get("file")): info for info in split_result.get("chain_file_info", []) or []}
+    problems: list[dict] = []
+    for protein_file in split_result.get("protein_files", []) or []:
+        info = infos.get(str(protein_file), {})
+        sequence = sequences.get(str(info.get("chain_id")))
+        if not sequence:
+            continue
+        residues = [r for r in _read_pdb_unique_residues(protein_file)
+                    if isinstance(r["resnum"], int) and r["resname"] not in TERMINAL_CAP_RESIDUES]
+        if not residues:
+            continue
+        positions = sequence["positions"]
+        first = positions.get((residues[0]["resnum"], residues[0]["icode"]))
+        last = positions.get((residues[-1]["resnum"], residues[-1]["icode"]))
+        if build_terminal_missing_residues:
+            pieces = ([info["residue_range"]] if info.get("residue_range")
+                      else list(info.get("residue_ranges") or []))
+            if pieces:
+                start = positions.get((pieces[0].get("start"), pieces[0].get("start_icode") or ""))
+                end = positions.get((pieces[-1].get("end"), pieces[-1].get("end_icode") or ""))
+                first = start if start is not None else first
+                last = end if end is not None else last
+            else:
+                if first is not None and first - sequence["first"] <= _TERMINAL_BUILD_LIMIT:
+                    first = sequence["first"]
+                if last is not None and sequence["last"] - last <= _TERMINAL_BUILD_LIMIT:
+                    last = sequence["last"]
+        author = info.get("author_chain") or residues[0]["chain"]
+        for terminus, cap, position, end, residue in (
+                ("N", n_cap, first, sequence["first"], residues[0]),
+                ("C", c_cap, last, sequence["last"], residues[-1])):
+            if cap and position is not None and position == end:
+                problems.append({
+                    "terminus": terminus, "cap": cap, "chain": author,
+                    "label": info.get("chain_id"),
+                    "residue": f"{author}:{residue['resname']}{residue['resnum']}{residue['icode']}",
+                    "file": str(protein_file),
+                })
+    return problems
+
+
+def native_terminus_cap_next_action(problems: list[dict], *, n_cap, c_cap) -> str:
+    """Which cap flags to keep so only cut termini are capped."""
+    native = {item["terminus"] for item in problems}
+    keep = []
+    if n_cap and "N" not in native:
+        keep.append(f"--n-terminal-cap {n_cap}")
+    if c_cap and "C" not in native:
+        keep.append(f"--c-terminal-cap {c_cap}")
+    spelled = ", ".join(f"{item['terminus']}-terminus {item['residue']}" for item in problems)
+    if keep:
+        return (f"{spelled} is the polymer's own end. Drop --cap-termini and cap only the cut "
+                f"termini with {' '.join(keep)}, then run the same (still pending) node again.")
+    return (f"{spelled} is the polymer's own end. Drop --cap-termini / --n-terminal-cap / "
+            "--c-terminal-cap so the native termini stay charged, then run the same (still "
+            "pending) node again.")
+
+
 def _terminal_cap_forcefield_xml(forcefield_name: str | None) -> tuple[str | None, str | None]:
     """Resolve a protein force field name to the XML used for cap H completion."""
     from mdclaw import forcefield_catalog as _ff_catalog

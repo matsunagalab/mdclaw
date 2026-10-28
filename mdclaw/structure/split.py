@@ -922,6 +922,309 @@ def _split_listed_ids(values):
     return out
 
 
+def default_select_chains_from_ranges(select_chains, residue_ranges, analysis=None):
+    """``(select_chains, adjustment)``: residue ranges alone select their chains.
+
+    A range used to crop only the chain it names while every other chain came
+    through whole (049_nucleic_1iv6, qwen v5: ranges for the two DNA strands
+    and the protein of chain A, ``--select-chains`` omitted, and a further
+    chain arrived uncropped). Naming a range for some chains and none for the
+    rest reads as "these chains, cropped", so with ``select_chains`` omitted
+    the selection is the chains the ranges name, in the order they are named,
+    resolved exactly as ``--select-chains`` would be. An explicit
+    ``select_chains`` is never touched; a malformed range is left for the range
+    parser to refuse, and a name ``analysis`` does not know (label or author)
+    is left for ``residue_range_chain_not_found``.
+    """
+    select_chains = _split_listed_ids(select_chains)
+    if select_chains is not None or not residue_ranges:
+        return select_chains, None
+    from mdclaw.structure.residue_range import ResidueRangeError, parse_residue_ranges
+
+    try:
+        parsed = parse_residue_ranges(residue_ranges)
+    except ResidueRangeError:
+        return select_chains, None
+    named = list(dict.fromkeys(entry.chain for entry in parsed))
+    if analysis is not None:
+        known = {str(name) for chain in analysis.get("chains") or []
+                 for name in (chain.get("chain_id"), chain.get("author_chain")) if name}
+        if any(name not in known for name in named):
+            return select_chains, None
+    if not named:
+        return select_chains, None
+    return named, {
+        "code": "select_chains_defaulted_to_range_chains",
+        "message": (
+            "select_chains was omitted, so the chains the residue ranges name were "
+            f"selected ({', '.join(named)}); every other chain is left out. Pass "
+            "--select-chains to keep other chains as well."
+        ),
+        "select_chains": named,
+    }
+
+
+def _select_chains_read_as_author(analysis, select_chains, parsed_ranges, structure_file):
+    """``(read_as_author, permuted)`` for a chain request on this entry.
+
+    Label ids can be a permutation of the author ids (1KX5: author D is
+    label F, author I is label A). The documented convention for mmCIF is
+    the label id, and most calls follow it; but a task that names chains and
+    ranges in author terms then lands on other chains, every endpoint is
+    "unresolved" and nothing says why (051_nucleic_1kx5, campaign v2: every
+    CLI attempt timed out on it). The names alone cannot tell the two apart
+    when both id sets are the same letters, so the residue numbers decide:
+    the names are read as author ids only when every requested name is an
+    author chain, one of them names a different chain as a label, and the
+    requested ranges fit the author chains strictly better than the label
+    chains. Reading on the names alone broke every call that used labels
+    the documented way (1IV6 "A:1-13" is label A's DNA strand, author A is
+    the protein 378-434; 1A66, 1J46, 1ZGW, 2HDC alike).
+    """
+    chains = analysis.get("chains") or []
+    author_ids = {info.get("author_chain") for info in chains}
+    label_ids = {info.get("chain_id") for info in chains}
+    label_to_author = {info.get("chain_id"): info.get("author_chain") for info in chains}
+    requested = set(select_chains or []) | {entry.chain for entry in parsed_ranges or []}
+    read_as_author = bool(
+        requested
+        and Path(structure_file).suffix.lower() not in (".pdb", ".ent")
+        and all(name in author_ids for name in requested)
+        and any(name in label_ids and label_to_author.get(name) != name for name in requested)
+        and _range_fit(parsed_ranges, chains, "author_chain")
+        > _range_fit(parsed_ranges, chains, "chain_id")
+    )
+    permuted = {name: label_to_author[name] for name in sorted(requested)
+                if name in label_ids and label_to_author.get(name) != name} if read_as_author else {}
+    return read_as_author, permuted
+
+
+def _resolve_select_chain_labels(analysis, select_chains, include_types, *, read_as_author):
+    """The label chains a ``select_chains`` request names, by one rule.
+
+    Every reader of a chain request resolves it here -- the split, the
+    disulfide and metal-site filters, the glycan closure -- so they cannot
+    disagree about which chains were asked for. Two readings of one request
+    once diverged: the split read 2DD8's "H L S" as author chains while the
+    disulfide filter mapped label H (the water of author S) to S and dropped
+    every disulfide of the heavy chain without a word (019_antibody_2dd8,
+    028_complex_1dfj, 022_antibody_3rvw: 13 attempts of campaign v5).
+
+    Returns ``{"selected", "missing", "fallback_used", "rescued"}``: the label
+    ids, the names that resolved to nothing, the names resolved through the
+    author fallback, and the names rescued from a label that holds no
+    deliverable chain (``(name, labels, reason)``).
+    """
+    chains = analysis.get("chains") or []
+    include_types = include_types or ["protein", "nucleic", "glycan", "ligand", "ion"]
+    selected: set[str] = set()
+    missing: list[str] = []
+    fallback_used: list[tuple[str, list[str]]] = []
+    rescued: list[tuple[str, list[str], str]] = []
+    for ch in select_chains or []:
+        if read_as_author:
+            selected |= {c["chain_id"] for c in chains if c["author_chain"] == ch}
+            continue
+        label_hits = [c for c in chains if c["chain_id"] == ch]
+        author_hits = [c for c in chains if c["author_chain"] == ch]
+        if label_hits:
+            # A label that holds only water names nothing the split can
+            # deliver (crystal waters are always dropped). When the same
+            # letters are an author chain with a deliverable chain under it,
+            # that chain is what was asked for: 2DD8's label H is the water of
+            # author S, while author H is the heavy chain.
+            deliverable = [c for c in author_hits
+                           if c.get("chain_type") != "water"
+                           and c.get("chain_type") in include_types]
+            if all(c.get("chain_type") == "water" for c in label_hits) and deliverable:
+                labels = sorted(c["chain_id"] for c in author_hits)
+                selected |= set(labels)
+                rescued.append((ch, labels, "label_holds_only_water"))
+                continue
+            selected |= {c["chain_id"] for c in label_hits}
+            continue
+        if author_hits:
+            labels = sorted(c["chain_id"] for c in author_hits)
+            selected |= set(labels)
+            fallback_used.append((ch, labels))
+            continue
+        missing.append(ch)
+
+    # Second fallback: if the primary label selection yielded chains but NONE
+    # of them are in include_types, try author-chain match (including the
+    # first-character-of-author shortcut that SabDab uses -- Hchain='F' in a
+    # multi-chain mmCIF with auth 'FFF' corresponds to the chain under auth
+    # 'FFF', which is the label that carries the protein, not label 'F' which
+    # in those entries is a ligand or water subchain).
+    selected_infos = [c for c in chains if c["chain_id"] in selected]
+    if selected and not missing and not any(c["chain_type"] in include_types for c in selected_infos):
+        rescue_label_ids: set[str] = set()
+        rescue_hits: list[tuple[str, list[str], str]] = []
+        for ch in select_chains or []:
+            matches = [c for c in chains
+                       if c["author_chain"] == ch and c["chain_type"] in include_types]
+            if not matches and len(ch) == 1:
+                matches = [c for c in chains
+                           if c["chain_type"] in include_types
+                           and c["author_chain"]
+                           and c["author_chain"][0] == ch
+                           and c["author_chain"] != ch]
+            if matches:
+                rescue_label_ids |= {c["chain_id"] for c in matches}
+                rescue_hits.append((ch, sorted({c["chain_id"] for c in matches}),
+                                    "no_selected_chain_in_include_types"))
+        if rescue_label_ids:
+            selected = rescue_label_ids
+            rescued.extend(rescue_hits)
+    return {"selected": selected, "missing": missing,
+            "fallback_used": fallback_used, "rescued": rescued}
+
+
+def exclusion_targets(analysis) -> dict[str, set[str]]:
+    """Every id an ``exclude_ligand_ids`` entry may name -> the label chains it drops.
+
+    Ligand and ion instances answer to ``chains[].unique_id`` (and a covalent
+    unit to any of its residues' ids); a glycan chain answers to
+    ``<author>:<resname>:<resnum>`` of any of its residues and is dropped
+    whole. Water is not here: crystal water is always removed.
+    """
+    targets: dict[str, set[str]] = {}
+    for chain in analysis.get("chains") or []:
+        label = str(chain.get("chain_id"))
+        kind = chain.get("chain_type")
+        if kind in ("ligand", "ion"):
+            for name in [chain.get("unique_id"), *(chain.get("covalent_unit_aliases") or [])]:
+                if name:
+                    targets.setdefault(str(name), set()).add(label)
+        elif kind == "glycan":
+            author = chain.get("author_chain")
+            for record in (chain.get("residue_numbering") or {}).get("ordered_residues") or []:
+                for number in {str(record.get("resnum")), str(record.get("residue_id"))}:
+                    targets.setdefault(f"{author}:{record.get('resname')}:{number}", set()).add(label)
+    return targets
+
+
+def unmatched_exclusion_refusal(analysis, exclude_ligand_ids) -> Optional[dict]:
+    """``exclude_ligand_id_unmatched`` for entries that name nothing, else None.
+
+    An exclusion that matches nothing used to be dropped without a word, and
+    what it meant to remove stayed in: 069_soluble_1aol (glm v5) passed
+    ``--exclude-ligand-ids NAG ZN HOH`` -- residue names, not ids -- and the
+    glycan came back in as a covalently linked chain.
+    """
+    targets = exclusion_targets(analysis)
+    unmatched = [entry for entry in exclude_ligand_ids or [] if entry not in targets]
+    if not unmatched:
+        return None
+    by_resname: dict[str, list[str]] = {}
+    for name in sorted(targets):
+        parts = name.split(":")
+        if len(parts) == 3:
+            by_resname.setdefault(parts[1].upper(), []).append(name)
+    suggestions: list[str] = []
+    notes: list[str] = []
+    for entry in unmatched:
+        spelled = str(entry).strip()
+        resname = spelled.split(":")[1] if spelled.count(":") == 2 else spelled
+        resname = resname.upper()
+        if resname in ("HOH", "WAT", "DOD", "H2O"):
+            notes.append(f"{spelled}: crystal water is always removed; drop it from the list")
+            continue
+        matches = by_resname.get(resname) or []
+        if matches:
+            # One id per chain is enough: an id drops the whole glycan chain.
+            per_label: dict[str, str] = {}
+            for name in matches:
+                for label in sorted(targets[name]):
+                    per_label.setdefault(label, name)
+            ids = sorted(set(per_label.values()))
+            suggestions.extend(ids)
+            notes.append(f"{spelled} names no instance; its ids here are {', '.join(ids)}")
+        else:
+            notes.append(f"{spelled} matches no ligand, ion or glycan of this entry")
+    keep = [entry for entry in exclude_ligand_ids if entry in targets]
+    fixed = list(dict.fromkeys(keep + suggestions))
+    if fixed:
+        next_action = ("Pass instance ids, not residue names: --exclude-ligand-ids "
+                       + " ".join(fixed) + " (inspect_molecules lists chains[].unique_id), "
+                       "then run the same (still pending) node again.")
+    else:
+        next_action = ("Drop --exclude-ligand-ids (nothing in it names a component of this "
+                       "entry), then run the same (still pending) node again.")
+    glycan_labels = {str(c.get("chain_id")) for c in analysis.get("chains") or []
+                     if c.get("chain_type") == "glycan"}
+    if any(targets[name] & glycan_labels for name in suggestions):
+        notes.append("To leave out every glycan, omit glycan from --include-types instead.")
+    error = create_validation_error(
+        "exclude_ligand_ids",
+        "entries name no ligand, ion or glycan instance: " + ", ".join(unmatched),
+        expected="ids from inspect_molecules chains[].unique_id (author_chain:resname:resnum)",
+        actual=", ".join(str(e) for e in exclude_ligand_ids),
+        hints=notes,
+        context_extra={"unmatched_exclude_ligand_ids": unmatched,
+                       "suggested_exclude_ligand_ids": fixed},
+        code="exclude_ligand_id_unmatched",
+    )
+    error["next_action"] = next_action
+    return error
+
+
+def resolve_chain_selection(structure_file, select_chains, *, include_types=None,
+                            residue_ranges=None, analysis=None) -> dict:
+    """Resolve a chain request exactly as :func:`split_molecules` will.
+
+    For the readers that work on the source before the split -- disulfide and
+    metal-site detection, the glycan closure -- and need the same chains in
+    author space, where SSBOND / ``_struct_conn`` records live. Returns
+    ``select_chains`` (after comma splitting and the range default),
+    ``label_ids`` (None when everything is selected), ``author_chains``
+    (author ids of those labels; None when everything is selected),
+    ``read_as_author``, ``missing`` and ``range_windows_by_author``
+    (``{author: [(start, end), ...]}`` of polymer chains given a range).
+    """
+    from mdclaw.structure.residue_range import ResidueRangeError, parse_residue_ranges
+
+    if analysis is None:
+        analysis = _inspect_molecules_impl(str(structure_file))
+    chains = analysis.get("chains") or []
+    select_chains, _adjustment = default_select_chains_from_ranges(
+        select_chains, residue_ranges, analysis)
+    try:
+        parsed_ranges = parse_residue_ranges(residue_ranges)
+    except ResidueRangeError:
+        parsed_ranges = []
+    read_as_author, _permuted = _select_chains_read_as_author(
+        analysis, select_chains, parsed_ranges, structure_file)
+    windows: dict[str, list[tuple[int, int]]] = {}
+    labels = {info.get("chain_id") for info in chains}
+    for entry in parsed_ranges:
+        if entry.chain in labels and not read_as_author:
+            matched = [info for info in chains if info.get("chain_id") == entry.chain]
+        else:
+            matched = [info for info in chains if info.get("author_chain") == entry.chain]
+        for info in matched:
+            if info.get("chain_type") in ("protein", "nucleic", "glycan"):
+                low, high = sorted((entry.start[0], entry.end[0]))
+                windows.setdefault(str(info.get("author_chain")), []).append((low, high))
+    out = {
+        "select_chains": select_chains,
+        "read_as_author": read_as_author,
+        "range_windows_by_author": windows,
+        "label_ids": None,
+        "author_chains": None,
+        "missing": [],
+    }
+    if select_chains is None:
+        return out
+    resolved = _resolve_select_chain_labels(
+        analysis, select_chains, include_types, read_as_author=read_as_author)
+    out["label_ids"] = sorted(resolved["selected"])
+    out["author_chains"] = sorted({str(c.get("author_chain")) for c in chains
+                                   if c.get("chain_id") in resolved["selected"]})
+    out["missing"] = resolved["missing"]
+    return out
+
+
 
 def split_molecules(
     structure_file: str,
@@ -935,6 +1238,7 @@ def split_molecules(
     residue_ranges: Optional[List[str]] = None,
     join_range_pieces: bool = False,
     join_range_groups: Optional[List[str]] = None,
+    extra_label_ids: Optional[List[str]] = None,
 ) -> dict:
     """Split an mmCIF or PDB structure file into separate chain files.
 
@@ -1039,6 +1343,19 @@ def split_molecules(
                            ``["A:29-173,A:183-227"]``. Ungrouped ranges stay
                            separate. Mutually exclusive with
                            ``join_range_pieces``.
+        extra_label_ids: Label chain ids to add to a ``select_chains``
+                           request after it has been resolved (prepare_complex
+                           passes covalently linked glycan chains here). They
+                           never change how the requested names are read.
+
+    Residue ranges without ``select_chains`` select the chains they name
+    (``select_chains_defaulted_to_range_chains``); every other chain is left
+    out. Pass ``select_chains`` as well to keep other chains whole.
+
+    ``exclude_ligand_ids`` entries name ligand or ion instances
+    (``chains[].unique_id``) or a residue of a glycan chain
+    (``<author>:<resname>:<resnum>``, which drops that glycan chain). An entry
+    that names nothing is refused (``exclude_ligand_id_unmatched``).
 
     Returns:
         Dict with:
@@ -1202,42 +1519,39 @@ def split_molecules(
     select_chains = _split_listed_ids(select_chains)
     include_ligand_ids = _split_listed_ids(include_ligand_ids)
     exclude_ligand_ids = _split_listed_ids(exclude_ligand_ids)
+    # Rebuilt from the split list: "A:ZN:301,A:NAG:401" is one argument.
+    excluded_ligand_id_set = (
+        set(exclude_ligand_ids) if exclude_ligand_ids is not None else None)
     analysis = _inspect_molecules_impl(structure_file)
-    
+
     if not analysis["success"]:
         result["errors"] = analysis["errors"]
         result["warnings"] = analysis["warnings"]
         return result
-    
+
+    select_chains, range_default = default_select_chains_from_ranges(
+        select_chains, residue_ranges, analysis)
+    if range_default is not None:
+        result["selection_adjustments"].append(range_default)
+        result["warnings"].append(
+            f"{range_default['code']}: {range_default['message']}")
+
     result["all_chains"] = analysis["chains"]
 
-    # Label ids can be a permutation of the author ids (1KX5: author D is
-    # label F, author I is label A). The documented convention for mmCIF is
-    # the label id, and most calls follow it; but a task that names chains and
-    # ranges in author terms then lands on other chains, every endpoint is
-    # "unresolved" and nothing says why (051_nucleic_1kx5, campaign v2: every
-    # CLI attempt timed out on it). The names alone cannot tell the two apart
-    # when both id sets are the same letters, so the residue numbers decide:
-    # the names are read as author ids only when every requested name is an
-    # author chain, one of them names a different chain as a label, and the
-    # requested ranges fit the author chains strictly better than the label
-    # chains. Reading on the names alone broke every call that used labels
-    # the documented way (1IV6 "A:1-13" is label A's DNA strand, author A is
-    # the protein 378-434; 1A66, 1J46, 1ZGW, 2HDC alike).
-    _author_ids = {info.get("author_chain") for info in analysis["chains"]}
-    _label_ids = {info.get("chain_id") for info in analysis["chains"]}
-    _label_to_author = {info.get("chain_id"): info.get("author_chain") for info in analysis["chains"]}
-    _requested_names = set(select_chains or []) | {entry.chain for entry in parsed_ranges}
-    read_as_author = bool(
-        _requested_names
-        and Path(structure_file).suffix.lower() not in (".pdb", ".ent")
-        and all(name in _author_ids for name in _requested_names)
-        and any(name in _label_ids and _label_to_author.get(name) != name for name in _requested_names)
-        and _range_fit(parsed_ranges, analysis["chains"], "author_chain")
-        > _range_fit(parsed_ranges, analysis["chains"], "chain_id")
-    )
-    _permuted_names = {name: _label_to_author[name] for name in sorted(_requested_names)
-                       if name in _label_ids and _label_to_author.get(name) != name} if read_as_author else {}
+    # How the names are read (label or author ids) is decided once, in
+    # _select_chains_read_as_author; the docstring there says why.
+    read_as_author, _permuted_names = _select_chains_read_as_author(
+        analysis, select_chains, parsed_ranges, structure_file)
+
+    excluded_label_ids: set[str] = set()
+    if exclude_ligand_ids:
+        refusal = unmatched_exclusion_refusal(analysis, exclude_ligand_ids)
+        if refusal is not None:
+            result.update(refusal)
+            return result
+        targets = exclusion_targets(analysis)
+        excluded_label_ids = {label for entry in exclude_ligand_ids for label in targets[entry]}
+        result["excluded_label_ids"] = sorted(excluded_label_ids)
 
     # Resolve each residue range to the chains it names, once and globally, so
     # the per-chain loop only has to look up an answer. Two rules matter here.
@@ -1520,24 +1834,14 @@ def split_molecules(
                     "chains, and the same letters are label ids of other chains in this "
                     f"entry ({permuted}); they were read as author ids."
                 )
-            for ch in select_chains:
-                if read_as_author:
-                    selected_chain_ids |= {
-                        c["chain_id"] for c in analysis["chains"] if c["author_chain"] == ch
-                    }
-                    continue
-                # Primary: label_asym_id exact match
-                label_hits = {c["chain_id"] for c in analysis["chains"] if c["chain_id"] == ch}
-                if label_hits:
-                    selected_chain_ids |= label_hits
-                    continue
-                # Fallback: author_chain match (all label IDs under that author)
-                author_hits = {c["chain_id"] for c in analysis["chains"] if c["author_chain"] == ch}
-                if author_hits:
-                    selected_chain_ids |= author_hits
-                    fallback_used.append((ch, sorted(author_hits)))
-                    continue
-                missing_chains.append(ch)
+            # One resolution rule for every reader of the request (the
+            # disulfide and metal filters and the glycan closure call the same
+            # function before the split runs).
+            resolution = _resolve_select_chain_labels(
+                analysis, select_chains, include_types, read_as_author=read_as_author)
+            selected_chain_ids = set(resolution["selected"])
+            missing_chains = resolution["missing"]
+            fallback_used = resolution["fallback_used"]
 
             if missing_chains:
                 result["errors"].append(f"Chain(s) not found: {missing_chains}")
@@ -1571,49 +1875,35 @@ def split_molecules(
                         f"Chain '{ch}' resolved via author_chain fallback -> label(s) {labels}. "
                         f"Pass the label_asym_id directly to avoid this fallback."
                     )
-
-            # Second fallback: if the primary label selection yielded chains
-            # but NONE of them are in include_types, try author-chain match
-            # (including the first-character-of-author shortcut that SabDab
-            # uses — Hchain='F' in a multi-chain mmCIF with auth 'FFF'
-            # corresponds to the chain under auth 'FFF', which is the label
-            # that carries the protein, not label 'F' which in those entries
-            # is a ligand or water subchain).
-            selected_infos = [c for c in analysis["chains"] if c["chain_id"] in selected_chain_ids]
-            if selected_chain_ids and not any(c["chain_type"] in include_types for c in selected_infos):
-                rescue_label_ids: set[str] = set()
-                rescue_hits: list[tuple[str, list[str]]] = []
-                for ch in select_chains:
-                    # Pattern A: exact author_chain match against include_types chains
-                    matches = [
-                        c for c in analysis["chains"]
-                        if c["author_chain"] == ch and c["chain_type"] in include_types
-                    ]
-                    # Pattern B: first-character-of-author match against
-                    # include_types chains (e.g. user passes 'F' and the auth
-                    # 'FFF' owns the protein subchain). Only used when
-                    # single-character input and no exact auth hit.
-                    if not matches and len(ch) == 1:
-                        matches = [
-                            c for c in analysis["chains"]
-                            if c["chain_type"] in include_types
-                            and c["author_chain"]
-                            and c["author_chain"][0] == ch
-                            and c["author_chain"] != ch
-                        ]
-                    if matches:
-                        rescue_label_ids |= {c["chain_id"] for c in matches}
-                        rescue_hits.append((ch, sorted({c["chain_id"] for c in matches})))
-                if rescue_label_ids:
-                    selected_chain_ids = rescue_label_ids
-                    for ch, labels in rescue_hits:
-                        result["warnings"].append(
-                            f"Chain '{ch}' rescued via author-chain fallback (primary "
-                            f"label match had no chains in include_types={include_types}). "
-                            f"Resolved to label(s) {labels}. Common for SabDab 1-char IDs "
-                            f"on mmCIF entries with multi-letter author IDs (e.g. 'F' -> "
-                            f"auth 'FFF')."
-                        )
+            for ch, labels, reason in resolution["rescued"]:
+                if reason == "label_holds_only_water":
+                    result["selection_adjustments"].append({
+                        "code": "chain_id_read_as_author_over_water_label",
+                        "message": (
+                            f"Label chain {ch} holds only crystal water (always dropped); "
+                            f"author chain {ch} was selected instead (label(s) {labels})."
+                        ),
+                        "requested": ch,
+                        "label_ids": labels,
+                    })
+                    result["warnings"].append(
+                        f"chain_id_read_as_author_over_water_label: label chain '{ch}' holds "
+                        f"only water, so '{ch}' was read as the author chain -> label(s) {labels}."
+                    )
+                else:
+                    result["warnings"].append(
+                        f"Chain '{ch}' rescued via author-chain fallback (primary "
+                        f"label match had no chains in include_types={include_types}). "
+                        f"Resolved to label(s) {labels}. Common for SabDab 1-char IDs "
+                        f"on mmCIF entries with multi-letter author IDs (e.g. 'F' -> "
+                        f"auth 'FFF')."
+                    )
+            # Label chains a caller resolved itself and adds to the request
+            # (prepare_complex's covalently linked glycans). Added after the
+            # resolution so they cannot change how the names are read.
+            for label in extra_label_ids or []:
+                if label in chain_info:
+                    selected_chain_ids.add(label)
             if include_ligand_ids is not None and "ligand" in include_types:
                 requested = requested_ligand_id_set or set()
                 matching_ligands = [
@@ -1868,10 +2158,12 @@ def split_molecules(
                                         "ligand from --include-types."
                                     ),
                                 ],
+                                # Ids only: the full candidate records stay in
+                                # ligand_selection, which brief output may stub.
+                                # The whole records here made this refusal an
+                                # 11 KB envelope whose fix sat at the bottom.
                                 context_extra={
-                                    "associated_ligand_candidates": (
-                                        associated_candidates
-                                    ),
+                                    "associated_ligand_ids": recommended_ids,
                                     "recommended_include_ligand_ids": (
                                         recommended_ids
                                     ),
@@ -1881,6 +2173,14 @@ def split_molecules(
                                 },
                                 code="associated_ligands_require_selection",
                             )
+                        )
+                        spelled_ids = " ".join(recommended_ids)
+                        result["next_action"] = (
+                            f"Decide the ligands {spelled_ids} and run the same (still "
+                            f"pending) node again with one of: keep them -> "
+                            f"--include-ligand-ids {spelled_ids}; leave them out -> "
+                            f"--exclude-ligand-ids {spelled_ids}; no ligand at all -> "
+                            "omit ligand from --include-types."
                         )
                         return result
         else:
@@ -1949,6 +2249,11 @@ def split_molecules(
 
             # Skip if chain_type not in include_types
             if chain_type not in include_types:
+                continue
+            # An excluded ligand, ion or glycan chain (exclusion_targets); for
+            # ligands the unique_id check below says the same thing.
+            if chain_type in ("ligand", "ion", "glycan") and chain_id in excluded_label_ids:
+                logger.info(f"Excluding {chain_type} chain {chain_id} (in exclude_ligand_ids)")
                 continue
 
             # Apply ligand-specific filtering by unique_id
