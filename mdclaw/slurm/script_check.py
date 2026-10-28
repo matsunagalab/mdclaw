@@ -392,8 +392,13 @@ def _parse_argv(argv: list[str], tool: str, info: dict):
     try:
         with contextlib.redirect_stderr(buffer), contextlib.redirect_stdout(io.StringIO()):
             namespace, extras = parser.parse_known_args(hoisted)
-    except SystemExit:
-        return None, [], _argparse_message(buffer.getvalue()), hoisted
+    except SystemExit as exc:
+        # The CLI parser raises _CliUsageError carrying argparse's message
+        # (no usage dump on stderr); a stock parser writes it to stderr.
+        message = getattr(exc, "message", None) or buffer.getvalue()
+        if getattr(exc, "message", None):
+            return None, [], message, hoisted
+        return None, [], _argparse_message(message), hoisted
     return namespace, extras, None, hoisted
 
 

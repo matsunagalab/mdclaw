@@ -603,6 +603,30 @@ def settle_uncertain_submission(job_dir: str, node_id: str, *,
     return {"outcome": "unknown", "slurm_job_id": None}
 
 
+def _superseded_job(job_dir: str, node_id: str, slurm_job_id: Optional[str]) -> Optional[str]:
+    """A message when Slurm job ``slurm_job_id`` is not the node's current
+    submission: a resubmitted node records its new job in
+    ``metadata.slurm_job_id``, and the end of the old one is an event only, not
+    the node's failure (reported from the v5 runs, 2026-10-29)."""
+    if not slurm_job_id:
+        return None
+    try:
+        meta = read_node(str(job_dir), node_id).get("metadata") or {}
+    except Exception:  # noqa: BLE001 - a lookup never breaks a sync
+        return None
+    recorded = meta.get("slurm_job_id")
+    if not recorded:
+        return None
+    # An array child is stamped as ``<parent>_<task>`` while check_job may be
+    # asked about the parent: the same submission, not a superseded one.
+    base = lambda job: str(job).split("_", 1)[0]  # noqa: E731
+    known = {base(recorded), base(meta.get("slurm_parent_job_id") or recorded)}
+    if base(slurm_job_id) in known:
+        return None
+    return (f"Slurm job {slurm_job_id} is not node {node_id}'s current submission "
+            f"(job {recorded}); its end is recorded as an event only")
+
+
 def _live_owner_elsewhere(job_dir: str, node_id: str, slurm_job_id: Optional[str]) -> Optional[str]:
     """A message when a live process other than Slurm job ``slurm_job_id``
     owns the running node: that job's end is recorded as an event, not as
@@ -755,6 +779,9 @@ def _sync_slurm_state_to_node(
                 f"node {node_id} already completed but SLURM reports {state}; "
                 f"not demoting node status"
             )
+        superseded = _superseded_job(str(job_dir), node_id, slurm_job_id)
+        if superseded:
+            return superseded
         if current == "running":
             keeper = _live_owner_elsewhere(str(job_dir), node_id, slurm_job_id)
             if keeper:
@@ -804,6 +831,9 @@ def _sync_slurm_state_to_node(
             return None
         if current == "failed":
             return None
+        superseded = _superseded_job(str(job_dir), node_id, slurm_job_id)
+        if superseded:
+            return superseded
         if current == "running":
             keeper = _live_owner_elsewhere(str(job_dir), node_id, slurm_job_id)
             if keeper:

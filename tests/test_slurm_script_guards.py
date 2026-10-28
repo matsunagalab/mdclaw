@@ -295,7 +295,12 @@ def test_condition_key_the_tool_never_reports_is_refused_with_the_reported_key(t
     from mdclaw._node import create_node
 
     jd = _dag(tmp_path)
-    create_node(str(jd), "prod", parent_node_ids=["eq_001"], conditions={"total_time_ps": 100000})
+    # create_node now refuses the key (condition_key_unknown); a DAG made
+    # before that screen still carries it, which is what submit must catch.
+    assert create_node(str(jd), "prod", parent_node_ids=["eq_001"],
+                       conditions={"total_time_ps": 100000})["code"] == "condition_key_unknown"
+    create_node(str(jd), "prod", parent_node_ids=["eq_001"])
+    _set_conditions(jd, "prod_001", {"total_time_ps": 100000})
     _queue(jd, "min_001", 101)
     _queue(jd, "eq_001", 102)
     result, calls = _submit(_cmd(jd, "prod_001", "run_production", "--simulation-time-ns 100"), jd, "prod_001")
@@ -341,7 +346,10 @@ def test_a_unit_changed_key_is_not_read_as_the_reported_one(tmp_path):
     from mdclaw._node import create_node
 
     jd = _dag(tmp_path)
-    create_node(str(jd), "prod", parent_node_ids=["eq_001"], conditions={"simulation_time_ps": 100000})
+    assert create_node(str(jd), "prod", parent_node_ids=["eq_001"],
+                       conditions={"simulation_time_ps": 100000})["code"] == "condition_key_unknown"
+    create_node(str(jd), "prod", parent_node_ids=["eq_001"])
+    _set_conditions(jd, "prod_001", {"simulation_time_ps": 100000})
     _queue(jd, "min_001", 1)
     _queue(jd, "eq_001", 2)
     result, _ = _submit(_cmd(jd, "prod_001", "run_production", "--simulation-time-ns 100"), jd, "prod_001")

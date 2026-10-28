@@ -14,12 +14,9 @@ is refused here with the key the tool does report, unit-converted.
 
 from __future__ import annotations
 
-import ast
-import inspect
 import json
 import re
 import shlex
-import textwrap
 from typing import Any, Optional
 
 _REPORTED_CACHE: dict[Any, Optional[frozenset]] = {}
@@ -30,36 +27,14 @@ def reported_condition_keys(fn) -> Optional[frozenset]:
 
     None when the tool reports a computed dict (the vocabulary is then not
     known before it runs). Read from the source rather than tabulated: a hand
-    table drifts (``mdclaw/node/condition_hints.py``).
+    table drifts (``mdclaw/node/condition_hints.py``). One reader serves this
+    check and create_node's key screen (``mdclaw/node/condition_vocabulary.py``).
     """
-    if fn in _REPORTED_CACHE:
-        return _REPORTED_CACHE[fn]
-    keys: set[str] = set()
-    found = False
-    try:
-        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
-    except (OSError, TypeError, SyntaxError):
-        _REPORTED_CACHE[fn] = None
-        return None
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
-        if name != "validate_node_execution_context":
-            continue
-        for keyword in node.keywords:
-            if keyword.arg != "actual_conditions":
-                continue
-            if not isinstance(keyword.value, ast.Dict) or any(
-                    not (isinstance(k, ast.Constant) and isinstance(k.value, str)) for k in keyword.value.keys):
-                _REPORTED_CACHE[fn] = None
-                return None
-            keys.update(k.value for k in keyword.value.keys)
-            found = True
-    _REPORTED_CACHE[fn] = frozenset(keys) if found else None
-    return _REPORTED_CACHE[fn]
+    if fn not in _REPORTED_CACHE:
+        from mdclaw.node.condition_vocabulary import literal_condition_keys
 
+        _REPORTED_CACHE[fn] = literal_condition_keys(fn)
+    return _REPORTED_CACHE[fn]
 
 def _topology_settings(job_dir: str, node_id: str) -> Optional[dict]:
     """hmr / implicit_solvent of the completed topo ancestor the run inherits."""

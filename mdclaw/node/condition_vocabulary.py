@@ -78,6 +78,55 @@ def _literal_keys(expr: ast.AST) -> tuple[set[str], bool]:
     return set(), True
 
 
+def _actual_conditions_values(tree: ast.AST) -> Optional[list[ast.AST]]:
+    """The expressions passed as ``actual_conditions=`` in ``tree``, with a
+    bare name followed to the values assigned to it (``actual_conditions=_actual``
+    in run_equilibration since the 2026-10-29 run guard). None when no call
+    passes ``actual_conditions``."""
+    assigned: dict[str, list[ast.AST]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assigned.setdefault(target.id, []).append(node.value)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value:
+            assigned.setdefault(node.target.id, []).append(node.value)
+    values: list[ast.AST] = []
+    found = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg == "actual_conditions":
+                found = True
+                if isinstance(keyword.value, ast.Name):
+                    values.extend(assigned.get(keyword.value.id) or [keyword.value])
+                else:
+                    values.append(keyword.value)
+    return values if found else None
+
+
+def literal_condition_keys(fn) -> Optional[frozenset]:
+    """The keys ``fn`` reports as ``actual_conditions`` when its source spells
+    them out as a dict literal (directly or through one name); None when the
+    dict is computed, so the vocabulary is unknown before the tool runs. The
+    submit-time condition check uses this strict form."""
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(fn))))
+    except (OSError, TypeError, SyntaxError):
+        return None
+    values = _actual_conditions_values(tree)
+    if not values:
+        return None
+    keys: set[str] = set()
+    for value in values:
+        literal, is_open = _literal_keys(value)
+        if is_open:
+            return None
+        keys |= literal
+    return frozenset(keys)
+
+
 def reported_condition_keys(fn) -> Optional[frozenset]:
     """Keys one stage tool can report, or None when it never cross-checks."""
     fn = inspect.unwrap(fn)
@@ -92,31 +141,14 @@ def reported_condition_keys(fn) -> Optional[frozenset]:
         tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
     except (OSError, TypeError, SyntaxError):
         return frozenset(_parameters(fn))
-    # ``actual_conditions=_actual`` passes a dict built a few lines earlier
-    # (run_equilibration since the 2026-10-29 run guard): read the literal
-    # assigned to that name instead of falling back to the parameters.
-    assigned: dict[str, list[ast.AST]] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    assigned.setdefault(target.id, []).append(node.value)
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value:
-            assigned.setdefault(node.target.id, []).append(node.value)
     keys: set[str] = set()
-    found = open_ = False
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        for keyword in node.keywords:
-            if keyword.arg == "actual_conditions":
-                found = True
-                values = ([keyword.value] if not isinstance(keyword.value, ast.Name)
-                          else assigned.get(keyword.value.id) or [keyword.value])
-                for value in values:
-                    literal, is_open = _literal_keys(value)
-                    keys |= literal
-                    open_ = open_ or is_open
+    values = _actual_conditions_values(tree)
+    found = values is not None
+    open_ = False
+    for value in values or []:
+        literal, is_open = _literal_keys(value)
+        keys |= literal
+        open_ = open_ or is_open
     if not found or open_:
         keys |= _parameters(fn)
     return frozenset(keys)
