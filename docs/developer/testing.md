@@ -91,6 +91,9 @@ limitations, and the manual update procedure.
 
 - Tool functions are called directly, e.g. `tool_name(param=value)`.
 - Shared fixtures such as `small_pdb` and `alanine_dipeptide_pdb` live in
-  `tests/conftest.py`.
+  `tests/conftest.py`. It also sets `MDCLAW_ALLOW_LOCAL_MD=1` for the whole
+  session (CLI subprocesses inherit it), so the node-mode MD tests run on a
+  Slurm login node; `tests/test_md_run_guard.py` removes it to test the
+  `md_outside_allocation` refusal.
 - Pipeline tests use class attributes to pass state between ordered steps.
 - Shared DAG helpers live in `tests/pipeline_helpers.py`.

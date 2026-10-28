@@ -217,7 +217,13 @@ job's node index (`_preflight_fix`), plus `dag` and `next`:
   of a refused call stays under `artifacts/` (the rerun gets `split_2/`).
   The CLI's own failure record (`_record_cli_node_failure`) skips a result
   whose `node_status` is `pending` when the node is, so it never seals a
-  node the tool deliberately left open. Two more refusals are decided from
+  node the tool deliberately left open; likewise a result whose
+  `node_status` is the node's `queued` / `running` status (an MD stage
+  refused on the login node while its Slurm job holds the node,
+  `md_outside_allocation`). A `NodeAlreadyRunningError` from `begin_node`
+  (another live run owns the node) is reported as `node_already_running`
+  and recorded nowhere: recording it sealed the node under its owner
+  (021_antibody_3eoa cli_sif r1 of MDDataBench v5). Two more refusals are decided from
   the split output before the node begins: `disulfide_site_not_selected`
   (a declared cysteine the selection cannot hold) and
   `residue_range_endpoint_unobserved` (a range end nothing will build); the

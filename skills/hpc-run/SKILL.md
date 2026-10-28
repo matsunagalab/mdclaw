@@ -89,6 +89,12 @@ from the DAG.
   hint rather than submitting by hand.
 - Always pass both `--job-dir` and `--node-id` when submitting or running a DAG
   workflow node.
+- MD stage tools run only inside a Slurm job. On the login node they refuse
+  (`md_outside_allocation`, node still pending) and `next_action` is the
+  node's `submit_job` command; run that, do not switch to `--platform CPU`.
+  Inside a GPU job whose container lacks `--nv` they refuse
+  `gpu_allocated_platform_unavailable`: fix the container
+  (`configure_container --extra-flags=--nv`) and submit again.
 - Do not pass `--system-xml-file`, `--topology-pdb-file`, `--state-xml-file`, or `--restart-from` in normal
   DAG SLURM commands; resolver logic handles these.
 - `COMPLETED` SLURM state alone does not mark a node complete. The MDClaw tool
