@@ -35,6 +35,11 @@ add the correction and say what it overturns.
   - GPU ジョブ（Slurm 241527、c167）で `test_pipeline_membrane_dag.py` が 5 passed（152 s）。patch はキャッシュに保存された（`packmol-memgen+equilibrate`、平衡化まで実行）。同じテストを CPU で流すと 45 分かかる。
 - **影響**: キャッシュに当たらない膜を GPU ジョブの中で組むと、これまでは必ず落ちていた（修正前の `82bc431` と旧 v4fix SIF でも同じ）。同じ緩和の処理（`minimize_robustly`）は、`run_minimization` と `build_openmm_system` も使っているので、詰め直後の溶媒の重なりが大きいほかの系にも効く。
 - 共有 SIF（`6d252ca`）にはこの修正がまだ入っていない。
+- **追記（同日 08:52）**: 共有 SIF に入れた（ユーザー依頼「SIF も更新」）。
+  - 作り方: `6d252ca` の SIF を土台に `relax.py` だけを上書きした（`apptainer build --sandbox` → ラベルの書き換え → `.pyc` の作り直し → SIF）。出来上がりは `/data1/rkp00079/sif/mdclaw-0.6.12-d65eca2981a4-arm64-cuda13.sif`（sha256 `8ef9e9e0…cf6c1`）。手順は `/data1/rkp00079/rku00161/mdclaw-validation/sif-relaxfix-20261029/` にある。
+  - 中身の照合: 焼き込まれたパッケージは 254 ファイルすべてが `d65eca2` と一致した。
+  - GPU での受け入れ（Slurm 241860、c285）: `test-rikyu-gpu.sh` は PASS。CUDA が拒否していた POPC patch は、焼き込まれたパッケージのまま組み上がった（緩和後 -1.29e5 kJ/mol、CUDA での受け入れ 0、CPU でのやり直しで 26）。
+  - 張り替え: `mdclaw.sif` の向きを変え、戻し用に `mdclaw.pre-relaxfix-20261029.sif` → `6d252ca` の SIF を作った。旧パスは `mdclaw.sif` の別名なので、自動でこちらを向く。RIKYU.md の「Current SIF」を更新した（書き換え前の控えは同じ場所にある）。
 
 ## 2026-10-29 — RIKYU の共有 SIF を `/data1/rkp00079/mdclaw.sif` に（main `6d252ca` から一からビルド）。旧パスは別名のまま使える。GPU で膜 patch を新規に作ると壊れる既存の不具合を見つけた
 
