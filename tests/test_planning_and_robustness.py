@@ -436,7 +436,10 @@ class TestCliPreflightJson:
         with pytest.raises(SystemExit):
             main(["inspect_moleculs"])
         payload = json.loads(capsys.readouterr().out)
-        assert payload["context"]["suggestions"] == ["inspect_molecules"]
+        # the nearest tool first; a few more follow (MDDataBench v5: 153 of
+        # 158 replies carried no suggestion at the old 0.85 cutoff)
+        assert payload["context"]["suggestions"][0] == "inspect_molecules"
+        assert len(payload["context"]["suggestions"]) <= 5
         assert any("inspect_molecules" in hint for hint in payload["hints"])
 
     def test_renamed_and_unknown_agree_across_entry_paths(self, capsys):
