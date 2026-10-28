@@ -13,6 +13,148 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-29 — v5 の調査で見つかった MDClaw のツール側の欠陥をまとめて修正（branch `v5-tool-fixes`）
+
+ユーザー依頼「まとめて直して」（2026-10-27 の調査の項の 1〜8 すべて）。main `82bc431` から 5 つの作業ツリーで並行して直し、統合ブランチ `v5-tool-fixes` にまとめた。統合のときに出た食い違いも直した。テストは RIKYU の v4fix SIF に checkout を重ねて流した（`test_molstar_mcp.py` は古いイメージに `mcp` が無いので除外）。修正前の main の fast suite は 2,892 passed / 1 failed で、この 1 件（`test_mddb_export.py::test_concat_tool_then_cli_export_preserves_conditions`）は、子プロセスがイメージの中の古い mdclaw を読み込むためで、コードの不具合ではない。
+
+- **構造準備**（`5d0416d`、`0e71a41`）
+  - chain の読み方を `split.resolve_chain_selection` に一本化した。S–S 結合と金属サイトのフィルタ、糖鎖の取り込みも同じ解決結果を使う。2DD8 / 1DFJ / 3RVW で検出される S–S 結合が 6→9、0→4、5→7 本になった。
+  - S–S 結合の不変条件を足した。deposit の結合が作られていなければ `detected_disulfide_not_formed`、topo で結合していない SG–SG < 2.5 Å なら `unbonded_disulfide_geometry`。`--disulfide-pairs '[]'` で deposit の結合を落とす指定は拒否する。
+  - リガンド: Dimorphite の状態で電荷があいまいなら `ligand_protonation_ambiguous`、新しい引数 `--ligand-net-charges`、`ligand_smiles_ccd_mismatch`。
+  - 天然の末端へのキャップは `terminal_cap_on_native_terminus` で拒否する。どれにも一致しない `--exclude-ligand-ids` は `exclude_ligand_id_unmatched` で拒否する。range を渡したときは、その chain だけを選ぶのを既定にした。
+- **MD 実行時**（`89b020e` ほか）: 新しい `simulation/run_guard.py`。
+  - Slurm の割り当ての外で MD を流すと `md_outside_allocation` で拒否し、ノードは pending に残す。拒否には submit_job のコマンドを添える。外すときは `MDCLAW_ALLOW_LOCAL_MD=1`。
+  - 使えない platform は `platform_unavailable`、GPU を割り当てられたのに CUDA が無ければ `gpu_allocated_platform_unavailable`。どちらも begin_node の前に返す。
+  - `NodeAlreadyRunningError` を eq / min と CLI で握りつぶし、走行中のノードを封印していたのを直した。宣言条件が食い違うときは、ノードを pending に残し、フラグを足した同じコマンドを示す。
+  - eq の時間制限の手前での停止は、設計を決める必要があるので保留した。止めると NPT 段が欠けた eq が completed になり、prod が黙って NVT で走る。
+- **Slurm 投入**（`2245a44`、`c0a20e1`、`30cd2cd`）: submit_job / array / mps が、ジョブの中で起きるはずの拒否を投入の時点で返すようにした。
+  - 全ツールの argparse 検査（`script_arguments_invalid`、修正案付き）と、プレースホルダーの拒否（`script_placeholder_unfilled`）。
+  - min / eq / prod の宣言条件の検査。
+  - 依存関係: 親のジョブへの afterok は自動で足す。ほかに `parent_not_submitted`、`dependency_not_parent_job`、`dependency_unsatisfiable`。
+  - `/tmp` や tmpfs 上のパスは `submission_path_not_shared`。bind の抽出は shlex に変え（バグ修正）、無いパスは `container_bind_missing`。GPU ジョブには `--nv` を自動で足す。
+  - v5 の 5,629 本の sbatch で試すと 61 本が拒否され、すべて実際に失敗していたジョブだった（誤検出 0）。
+- **CLI と DAG**（`27f01de` ほか）
+  - 次の手のコマンドから `...` を無くし、すべての出力の末尾に `status_line` を足した。
+  - ツール名の読み替え（区分名の前置き、別名）と `node_id_value_missing`。`--output id` の失敗は stderr に出して 0 以外で終える。引数の省略形は使えなくした（単位・複数形の語尾の省略は除く）。
+  - `create_node --conditions` は報告されないキーを `condition_key_unknown` で拒否し、単位をまたいだあいまい一致のバグを直した。
+  - `inspect_molecules` / `list_source_candidates` は source ノードが 1 つなら自動で選ぶ。中身のある非 study のディレクトリと study の入れ子を拒否する。
+- **溶媒和**（`02058b3`、`1396c2c`）
+  - 水モデルは、ノードの宣言条件から継ぐか、明示しなければ `water_model_required` で拒否する（既定値の `opc` をやめた）。
+  - `--no-salt` で溶質が電荷を持てば `solvation_charged_without_ions`。電荷の見積もりは v5 の 84/84 で一致した。
+  - 膜 patch のキャッシュに当たらない構築は、Slurm の外では止める（`--allow-patch-build` で通す）。細長い溶質への立方体の箱と、50 万原子を超える系には警告を出す。
+- **統合のときの修正**（`863b09a`、`60dde6d`）
+  - 条件キーの読み取りを 1 つにまとめた（`node/condition_vocabulary.literal_condition_keys`）。eq の `actual_conditions=_actual` を読めず、`create_node` が `ensemble` を拒否していた。
+  - 投入時の検査は `_CliUsageError.message` から理由を読む。
+  - `node_sync` は、今の投入でないジョブの終了ではノードを failed にしない。
+  - rounds の `list[str]` 引数を要素ごとに渡す。
+  - `lifecycle.py` の `<stage tool> ...` の案内を `explain_node` に置き換えた。
+- 各作業ツリーの fast suite は、どれも修正前の main と同じ 1 件だけが落ちた（溶媒和の担当の tempering 3 件は、GPU を共有していたためのメモリ不足で、単独で流し直すと通った）。統合後の `60dde6d` の fast suite は 3,083 passed / 1 failed / 3 skipped で、落ちたのは修正前の main と同じ 1 件だけ（616 s）。ruff は clean。main にマージした（`6788460`、ユーザー指示「fast suite がパスしたら main へマージして」）。slow suite は、SIF をビルドするときの受け入れで流す。
+- **挙動が変わる点**
+  - ログインノードでは MD を流せない。
+  - 溶媒和では水モデルの指定が要る。
+  - 引数の誤りは JSON で返る。
+  - 引数の省略形は使えない。
+  - 未知の条件キーは作成時に拒否する。
+  - 天然の末端へのキャップは拒否する。
+
+## 2026-10-27 — v5 の条件の 3 キャンペーン（glm / qwen / kimi）の CLI 2 条件の失敗から、MDClaw のツール側で直すべき点を洗い出した（未着手）
+
+ユーザー依頼「v5 テストの結果を調査して、ハーネス側で直したほうがよいところは」。3 本の調査を並行で走らせ（読み取りのみ）、主要な指摘はコードで裏を取った。対象は CLI + skills と CLI only の 1,764 attempt で、失敗は glm 11、kimi 17、qwen 138。作業ファイルはセッションの scratchpad（`details.txt`、`fails.txt`、`jobs.txt`、`login.jsonl`、`an/`）。
+
+**A. 組成と S–S 結合の不合格（44 件）**
+- **バグ（13 件、3 モデルすべて）: `prepare_complex.py:1794-1803` の `ss_select_chains`**
+  - 渡された chain ID を label ID として先に解釈し、author ID に変換する。author ID と同じ名前の label chain（水など）があると、別の chain にすり替わる。
+  - 例: 2DD8 は H→S、1DFJ は E→I、3RVW は C→D、D→A になり、S–S 結合が警告なしに消えた（SG–SG 2.03 Å のまま CYS が残る）。
+  - 019 と 022 の 36 attempt で、author ID を渡した attempt はすべて不合格、label ID を渡した attempt はすべて合格した。
+  - `--select-chains A,B,E` のカンマ区切りは `ss_select_chains` 側で分割されず、フィルタが空になる。その後の拒否 `disulfide_endpoint_unresolvable` は誤った next_action を返し、`--disulfide-pairs '[]'` で全結合が消えても警告だけで通った（2 件）。
+  - 修正案: `split_molecules` の解決結果を使う。prep と topo に不変条件チェック（結合していない SG–SG < 2.5 Å を拒否、`unbonded_disulfide_geometry`）を入れる。
+- **頼まれていない末端キャップ（10 件）**: そのうち 8 件は天然の末端へのキャップで、拒否できる（`terminal_cap_on_native_terminus`）。
+- **リガンドの電荷（3 件）**: `ligand_chemistry._select_protonation_state` は Dimorphite の先頭を優勢な状態とみなしている（9V2 と AMH が −1 になった）。候補が複数ならあいまいとして拒否し、期待電荷を CLI で渡せるようにする。
+- **その他**: 融合体の番号範囲（2 件）、配列のない source で欠損残基を作れなかった（3 件）、一致しない `--exclude-ligand-ids` が黙って無視された（1 件）など。
+
+**B. MD 実行の失敗（qwen 59 件、glm 1 件、kimi 3 件）**
+
+多くは同じ形で起きている。投入は成功し、ジョブの中で最初の MD がすぐ落ち、afterok で後続が取り消される。submit_job の preflight は、run_production の条件しか見ていない。
+1. `--script` の引数がジョブの中の argparse で不正になる（14 件）。`next` の command が `...` 付きで出ていて、それを貼った例が 3 件ある。全ツールの argparse 事前検査（`script_arguments_invalid`、近いフラグを提案）を入れ、`_envelope.py` は `...` を出さないようにする。
+2. 計算ノードに無いパス（11 件）: `/data1/rku00161`、`/tmp`、workspace の外など。sandbox の tmpfs の上では打ち間違えたパスも存在してしまう。submit_job で `submission_path_not_shared` を返す。
+3. eq の宣言条件と実際の値の食い違い（6 件が最終的な失敗。qwen の CLI + skills では 36 ノード）。preflight を eq と min にも広げる。何も走っていないノードは failed で封印しない。
+4. ツールが報告しない条件キーを、作成時に受け付けてしまう（5 件）。`create_node` で拒否する。単位の違う別名（`_ps` と `_ns`）にあいまい一致させない。
+5. **バグ（4 件）**: `_base.py:167` の `(\S+)` が引用符を含むパスを bind に入れる。shlex で分割する。
+6. **バグ（4 件）**: 重複実行の `NodeAlreadyRunningError` を、eq / prod / min の汎用 `except` が fail_node に変えてしまう。
+7. GPU を確保したのに `--nv` が無い（3 件）。依存関係が無い、または誤っている（2 件、glm の 026 を含む）: `parent_not_submitted`、`parent_dependency_missing`。
+
+**C. エージェントの時間を浪費させるもの**
+- **最大の項目: ログインノードでの MD の直接実行**
+  - qwen で 97 attempt、合計約 52,400 s。qwen の時間切れ 35 件のうち 19 件。OOM の原因でもある。
+  - `--platform CUDA` を指定すると、`unhandled_error` でノードが failed として封印された（21 件）。
+  - 修正案: Slurm の割り当ての外では min / eq / prod を拒否する（`md_outside_allocation`、next は submit_job）。使えない platform では、ノードを封印せずに `platform_unavailable` を返す。
+- **preflight の理由が消える**: `preflight.py:308` が argparse の文言を捨て、「Cannot validate … : 2」だけを返す（28 attempt）。
+- **id モード**: `--output id` が失敗すると空文字を出すだけになる（約 36 attempt）。
+- **`tool_not_available`**: 113 attempt。候補の提案が空で、server 名を前に置いた呼び方や別名に対応していない。
+- **`--conditions` の形式違いを作成時に通してしまう**（56 attempt）。
+- **膜と溶媒和の水モデルの既定値が `opc`**（`water.py:232`、`membrane.py:2027`）: topo で不一致として拒否された（13 attempt）。膜 patch のキャッシュに当たらないと構築に 1,100–1,400 s かかる。
+- **`| tail` で envelope の先頭が消える**（441 attempt）。末尾にもまとめの 1 行を置く。
+- **`bootstrap_md_workflow` が workspace 直下や `--containall` で入る HOME を拒否しない**（DAG を契約外に作った 6 件）。
+
+**優先度の案**（件数、実害、直しやすさから）
+1. S–S 結合の chain 解決のバグと不変条件チェック
+2. MD の割り当て外実行の拒否と、platform の扱い
+3. submit_job preflight の全ツール化（argparse の理由を返す、`...` の拒否、条件・パス・依存関係の検査）と bind 抽出のバグ
+4. `NodeAlreadyRunningError` の握りつぶし
+5. 水モデルの既定値
+6. リガンドのプロトン化状態の選択
+7. 末端キャップ
+8. エラー表示の改善（`tool_not_available`、id モード、envelope の末尾の 1 行）
+
+## 2026-10-27 — v5 の未調査 2 点の結論: qwen の `execution_evidence_unavailable` 2 件と SIF only の `scorer_error`（qwen 42、glm 7、kimi 0）は、どちらも提出物が契約の場所・形式に従っていないもの。合否は変わらない
+
+ユーザー依頼「詳細が空のまま落ちた 2 件と、scorer_error の多さを調べて」。
+
+- **`execution_evidence_unavailable` 2 件**（qwen、CLI + skills）:
+  - MD のジョブ 3 本はどちらも COMPLETED。scorer は契約の場所 `workspace/study/jobs/main` に `nodes/` を見つけられず、20 check がすべて `no nodes directory` で落ちた。
+  - 080_soluble_1ez3 r3 は DAG を `workspace/jobs/main` に作った（`--study-dir` を workspace そのものにした）。
+  - 070_soluble_1bgf r2 は `--job-dir /home/rku00161/study/jobs/main` で作った。sandbox の中の HOME は `sandbox/home` なので、DAG はそこに残っている。
+  - prompt は「submission at study/jobs/main」と明記しているので、エージェントの誤り。合否は変わらない。
+  - ただし harness の分類（stage `unknown`、detail が空）は分かりにくい。`submission_not_at_contract_path` のような code にするのが MDDataBench 側の改善候補。
+- **SIF only の `scorer_error`**: どれも scorer が exit 1。原因は 2 種類。
+  - 43 件（qwen 38、glm 5）: `production.json` の `system_signature` を文字列（ハッシュ値、例 `"054f61318bb30f53"`）で書いていた。契約（`experiments.py` の SIF only 説明）は「`system_signature` with `ensemble` and `pressure_bar`」で、オブジェクトを求めている。`scoring.py:979` の `signature.get("ensemble")` が AttributeError で落ちた。kimi はオブジェクトで書いていて 0 件。
+  - 残り 6 件: `trajectory.dcd` が無い 3 件、`energy.dat` の行が数値でない 1 件、IndexError 1 件、`system_signature` が無い 1 件。
+  - pass_rule は `all_weighted_checks_pass` で、ensemble を読めなければ `thermodynamic_conditions_match_reference` が成り立たない。scorer が落ちなくても全件不合格で、SIF only の数字は変わらない。
+  - scorer は、形式違反の提出物でも落ちずに check の不合格として返すべき（`signature` が dict でなければ空として扱う、trajectory の欠落を check にする）。MDDataBench 側の修正候補で、まだ直していない。
+- `RESULTS-v5.md` の qwen 節の「未調査」の行に、この結論を書いた。
+- **追記（同日）**: MDDataBench `9bd2b96` で直して push した。scorer は形式違反の提出物でも落ちずに採点し、例外は `evaluation/submission_unscorable` に、契約の場所以外の DAG は `agent/submission_not_at_contract_path` になる。49 件を新しい scorer で採点し直すと、全件が採点できて合格は 0 件。キャンペーンの数字は変わらない（詳細は MDDataBench の `docs/memo.md`）。
+
+## 2026-10-27 — MDDataBench kimi-k3 v5 完走（882/882、スナップショット 00:35 JST）
+
+- **pass^3（CLI+skills / CLI only / SIF only）**: 0.949 / 0.908 / 0。pass@1: 0.983 / 0.959 / 0.099（SIF only は 294 件中 29 件合格）。glm v5 は 0.980 / 0.939 / 0、qwen3.6-35b は 0.510 / 0.429 / 0。
+- **トークン（1 試行の中央値）**: 送った量 1.23 / 0.71 / 0.59 M。KV キャッシュに当たらず実際に計算された量（入力の未キャッシュ分＋出力）は 70 / 47 / 51 k、キャッシュのヒット率は 95 / 94 / 96 %。SIF only の時間切れは 41 件。
+- **DAG からの回復（CLI 2 条件、3 モデル）**: 失敗ノード 243 個のうち 192 個（79%）が、あとで同じ種類のノードの完了につながった。失敗ノードを出した試行の合格は glm・kimi 21/22、qwen 93/141。宣言条件と実際の引数の照合が働いたのは 67 試行で、うち 48 試行が合格。
+- 集計: CBI 発表フォルダの `data/mddatabench/scripts`（extract_attempts → summarize → make_figures_en）と `data/dag_cases/scripts`（extract_recovery → summarise）。
+
+## 2026-10-27 — MDDataBench kimi-k3（v5 の条件）が完了: pass^3 は CLI + skills 0.949、CLI only 0.908、SIF only 0。v5 の条件の 3 モデルがそろった
+
+`runs/kimi-k3-3cond-full-v5` は 882/882 が確定した（10/27 00:2x JST）。インフラ段階・scorer の失敗はどの条件も 0。追記先は `runs/RESULTS-v5.md` の「kimi-k3-v5」節（3 モデルのまとめ表つき）。図は `runs/figures-20261027-v5/`、表は `runs/prep/kimi-v5-pass3.txt`。
+
+- **kimi-k3 の数字**:
+  - CLI + skills: pass^3 93/98、pass@1 289/294 = 0.983 [0.961, 0.993]
+  - CLI only: pass^3 89/98、pass@1 0.959
+  - SIF only: pass^3 0/98、pass@1 29/294 = 0.099
+  - SIF only の pass@1 は 3 モデルで最も高い（glm 0.007、qwen 0）。
+- **pass^3 の 3 モデル比較**（CLI + skills / CLI only）: glm-5.3-flash 0.980 / 0.939、kimi-k3 0.949 / 0.908、qwen3.6-35b 0.510 / 0.429。どのモデルでも CLI + skills > CLI only > SIF only = 0。
+- **落ちたタスク**: kimi の CLI + skills で落ちたのは 005・007・012（膜）、023、028。028_complex_1dfj は glm v5 でも落ちていて、モデルを問わない難所。
+- **kimi-k3 v4 との差**: CLI + skills 294/294 → 289/294。dataset 版（v0.4 → v0.5）、イメージ、sandbox の有無が違うので、モデルの変化とは読まない。論文では v5 の数字に置き換える。
+- tmux での走行は、最後まで止まらなかった。見張り（oom-shield）の tmux セッションは止めた。
+
+## 2026-10-26 — MDDataBench v5 の 3 モデルとも、推論の強さ（thinking high）は API に送られていなかった
+
+- **設定**: glm-5.3-flash v5、qwen3.6-35b、kimi-k3 v5 の experiment.json は、どの cell も `harness: pi`、`thinking: high` になっている。pi のセッションにも `thinkingLevel: high` が記録されている。
+- **実際に送られたもの**: sandbox は `~/.pi/agent/models.json` を読み取り専用で bind している。このファイルの更新日は 9/14 で、3 つのキャンペーンより前。そこでは rikyu provider が `compat.supportsReasoningEffort: false` で、`thinkingFormat` の指定がない。
+  - pi の openai-completions（`openai-completions-EKZT2IH2.js`）は、この組み合わせでは `reasoning_effort` も thinking 用のパラメータも付けない。
+  - よって推論の強さは、3 モデルとも RIKYU のサーバーの既定のまま。
+- **推論自体は有効**: 推論トークンは出ている。1 試行あたりの中央値は、CLI 条件で kimi 7–8 k、glm 14 k、qwen 6 k（1 呼び出しあたり kimi 210–240、glm 340–400、qwen 130）。
+- **意味**: v5 の結果は「thinking high」ではなく「サーバー既定の推論」での結果として書く。CBI 2026 の発表のスライド 11 にもそう書いた。
+- **未解決**: 強さを実際に変えるには、rikyu provider に `supportsReasoningEffort` か `thinkingFormat` を設定する必要がある。サーバーがそれを受け付けるかは確かめていない。kimi v5 は走行中なので、models.json には触れていない。
+
 ## 2026-10-26 — Molstar MCPはCodexプラグインだけに同梱
 
 本人「Codexの時だけはpluginとして入った方がいいけど、Codex以外は外れるように」。
@@ -47,6 +189,54 @@ add the correction and say what it overturns.
 - 本人のセッション再開でtoolが読み込まれ、autoモードへの変更でpermission拒否も解消。呼出しは成功したが、本人のClaude Desktop Code画面にMolstarパネルは出ない。クライアント版とUI resource要求は未取得。全Claude版の非対応とは断定せず、この接続の描画を未解決と記録する。
 - `1a86475` でREADMEと表示skillを訂正。「ツール行の下に出るはず」と案内せず、既知のアプリ名を再質問しない。呼出し成功後は表示クライアントの調査へ進む。文書/deploy検査10件成功。Codex Remote Controlの表示成功とは区別する。
 - 以前の「Claudeも登録すれば表示できる」という説明は保証過剰だった。共有SIFの張替え・設定の権限緩和・ネットワーク公開は行わず、全座標Artifact化も解決として扱わない。floydの既存memo変更は保持する。
+
+## 2026-10-25 — kimi v5 の dispatcher が systemd の user マネージャごと止まった（20:02 JST ごろ）。tmux に移して 20:35 に再開
+
+- **何が起きたか**:
+  - 20:34 の tick で DISPATCHER_DEAD を検出した。`systemctl --user` は `Failed to connect to bus` を返し、`loginctl user-status` は `State: closing`、`Linger: no` だった。
+  - ログインセッションの終わりとともに、`systemd --user`（user@100160.service）が停止し、その下の unit（dispatcher と oom-shield）も止まった。
+  - 止まる直前の最後の event は 20:02 JST。確定は 57/882、合格 33。
+- **linger**: `loginctl enable-linger` は Claude Code の自動の権限判定に拒否された（恒久化にあたる）。有効にするかはユーザーが決める。
+- **対処**: 途中の 4 件（007 cli_skill_sif r1–r3、sif_only r1、ジョブなし）を `_reset_attempt` で戻した。dispatcher と oom-shield を tmux のセッション（`mddb-kimi`、`mddb-kimi-shield`）で起動し直した（dispatcher pid 3523532）。
+- **起動手段のまとめ**: どれも何かと一緒に止まる。
+  - Claude のシェルから `nohup setsid`: Claude が落ちると止まる（10/24）。
+  - `systemd-run --user`: user マネージャが止まると止まる（今回）。
+  - tmux: ログインノードの再起動でだけ止まる見込み。
+
+## 2026-10-25 — MDDataBench kimi-k3 を v5 の条件で起動（`kimi-k3-3cond-full-v5`、ユーザー了承「起動して」）
+
+- **spec**: `runs/prep/experiment-kimi-k3-3cond-full-v5.json`。glm v5 の spec から、モデルを `rikyu/kimi-k3` に変えただけ。init は 882 attempt、`sandbox_probe.ok`、dataset v0.5、sha256 `2f97517d…`。パイロットは省いた（kimi-k3 は v2–v4 の走行実績がある）。
+- **起動**: 17:20 JST、unit `mddb-kimi-20261025-1720`（`-p OOMPolicy=continue -p EnvironmentFile=<E>/dispatcher.env`）、6 agent。見張りは `mddb-kimi-oomshield-20261025-1720`。
+  - dispatcher の adj は 200、子 6 本は 1000。
+  - `failed to execute` は 0 件。
+- **ゲートウェイ**: 起動前の probe（thinking high）は 15:30 ごろに 3 回とも 120 s で時間切れになった。17:15 には 1–2 s で応答したので起動した。
+- 監視は `runs/prep/tick-kimi.sh` を毎時 :17 に回す。
+- 小さな失敗: 待ち合わせのループで `pgrep -f` / `pkill -f` が自分のシェルのコマンド行に一致し、ループが終わらず、`pkill` が自分のシェルを殺した。害はなし。待ち合わせは `pgrep` の自己一致を避けて書く。
+
+## 2026-10-25 — MDDataBench qwen3.6-35b（v5 の条件）が完了: pass^3 は CLI + skills 0.510、CLI only 0.429、SIF only 0。glm v5（0.980 / 0.939）より大きく下がる
+
+`runs/qwen3.6-35b-3cond-full` は 882/882 が確定した（10/25 15:1x JST）。追記先は `runs/RESULTS-v5.md` の「qwen3.6-35b-v5」節。図は `runs/figures-20261025-v5/`、表は `runs/prep/qwen-v5-pass3.txt`。
+
+- **数字**:
+  - CLI + skills: pass^3 50/98、pass@1 234/294 = 0.796 [0.746, 0.838]
+  - CLI only: pass^3 42/98、pass@1 216/294 = 0.735 [0.681, 0.782]
+  - SIF only: 0/294
+- **skills の効果**: glm v5（pass@1 で +1.7 ポイント）より大きく、+6.1 ポイント。membrane は 30/42 対 21/42、時間切れ（`agent_no_submission`）は 8 対 27。
+- **失敗の型**: どの条件にも `checks_failed` と `production_incomplete` が 15〜22 件ずつある。CLI + skills にだけ `node_execution_context_invalid` が 8 件ある。mdclaw 側で塞げるかは、v5 の 026 型（依存関係なしの投入）と合わせて調べる候補。
+- **未調査**: `execution_evidence_unavailable` 2 件（failure_detail が空。インフラの可能性あり）、SIF only の `scorer_error` 42 件（glm v5 は 7 件）。
+- 見張り（oom-shield）の unit は止めた。次は kimi-k3（`kimi-k3-3cond-full-v5`）。ユーザーの了承待ち。
+
+## 2026-10-25 — qwen の dispatcher がまた止まった（06:16 JST、SIGKILL）。agent 側を OOM で優先して殺されるようにする見張り（oom-shield）を付けて 07:11 に再開
+
+- **何が起きたか**:
+  - unit `mddb-qwen-20261024-2004` の dispatcher が、06:16 に status 137（SIGKILL）で終わった。止まる前の確定は 681/882、合格 339。
+  - unit のメモリのピークは 8.8 GB だった。一方でユーザー slice（上限 64 GiB）の `memory.events` には `oom_kill 25` が記録されていた。slice 全体が上限に達し、カーネルが dispatcher を選んだと読む。誰がメモリを使ったかは、権限がなく journal を見られないので確かめられない。
+  - 前日の `OOMPolicy=continue` で unit ごと止まることは防げたが、dispatcher 自身が狙われる場合は防げない。
+- **対処**:
+  - `runs/prep/oom-shield.sh <E>` を別の user unit（`mddb-qwen-oomshield-*`）で動かす。20 秒ごとに、dispatcher の子孫（agent の `timeout` から下）の `oom_score_adj` を 1000 にする。値を上げるだけなので権限は要らない。子孫は後から fork したものも値を引き継ぐ。
+  - dispatcher は 200（systemd user の既定）のままなので、OOM のときは agent 側が先に殺される。agent が殺された attempt は、エージェント自身の失敗として確定する。
+  - 途中の 6 件（078 sif_only r1–r3、079 cli_sif r1–r3、ジョブなし）は `_reset_attempt` で戻した。
+- **再開**: unit `mddb-qwen-20261025-0711`。子 6 本の adj が 1000 になっていることを確かめた。
 
 ## 2026-10-25 — Molstar MCP標準deployのCI・配布完了（0.6.11）
 
@@ -216,6 +406,61 @@ add the correction and say what it overturns.
 - **確認の限界**：検証用ブラウザのURLポリシーで `file://` が拒否された。限定HTTP配信による確認は、Macでのファイル直接オープン、Codex Remoteからのダウンロード、スパコン実機の確認の代わりにはならない。生成物は `~/.codex/visualizations/2026/10/24/01a16e11-2738-7d82-aef6-74e12b8d233d/1ake-remote.html`、画面は同ディレクトリの `mdclaw-portable.png`。
 - iOS向けは、生成したHTMLを別の常時稼働Macへ転送し、本人認証付きHTTPSでSafariから開く構成を提案。[Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/setup/secure-private-apps/private-web-app/)または[Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve)が候補。m4でCloudflare Accessを使う案への返答待ち。新たな公開先・DNS・認証・VPNの設定は行っていない。iOS実機とCodex内の埋込表示は未検証。
 
+## 2026-10-24 — qwen の dispatcher の systemd unit が OOM kill で止まった（19:10 JST）。`OOMPolicy=continue` で 20:05 に再開
+
+- **何が起きたか**:
+  - 19:10 に unit `mddb-qwen-20261024-1056` の中のプロセスが OOM killer に殺され、systemd の既定 `OOMPolicy=stop` で unit ごと止まった。
+  - ユーザー slice（`user-100160.slice`）の MemoryMax は 64 GiB。ログインノード自体は 1.5 TB 空いていた。
+  - 止まる前の約 50 分は確定が増えていなかった（431 → 435）。気づいたのは 20:03 の tick（DISPATCHER_DEAD）。
+- **候補**: 途中だった 6 件の最後のツール呼び出しを見ると、033_nanobody_3tpk cli_sif r1 がログインノードで `run_equilibration --platform CPU` を走らせていた。ほかは sif_only のスクリプトによる系の準備（`prep_system.py`）など。どのプロセスが殺されたかは journal に出ていない。
+- **なぜセッション内では問題にならなかったか**: セッションの scope の中では、カーネルが大きいプロセスだけを殺し、dispatcher は生き残る。systemd の service は、プロセスが 1 つ OOM になると unit 全体を止める。
+- **対処**: 6 件（032 sif_only r3、033 cli_sif r1・cli_skill_sif r3・sif_only r1–r3、MD ジョブなし）を `_reset_attempt` で戻し、`-p OOMPolicy=continue` を足して起動し直した（unit `mddb-qwen-20261024-2005`）。
+- 確定は 435/882、合格 211。
+
+## 2026-10-24 — qwen の dispatcher が Claude のセッションと一緒に止まった（05:12 JST）。systemd の user unit で起動し直す途中で、PATH を渡し忘れ 649 attempt を誤って確定させた。全件戻して 10:35 に再開
+
+- **止まった理由**: ログインノードの再起動はなかった（`who -b` は 10/23 13:37 のまま）。Claude Code のセッションが落ちたときに、そこから `nohup setsid` で起動した dispatcher と agent も一緒に止まった。最後の event は 05:12 JST。確定は 233/882。途中だった 6 件（025 cli_sif r1/r2・cli_skill_sif r2、063 sif_only r1–r3）は `_reset_attempt`（`dispatcher_stopped`）で戻した。
+- **対策と事故**:
+  - セッションの外で動かすため、`systemd-run --user` で起動した。cgroup は `user@100160.service/app.slice` で、ログインセッションの scope の外になる。
+  - しかし unit に PATH が渡らず、`unshare: failed to execute pi` で agent が 0.3 s で終わった。dispatcher は 1 分のうちに 649 件を `agent/agent_no_submission` として確定し、正常に終了した。
+  - 該当 649 件（`agent.stderr.log` に `failed to execute pi`、MD ジョブなし）は `reset_attempts --reason infra` で全件戻した。確定数は 233 に戻った。
+- **再開**: `systemd-run --user -E PATH="$PATH" -E HOME="$HOME" -E LANG=C.UTF-8` で起動した（unit `mddb-qwen-20261024-1035`、pid 4135399）。先に同じ形の unit で `which pi` と `pi --version` が通ることを確かめた。6 agent が transcript を書いていることも確認した。
+- **追記（10:57）**: systemd unit の中では `SLURM_CONF_SERVER` も渡っていなかった。dispatcher 自身の `sbatch`（scorer 投入）が `fetch_config: DNS SRV lookup failed` で失敗し、MD まで済んだ 5 件が `scorer_submit_failed` で確定した。agent の MD 投入は通っていた。
+  - 対処: unit を止め、途中の 6 件（ジョブなし）を `_reset_attempt` で戻した。
+  - シェルの環境を `<E>/dispatcher.env`（600）に書き出し、`systemd-run --user -p EnvironmentFile=<E>/dispatcher.env` で起動し直した（unit `mddb-qwen-20261024-1056`）。先に unit の中で `which pi` と `sbatch --test-only` が通ることを確かめた。
+  - MD が完走していた 4 件は `rescore_attempt --force true` で採点し直す。025 cli_sif r2 は MD の完了後に採点する。
+- 毎時の tick は、確定が 1 時間に 30 件を超える急増も異常として見る。
+
+## 2026-10-24 — qwen3.6-35b 本番の agent 数を 3 → 6 に上げた（ユーザー了承、v5 の完了後）
+
+- **手順**: 00:34 JST に dispatcher を SIGTERM で止め、走っていた 3 本の agent の `timeout` プロセスも SIGTERM で止めた。
+- **途中の attempt**:
+  - 036_ligand_1ceb cli_skill_sif r1 は、止めた時点でちょうどエージェントが終わり、scorer 212342 が投入済みだったのでそのまま残した。
+  - 014_membrane_6zdv sif_only r3 と 036 cli_skill_sif r2 は、`_reset_attempt`（reason `dispatcher_stopped`）で戻した。2 件とも Slurm ジョブは出ていなかった。
+- **再起動**: `launch.sh` を `--max-agents 6` にして起動した（pid 1992743、6 agent が稼働）。ログインノードの load は 4〜17。
+- 止めた時点で 127/882 が確定、合格 53。
+
+## 2026-10-24 — MDDataBench glm-5.3-flash v5 が完了: pass^3 は CLI + skills 0.980（v4 0.969）、CLI only 0.939（v4 0.867）、SIF only 0。CLI の 2 条件にインフラ起因の失敗は 0
+
+`runs/glm-5.3-flash-3cond-full-v5` は 10/23 23:54 JST に 882/882 が確定し、dispatcher は正常に終了した。索引は `/data1/rkp00079/rku00161/runs/RESULTS-v5.md`、図は `runs/figures-20261024-v5/`（v5 と v4 の 2 モデル）、表は `runs/prep/v5-pass3.txt`。
+
+- **数字**:
+  - CLI + skills: pass^3 96/98、pass@1 291/294 = 0.990 [0.970, 0.997]
+  - CLI only: pass^3 92/98、pass@1 286/294 = 0.973 [0.947, 0.986]
+  - SIF only: pass^3 0/98、pass@1 2/294
+- **v4 との差**:
+  - v4 の CLI + skills の失敗 3 タスク（004、010、015）は 3/3 合格した。`b82e7db` の修正（親の型検査、二重実行の拒否、時間制限の手前での停止など）が効いた。
+  - CLI only は pass^3 が 0.867 → 0.939。v4 で落ちた 13 タスクのうち、v5 でも落ちたのは 024 と 028 だけ。
+- **残った失敗**（CLI の 2 条件、11 件）:
+  - 026 cli_skill_sif r1: 親 min の依存関係なしで eq を投入した。eq は `parent_not_completed` で拒否され、後続が取り消された。
+  - 028（3 件）: S–S 結合または monomer 数の不一致。
+  - 019 cli_sif r1–r3: 3 回とも M1 鎖の S–S 結合 3 本が抜けた。skills ありでは 3/3 合格。
+  - 034、069、013、024: 各 1 件。
+  - mdclaw の修正候補: 親が終わっていないノードを依存関係なしで `submit_job` したら拒否する（026 の型）。
+- **SIF only**: 失敗 292 件の内訳は `scheduler_failure_observed` 228、`checks_failed` 41、`agent_no_submission` 16、`scorer_error` 7。`scorer_error` は scorer が exit 1 で、v4 は 3 件。原因は未調査で、分母には入れたまま。
+- **走行中の出来事**: 9/29 のゲートウェイ障害で停止、c139 の libz 破損（2 件を再採点、7 件を再走）、10/23 13:37 のログインノード再起動（6 件を再走）。どれも分母から除いて再走した。
+- 論文の数字は v4 から v5 に置き換える予定（ユーザー方針）。qwen3.6-35b の本番は並行で走行中。
+
 ## 2026-10-24 — Codex／Claude Code用の共通Mol*ビューアを実装
 
 - 本人が共通ビューアの実装を指定し、続けて「Gooseや他のアプリへの対応はまだ不要」と範囲を限定。今回の対象はCodex／Claude CodeのローカルBrowserでのPDB表示とDCD再生。追加ホスト、MCP Apps、skill変更は含めない。
@@ -356,6 +601,73 @@ add the correction and say what it overturns.
 - 対象は公開済みlatest（OCI digest `sha256:b3783f686bc3ae196a622c1c8d09b120a5004a04ed615ef68de3289c1b6b9c8f`、x86_64）で、新規ビルドとは別。READMEとdeploymentへx86_64向けであること、一時領域を含め約60 GBを見込むことを追記した。文書参照テスト成功。
 - `7ac36a7` の通常CIはmacOS/Linuxとも433テスト成功。[Container再実行39972790606](https://github.com/matsunagalab/mdclaw/actions/runs/39972790606) はStage 2で `tar -xzf /tmp/mdclaw_env.tar.gz` が `tar: Skipping to next header` を出して失敗。git不足は解消したが、アーカイブ展開の失敗原因は未確定で、コンテナ内の動作テストには未到達。開始時106 GiB、終了時35 GiBの空きがあり、容量不足のエラーは記録されていない。新イメージとlatestの公開・更新は行われていない。
 
+## 2026-10-23 — ログインノードの再起動（13:37 JST）で v5 と qwen の dispatcher が止まった。途中の 9 attempt を戻して 14:56 に再開
+
+- **何が起きたか**:
+  - ログインノードが 13:37 JST に再起動し（`who -b`）、両キャンペーンの dispatcher とエージェントがすべて消えた。
+  - 定期チェック（cron）は動いていたが、tick スクリプトの生存確認が `ps … | tail -1 || echo DISPATCHER_DEAD` で、ps の見出し行が出るため死んでいても DISPATCHER_DEAD を出さなかった。気づいたのはユーザーの指摘（14:43）。
+  - 生存確認は `ps -p <pid> >/dev/null` の成否で判定するように直した（`tick-v5.sh` / `tick-qwen.sh`）。
+- **止まった時点**:
+  - v5: 504/882 attempt が確定、合格 334（CLI + skills 166/169、CLI only 168/170、SIF only 0/165）。
+  - qwen: 41/882 attempt が確定、合格 23。
+- **片付け**:
+  - `agent_start` はあるが `agent_end` の無い attempt は、v5 が 6 件（031 cli_sif r1–3、059 sif_only r1–3）、qwen が 3 件（005 sif_only r1–3）。これらを `_reset_attempt`（reason `login_node_reboot`）で退避・再計画した。Slurm には残ったジョブが無かった。
+  - 再起動後の最初の probe（14:45–14:55）は、pi の呼び出しが 120 s で時間切れになった。直接の HTTP は 401 を 0.05 s で返していたので、ゲートウェイ側が一時的に止まっていた。14:55 以降は両モデルとも 1 s で応答した。
+- **再開**: 14:56 JST（v5 dispatcher pid 1422190、qwen pid 1422192）。v5 は今回の起動で、10/23 未明に infra で戻した 7 件も拾う。
+
+## 2026-10-23 — qwen3.6-35b 3 条件の本番を起動（ユーザー了承「本番、起動して」）
+
+`runs/qwen3.6-35b-3cond-full`（882 attempt、spec `runs/prep/experiment-qwen3.6-35b-3cond-full.json`）。
+
+- 状態: `sandbox_probe.ok`、dataset v0.5、sha256 `2f97517d…`（glm v5 と同じ）。
+- 起動: dispatcher pid 1207247、`--max-agents 3`、c139 は除外。glm v5 と並行で流す。
+- 監視は毎時の tick（`runs/prep/tick-qwen.sh`）。
+- v5 が終わってもこの dispatcher は 3 agent のまま走る。増やすには、止めて `launch.sh` の `--max-agents` を変えて起動し直す（restart-safe）。
+
+## 2026-10-23 — qwen3.6-35b 3 条件パイロットの結果: CLI + skills 7/7、CLI only 6/7、SIF only 0/7
+
+`runs/qwen3.6-35b-3cond-pilot`（10/23 02:27 → 04:4x JST、3 agent、v5 と並行）。凍結した入力は glm v5 と同じ。
+
+- **合格**:
+  - CLI + skills は 7/7（9/14 のパイロット 3/7 は dataset v0.4 の修正より前だった）。
+  - CLI only は 6/7。落ちたのは 051_nucleic_1kx5 で、1800 s の時間切れ、`agent_no_submission`。同じタスクを CLI + skills は 1066 s で通した。
+  - SIF only は 0/7。内訳は時間切れの `agent_no_submission` 5、`checks_failed` 1（015）、`scheduler_failure_observed` 1（069）。
+- **transcript**:
+  - CLI の 2 条件は、全 attempt が `singularity exec` 経由で mdclaw を呼んだ（27〜57 回）。
+  - skills は CLI + skills の 7 件中 6 件が読んだ（8〜13 ファイル、49k〜79k 文字）。015_antibody_1ahw だけ 0 件で、それでも合格した。
+  - 合格した run はすべて、MD を投入した後に文章の返答で終わっていた。時間切れの run はツール呼び出しの途中で打ち切られた。
+- **速さ**: LLM 1 回あたり 11.6〜21.0 s（中央値 12.6 s）。合格した run の経過時間は 480〜1066 s。ゲートウェイの再試行は 0 件。
+- 判断: 本番（`runs/prep/experiment-qwen3.6-35b-3cond-full.json`）に進んでよい状態。起動はユーザーの了承待ち。
+
+## 2026-10-23 — qwen3.6-35b 3 条件のパイロットを v5 と並行で起動（7 タスク × 3 条件 × 1、3 agent）
+
+ユーザー指示「3 条件流して。LLM が混まない程度に並列で」。
+
+- **spec**: v5 の spec を写し、モデルだけ `rikyu/qwen3.6-35b` に変えた。凍結した入力は v5 と同じで、v4fix イメージ（sha256 `2f97517d…`、mdclaw `b82e7db`）、pi の skills `b82e7db`、dataset v0.5、sandbox + Slurm guard、1800 s、MD 20 分。
+  - パイロット: `runs/prep/experiment-qwen3.6-35b-3cond-pilot.json`（runbook の 7 タスク）。
+  - 本番: `runs/prep/experiment-qwen3.6-35b-3cond-full.json`（98 × 3 × 3、未起動）。
+- **起動**: `runs/qwen3.6-35b-3cond-pilot`、`sandbox_probe.ok`、dispatcher pid 2117917、`--max-agents 3`、c139 は除外。
+  - ゲートウェイの probe は 5/5 成功（各 1 秒）。ログインノードの load は 5〜20。
+  - qwen と glm は別サーバーで提供されているので、互いのモデルを取り合わない。混雑の目安は PACE（30 s/call を超えたら速度制御が agent 数を半分にする）。
+- パイロットで見ること（9/14 のパイロットは dataset v0.4 の修正より前で 3/7）: skills を読むか、`singularity exec` 経由で mdclaw を呼ぶか、ツール呼び出しで run を終えるか。結果を見てから本番に進む。
+
+## 2026-10-23 — MDDataBench v5（glm-5.3-flash 3 条件）を再開、c139 の被害 9 attempt を再走・再採点、v4 の結果の索引を作成
+
+ユーザー指示: 論文は v4 の数字で書き進め、最終的に v5 で置き換える。v5 を最後まで流し、その後は qwen3.6-35b → kimi-k3 の順で流す。
+
+- **v4 の索引**: `/data1/rkp00079/rku00161/runs/RESULTS-v4.md`。中身は 2 モデル × 3 条件の pass^3 / pass@1 / 軸別の数、落ちたタスク、条件の違い（kimi-k3 v4 は dataset v0.4・v2fix イメージ・sandbox なし・scorer v0.6 で再採点、glm v4 は v0.5・membranecache イメージ・sandbox あり）、図、attempt の中身、v5 で置き換える手順。図は `runs/figures-20261023-v4/` に新しく描いた（`paper_figures.py`、matplotlib は SIF 内のもの）。
+  - pass^3: kimi-k3 は CLI + skills 98/98、CLI only 89/98、SIF only 0/98。glm は 95/98、85/98、0/98。
+- **再開**（10/23 01:47 JST、dispatcher pid 813701）:
+  - ゲートウェイの probe は 5/5 成功。
+  - 停止時に走っていた 6 attempt は `agent_end` が無いので `reset_attempts` が「agent still running」で拒否した。プロセスが無いことを確かめ、同じ内部関数 `_reset_attempt`（reason `dispatcher_stopped`）で退避・再計画した。
+  - `launch.sh` に `export SBATCH_EXCLUDE=c139` を足した。
+- **c139**: 9/29 に c139 で落ちた 12 ジョブ（`libz.so.1: invalid ELF header`、scorer ジョブは squashfuse_ll が同じ理由で起動できず exit 255）は 9 attempt にかかっていた。
+  - 再開直後に、dispatcher が 9/29 の scorer を照合し、3 件を `scorer_job_failed` で確定させた。
+  - MD が c118 で完走して scorer だけ死んだ 2 件（094 cli_skill_sif r1、094 cli_sif r3）は `rescore_attempt --force true` で採点し直し、どちらも 20/20 で合格した。
+  - MD チェーンが c139 で死んだ 7 件（093 cli_sif r1/r2・cli_skill_sif r3、094 cli_sif r2・cli_skill_sif r2、092 sif_only r2、095 cli_sif r1）は `reset_attempts --reason infra --force true` で戻した。走行中の dispatcher の queue は起動時に固定されるので、この 7 件は dispatcher が終わった後に `launch.sh` をもう一度起動して流す。
+- **残るリスク**: 742 attempt がゲートウェイ障害の再試行枠（3 回）を 2 回使っている。次に障害が起きると infra で確定するので、そのときは `reset_attempts --reason infra` で戻す。
+- 監視は毎時の tick（`runs/prep/tick-v5.sh`、c139 の確認を追加）。
+
 ## 2026-10-23 — CUDA 12・13対応の環境調査
 
 - [調査メモ](research/cuda-runtime-compatibility-20261023.md)へ現checkoutの設定、lock内容、NVIDIA・OpenMM・Pixi・Apptainerの一次資料を整理。通常コンテナ11.8、Pixi12.9、RIKYU13系の3構成。Pixi defaultのARM lock欠落と通常コンテナの後置換による依存残留を確認した。
@@ -417,6 +729,7 @@ add the correction and say what it overturns.
 - **発見**: リポジトリに LICENSE ファイル自体が無かった（README が MIT と宣言するのみ）→ MIT 全文を新設し、pyproject.toml に `license = "MIT"` / `license-files`（PEP 639）を追加。pip のメタデータビルドが通ることを確認。
 - **依存ライセンスの実測**（pixi 環境の conda-meta と importlib.metadata が正）: OpenMM LGPL-3.0+、AmberTools は GPL-3.0+ AND LGPL-3.0+ AND BSD-3 AND MIT の複合、MDAnalysis LGPL-3.0+（GPL ではない）、MDTraj LGPL-2.1+、ParmEd LGPL-2.1+、propka LGPL-2.1、SST2 GPL-2.0（サブプロセス実行で分離済み）、RDKit/PyTorch BSD-3、PDBFixer・OpenFF 系・pymbar・e3nn・hpacker（GitHub 確認）・BioEmu・Boltz-2 MIT、dimorphite-dl・HOLE2 Apache-2.0、gemmi MPL-2.0、PyMOL は独自 OSS ライセンス、MODELLER はプロプライエタリ（学術無償・ユーザーがキー供給）。README 末尾に表として記載。
 
+
 ## 2026-10-23 — README 総点検: skills インストールを npx に一本化、ベンチマーク記述の削除
 
 ユーザーレビューでの指摘を受けた一括整理。
@@ -462,6 +775,26 @@ add the correction and say what it overturns.
   - doctor の新チェックが `container/scripts/build-plumed.sh` の exec bit 欠落（git 追跡モードも 100644）を即検出 → `chmod +x` で修正（Dockerfile は `bash` 経由で呼ぶため実害はなかった）。
 - **検証**: 標準テストセット＋deployment＋bin wrapper＋新テストの 387 passed、ruff clean、doctor 動作確認。GHCR には `0.6.8` / `latest` が公開済みで、バージョン 5 箇所の同期も確認した。
 
+## 2026-10-02 — CTLA-4 の通常 MD 対照（3 本 × 300 ns / 出発）が完了: apo 出発は holo 型 H3 に一度も届かず（0 %、0/3 本、Thr103 は一度も反転しない）、SST2（3.7 %、6/8 本）との差がはっきりした。2 出発の分布の差（JSD）は約 900 ns / 出発で SST2 0.37 対 通常 MD 0.75。holo 出発は通常 MD でも 89 % から約 45 % に下がる
+
+- **走行と費用**。MPS 152390（c232）は COMPLETED（ExitCode 0:0、経過 19:46:37、10/1 11:14 → 10/2 07:00 JST）。prod_025–027（md_s1–3）は各 job ともすべて completed で、final_step は 7,500 万（300 ns）。各 task の `.err` は heartbeat と区切り行だけ。**4.94 node-h（19.78 GPU-h）= 5,933 円（税込 6,526 円）**で、見込みどおり（上限 6 node-h）。ns あたりの費用は SST2 とほぼ同じ（通常 MD 0.0110、SST2 0.0109 GPU-h / walker-ns）。CTLA-4 の累計は 18.0 node-h（72.0 GPU-h）、税込 23,751 円。
+- **解析**。`analyze_ctla4.py` に md モードを足した（`run_adapter_md.sh` → `analyze_ctla4.py <study> md`）。各 job の `md_*` ノードの軌跡を直接読み、等重み、walker = ノード、時刻 = (フレーム + 1) × 出力間隔、rung は 300 K だけとして、SST2 と同じ定義（結晶の φ/ψ から 60°、3 残基の同時パターン、25 ns 窓、walker bootstrap、RMSD、JSD）で集計する。フレームの無い rung は残基別の表から飛ばす（SST2 は全 rung にフレームがあるので変わらない）。md モードの図の題は「plain MD (300 K)」。SST2 の `ext2` を回し直し、`analysis_ext2.{txt,json}` が完全に一致することを確かめた。比較図は `compare_sst2_md.py` → `ctla4_sst2_vs_md.png`（窓ごとの holo パターンと、JSD 対集計時間）。図はユーザーに送付済み。
+- **結果**（300 K。SST2 は MBAR 重みで 8 walker × 300 ns、通常 MD は等重みで 3 本 × 300 ns）。
+
+| | SST2 apo 出発 | 通常 MD apo 出発 | SST2 holo 出発 | 通常 MD holo 出発 |
+|---|---|---|---|---|
+| joint holo H3 % [95 % 区間] | 3.72 [0.88, 8.05] | **0.00 [0.00, 0.00]** | 52.9 [28.6, 74.1] | 66.5 [47.8, 87.6] |
+| joint apo H3 % | 20.4 | 75.3 | 12.7 | 2.6 |
+| holo パターンに届いた walker（300 K） | 6/8 | **0/3** | 8/8 | 3/3 |
+| apo パターンに届いた walker（300 K） | 8/8 | 3/3 | 3/8 | 1/3 |
+| 残基別 Gly101 / Thr103 / Asn104 %（apo 出発は holo 様、holo 出発は apo 様） | 53.2 / 8.85 / 10.1 | 22.9 / **0.00** / 0.19 | 16.1 / 24.8 / 31.7 | 2.7 / 8.5 / 24.3 |
+| H3 RMSD < 2 Å（apo 結晶 / holo コピー）% | 53.9 / 16.0 | 80.2 / 2.4 | 17.6 / 46.7 | 5.2 / 72.7 |
+
+- **時間経過**。通常 MD の holo 出発の joint holo は、25 ns 窓で 88.9、88.5、87.2、88.1、78.3、66.9、68.5、52.2、45.1、44.1、44.5、45.3 %（100 ns までは保ち、その後下がる）。walker 2 は 225 ns 付近で apo パターンに達した（225–250 ns の窓の apo パターン 22.3 %）。holo 出発では、Thr103 の apo 様が 200–250 / 250–300 ns に 19.2 / 28.6 %、Asn104 の apo 様が 40.1 / 51.6 %（重みなし）まで増える。通常 MD の apo 出発は、全窓で holo パターン 0.0 %。Thr103 の holo 様は全期間 0.0 %、Asn104 も 0.4 % 以下で、Gly101 だけが 23 %（300 K）holo 様になる。
+- **JSD**（2 出発の H3 RMSD 分布）。通常 MD は 1 出発あたり 90、180、…、900 ns で 0.982、0.977、0.965、0.962、0.935、0.921、0.925、0.835、0.780、0.747。SST2 は 960 ns で 0.371（`analysis_ext2` の格子）、800 ns で 0.446（100 ns 時点の `analysis_final`）。同じ集計時間（約 900 ns / 出発、ns あたりの費用もほぼ同じ）で、SST2 の 2 出発のほうがはるかに近い。
+- **読み方**。(1) 通常 MD との比較で、SST2 の効果は示せた。apo 出発で holo パターンに届いたのは SST2 の 8 本中 6 本に対し、通常 MD は 3 本中 0 本。律速の Thr103 の反転は、通常 MD の apo 出発では 900 ns（3 本 × 300 ns）で一度も起きない。2 出発の分布の差は、同じ集計時間で約半分。(2) ただし同じ集計時間（約 900 ns / 出発）で比べると、apo 出発の holo パターンの割合は、SST2（100 ns × 8 本で 0.67 % [0.00, 2.18]、1/8 本）と通常 MD（0 %）とで統計的に区別できない。joint パターンの差がはっきり出るのは walker あたり 300 ns のとき（SST2 の集計 2.4 µs、通常 MD の 2.7 倍）。論文で効果を言う指標は、JSD、Thr103 の反転、届いた walker の数で、300 K の割合そのものではない。(3) 通常 MD の holo 出発も、抗原なしで holo パターンを失う（89 % → 約 45 %、1/3 本は apo パターンへ）。TPP-3077 の通常 MD（約 95 % を保つ、速度論的トラップ）とは違い、この力場では CTLA-4 の holo H3 は抗原なしで安定でない。(4) 集団の移動（2 出発の一致）は SST2 でも示せていない（3.7 % 対 52.9 %）。主張しないことは変わらない。
+- **記録**。`inputs/ctla4/analysis_md.{json,txt}`、`ctla4_{joint,raster,landscape}_md.png`、`ctla4_sst2_vs_md.png`、`run_adapter_md.sh`、`compare_sst2_md.py`。
+
 ## 2026-10-01 — 共有 amd64 SIF を main `63e352c` に、スイート初の全件クリーン、GHCR も更新
 
 同日 2 回目の更新。前段（`a70d16b` + SST2 `ba48461`）の受け入れで挙げた 3 件を別セッションが `bca9e96` で直して push してきたので、それを取り込んで作り直した。ビルド入力で `a70d16b` から動いたのは SST2 ピンだけで、土台のイメージが既に `ba48461` を積んでいるため増分ビルドが成立（`FROM ghcr.io/matsunagalab/mdclaw:a70d16b8a183-sst2ba48461` にパッケージのみ `--no-deps` で差し替え）。`b0eefb5` の `--ligand-charge-method nagl` は `openff-nagl>=0.5` が `a70d16b` 以前から宣言済みで、イメージに 0.6.1 が実在するので新規依存なし。
@@ -473,6 +806,7 @@ add the correction and say what it overturns.
 SST2 ピンは `ee4495b` でこちらからコミット・push した（5 箇所すべて）。`docs/developer/container.md` の「bump the three places together」が `MDCLAW_SST2_REVISION` の 2 箇所を数え落としていてドリフトの機構そのものだったので、5 箇所の表に書き換え、「ピンを上げてもイメージは再ビルドされない。amd64 と RIKYU arm64 は別承認で切り替わるので、リビジョンは checkout から推測せずイメージ内の `MDCLAW_SST2_REVISION` を見る」を明記。**RIKYU arm64 イメージは未着手（再ビルド未承認）** なので、向こうは今も `5590f4f` を積んでいる。
 
 残件: 5 箇所のピン一致を検証するテストが無く、それが今回のドリフトを許した機構。ランタイムの `sst2_charge_unscaled_unsupported` は診断であって再発防止ではない。未着手。
+
 
 ## 2026-10-01 — `--ligand-charge-method {nagl, am1bcc}`: リガンド電荷を AM1-BCC に切り替える CLI オプション（既定は NAGL のまま）
 
@@ -793,6 +1127,16 @@ T4L ABFE の Methods 草稿（9/27）で、記録に使用が残っているの�
 SIF 内のインストール済みスイートは 2,632 passed / 3 failed / 148 deselected。3 件とも**このビルドが原因ではない**: 旧イメージ `661a80cedc05` に同じ checkout を `PYTHONPATH` で被せると同じ 3 件が同じように落ちる（両イメージの依存は同一）。内訳は (1) 既知の古いピン `test_pdb_writefile_inventory_is_pinned`（SST2 コミット以来）、(2) `test_run_metadynamics_standalone_fills_the_bond_well` — `free_energy_range_kj_mol`（13.62274711745013）をファイルに 6 桁で書かれた FES の最大値（13.622747）と 1e-9 の許容で比べているので、丸めの分だけ必ず超える、(3) `test_direct_distance_restraint_reporter_matches_custom_cv_reference` — mdtraj の `Cannot identify molecules because this Topology does not include bonds`。(2)(3) は main の側の問題で、amd64 の依存スタック特有かどうかまでは floyd からは判断できない。作者側で決着させるべき。
 
 GHCR への push は未実施（`:latest` は `661a80cedc05` のまま）。`pyproject` は 0.6.8 のままで `/data/.mdclaw-version` も変更なし。
+
+## 2026-09-29 — v5 を 16:19 JST に一時停止（LLM ゲートウェイ障害で 04:20〜14:00 は完走 0、計算ノード c139 の libz 破損）
+
+ユーザー指示で dispatcher（pid 2600447）を停止。経過:
+
+- **LLM ゲートウェイ障害**: 起動（04:20 JST）から 14:00 JST ごろまで `api.rikyu.r-ccs.riken.jp` が断続的に `502 Upstream error at the LLM gateway` を返し、10 時間で完走 0。手動 probe（thinking high、各 5 回）は glm-5.3-flash 2/5、kimi-k3 4/5、glm-5.2 4/5、qwen3.6-35b 0/5 成功で、モデル共通の障害。pi は 1 呼び出しを約 40 秒で 3 回まで再試行して run を終え、ハーネスが `retired/…-llm_gateway_error` に退避して再キュー（attempt あたり上限 3 回）。停止時点で `RESETS llm_gateway_error: 1623`、**742 attempts が 3 回のうち 2 回を消費**、`infra` 封印は 0。ハーネスの gateway breaker は「連続 2 失敗 → 小さな probe が通るまで待つ」なので、時々落ちるだけの状態では防波堤にならない。GPU ジョブは出る前に死ぬので GPU-h の浪費なし。v4（9/26–28）は gateway エラー 0 件。
+- **回復後**: 14:00〜16:21 で terminal 97/882、passed 61（cli_sif 31/33、cli_skill_sif 30/31、sif_only 0/33; sif_only の失敗は v4 と同じ `scheduler_failure_observed` / `checks_failed`）、pace 10.0 s/call、rate 43/h、ETA 09-30 10:30 JST だった。停止後も scorer ジョブが残りの数件を封印するので terminal は少し増える。
+- **c139**: cli_sif の唯一の失敗 093 r1（`production_incomplete`）は、チェーン先頭の solv ジョブ 149326 が c139 で `python3: error while loading shared libraries: /lib/aarch64-linux-gnu/libz.so.1: invalid ELF header`（exit 127）で死に、`--kill-on-invalid-dep` で残りが連鎖キャンセルされたもの。093 r2 の min（149341）も c139 で同じ。c139 は Slurm 上 IDLE で Reason なし。v4 では 0 件。
+- **停止操作**: dispatcher に SIGTERM、孤児になった 6 本の agent（`timeout 1800s → unshare → python`）を PID 指定で SIGTERM、それらの Slurm ジョブ（149597/149598 = 097 cli_skill_sif r1 の eq/prod、149600–149602 = 095 sif_only r2）を scancel。停止時に走行中だった 6 attempts は `runs/glm-5.3-flash-3cond-full-v5/inflight-at-stop.txt`（095 sif_only r2/r3、096 cli_skill_sif r1・sif_only r3、097 cli_skill_sif r1・sif_only r2）。097 cli_sif の prod 149590 と scorer 149592 はエージェント完了済みなので流したまま。毎時 tick（cron）は解除。
+- **再開手順**: (1) ゲートウェイ確認 `pi --print --model rikyu/glm-5.3-flash --thinking high … ×5`; (2) 6 attempts を `reset_attempts --experiment-dir <v5> --attempts <inflight-at-stop の id> --reason dispatcher_stopped --force`; (3) c139 を避けるなら `launch.sh` に `export SBATCH_EXCLUDE=c139`（shim が環境をそのまま渡すかは未確認）、または運用側に報告; (4) `nohup ./launch.sh > run_experiment.log 2>&1 &`（restart-safe）。093 r1/r2 と、後で出る `infra/llm_gateway_error` 封印は `reset_attempts --reason infra` の対象。
 
 ## 2026-09-29 — 共有 RIKYU イメージを v4fix-cf121bd8b3f6（main b82e7db）へ切替、MDDataBench glm-5.3-flash 3 条件キャンペーン v5 を起動
 
