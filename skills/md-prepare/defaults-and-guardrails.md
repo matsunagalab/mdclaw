@@ -19,8 +19,9 @@ Preparation-specific defaults:
 - Standard DNA/RNA are preserved as nucleic polymers, not treated as ligands.
 - Glycan residues are preserved and passed to GLYCAM-aware topology generation.
 - Ligands are cleaned into `ligand_chemistry`. A charged SMILES/SDF fixes the
-  molecular state; an expected `net_charge` selects a matching protonation
-  candidate but never changes the molecular graph by itself.
+  molecular state; an expected net charge (`--ligand-net-charges '{"AMH": 0}'`)
+  selects a matching protonation candidate but never changes the molecular
+  graph by itself.
 - Solvation ion recipes, ion retention/exclusion by regime, water-model ion
   coverage, and the metal-site XML policy: `skills/common/solvent-regimes.md`.
 

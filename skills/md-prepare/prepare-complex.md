@@ -28,7 +28,9 @@ verbatim as `--residue-ranges` in author numbering. The range is what removes a
 deposited cap or an extra residue the reference does not carry: in campaign v2,
 1DFJ attempts that selected the chains without the ranges kept a deposited ACE
 and failed the reference's residue count, while the one that passed
-`--residue-ranges A:1-124 B:1-456` matched it.
+`--residue-ranges A:1-124 B:1-456` matched it. Ranges without
+`--select-chains` select only the chains they name; pass `--select-chains` too
+when other chains stay whole.
 
 Expand every omission into effective `--residue-ranges` first. All resulting ranges are separate components by default, including pieces created by "leave it out"; an enclosing range, shared source chain, nearby residue numbers, or physical plausibility never implies a peptide bond.
 Use `--join-range-pieces` only when the request explicitly joins every piece of that chain; for only named boundaries, use `--join-range-groups 'A:29-173,A:183-227'`. Before topology, verify the returned component sizes match the requested construct.
@@ -43,8 +45,10 @@ This selects matching associated ligands even when their ligand label chain IDs
 differ from the selected protein chain IDs. If the exact instance matters, use
 the returned `ligand_selection.recommended_include_ligand_ids` with
 `--include-ligand-ids`. Use `--include-associated-ligands` only when all listed
-same-author ligand candidates should be included. Omit `ligand` from
-`--include-types` for a ligand-free task. Do not retry unchanged.
+same-author ligand candidates should be included. To leave named instances out,
+pass their ids to `--exclude-ligand-ids` (ids such as `A:ZN:301`, not residue
+names; an entry that names nothing is refused with the ids to use). Omit
+`ligand` from `--include-types` for a ligand-free task. Do not retry unchanged.
 
 Crystallization additives (`EOH`, `GOL`, `PEG`/`2PE`/`PG4`, `MPD`, `SO4`,
 `ACT`, ...) and unknown residues (`UNX`, `UNL`, `UNK`) are swept into `ligand`
@@ -79,12 +83,14 @@ first):
   Neutral ligand SMILES are protonated at the protein `--ph` via Dimorphite-DL
   by default; override with `--ligand-ph`, disable with
   `--no-protonate-ligands`. An explicitly charged SMILES (`[O-]`/`[NH3+]`) or a
-  known expected `net_charge` takes precedence (charge selects the matching
-  candidate and fails if none matches). When the task supplies an expected
-  ligand charge, pass it without inventing a SMILES, for example
-  `--structure-analysis '{"ligands":[{"resname":"AMH","net_charge":0}]}'`.
-  If several candidates remain and no expected charge is known, report the
-  ambiguity instead of treating visual inspection as chemical validation.
+  stated net charge takes precedence (the charge selects the matching
+  candidate). When the task gives an expected ligand charge, pass it without
+  inventing a SMILES: `--ligand-net-charges '{"AMH": 0}'`. When Dimorphite-DL
+  offers states of different charge and none is stated, the run is refused
+  with `ligand_protonation_ambiguous` and the flags to choose; take the charge
+  from the task, never from the candidate order. A `--ligand-smiles` that
+  bonds the CCD ligand's atoms differently is refused
+  (`ligand_smiles_ccd_mismatch`).
 - `missing_residue_detection`: per chain, whether gaps could be detected at
   all. A chain whose input carries no reference sequence (SEQRES) reports
   `status="not_detectable"` — there zero gaps means "not checked", not "none

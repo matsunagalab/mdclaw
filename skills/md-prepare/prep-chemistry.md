@@ -43,21 +43,22 @@ minimization. A declared list is also measured on the input before anything is
 rebuilt (`declared_disulfide_input_geometry`), so a short pair after the repair
 can be read against what the deposit itself says.
 
-Suppression exists and is explicit:
+Suppression exists and is explicit: name each pair to keep reduced with
+`"form_bond": false`.
 
 | what you want | how |
 |---|---|
-| no disulfides at all | `--disulfide-pairs '[]'` |
-| all but one | list the pairs to keep, or give the unwanted one `"form_bond": false` |
 | the detected set | pass nothing |
+| one bond reduced | list the pairs, the reduced one with `"form_bond": false` |
+| none, on a structure without bonded disulfides | `--disulfide-pairs '[]'` |
 
-A declared list that leaves out a bonded disulfide the deposit shows is
-accepted, and warned about with `detected_disulfides_suppressed` naming the
-pairs; read that warning before continuing.
-
-The empty list is honoured rather than ignored: preparation gates on the
-argument being present, not on it being non-empty, so `'[]'` means none rather
-than falling back to detection.
+Leaving a bonded pair out of the list is not a way to reduce it: a declared
+list (including `'[]'`) that omits a disulfide the deposit shows is refused
+with `detected_disulfides_suppressed`, node still pending, and `next_action`
+spells the three ways on (omit the option, add the pairs, or name them with
+`form_bond` false). The prep and the topology also refuse a deposit disulfide
+left unformed (`detected_disulfide_not_formed`, `unbonded_disulfide_geometry`);
+metal-ligating cysteines are not disulfides.
 
 Each declared pair is `{"cys1": {"chain": "A", "resnum": 6}, "cys2": {"chain":
 "A", "resnum": 127}}`, with `icode` and `form_bond` optional. `chain` is the
@@ -142,7 +143,10 @@ If the user requests terminal caps, use `--n-terminal-cap ACE` and/or
 side is independent - a C-terminal cap alone is fine. Do not cap when nothing
 asks for it: a database reference with charged termini counts ACE/NME as two
 extra residues and fails the residue-count and composition checks
-(095_soluble_1ard, campaign v2).
+(095_soluble_1ard, campaign v2). A cap on the polymer's own end (nothing of the
+entity sequence beyond it) is refused with `terminal_cap_on_native_terminus`,
+node still pending; a terminus a residue range cuts inside the sequence may be
+capped, and `next_action` names the one-sided flag that does it.
 
 A deposit can arrive already capped. ACE and NME count as protein, so a cap
 that came in with the structure is kept and counted as a residue, which changes

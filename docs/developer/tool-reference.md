@@ -82,7 +82,27 @@ signature, update the relevant section here and the matching skill examples.
   deliberate `include_associated_ligands=True`; otherwise prep fails with
   `code="associated_ligands_require_selection"` instead of silently dropping
   ligand components. That refusal, like every refusal raised before the split
-  has delivered the selection, leaves the prep node pending and rerunnable.
+  has delivered the selection, leaves the prep node pending and rerunnable;
+  its `next_action` spells the include and the exclude command with the ids.
+  The chain request is resolved once (`split.resolve_chain_selection`, the
+  split's own rule) for the split, the disulfide and metal-site filters and
+  the glycan closure; a name whose label holds only water is read as the
+  author chain (`chain_id_read_as_author_over_water_label`), and ranges
+  without `select_chains` select only the chains they name
+  (`select_chains_defaulted_to_range_chains`). Disulfide invariants: a declared
+  `disulfide_pairs` list (including `[]`) that omits a pair the deposit shows
+  bonded is refused before the split (`detected_disulfides_suppressed`; keep a
+  pair reduced only by naming it with `form_bond: false`), and after the merge
+  a deposit disulfide on the delivered chains, or two sulfurs within 2.3 A
+  that no metal bridges, left unformed fails the prep
+  (`detected_disulfide_not_formed`). A cap on a polymer's own end (nothing of
+  the entity sequence beyond it) is refused (`terminal_cap_on_native_terminus`).
+  `ligand_net_charges={"9V2": 0}` (residue name or instance id) states a
+  ligand's net charge; Dimorphite-DL states of different charge with none
+  stated are refused before the run (`ligand_protonation_ambiguous`), as is a
+  `ligand_smiles` entry that bonds the CCD ligand's heavy atoms differently
+  (`ligand_smiles_ccd_mismatch`) and a `ligand_net_charges` key that names no
+  selected ligand (`invalid_ligand_net_charges`).
 - `clean_protein(...)`: PDBFixer plus pdb2pqr protonation
   (`protonation_method="propka"` predicts states at `ph`; `"no-prediction"`
   keeps the force field's fixed states and ignores `ph`; `"standard"` is a
@@ -114,7 +134,12 @@ signature, update the relevant section here and the matching skill examples.
   `include_associated_ligands=True` remains available only for deliberately
   including all same-author ligand candidates; otherwise selection blocks with
   `code="associated_ligands_require_selection"` when `ligand` is in
-  `include_types`.
+  `include_types`. `exclude_ligand_ids` names ligand or ion instances
+  (`unique_id`) or a residue of a glycan chain (`<author>:<resname>:<resnum>`,
+  dropping that glycan); an entry that names nothing is refused
+  (`exclude_ligand_id_unmatched`, with the matching ids in `next_action`).
+  `extra_label_ids` adds already-resolved label chains to a `select_chains`
+  request (prepare_complex's covalently linked glycans).
 - `merge_structures(...)`: merge prepared PDB fragments and emit
   `chain_identity_map` / `*.chain_identity_map.json`; PDB chain IDs are short
   compatibility labels and may repeat in large assemblies.
@@ -1682,6 +1707,10 @@ Topology validation distinguishes `input_conservation` (prepared heavy-atom
 identities across loading) from `core.atom_count_preserved` (output artifact
 consistency). S–S validation checks specific atom pairs in Topology and System
 (bond force or constraints), and checks CYX connectivity even without a plan.
-`disulfide_chemistry_conflict` fails before System generation. Inspection and
+`disulfide_chemistry_conflict` fails before System generation, and so does
+`unbonded_disulfide_geometry`: two cysteine sulfurs within 2.5 A with no S-S
+bond and no metal within 3.5 A of both (pairs declared `form_bond: false`
+pass); the final validation repeats the check on the relaxed positions
+(`disulfides.unbonded_disulfide_geometry`). Inspection and
 split share AMBER sequence aliases; `cap_count` reports ACE/NME separately
 from `sequence_length`.
