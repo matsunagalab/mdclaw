@@ -30,6 +30,15 @@ from mdclaw.solvation.constants import (
     _evaluate_solvation_water_model_guardrails,
     _normalize_water_model_name,
 )
+from mdclaw.solvation.preflight import (
+    box_size_advisory,
+    charged_without_ions_result,
+    elongated_cubic_warning,
+    estimate_solute_charge,
+    large_system_warning,
+    resolve_solvation_water_model,
+    water_model_required_result,
+)
 from mdclaw.solvation.pdb_identity import (
     _auto_lipid_packmol_charge_pdb_delta,
     _auto_metal_ion_packmol_charge_pdb_delta,
@@ -229,7 +238,7 @@ def solvate_structure(
     notprotonate: bool = True,
     preoriented: bool = True,
     keepligs: bool = True,
-    water_model: str = "opc",
+    water_model: Optional[str] = None,
     ligand_chemistry: Optional[list[dict[str, Any]]] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None
@@ -258,9 +267,16 @@ def solvate_structure(
                because packmol-memgen calculates box size from the maximum XY distance
                from the protein's centroid (max_rad). For proteins with asymmetric
                mass distribution, rectangular boxes (cubic=False) can reduce water
-               count by 50-70%.
+               count by 50-70%. Before packing, ``box_advisory`` in the result
+               predicts both boxes and their atom counts; an elongated solute
+               in a cubic box adds a warning naming the rectangular
+               alternative, and a system of 500k atoms or more adds one to run
+               topo/min through ``submit_job``.
         salt: Enable ion placement (default: True). True adds neutralizing
-              counterions plus bulk salt; False (``--no-salt``) skips both.
+              counterions plus bulk salt; False (``--no-salt``) skips both, so
+              in node mode a solute whose estimated charge is not zero is
+              refused before any work (``solvation_charged_without_ions``):
+              the topology would refuse the charged cell.
         salt_c: Cation used for counterions and bulk salt (default: "Na+").
         salt_a: Anion used for counterions and bulk salt (default: "Cl-").
         saltcon: Bulk-salt concentration in molar (default: 0.15). Keep 0.15
@@ -278,11 +294,13 @@ def solvate_structure(
         preoriented: (Ignored for --solvate mode, automatically set to True by packmol-memgen)
         keepligs: Keep ligands in the structure (default: True). Important when
                   processing protein-ligand complexes.
-        water_model: Water model type (default: "opc").
-                     Options: "tip3p", "opc", "opc3", "tip4pew", "spce".
-                     IMPORTANT: Must match the water model used in build_amber_system for
-                     topology generation. Using mismatched models causes severe atom clashes.
-                     OPC is strongly recommended with ff19SB (Amber Manual 2024).
+        water_model: Water model, required: "opc", "tip3p", "opc3", "tip4pew"
+                     or "spce". There is no default: an omitted value is taken
+                     from the node's declared ``--conditions`` (``water_model``)
+                     and otherwise refused before any work
+                     (``water_model_required``). build_amber_system inherits it
+                     from this node. Use the model the request names, or "opc"
+                     (paired with ff19SB, Amber Manual 2024) when it names none.
         ligand_chemistry: Ligand chemistry records from prepare_complex. Formal
                           charges are included in packmol-memgen's
                           --charge_pdb_delta so arbitrary GAFF/OpenFF ligands
@@ -355,24 +373,29 @@ def solvate_structure(
         "warnings": []
     }
 
-    canonical_water_model = _normalize_water_model_name(water_model)
-    if not canonical_water_model:
-        blocked = create_validation_error(
-            "water_model",
-            f"Unknown water model: {water_model}",
-            expected=f"One of: {sorted(CANONICAL_WATER_MODELS.values())}",
-            actual=water_model,
-        )
-        if job_dir and node_id:
-            from mdclaw._node import fail_node_from_result
-            return fail_node_from_result(
-                job_dir,
-                node_id,
-                blocked,
-                default_error="solvate_structure unknown water_model",
+    water_model, water_model_source = resolve_solvation_water_model(
+        water_model, job_dir, node_id,
+    )
+    result["parameters"]["water_model_source"] = water_model_source
+    if water_model is not None:
+        canonical_water_model = _normalize_water_model_name(water_model)
+        if not canonical_water_model:
+            blocked = create_validation_error(
+                "water_model",
+                f"Unknown water model: {water_model}",
+                expected=f"One of: {sorted(CANONICAL_WATER_MODELS.values())}",
+                actual=water_model,
             )
-        return blocked
-    water_model = canonical_water_model
+            if job_dir and node_id:
+                from mdclaw._node import fail_node_from_result
+                return fail_node_from_result(
+                    job_dir,
+                    node_id,
+                    blocked,
+                    default_error="solvate_structure unknown water_model",
+                )
+            return blocked
+        water_model = canonical_water_model
     result["parameters"]["water_model"] = water_model
 
     if job_dir and node_id:
@@ -401,7 +424,16 @@ def solvate_structure(
                 blocked,
                 default_error="solvate_structure node execution context invalid",
             )
-    
+
+    if water_model is None:
+        blocked = water_model_required_result(
+            "solvate_structure", job_dir=job_dir, node_id=node_id,
+        )
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(job_dir, node_id, blocked)
+        return blocked
+
     # Node mode always uses the canonical DAG input. An explicit path may only
     # repeat that same artifact; it cannot replace the parent provenance.
     if job_dir and node_id:
@@ -453,6 +485,21 @@ def solvate_structure(
             from mdclaw._node import fail_node
             fail_node(job_dir, node_id, errors=result.get("errors", []), code=result.get("code"))
         return result
+
+    if not salt:
+        # --no-salt places no ions at all, and the topology refuses a charged
+        # cell (system_net_charge_without_ions) one node later.
+        charge_estimate = estimate_solute_charge(pdb_path, ligand_chemistry)
+        result["solute_charge_estimate"] = charge_estimate
+        charge = charge_estimate.get("charge")
+        if charge_estimate.get("success") and abs(float(charge)) >= 0.5:
+            blocked = charged_without_ions_result(
+                "solvate_structure", charge, job_dir=job_dir, node_id=node_id,
+            )
+            if job_dir and node_id:
+                from mdclaw._node import fail_node_from_result
+                return fail_node_from_result(job_dir, node_id, {**result, **blocked})
+            result["warnings"].append(blocked["message"])
 
     # Check packmol-memgen availability; fall back to OpenMM if not available
     if not packmol_memgen_wrapper.is_available():
@@ -534,6 +581,21 @@ def solvate_structure(
             else:
                 fail_node(job_dir, node_id, errors=fallback_result.get("errors", []), code=fallback_result.get("code"))
         return fallback_result
+
+    # Predict the box before packing: an elongated solute in the default cubic
+    # box (79_soluble_1ewf: 179 A per side, ~580k atoms) is cheap to avoid here.
+    try:
+        box_advisory = box_size_advisory(
+            pdb_path, dist=dist, cubic=cubic, water_model=water_model,
+        )
+    except Exception as exc:  # noqa: BLE001 - advisory only
+        box_advisory = None
+        logger.debug(f"box size advisory unavailable: {exc}")
+    if box_advisory:
+        result["box_advisory"] = box_advisory
+        elongated = elongated_cubic_warning(box_advisory)
+        if elongated:
+            result["warnings"].append(elongated)
 
     # Setup output directory
     _node_mode = job_dir and node_id
@@ -838,6 +900,11 @@ def solvate_structure(
                 )
             if result.get("success"):
                 _record_periodic_seam(result, output_file, result.get("box_dimensions") or {})
+                large = large_system_warning(
+                    (result.get("statistics") or {}).get("total_atoms"), job_dir=job_dir,
+                )
+                if large:
+                    result["warnings"].append(large)
 
     except Exception as e:
         error_msg = f"Error during solvation: {type(e).__name__}: {str(e)}"
@@ -892,7 +959,9 @@ def solvate_structure(
                         "forcefield_charge_templates"
                     ),
                     "total_atoms": result.get("statistics", {}).get("total_atoms"),
-                })
+                    "water_model_source": water_model_source,
+                },
+                warnings=result.get("warnings") or None)
             update_job_summaries(job_dir, params={
                 "solvation_type": "explicit",
                 "water_model": water_model,

@@ -45,8 +45,20 @@ from mdclaw.solvation.pdb_identity import (
     _write_packmol_safe_solute,
 )
 from mdclaw.solvation.patch_membrane import (
+    cached_patch_alternatives,
     embed_with_membrane_patch_tiles,
     probe_patch_cache,
+)
+from mdclaw.solvation.preflight import (
+    PATCH_CACHED_EMBED_TIME,
+    PATCH_COLD_BUILD_TIME,
+    charged_without_ions_result,
+    estimate_solute_charge,
+    in_slurm_job,
+    membrane_patch_cache_miss_result,
+    patch_cache_alternative_summary,
+    resolve_solvation_water_model,
+    water_model_required_result,
 )
 
 from mdclaw.solvation._base import (
@@ -1233,7 +1245,7 @@ def _compute_membrane_net_charge(
     *,
     pdb_file: Path,
     box_dims: dict,
-    water_model: str = "opc",
+    water_model: str,
     disulfide_bonds: Optional[list[dict]] = None,
     ligand_chemistry: Optional[list[dict]] = None,
 ) -> dict:
@@ -2024,13 +2036,14 @@ def embed_in_membrane(
     keepligs: bool = True,
     nloop: int = 20,
     nloop_all: int = 100,
-    water_model: str = "opc",
+    water_model: Optional[str] = None,
     allow_forced_output: bool = False,
     allow_imperfect_primary_output: bool = True,
     packmol_race_lanes: int = 4,
     membrane_backend: str = "patch-tile",
     membrane_cache_mode: str = "auto",
     membrane_cache_dir: Optional[str] = None,
+    allow_patch_build: bool = False,
     membrane_carve_padding: float = 2.5,
     membrane_patch_side: float = PATCH_SIDE_ANGSTROM,
     membrane_patch_builder_timeout: Optional[int] = None,
@@ -2083,7 +2096,10 @@ def embed_in_membrane(
         memembed_force_span: Pass MEMEMBED ``-l`` to force the target to span
                      the membrane.
         salt: Enable ion placement (default: True). True adds neutralizing
-              counterions plus bulk salt; False (``--no-salt``) skips both.
+              counterions plus bulk salt; False (``--no-salt``) skips both, so
+              in node mode a solute whose estimated charge is not zero is
+              refused before any work (``solvation_charged_without_ions``):
+              the topology would refuse the charged cell.
         salt_c: Cation used for counterions and bulk salt (default: "Na+").
         salt_a: Anion used for counterions and bulk salt (default: "Cl-").
         saltcon: Bulk-salt concentration in molar (default: 0.15). Keep 0.15
@@ -2104,13 +2120,13 @@ def embed_in_membrane(
         nloop_all: PACKMOL GENCAN loops for final packing (default: 100).
                    MDClaw adaptively retries with a larger bounded budget if
                    Packmol reports imperfect packing.
-        water_model: Water model type. Defaults to "opc" only when no model was
-                     specified by the user/caller; an explicitly requested
-                     model must be passed here and carried unchanged into
-                     build_amber_system.
-                     Options: "tip3p", "opc", "opc3", "tip4pew", "spce".
-                     Must match the water model used in build_amber_system.
-                     OPC is strongly recommended with ff19SB (Amber Manual 2024).
+        water_model: Water model, required: "opc", "tip3p", "opc3", "tip4pew"
+                     or "spce". There is no default: an omitted value is taken
+                     from the node's declared ``--conditions`` (``water_model``)
+                     and otherwise refused before any work
+                     (``water_model_required``). build_amber_system inherits it
+                     from this node. Bundled lipid patches exist for "opc" and
+                     "tip3p" only.
         allow_forced_output: Deprecated compatibility flag. Packmol's
                      ``*_FORCED`` PDB is recorded as a raw diagnostic artifact
                      when present, but is not treated as the MD-ready solvated
@@ -2141,6 +2157,17 @@ def embed_in_membrane(
                      packmol-memgen.
         membrane_cache_mode: Patch cache policy: ``off``, ``read-only``,
                      ``auto`` (build on miss), or ``refresh`` (rebuild).
+                     A patch-tile cache miss is checked before any work: in
+                     read-only mode it is refused (``membrane_patch_cache_miss``);
+                     in auto mode it is refused in node mode outside a Slurm job
+                     unless ``allow_patch_build`` is set. The refusal names the
+                     argument values that hit a cached patch.
+        allow_patch_build: Build the lipid patch when no cached patch matches
+                     (CLI: ``--allow-patch-build``). A cold build takes about
+                     20 minutes on a CPU host against 1-2 minutes for a cached
+                     patch, so a node-mode call outside a Slurm job refuses
+                     the miss unless this is set; inside a Slurm job the build
+                     runs with a warning.
         membrane_cache_dir: Optional patch cache root. Defaults to
                      ``MDCLAW_MEMBRANE_CACHE_DIR`` or
                      ``MDCLAW_CACHE_DIR/membrane_patches``, then the XDG (or
@@ -2234,6 +2261,7 @@ def embed_in_membrane(
             "membrane_backend": membrane_backend,
             "membrane_cache_mode": membrane_cache_mode,
             "membrane_cache_dir": membrane_cache_dir,
+            "allow_patch_build": allow_patch_build,
             "membrane_carve_padding": membrane_carve_padding,
             "membrane_patch_side": membrane_patch_side,
             "membrane_patch_builder_timeout": membrane_patch_builder_timeout,
@@ -2245,24 +2273,29 @@ def embed_in_membrane(
         "warnings": []
     }
 
-    canonical_water_model = _normalize_water_model_name(water_model)
-    if not canonical_water_model:
-        blocked = create_validation_error(
-            "water_model",
-            f"Unknown water model: {water_model}",
-            expected=f"One of: {sorted(CANONICAL_WATER_MODELS.values())}",
-            actual=water_model,
-        )
-        if job_dir and node_id:
-            from mdclaw._node import fail_node_from_result
-            return fail_node_from_result(
-                job_dir,
-                node_id,
-                blocked,
-                default_error="embed_in_membrane unknown water_model",
+    water_model, water_model_source = resolve_solvation_water_model(
+        water_model, job_dir, node_id,
+    )
+    result["parameters"]["water_model_source"] = water_model_source
+    if water_model is not None:
+        canonical_water_model = _normalize_water_model_name(water_model)
+        if not canonical_water_model:
+            blocked = create_validation_error(
+                "water_model",
+                f"Unknown water model: {water_model}",
+                expected=f"One of: {sorted(CANONICAL_WATER_MODELS.values())}",
+                actual=water_model,
             )
-        return blocked
-    water_model = canonical_water_model
+            if job_dir and node_id:
+                from mdclaw._node import fail_node_from_result
+                return fail_node_from_result(
+                    job_dir,
+                    node_id,
+                    blocked,
+                    default_error="embed_in_membrane unknown water_model",
+                )
+            return blocked
+        water_model = canonical_water_model
     result["parameters"]["water_model"] = water_model
 
     canonical_membrane_backend = normalize_choice(membrane_backend, MEMBRANE_BACKENDS)
@@ -2350,6 +2383,7 @@ def embed_in_membrane(
                 "membrane_backend": membrane_backend,
                 "membrane_cache_mode": membrane_cache_mode,
                 "membrane_cache_dir": membrane_cache_dir,
+                "allow_patch_build": allow_patch_build,
                 "membrane_carve_padding": membrane_carve_padding,
                 "membrane_patch_side": membrane_patch_side,
                 "membrane_patch_builder_timeout": patch_builder_timeout,
@@ -2365,6 +2399,15 @@ def embed_in_membrane(
                 blocked,
                 default_error="embed_in_membrane node execution context invalid",
             )
+
+    if water_model is None:
+        blocked = water_model_required_result(
+            "embed_in_membrane", job_dir=job_dir, node_id=node_id, membrane=True,
+        )
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(job_dir, node_id, blocked)
+        return blocked
 
     # Node mode always uses the canonical DAG input. An explicit path may only
     # repeat that same artifact; it cannot replace the parent provenance.
@@ -2439,19 +2482,6 @@ def embed_in_membrane(
     
     # Validate input file (resolve to absolute path for conda run compatibility)
     pdb_path = Path(pdb_file).resolve()
-    if pdb_path.exists() and not salt:
-        # --no-salt places no ions at all. Three campaign agents read it as "no
-        # bulk salt" for a "neutralised" request, embedded a +6 to +18 e
-        # receptor without counter-ions and only learnt it from the topology
-        # refusal one node later. Say it here, from the residue names.
-        estimate = _estimate_protein_net_charge(pdb_path)
-        if estimate:
-            result["warnings"].append(
-                f"--no-salt places no ions, and the protein residues carry an estimated "
-                f"{estimate:+d} e (ARG/LYS/HIP minus ASP/GLU/CYM; ligands not counted). "
-                "The topology will refuse a charged cell. For counter-ions only use "
-                "--salt --saltcon 0; for physiological salt --salt --saltcon 0.15."
-            )
     if not pdb_path.exists():
         result["errors"].append(f"Input PDB file not found: {pdb_file}")
         logger.error(f"Input PDB file not found: {pdb_file}")
@@ -2459,6 +2489,101 @@ def embed_in_membrane(
             from mdclaw._node import fail_node
             fail_node(job_dir, node_id, errors=result.get("errors", []), code=result.get("code"))
         return result
+
+    if not salt:
+        # --no-salt places no ions at all. Campaign agents read it as "no bulk
+        # salt" for a "neutralised" request, embedded a +6 to +18 e receptor
+        # without counter-ions (v5 010_membrane_6kux: +14 e after a 19-minute
+        # embed) and learnt it only from the topology refusal one node later.
+        charge_estimate = estimate_solute_charge(pdb_path, ligand_chemistry)
+        result["solute_charge_estimate"] = charge_estimate
+        charge = charge_estimate.get("charge")
+        if charge_estimate.get("success") and abs(float(charge)) >= 0.5:
+            blocked = charged_without_ions_result(
+                "embed_in_membrane", charge, job_dir=job_dir, node_id=node_id,
+            )
+            if job_dir and node_id:
+                from mdclaw._node import fail_node_from_result
+                return fail_node_from_result(job_dir, node_id, {**result, **blocked})
+            result["warnings"].append(blocked["message"])
+        elif not charge_estimate.get("success"):
+            estimate = _estimate_protein_net_charge(pdb_path)
+            if estimate:
+                result["warnings"].append(
+                    f"--no-salt places no ions, and the protein residues carry an estimated "
+                    f"{estimate:+d} e (ARG/LYS/HIP minus ASP/GLU/CYM; ligands not counted). "
+                    "The topology will refuse a charged cell. For counter-ions only use "
+                    "--salt --saltcon 0; for physiological salt --salt --saltcon 0.15."
+                )
+
+    # The patch is protein-independent, so whether it is cached is known now,
+    # before orientation. v5 campaigns: cached embeds 77-121 s, cold builds
+    # 1137-1412 s, and every killed build had changed a cache-key argument.
+    early_cache_probe = None
+    if membrane_backend in {"patch-tile", "auto"} and membrane_cache_mode in {"auto", "read-only"}:
+        try:
+            early_cache_probe = probe_patch_cache(
+                lipids=lipids,
+                ratio=ratio,
+                water_model=water_model,
+                salt=salt,
+                salt_c=salt_c,
+                salt_a=salt_a,
+                saltcon=saltcon,
+                dist_wat=dist_wat,
+                leaflet=leaflet,
+                patch_side=membrane_patch_side,
+                nloop=nloop,
+                nloop_all=nloop_all,
+                equil_params={
+                    **patch_equilibration_params(water_model),
+                    "water_model": water_model,
+                },
+                forcefield=patch_equilibration_forcefield(water_model),
+                cache_dir=membrane_cache_dir,
+            )
+        except Exception as exc:  # noqa: BLE001 - the assembler probes again
+            logger.debug(f"early patch cache probe failed: {exc}")
+    if early_cache_probe is not None and not early_cache_probe["hit"]:
+        alternatives = cached_patch_alternatives(
+            early_cache_probe["parameters"],
+            cache_dir=membrane_cache_dir,
+            forcefield_for_water=patch_equilibration_forcefield,
+        )
+        result["membrane_patch_cache"] = {
+            "hit": False,
+            "cached_alternatives": alternatives[:3],
+        }
+        read_only = membrane_cache_mode == "read-only"
+        refuse = (
+            (read_only and membrane_backend == "patch-tile")
+            or (
+                membrane_cache_mode == "auto"
+                and bool(job_dir and node_id)
+                and not allow_patch_build
+                and not in_slurm_job()
+            )
+        )
+        if refuse:
+            blocked = membrane_patch_cache_miss_result(
+                requested=early_cache_probe["parameters"],
+                alternatives=alternatives,
+                read_only=read_only,
+                job_dir=job_dir,
+                node_id=node_id,
+            )
+            if job_dir and node_id:
+                from mdclaw._node import fail_node_from_result
+                return fail_node_from_result(job_dir, node_id, {**result, **blocked})
+            return {**result, **blocked}
+        summary = patch_cache_alternative_summary(
+            [alt for alt in alternatives if alt["same_composition"]]
+        )
+        if summary and membrane_cache_mode == "auto":
+            result["warnings"].append(
+                f"patch-tile: no cached patch matches these settings; {summary} "
+                f"(cached: {PATCH_CACHED_EMBED_TIME}; this build: {PATCH_COLD_BUILD_TIME})."
+            )
 
     # Check packmol-memgen availability.  A warm patch-cache hit can still build
     # a membrane without the packer, but a cold patch build (and the full
@@ -2620,9 +2745,9 @@ def embed_in_membrane(
         if not cache_probe["hit"] and membrane_cache_mode != "read-only":
             notice = (
                 f"patch-tile: no cached membrane patch for lipids={lipids} "
-                f"ratio={ratio}; building it once now. This runs a short OpenMM "
-                "equilibration (energy minimization + a few hundred ps of MD) "
-                "that can take several minutes, and the result is cached for reuse."
+                f"ratio={ratio}; building it once now. This packs the patch and runs "
+                "a short OpenMM equilibration (energy minimization + a few hundred "
+                f"ps of MD): {PATCH_COLD_BUILD_TIME}. The result is cached for reuse."
             )
             if box_interval.get("extended"):
                 notice += (

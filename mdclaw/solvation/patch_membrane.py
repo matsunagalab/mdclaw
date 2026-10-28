@@ -1575,8 +1575,119 @@ def probe_patch_cache(
         "hit": hit is not None,
         "source": (hit or {}).get("cache_source"),
         "fingerprint": fingerprint,
+        "parameters": _payload,
         "warnings": invalid_cache_warnings,
     }
+
+
+# The fingerprint fields an embed_in_membrane argument sets, with that CLI flag
+# (``salt`` is the --salt / --no-salt pair). The other fields (equilibration
+# settings, tolerance, schema) are fixed, and the force field follows the water.
+PATCH_KEY_FLAGS: tuple[tuple[str, Optional[str]], ...] = (
+    ("lipids", "--lipids"),
+    ("ratio", "--ratio"),
+    ("water_model", "--water-model"),
+    ("salt", None),
+    ("salt_c", "--salt-c"),
+    ("salt_a", "--salt-a"),
+    ("saltcon", "--saltcon"),
+    ("dist_wat", "--dist-wat"),
+    ("leaflet", "--leaflet"),
+    ("patch_side", "--membrane-patch-side"),
+    ("nloop", "--nloop"),
+    ("nloop_all", "--nloop-all"),
+)
+_PATCH_FIXED_KEYS = (
+    "schema_version", "equil_nvt_ns", "equil_npt_ns", "equil_temperature_k",
+    "equil_pressure_bar", "tolerance",
+)
+
+
+def _patch_values_equal(a: Any, b: Any) -> bool:
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a is b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b)) <= 1e-6
+    if isinstance(a, str) and isinstance(b, str):
+        return a.strip().lower() == b.strip().lower()
+    return a == b
+
+
+def patch_flag_arguments(values: dict[str, Any]) -> str:
+    """CLI arguments that set the given fingerprint fields."""
+    import shlex
+
+    parts: list[str] = []
+    for key, flag in PATCH_KEY_FLAGS:
+        if key not in values:
+            continue
+        value = values[key]
+        if key == "salt":
+            parts.append("--salt" if value else "--no-salt")
+        else:
+            parts.append(f"{flag} {shlex.quote(str(value))}")
+    return " ".join(parts)
+
+
+def cached_patch_alternatives(
+    requested: dict[str, Any],
+    *,
+    cache_dir: Optional[str] = None,
+    forcefield_for_water: Optional[Callable[[str], str]] = None,
+) -> list[dict[str, Any]]:
+    """Cached patches a request can reach by changing its arguments, closest first.
+
+    ``requested`` is the fingerprint payload of the request (``probe_patch_cache``
+    returns it). An entry qualifies when its fixed fields match the request's and
+    its force field is the one its own water model implies; each one lists the
+    fields that differ and the CLI arguments that select it. Same-composition
+    entries come first, then fewer differences. Manifests are read, not
+    validated: this names candidates, the cache lookup decides hits.
+    """
+    roots: list[tuple[str, Path]] = []
+    try:
+        roots.append(("writable", resolve_patch_cache_root(cache_dir)))
+    except OSError:
+        pass
+    roots.extend(("bundled", root) for root in resolve_bundled_patch_cache_roots())
+    seen: set[str] = set()
+    found: list[dict[str, Any]] = []
+    for source, root in roots:
+        for manifest_path in sorted(Path(root).glob("*/*/manifest.json")):
+            manifest = _read_json(manifest_path) or {}
+            params = manifest.get("parameters")
+            fingerprint = str(manifest.get("fingerprint") or manifest_path.parent.name)
+            if not isinstance(params, dict) or fingerprint in seen:
+                continue
+            if any(
+                not _patch_values_equal(params.get(key), requested.get(key))
+                for key in _PATCH_FIXED_KEYS
+            ):
+                continue
+            if forcefield_for_water is not None and not _patch_values_equal(
+                params.get("forcefield"),
+                forcefield_for_water(str(params.get("water_model") or "")),
+            ):
+                continue
+            seen.add(fingerprint)
+            differences = {
+                key: params.get(key)
+                for key, _flag in PATCH_KEY_FLAGS
+                if not _patch_values_equal(params.get(key), requested.get(key))
+            }
+            same_composition = not ({"lipids", "ratio"} & set(differences))
+            found.append({
+                "source": source,
+                "fingerprint": fingerprint,
+                "parameters": {key: params.get(key) for key, _flag in PATCH_KEY_FLAGS},
+                "differences": differences,
+                "same_composition": same_composition,
+                "arguments": patch_flag_arguments(differences),
+            })
+    found.sort(key=lambda item: (
+        not item["same_composition"], len(item["differences"]), item["source"] != "bundled",
+    ))
+    return found
 
 
 def _patch_manifest_valid(

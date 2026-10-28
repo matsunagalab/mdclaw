@@ -582,7 +582,9 @@ class TestArgparseConstruction:
 
         args = parser.parse_args(["solvate_structure", "--pdb-file", "test.pdb"])
         assert args.pdb_file == "test.pdb"
-        assert args.water_model == "opc"  # default
+        assert args.dist == 15.0  # default
+        # No default water: the tool refuses water_model_required unless chosen.
+        assert args.water_model is None
 
     def test_boltz_smiles_list_is_optional_for_protein_only(self):
         from mdclaw._cli import _tool_list_json, _discover_tools
@@ -608,7 +610,7 @@ class TestArgparseConstruction:
         args = parser.parse_args(["embed_in_membrane", "--lipids", "POPC"])
         assert args.pdb_file is None
         assert args.lipids == ["POPC"]
-        assert args.water_model == "opc"  # default
+        assert args.water_model is None  # chosen per call, no default
 
         # Repeated tokens arrive as a plain list; the tool itself joins them.
         args = parser.parse_args(
@@ -628,13 +630,15 @@ class TestArgparseConstruction:
         topology_recipes = [
             line
             for line in skill_text.splitlines()
-            if "build_amber_system --is-membrane" in line
+            if "build_amber_system --" in line
         ]
 
+        # The water model is chosen once, at the solv node (embed_in_membrane
+        # refuses water_model_required without it); the topology inherits it.
         assert embed_recipes
         assert all("--water-model" in recipe for recipe in embed_recipes)
         assert topology_recipes
-        assert all("--water-model" in recipe for recipe in topology_recipes)
+        assert all("--water-model" not in recipe for recipe in topology_recipes)
 
     def test_embed_in_membrane_lipids_accepts_list_and_colon_string(
         self, monkeypatch, capsys
@@ -912,7 +916,8 @@ class TestArgparseConstruction:
         assert solvate["node_type"] == "solv"
         params = {param["name"]: param for param in solvate["parameters"]}
         assert params["pdb_file"]["cli_flag"] == "--pdb-file"
-        assert params["water_model"]["default"] == "opc"
+        assert params["water_model"]["default"] is None
+        assert params["water_model"]["required"] is False
         assert params["salt"]["cli_action"] == "boolean_optional"
         assert params["salt"]["accepted_cli_forms"] == [
             "--salt",
