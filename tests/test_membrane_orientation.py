@@ -1435,7 +1435,7 @@ def test_embed_rejects_an_unknown_orientation_method(tmp_path):
     structure = _write_chain(tmp_path / "p.pdb", _SEQ)
 
     result = membrane.embed_in_membrane(
-        pdb_file=str(structure), output_dir=str(tmp_path / "out"),
+        pdb_file=str(structure), output_dir=str(tmp_path / "out"), water_model="opc",
         orientation_method="sideways",
     )
 
@@ -1469,7 +1469,7 @@ def test_packing_receives_an_already_oriented_structure(monkeypatch, tmp_path):
     structure = _write_chain(tmp_path / "p.pdb", _SEQ)
 
     membrane.embed_in_membrane(
-        pdb_file=str(structure), output_dir=str(tmp_path / "out"),
+        pdb_file=str(structure), output_dir=str(tmp_path / "out"), water_model="opc",
     )
 
     assert seen["preoriented"] is True

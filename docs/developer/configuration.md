@@ -155,7 +155,7 @@ mdclaw --version
 mdclaw fetch_structure --help
 mdclaw fetch_structure --source pdb --pdb-id 1AKE
 mdclaw inspect_molecules --structure-file 1AKE.cif
-mdclaw solvate_structure --pdb-file merged.pdb --dist 15.0 --salt --saltcon 0.15
+mdclaw solvate_structure --pdb-file merged.pdb --water-model opc --dist 15.0 --salt --saltcon 0.15
 mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "select_chains": ["A"]}'
 ```
 

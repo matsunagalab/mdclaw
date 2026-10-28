@@ -1701,6 +1701,7 @@ def test_embed_in_membrane_restores_packmol_solute_identity(tmp_path, monkeypatc
     )
 
     result = embed_in_membrane(
+        water_model="opc",
         pdb_file=str(input_pdb),
         output_dir=str(tmp_path),
         output_name="membrane",
@@ -2206,6 +2207,7 @@ def test_embed_in_membrane_patch_tile_builds_then_reuses_default_cache(
         membrane_backend="patch-tile",
         membrane_cache_mode="auto",
         membrane_patch_side=40.0,
+        water_model="opc",
     )
     first_cwd = tmp_path / "cwd-a"
     second_cwd = tmp_path / "cwd-b"
@@ -2260,6 +2262,7 @@ def test_embed_in_membrane_patch_tile_tiles_cover_large_protein(tmp_path, monkey
     monkeypatch.setattr("mdclaw.solvation.membrane._compute_membrane_net_charge", None)
 
     result = embed_in_membrane(
+        water_model="opc",
         pdb_file=str(input_pdb),
         output_dir=str(tmp_path / "out"),
         output_name="membrane",
@@ -2305,6 +2308,7 @@ def test_embed_in_membrane_patch_tile_neutralizes_net_charge(tmp_path, monkeypat
     monkeypatch.setattr("mdclaw.solvation.membrane._compute_membrane_net_charge", fake_charge)
 
     result = embed_in_membrane(
+        water_model="opc",
         pdb_file=str(input_pdb),
         output_dir=str(tmp_path / "out"),
         output_name="membrane",
@@ -2365,6 +2369,7 @@ def test_embed_in_membrane_patch_tile_rejects_charge_evaluation_failure(
     )
 
     result = embed_in_membrane(
+        water_model="opc",
         pdb_file=str(input_pdb),
         output_dir=str(tmp_path / "out"),
         lipids="POPC",
@@ -2411,6 +2416,7 @@ def test_embed_in_membrane_patch_tile_read_only_miss_falls_back(tmp_path, monkey
     )
 
     result = embed_in_membrane(
+        water_model="opc",
         pdb_file=str(input_pdb),
         output_dir=str(tmp_path),
         output_name="membrane",
@@ -2485,6 +2491,7 @@ def test_embed_in_membrane_retries_before_reporting_packmol_failure(
     )
 
     result = embed_in_membrane(
+        water_model="opc",
         pdb_file=str(input_pdb),
         output_dir=str(tmp_path),
         output_name="membrane",
@@ -2552,6 +2559,7 @@ def test_embed_in_membrane_accepts_imperfect_primary_before_lateral_retry(
     )
 
     result = embed_in_membrane(
+        water_model="opc",
         pdb_file=str(input_pdb),
         output_dir=str(tmp_path),
         output_name="membrane",
@@ -2630,6 +2638,7 @@ def test_embed_in_membrane_runs_parallel_packmol_race(tmp_path, monkeypatch):
     )
 
     result = embed_in_membrane(
+        water_model="opc",
         pdb_file=str(input_pdb),
         output_dir=str(tmp_path),
         output_name="membrane",
@@ -2715,6 +2724,7 @@ def test_embed_in_membrane_cancels_pending_parallel_race_lanes(tmp_path, monkeyp
     )
 
     result = embed_in_membrane(
+        water_model="opc",
         pdb_file=str(input_pdb),
         output_dir=str(tmp_path),
         output_name="membrane",

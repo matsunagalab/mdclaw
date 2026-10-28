@@ -136,7 +136,7 @@ source ─ prep_001 ─ solv ─ topo(decoupled) ─ min ─ eq ─ topo(boresch
    ```
 
    Then, each with `--parent-node-ids` naming this branch:
-   `solvate_structure` (`--dist 12` or more) → `build_decoupled_system` (same
+   `solvate_structure` (`--dist 12` or more, the complex leg's `--water-model`) → `build_decoupled_system` (same
    options as step 2; `leg` is `solvent`, 18 windows) → min → eq → `run_fep`
    (fep nodes under the eq) → `analyze_fep`. No restraint step on this leg.
 

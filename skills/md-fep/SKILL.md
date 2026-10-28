@@ -176,8 +176,8 @@ source ─ prep_001 ─ solv ─ topo(hybrid) ─ min ─ eq ─ fep ─ analyze
    ```
 
    Then, each with `--parent-node-ids` naming this branch: `solvate_structure
-   --dist 10` (a tripeptide needs no 15 Å buffer; keep the image gap above the
-   10 Å cutoff), `build_hybrid_system` with the **same** `--mutation`,
+   --dist 10 --water-model <folded leg's>` (a tripeptide needs no 15 Å buffer;
+   keep the image gap above the 10 Å cutoff), `build_hybrid_system` with the **same** `--mutation`,
    `--forcefield`, `--water-model`, `--n-windows`/`--lambda-schedule`, then
    min → eq → `run_fep` → `analyze_fep` as in steps 2–5. `create_node` without
    `--parent-node-ids` refuses (`parent_required`) while both branches are

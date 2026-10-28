@@ -32,16 +32,20 @@ use `implicit-water.md` instead and do not retain explicit ions.
 mdclaw create_node --job-dir <job_dir> --node-type solv
 mdclaw explain_node --job-dir <job_dir> --node-id <solv_node_id>
 mdclaw --job-dir <job_dir> --node-id <solv_node_id> solvate_structure \
-  --dist 15.0 --salt --saltcon 0.15
+  --water-model opc --dist 15.0 --salt --saltcon 0.15
 ```
 
-The water model is decided here and only here: the default is OPC, and a
-request that names another water (for example TIP3P) is `--water-model tip3p`
-on this command. The topology stage inherits the solv node's water model and
-pairs the protein force field with it, so do not repeat the water model at
-`build_amber_system`; an explicit different value there is refused
-(`solvation_topology_water_model_mismatch`), because the solvated
-coordinates already fix it.
+The water model is decided here and only here, and `--water-model` is
+required (`water_model_required` otherwise): `opc` unless the request names
+another water, for example `--water-model tip3p`. The topology stage inherits
+the solv node's water model and pairs the protein force field with it, so do
+not repeat it at `build_amber_system`; a different value there is refused
+(`solvation_topology_water_model_mismatch`).
+
+Read `warnings` before topology: an elongated solute in the default cubic box
+names the rectangular alternative (`--no-cubic`) with both atom counts
+(`box_advisory`), and a system of 500k atoms or more says to run topo and min
+through `submit_job`.
 
 `pdb_file` is auto-resolved from the `prep` parent's `merged_pdb` artifact. If
 that artifact is wrong, create a corrected prep branch instead of overriding

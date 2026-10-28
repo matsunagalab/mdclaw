@@ -768,6 +768,7 @@ class TestAmberServer:
             dist=10.0,
             salt=True,
             saltcon=0.15,
+            water_model="opc",
         )
         assert solv["success"] is True
 
@@ -817,6 +818,7 @@ class TestMDSimulationServer:
             dist=10.0,
             salt=True,
             saltcon=0.15,
+            water_model="opc",
         )
         assert solv["success"] is True
 
