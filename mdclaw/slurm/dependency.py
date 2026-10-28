@@ -239,6 +239,7 @@ def dependency_preflight(job_dir: Optional[str], node_id: Optional[str], depende
     # Jobs the dependency names that belong to a node of this DAG that is
     # neither an ancestor nor a node of this node's own stage (siblings may
     # be chained on purpose, to serialise them).
+    offending: list[str] = []
     if node and parsed:
         named = _ids_of(parsed[0], _COVERING_TYPES)
         unknown = [j for j in named if j not in parent_jobs]
@@ -253,6 +254,7 @@ def dependency_preflight(job_dir: Optional[str], node_id: Optional[str], depende
                 owner_id, owner_type = owner
                 if owner_id in ancestors or owner_type == node_type:
                     continue
+                offending.append(job_id)
                 problems.append({
                     "code": "dependency_not_parent_job",
                     "message": f"--dependency names job {job_id}, which runs {owner_id!r} ({owner_type}); that node is "
@@ -309,9 +311,14 @@ def dependency_preflight(job_dir: Optional[str], node_id: Optional[str], depende
     if problems:
         code, message, fix = problems[0]["code"], problems[0]["message"], problems[0]["fix"]
         if fix == "__dependency_fix__":
-            keep = [j for j in _ids_of(parsed[0], _COVERING_TYPES) if j in parent_jobs]
-            ids = list(dict.fromkeys([*keep, *(j for _, j in to_add)]))
-            fix = (f"Resubmit with --dependency afterok:{':'.join(ids)}" if ids
+            # The caller's spec without the offending jobs, plus the parents'.
+            parts = [f"{kind}:{':'.join(kept)}" if kept else kind
+                     for kind, ids in parsed[0]
+                     for kept in [[j for j in ids if j not in offending]]
+                     if kept or kind == "singleton"]
+            if to_add:
+                parts.append("afterok:" + ":".join(j for _, j in to_add))
+            fix = (f"Resubmit with --dependency {parsed[1].join(parts)}" if parts
                    else "Resubmit without --dependency (no parent of this node is waiting on a job)")
         out["error"] = _refusal(
             code, message, fix,

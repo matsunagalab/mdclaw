@@ -421,6 +421,10 @@ def test_dependency_on_a_non_ancestor_job_is_refused(tmp_path):
     assert result["code"] == "dependency_not_parent_job"
     assert "min_002" in result["message"]
     assert result["next_action"] == "Resubmit with --dependency afterok:600"
+    # the rest of the caller's spec is kept
+    result, _ = _submit(_cmd(jd, "eq_001", "run_equilibration"), jd, "eq_001",
+                        dependency="afterany:55,afterok:601")
+    assert result["next_action"] == "Resubmit with --dependency afterany:55,afterok:600"
 
 
 def test_siblings_may_be_chained_to_serialise_them(tmp_path):

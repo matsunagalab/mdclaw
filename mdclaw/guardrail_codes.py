@@ -168,7 +168,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "metadynamics_scope_unsupported": "Create the analyze node with analysis_data_scope 'production_chain' (or 'segment') and the run_metadynamics prod nodes as parents.",
     "metadynamics_states_invalid": "Pass --state-a LO HI and --state-b LO HI in nm: two disjoint ranges of the coordinate inside the biased range, each with the upper edge above the lower.",
 
-    "container_runtime_not_found": "Export MDCLAW_SLURM_PATH=\"$PATH\" from a host shell before submitting from inside the image, or run `mdclaw configure_container --runtime /abs/path/to/singularity`, then resubmit the same (still pending) node.",
+    "container_runtime_not_found": "The configured absolute --runtime is not an executable file on this host; store a bare name instead (mdclaw configure_container --runtime singularity, resolved on the compute node) or the path `command -v singularity` prints here, then resubmit the same (still pending) node.",
 
     # --- node / DAG context ---
     "node_context_required": "Create the node, then run it with both --job-dir and --node-id.",

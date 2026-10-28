@@ -637,8 +637,10 @@ def configure_container(
             (``/shared/software/apptainer/bin/singularity``) or a command name.
             Default: ``singularity``, then ``apptainer``, resolved at each
             submission on ``MDCLAW_SLURM_PATH`` (or PATH) to an absolute path
-            that is written into the sbatch script; a runtime that cannot be
-            resolved refuses the submission (``container_runtime_not_found``).
+            that is written into the sbatch script. An absolute path that is
+            not an executable file is refused (``container_runtime_not_found``)
+            except from inside a container image, where the host's binaries
+            are not visible: it is then stored unchecked, with a warning.
 
     Returns:
         dict with:
