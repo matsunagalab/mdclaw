@@ -65,6 +65,10 @@ _NS_PER_DAY_AT_30K: dict[str, float] = {
 _GPU_ALIASES: list[tuple[str, str]] = [
     ("gb200", "gb200"),             # also Slurm's gres name "nvidia_gb200"
     ("grace blackwell", "gb200"),
+    # The same Blackwell GPU without the Grace CPU; agents asked for it by
+    # this name (MDDataBench v5) and got unknown_gpu_type.
+    ("b200", "gb200"),
+    ("blackwell", "gb200"),
     ("6000 ada", "rtx_6000_ada"),
     ("rtx_6000_ada", "rtx_6000_ada"),
     ("a6000", "rtx_a6000"),

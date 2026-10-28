@@ -680,9 +680,16 @@ def configure_container(
     if runtime is not None:
         runtime = str(runtime).strip()
         if os.path.isabs(runtime) and not (os.path.isfile(runtime) and os.access(runtime, os.X_OK)):
-            result["code"] = "container_runtime_not_found"
-            result["errors"].append(f"runtime {runtime!r} is not an executable file")
-            return result
+            if os.environ.get("SINGULARITY_CONTAINER") or os.environ.get("APPTAINER_CONTAINER"):
+                # From inside the image the host's binaries are not mounted:
+                # a host path cannot be checked here, only stored.
+                result.setdefault("warnings", []).append(
+                    f"runtime {runtime!r} is not visible from inside this image, so it was stored "
+                    "unchecked; the job script runs it on the compute node as given.")
+            else:
+                from mdclaw.slurm.config import runtime_not_found_error
+
+                return {**result, **runtime_not_found_error(runtime)}
         container["runtime"] = runtime
         container.pop("runtime_resolved", None)
     flags_error = validate_container_flags(container)

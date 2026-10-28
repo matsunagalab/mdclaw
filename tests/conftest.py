@@ -63,6 +63,14 @@ def pytest_runtest_makereport(item, call):
         cls._steps_passed = passed
 
 
+@pytest.fixture(autouse=True)
+def _allow_host_local_submit_paths(monkeypatch):
+    """pytest's tmp_path lives under /tmp, which submit_job refuses for a
+    compute node (``submission_path_not_shared``). Tests of that refusal
+    delete the variable."""
+    monkeypatch.setenv("MDCLAW_ALLOW_LOCAL_SUBMIT_PATHS", "1")
+
+
 # --- Minimal PDB fixtures ---
 
 
