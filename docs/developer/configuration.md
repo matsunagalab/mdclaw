@@ -82,7 +82,9 @@ Notes:
   `SLURM_CONF_SERVER`, `sbatch`/`squeue` on `MDCLAW_SLURM_PATH` or `PATH`, a
   `slurm.conf` under `/etc/slurm*`, `/usr/local/etc` or `/opt/slurm/etc`, or
   a `.mdclaw_cluster.json` in the working directory or above the job) and
-  without `SLURM_JOB_ID` is refused with `md_outside_allocation` and the
+  outside a Slurm job (no `SLURM_JOB_ID`, and no `job_<id>` Slurm cgroup in
+  `/proc/self/cgroup`, which still names the job when a container dropped
+  the variables with `--cleanenv`) is refused with `md_outside_allocation` and the
   node's `submit_job` command (`mdclaw/simulation/run_guard.py`). For a
   deliberate test, or a workstation that only looks like a cluster. Refusals
   do not mention it: an agent should submit, not bypass. The test suite sets

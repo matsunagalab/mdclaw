@@ -33,6 +33,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import re
 import shlex
 import shutil
 from pathlib import Path
@@ -48,6 +49,11 @@ SLURM_CONF_PATHS = (
     "/opt/slurm/etc/slurm.conf",
 )
 _TRUE = {"1", "true", "yes", "on"}
+# Slurm puts every job step in a cgroup named after the job (v1:
+# .../slurm/uid_N/job_J/step_S, v2: .../slurmstepd.scope/job_J/step_S); a
+# container shares /proc, so this survives `singularity exec --cleanenv`.
+CGROUP_PATH = "/proc/self/cgroup"
+_CGROUP_JOB = re.compile(r"/job_(\d+)(?:/|$)")
 _PLATFORM_NAMES = {"cuda": "CUDA", "opencl": "OpenCL", "cpu": "CPU", "reference": "Reference"}
 _GPU_PLATFORMS = ("CUDA", "OpenCL")
 # (platform, properties) -> None when usable, else the reason. A process's
@@ -80,10 +86,31 @@ def local_md_allowed(environ: Optional[dict] = None) -> bool:
     return str(_env(environ).get(ALLOW_LOCAL_ENV) or "").strip().lower() in _TRUE
 
 
+def _cgroup_slurm_job() -> Optional[str]:
+    try:
+        text = Path(CGROUP_PATH).read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if "slurm" in line:
+            match = _CGROUP_JOB.search(line)
+            if match:
+                return match.group(1)
+    return None
+
+
 def slurm_allocation(environ: Optional[dict] = None) -> Optional[str]:
-    """The Slurm job this process runs in, or None."""
+    """The Slurm job this process runs in, or None.
+
+    ``SLURM_JOB_ID``; with this process's own environment also its cgroup,
+    so a job whose container dropped the variables (``--cleanenv``) is not
+    taken for a login node.
+    """
     env = _env(environ)
-    return env.get("SLURM_JOB_ID") or env.get("SLURM_JOBID") or None
+    found = env.get("SLURM_JOB_ID") or env.get("SLURM_JOBID")
+    if found:
+        return found
+    return _cgroup_slurm_job() if environ is None else None
 
 
 def slurm_cluster_evidence(environ: Optional[dict] = None, search_dirs=()) -> Optional[str]:
@@ -121,7 +148,7 @@ def outside_allocation(job_dir: Optional[str] = None, environ: Optional[dict] = 
     ``MDCLAW_ALLOW_LOCAL_MD=1``.
     """
     env = _env(environ)
-    if local_md_allowed(env) or slurm_allocation(env):
+    if local_md_allowed(env) or slurm_allocation(environ):
         return None
     dirs: list[Path] = [Path.cwd()]
     if job_dir:
@@ -138,7 +165,7 @@ def allocated_gpus(environ: Optional[dict] = None) -> Optional[str]:
     """The GPUs Slurm gave the job this process runs in, or None (also
     outside a Slurm job)."""
     env = _env(environ)
-    if not slurm_allocation(env):
+    if not slurm_allocation(environ):
         return None
     for key in ("SLURM_JOB_GPUS", "SLURM_STEP_GPUS"):
         value = str(env.get(key) or "").strip()
@@ -409,7 +436,7 @@ def md_preflight(fn: Callable, call_args: dict, job_dir: Optional[str], node_id:
     status = node.get("status")
     tool = fn.__name__
     jd = str(Path(job_dir).resolve())
-    evidence = outside_allocation(job_dir, env)
+    evidence = outside_allocation(job_dir, environ)
     if evidence:
         if status in ("queued", "running"):
             next_action = (f"'{node_id}' is already {status}; wait for the run that owns it: "
@@ -437,8 +464,10 @@ def md_preflight(fn: Callable, call_args: dict, job_dir: Optional[str], node_id:
     code = problem["code"]
     reasons = "; ".join(f"{k}: {v}" for k, v in problem["reasons"].items())
     available = usable_platforms()
-    in_job = slurm_allocation(env)
-    sealed_here = status != "pending" and not _owned_by_another_live_run(job_dir, node_id)
+    in_job = slurm_allocation(environ)
+    # A queued/running node no other live run owns is this job's: _record
+    # fails it (the job's end would anyway), so the fix is a new node.
+    sealed_here = status in ("queued", "running") and not _owned_by_another_live_run(job_dir, node_id)
     if code == "gpu_allocated_platform_unavailable":
         image = env.get("APPTAINER_CONTAINER") or env.get("SINGULARITY_CONTAINER")
         fix = (f"mdclaw configure_container --image {shlex.quote(image)} --extra-flags=--nv"

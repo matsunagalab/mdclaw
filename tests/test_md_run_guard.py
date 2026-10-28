@@ -47,6 +47,7 @@ def clean_env(monkeypatch, tmp_path):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(run_guard, "_which", lambda tool, path: None)
     monkeypatch.setattr(run_guard, "SLURM_CONF_PATHS", ())
+    monkeypatch.setattr(run_guard, "CGROUP_PATH", str(tmp_path / "no_cgroup"))
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     monkeypatch.chdir(cwd)
@@ -126,6 +127,30 @@ def test_inside_a_job_or_with_the_escape_md_may_run(clean_env):
     assert run_guard.outside_allocation(environ={**on_login, "SLURM_JOB_ID": "222174"}) is None
     assert run_guard.outside_allocation(environ={**on_login, run_guard.ALLOW_LOCAL_ENV: "1"}) is None
     assert run_guard.outside_allocation(environ={}) is None          # a workstation
+
+
+def test_a_job_whose_container_dropped_the_slurm_variables_is_still_a_job(clean_env, tmp_path):
+    """``singularity exec --cleanenv`` inside a job: no SLURM_JOB_ID, but the
+    cgroup names the job; a .mdclaw_cluster.json in the job's cwd must not
+    turn the job into a login node."""
+    (tmp_path / "cwd" / ".mdclaw_cluster.json").write_text("{}")
+    assert run_guard.outside_allocation()                                   # looks like a login node
+    cgroup = tmp_path / "cgroup"
+    clean_env.setattr(run_guard, "CGROUP_PATH", str(cgroup))
+    cgroup.write_text("0::/system.slice/slurmstepd.scope/job_222174/step_batch/user/task_0\n")
+    assert run_guard.slurm_allocation() == "222174"
+    assert run_guard.outside_allocation() is None
+    from mdclaw.simulation.minimize import run_minimization
+    no_node = str(tmp_path / "no_job")
+    assert run_guard.md_preflight(run_minimization, {}, no_node, "min_001") is None
+    clean_env.setattr(run_guard, "CGROUP_PATH", str(tmp_path / "no_cgroup"))
+    assert run_guard.md_preflight(run_minimization, {}, no_node, "min_001")["code"] == "md_outside_allocation"
+    clean_env.setattr(run_guard, "CGROUP_PATH", str(cgroup))
+    cgroup.write_text("12:memory:/slurm/uid_100160/job_99/step_0\n")
+    assert run_guard.slurm_allocation() == "99"
+    cgroup.write_text("0::/user.slice/user-100160.slice/session-26918.scope\n")     # RIKYU login node
+    assert run_guard.slurm_allocation() is None
+    assert run_guard.slurm_allocation({}) is None                           # an explicit environ only
 
 
 def test_gpu_allocation_comes_from_slurm(clean_env):
@@ -390,8 +415,6 @@ def test_the_cli_does_not_seal_a_node_another_live_run_owns(tmp_path, triple, li
 def test_declared_conditions_the_call_missed_keep_the_node_pending(tmp_path, triple, clean_env, capsys):
     """010_membrane_6kux cli_skill_sif r2: declared 310 K, 0.5 + 0.5 ns; the
     bare command ran the defaults and the node was sealed."""
-    from mdclaw.simulation.equilibrate import run_equilibration
-
     jd, topo = _job_with_topo(tmp_path, triple)
     # 200 steps at 2 fs are 0.0004 ns; the node declares half that, 310 K and no NPT
     eq = _eq_node(jd, topo, conditions={"temperature_kelvin": 310, "nvt_time_ns": 0.0002,
