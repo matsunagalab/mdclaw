@@ -349,64 +349,13 @@ ENV PATH="/opt/mdclaw/bin:$PATH" \
     NVIDIA_DRIVER_CAPABILITIES="compute,utility" \
     MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR="/opt/mdclaw/lib/python3.12/site-packages/mdclaw/data/membrane_patches"
 
-# Confirm that the final image contains and loads the shim.  GPU acceptance is
-# performed from the resulting SIF because a normal Docker filesystem does not
-# exercise the affected FUSE path.
-RUN /opt/mdclaw/bin/python - <<'PY'
-import os
-from pathlib import Path
-
-shim = os.environ["MDCLAW_FUSEFIX_LIB"]
-assert shim in os.environ["LD_PRELOAD"].split(":"), os.environ["LD_PRELOAD"]
-assert Path(shim).is_file()
-assert shim in Path("/proc/self/maps").read_text()
-print("cuFFT FUSE preload shim active")
-PY
-
-# Fail the build if the final runtime accidentally receives NVRTC from a newer
-# toolkit. OpenMM compiles its CUDA kernels with this library at Context
-# creation time, so this version is a runtime compatibility contract.
-RUN /opt/mdclaw/bin/python - <<'PY'
-import ctypes
-
-nvrtc = ctypes.CDLL("libnvrtc.so")
-major = ctypes.c_int()
-minor = ctypes.c_int()
-assert nvrtc.nvrtcVersion(ctypes.byref(major), ctypes.byref(minor)) == 0
-assert (major.value, minor.value) == (13, 0), (major.value, minor.value)
-print(f"NVRTC {major.value}.{minor.value}")
-PY
-
-# The CUDA compiler and NVRTC stay on 13.0 for driver/PTX compatibility, while
-# the conda CUDA math libraries use the 13.1 family. cuFFT 12.1 is required for
-# compute capability 10.0 FFT workloads. Verify the actual runtime library,
-# not only the solver metadata.
-RUN /opt/mdclaw/bin/python - <<'PY'
-import ctypes
-import os
-import re
-import sys
-from pathlib import Path
-
-minimum = tuple(map(int, os.environ["MDCLAW_CUFFT_MIN_VERSION"].split(".")))
-files = list((Path(sys.prefix) / "lib").glob("libcufft.so.12.*"))
-versions = []
-for path in files:
-    match = re.search(r"libcufft\.so\.(\d+(?:\.\d+)+)$", str(path))
-    if match:
-        versions.append(tuple(map(int, match.group(1).split("."))))
-assert versions and max(versions) >= minimum, (files, versions, minimum)
-
-cufft = ctypes.CDLL("libcufft.so.12")
-api_version = ctypes.c_int()
-assert cufft.cufftGetVersion(ctypes.byref(api_version)) == 0
-assert api_version.value >= 12010, api_version.value
-print(
-    "cuFFT",
-    ".".join(map(str, max(versions))),
-    f"API={api_version.value}",
-)
-PY
+# Build-time contracts: the cuFFT FUSE preload shim is active, NVRTC is 13.0
+# (OpenMM compiles kernels with it at Context creation), and cuFFT is at least
+# MDCLAW_CUFFT_MIN_VERSION. GPU acceptance runs from the resulting SIF because
+# a container filesystem does not exercise the FUSE path. A script, not a RUN
+# heredoc: Podman 4.9 (RIKYU) parses heredoc lines as Dockerfile instructions.
+COPY container/scripts/check-rikyu-image.py /opt/mdclaw/share/mdclaw/check-rikyu-image.py
+RUN /opt/mdclaw/bin/python /opt/mdclaw/share/mdclaw/check-rikyu-image.py
 
 # The bundled patches ship in the package (mdclaw/data/membrane_patches) and
 # the variable names that directory. Until 2026-09-26 it named an empty
