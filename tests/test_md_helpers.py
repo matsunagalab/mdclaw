@@ -1845,12 +1845,12 @@ class TestRunProductionFailNodeCoverage:
             f"Expected failed, got {prod_node['status']!r}"
         )
 
-    def test_node_invalid_platform_after_begin_node_marks_failed(self, tmp_path):
-        """An unknown OpenMM platform name fails inside the inner try block
-        — well past begin_node() — so the helper must catch and fail_node
-        the result. The test points run_production at fake-but-existent
-        modern artifacts so we get past the existence checks before the
-        platform error fires."""
+    def test_node_invalid_platform_is_refused_before_begin_node(self, tmp_path):
+        """An unknown OpenMM platform name used to fail inside the inner try
+        block, past begin_node(), and seal the node. The run guard
+        (mdclaw/simulation/run_guard.py) now refuses it before the node
+        starts: nothing ran, so the node stays pending for the corrected
+        command (platform_unavailable)."""
         from mdclaw._node import create_node, read_node
 
         job_dir = self._dag_with_fake_modern_artifacts(tmp_path)
@@ -1863,10 +1863,12 @@ class TestRunProductionFailNodeCoverage:
             node_id="prod_001",
         )
         assert result.get("success", False) is False
+        assert result["code"] == "platform_unavailable"
         prod_node = read_node(str(job_dir), "prod_001")
-        assert prod_node["status"] == "failed", (
-            f"Expected failed, got {prod_node['status']!r}"
+        assert prod_node["status"] == "pending", (
+            f"Expected pending, got {prod_node['status']!r}"
         )
+        assert prod_node["metadata"]["last_refusal"]["code"] == "platform_unavailable"
 
     def test_fail_node_helper_is_idempotent_outside_node_mode(self):
         """When called without job_dir/node_id, the helper must be a no-op
