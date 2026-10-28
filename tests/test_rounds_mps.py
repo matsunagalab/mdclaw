@@ -138,6 +138,19 @@ def test_stage_args_become_cli_flags():
                      "--distance-restraints", '[{"k": 1}]', "--trajectory-format", "dcd"]
 
 
+def test_list_of_str_stage_args_are_separate_cli_values():
+    # A list[str] option is nargs='+': JSON text after the flag would arrive as
+    # a one-element list holding the JSON (found 2026-10-29).
+    def stage(job_dir: str, node_id: str, selections: list[str] = None,
+              distance_restraints: list[dict] = None):
+        return {}
+
+    flags = _stage_args_to_flags({"selections": ["A:1-10", "B:5"],
+                                  "distance_restraints": [{"k": 1}]}, stage)
+    assert flags == ["--selections", "A:1-10", "B:5", "--distance-restraints", '[{"k": 1}]']
+    assert _stage_args_to_flags({"selections": ["A", "B"]}) == ["--selections", "A", "B"]
+
+
 class TestMpsExecutor:
     def test_two_rounds_run_as_packed_jobs(self, tmp_path, periodic_triple, fake_slurm):  # noqa: F811
         jd, eq = _job_with_eq(tmp_path, periodic_triple)
