@@ -62,7 +62,9 @@ One introspection pass (`_tool_param_specs`) feeds the argparse builder, the
   required-argument validation as flags.
 
 Exit code `0` means success. Exit code `1` means the tool returned
-`success: False` or raised an exception.
+`success: False` or raised an exception. Exit code `2` is a command-line
+error (`unknown_parameter`, `invalid_parameter_value`,
+`node_id_value_missing`), still answered with the JSON envelope.
 
 `mdclaw --list` is a compact server-grouped tool-name index; use it only when
 the tool name is not already known. `mdclaw --list-json` returns the full
@@ -74,6 +76,34 @@ on the tool; these document accepted shapes without narrowing runtime inputs.
 The targeted form omits the long docstring; use full `--help` only when that
 compact contract is insufficient. An unknown name returns the structured
 `tool_not_available` error instead of argparse text.
+
+Reading the command line (`mdclaw/_cli_names.py`, MDDataBench v5 slips):
+
+- Read as the tool, with a note in `warnings`: case and hyphen variants
+  (`Build_Amber-System`), a server or stage word before an exact tool name
+  (`mdclaw slurm submit_job`, `slurm_submit_job`, `slurm.submit_job`;
+  `--list-json` too), and tool options written before the tool name
+  (`--job-dir J --node-type solv create_node` runs `create_node --node-type
+  solv`).
+- Refused as `tool_not_available`, always with up to five `suggestions`: a
+  guessed verb (`TOOL_ALIASES`: `fetch_pdb`, `remove_node`, `inspect_node`, ...)
+  gets the corrected command in `next_action`; a node id in the tool position
+  (`--job-dir J source_001 fetch_structure`) gets the command with
+  `--node-id`; a tool option with no tool (`--node-type prep`) gets the one
+  tool that takes it.
+- `node_id_value_missing` (exit 2): `--node-id` is last, empty, followed by an
+  option or by a tool name — an empty shell variable. `next_action` names the
+  single pending node of the tool's type, or captures a new one with
+  `NODE_ID=$(mdclaw --output id create_node ...)`.
+- argparse refusals are JSON on stdout (exit 2), never a usage dump:
+  `unknown_parameter` for tokens the tool does not take (near flags are named
+  in `hints`, never substituted; a pasted `...` is dropped in `next_action`),
+  `invalid_parameter_value` for a flag without its value or a bad value.
+- Tool parsers do not accept abbreviated flags (`allow_abbrev=False`), except
+  a missing unit or plural ending (`--temperature` for
+  `--temperature-kelvin`, `--residue-range` for `--residue-ranges`; see
+  `_FLAG_COMPLETIONS`). argparse prefix matching had read `--output <file>` as
+  `--output-dir` and `--forcefield` as `--forcefield-xml`.
 
 When a command runs with both `--job-dir` and `--node-id`, CLI-level failures
 are also recorded on that node. The node stays small (`metadata.errors`,
@@ -116,7 +146,17 @@ Every exit path of the CLI (success, refusal, crash) goes through
   `{"_omitted": true, "chars": N, "see": "<result_file>#<key>", "keys"|"items"}`.
   `PROTECTED_KEYS` (errors, hints, guidance, confirmations, resolved inputs,
   ...) never shrink. `--output full` prints everything; `--output id` prints
-  only the node id (for `create_node`) or the job dir.
+  only the node id (for `create_node`) or the job dir. A failure in id mode
+  prints nothing on stdout (so `NODE=$(...)` is visibly empty) and one line
+  `mdclaw error: {"success": false, "code": ..., "next_action": ...}` on
+  stderr, with a non-zero exit.
+- The last key of every printed result is `status_line`
+  (`success=false code=X node=Y status=Z next=<command or fix>`), so
+  `| tail -2` still shows the head of the envelope.
+- Python warnings raised while a tool runs are shown three times per site
+  (category, file, line) and then counted in one `[mdclaw] N more ...
+  suppressed` line on stderr (OpenMM's PDB reader warned once per lipid
+  residue pair).
 - Node tools also write the complete, ordered result to
   `<job_dir>/nodes/<node_id>/result.json` and report it as `result_file`.
 - stderr carries WARNING and above by default (`MDCLAW_LOG_LEVEL` raises or
@@ -178,6 +218,16 @@ Whenever a job dir is known, `_emit_result` attaches `dag_context(...)`:
   not completed gets the parent's step with `blocked_node_id` and `reason`
   (`wait` for a running parent). `next` names tools and ids, never
   scientific parameters.
+- Every command string in `next` runs as written (agents pasted `run_minimization
+  ...` and `[--dependency afterok:<job>]` into sbatch scripts): a node still to
+  be created is `"$NODE_ID"`, set by `node_id_capture`
+  (`NODE_ID=$(mdclaw --output id create_node ...)`); arguments only the caller
+  can supply are listed in `required_args`; `options_from` names the
+  `--list-json` call for the stage's options. A queued or running node gets
+  `wait`, and when it carries a `slurm_job_id`, a `chain_command` that submits
+  the forward stage (creating it if needed) with `--dependency
+  afterok:<that id>`; a pending node blocked by queued parents gets the same
+  for itself.
 - `mdclaw --workflow` prints the same contract as text (`_workflow_text`) and
   `mdclaw --list` groups stage tools by stage before listing the rest by
   server. `mdclaw --help` is one screen; per-tool help is unchanged.
@@ -194,8 +244,9 @@ job's node index (`_preflight_fix`), plus `dag` and `next`:
   that has a stage counterpart (`HELPER_STAGE_TOOL` in `_envelope.py`, e.g.
   `clean_protein` -> `prepare_complex`) the hint names the stage command.
 - `unknown_parameter`: `--json-input` carried keys the tool does not accept
-  (close matches and the accepted names are listed). Previously a
-  `TypeError` surfaced as `unhandled_exception`.
+  (close matches and the accepted names are listed), or a flag the tool's
+  parser does not take. Previously a `TypeError` surfaced as
+  `unhandled_exception`, and an unknown flag as argparse text on stderr.
 - `node_context_not_applicable`: `--job-dir`/`--node-id` given to a tool that
   has neither parameter; they would have been silently ignored.
 - `tool_contract_invalid`: the tool's own signature is broken (see Parameter
@@ -217,7 +268,13 @@ job's node index (`_preflight_fix`), plus `dag` and `next`:
   of a refused call stays under `artifacts/` (the rerun gets `split_2/`).
   The CLI's own failure record (`_record_cli_node_failure`) skips a result
   whose `node_status` is `pending` when the node is, so it never seals a
-  node the tool deliberately left open. Two more refusals are decided from
+  node the tool deliberately left open; likewise a result whose
+  `node_status` is the node's `queued` / `running` status (an MD stage
+  refused on the login node while its Slurm job holds the node,
+  `md_outside_allocation`). A `NodeAlreadyRunningError` from `begin_node`
+  (another live run owns the node) is reported as `node_already_running`
+  and recorded nowhere: recording it sealed the node under its owner
+  (021_antibody_3eoa cli_sif r1 of MDDataBench v5). Two more refusals are decided from
   the split output before the node begins: `disulfide_site_not_selected`
   (a declared cysteine the selection cannot hold) and
   `residue_range_endpoint_unobserved` (a range end nothing will build); the

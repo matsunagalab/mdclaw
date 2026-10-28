@@ -265,6 +265,25 @@ def inspect_molecules(
         source_model_index=source_model_index,
         source_model_id=source_model_id,
     )
+    auto_note = None
+    if job_dir and not node_id and not structure_file:
+        # A job has one source node; --job-dir alone means it.
+        from mdclaw.research.source_core import job_source_node
+
+        chosen = job_source_node(job_dir, "inspect_molecules")
+        if chosen.get("error"):
+            error = chosen["error"]
+            refused = create_validation_error(
+                "node_id", error["input_resolution_error"],
+                expected="--node-id of the job's source node (or --structure-file)",
+                actual=f"job_dir={job_dir}, node_id=None",
+                context_extra={"candidate_node_ids": error["candidate_node_ids"]},
+                code="node_id_required",
+            )
+            refused["next_action"] = error["next_action"]
+            return refused
+        node_id = chosen["node_id"]
+        auto_note = f"--node-id not given: inspected the job's source node {node_id}"
     _resolved_structure = _resolve_inspection_structure_file(
         job_dir, node_id, structure_file, _source_selection
     )
@@ -302,8 +321,10 @@ def inspect_molecules(
         "chains": [],
         "chain_ranges": [],
         "errors": [],
-        "warnings": [],
+        "warnings": [auto_note] if auto_note else [],
     }
+    if auto_note:
+        result["node_id"] = node_id
 
     if _resolved_structure.get("input_resolution_error"):
         return {

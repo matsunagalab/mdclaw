@@ -75,13 +75,11 @@ DAG handoff instead of claiming a scientific answer.
 
    For `prep`, `solv`, `topo`, `min`, `eq` and `prod`, `--conditions` is
    optional and each key is a contract: the stage tool must report that key
-   back with a concrete value or the node fails and is spent. Which keys a tool
-   reports is narrower than its parameter list and is not visible in
-   `--list-json`, so declare sparingly and keep other intent in `--label` or
-   the study plan; when a node does fail this way the error lists the keys that
-   invocation did cross-check. `analyze` is the exception — it requires
-   `analysis_data_scope` at creation and has no runtime cross-check, so follow
-   `skills/md-analyze/SKILL.md`.
+   back with the same value, so declare only values you also pass to the tool
+   and keep other intent in `--label` or the study plan. A key no stage tool of
+   that type reports is refused at creation (`condition_key_unknown`; run its
+   `next_action`). `analyze` is the exception — it requires
+   `analysis_data_scope` at creation, so follow `skills/md-analyze/SKILL.md`.
 
 3. **Validate the node before running it.**
 
@@ -123,7 +121,9 @@ DAG handoff instead of claiming a scientific answer.
    follow `skills/hpc-run/SKILL.md` and use `submit_job` (one node per GPU) or
    `submit_mps_job` (replicates of a small system sharing one GPU), which own
    the sbatch script and the `--dependency` flag. Do not hand-write sbatch
-   files.
+   files. Run on the login node, a stage tool refuses with
+   `code=md_outside_allocation` (nothing ran, the node stays pending) and its
+   `next_action` is the `submit_job` command for that node: run it.
 
 5. **Report what ran, before moving on.**
 

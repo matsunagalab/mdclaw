@@ -28,6 +28,7 @@ from mdclaw.simulation.custom_forces import CUSTOM_FORCE_GROUP, CustomForceError
 from mdclaw.simulation.deadline import DeadlineStepper, job_deadline_epoch  # noqa: E402
 from mdclaw.simulation.integrator_plan import _compute_step_plan, _record_production_node_result  # noqa: E402
 from mdclaw.simulation.restraints import DistanceRestraintError, load_distance_restraints, normalize_distance_restraints  # noqa: E402
+from mdclaw.simulation.run_guard import context_refusal, md_preflight  # noqa: E402
 from mdclaw.simulation.steering import PROTOCOL_PARAMETER, DistanceSteering, TorchSteering, check_steering_handoff, prepare_torch_steering, validate_steering  # noqa: E402
 from mdclaw.simulation.plumed import PlumedRun, native_log, validate_run as validate_plumed  # noqa: E402
 from mdclaw.simulation.restart import _close_reporter_stream, _count_state_data_rows, _detect_ensemble_mismatch, _flush_reporter_stream, _integrator_restart_verdict, _load_state_into_simulation, _resolve_dcd_append_mode, _resolve_restart_node_id_for_run, _restart_random_seed, _restart_source_metadata, _save_checkpoint_atomic, _save_state_atomic, _sibling_seed_collision  # noqa: E402
@@ -251,6 +252,7 @@ def run_production(
             - errors: list[str] - Error messages if any
             - warnings: list[str] - Non-critical warnings
     """
+    _call = dict(locals())
     _started_monotonic = time.monotonic()
     # Auto-resolve inputs from DAG when in node mode
     _eq_final_ensemble: Optional[str] = None
@@ -396,40 +398,36 @@ def run_production(
                         f"temperature_kelvin=300.0 (default): restart node "
                         f"'{_restart_from_node_id}' records no temperature to inherit."
                     )
-        _ctx = validate_node_execution_context(
-            job_dir,
-            node_id,
-            "prod",
-            actual_conditions={
-                "simulation_time_ns": simulation_time_ns,
-                "temperature_kelvin": temperature_kelvin,
-                "pressure_bar": pressure_bar,
-                # The pressure is resolved by now (inherited from the eq
-                # ancestor when omitted), so the ensemble is known: agents
-                # declare it ("NPT") and 054_nucleic_1zgw cli_skill_sif r3
-                # lost its production job to "did not include declared
-                # condition 'ensemble'".
-                "ensemble": ("NPT" if (pressure_bar is not None and pressure_bar > 0
-                                       and not implicit_solvent) else "NVT"),
-                "timestep_fs": timestep_fs,
-                "output_frequency_ps": output_frequency_ps,
-                "trajectory_format": trajectory_format,
-                "is_membrane": is_membrane,
-                "implicit_solvent": implicit_solvent,
-                "platform": platform,
-                "device_index": device_index,
-                "hmr": hmr,
-                "random_seed": random_seed,
-                "custom_force": _safe_custom_force_signature(
-                    custom_force_script, custom_force_parameters,
-                ),
-                "distance_restraints": distance_restraints,
-                "steering_time_ns": steering_time_ns,
-                "steering_update_interval_ps": steering_update_interval_ps,
-            },
-        )
+        _actual = {
+            "simulation_time_ns": simulation_time_ns,
+            "temperature_kelvin": temperature_kelvin,
+            "pressure_bar": pressure_bar,
+            # The pressure is resolved by now (inherited from the eq
+            # ancestor when omitted), so the ensemble is known: agents
+            # declare it ("NPT") and 054_nucleic_1zgw cli_skill_sif r3
+            # lost its production job to "did not include declared
+            # condition 'ensemble'".
+            "ensemble": ("NPT" if (pressure_bar is not None and pressure_bar > 0
+                                   and not implicit_solvent) else "NVT"),
+            "timestep_fs": timestep_fs,
+            "output_frequency_ps": output_frequency_ps,
+            "trajectory_format": trajectory_format,
+            "is_membrane": is_membrane,
+            "implicit_solvent": implicit_solvent,
+            "platform": platform,
+            "device_index": device_index,
+            "hmr": hmr,
+            "random_seed": random_seed,
+            "custom_force": _safe_custom_force_signature(
+                custom_force_script, custom_force_parameters,
+            ),
+            "distance_restraints": distance_restraints,
+            "steering_time_ns": steering_time_ns,
+            "steering_update_interval_ps": steering_update_interval_ps,
+        }
+        _ctx = validate_node_execution_context(job_dir, node_id, "prod", actual_conditions=_actual)
         if not _ctx["success"]:
-            return {"success": False, "error_type": "ValidationError", **_ctx}
+            return context_refusal(run_production, _call, job_dir, node_id, _ctx, _actual)
         # A prod -> prod continuation must keep its parent's integrator; a
         # different temperature or timestep used to fail only after the node
         # had started, with no code. Refuse before anything runs.
@@ -639,6 +637,11 @@ def run_production(
     # its driver owns the time budget; every other run stops before the
     # batch job's deadline and completes with what it has.
     _scheme_segment = False
+    # Where and on which platform the run may integrate: refused before
+    # begin_node, so the node stays pending for the corrected command.
+    _refusal = md_preflight(run_production, _call, job_dir, node_id)
+    if _refusal is not None:
+        return _refusal
     if _node_mode:
         from mdclaw._node import begin_node
         from mdclaw._node import read_node as _read_node

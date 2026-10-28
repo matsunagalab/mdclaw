@@ -77,6 +77,33 @@ def _write_slurm_observation_event(
         logger.warning("Could not write SLURM observation event: %s", exc)
 
 
+def already_submitted_action(job_dir: str, node_id: str, job_id: str, node_status: Optional[str], *,
+                             look_up: bool = True) -> str:
+    """The concrete next step for ``slurm_node_already_submitted``, from the
+    recorded job's state: wait for a live job, free a node whose job died
+    before the tool started, record and replace one that died while it ran.
+    The registered action used to be the only advice, with ``<job_dir>`` and
+    ``<node_id>`` left unfilled and no word on whether the job had failed."""
+    import shlex
+
+    from mdclaw.slurm.dependency import FAILED_STATES, QUEUED_STATES, recovery_for_dead_job, slurm_job_states
+
+    jd = shlex.quote(str(job_dir))
+    state = slurm_job_states([str(job_id)]).get(str(job_id)) if look_up else None
+    if state in QUEUED_STATES:
+        return (f"Job {job_id} is {state}: {node_id} is already submitted, do not submit it again; follow it "
+                f"with mdclaw check_job --job-dir {jd} --node-id {node_id}")
+    if state in FAILED_STATES:
+        return recovery_for_dead_job(job_dir, node_id, str(job_id), state, node_status)
+    if state == "COMPLETED":
+        return (f"Job {job_id} COMPLETED but {node_id} is {node_status}: record it with mdclaw check_job "
+                f"--job-dir {jd} --node-id {node_id}, then branch a new node from its parent")
+    return (f"If job {job_id} is still queued or running, wait for it (mdclaw check_job --job-dir {jd} "
+            f"--node-id {node_id}); if it is gone and {node_id} never started, free the node with mdclaw "
+            f"update_workflow_state --job-dir {jd} --node-id {node_id} --clear-slurm-metadata and submit it "
+            "again")
+
+
 def _validate_node_ready_for_slurm_submit(job_dir: str, node_id: str) -> Optional[dict]:
     try:
         node = read_node(str(Path(job_dir).resolve()), node_id)
@@ -92,7 +119,7 @@ def _validate_node_ready_for_slurm_submit(job_dir: str, node_id: str) -> Optiona
     if _node_is_terminal(node):
         return _terminal_node_sealed_response(node_id, node.get("status"))
     if existing:
-        return create_validation_error(
+        error = create_validation_error(
             "node_id",
             f"Node {node_id!r} already has slurm_job_id={existing!r}.",
             expected="node without existing SLURM submission metadata",
@@ -100,6 +127,8 @@ def _validate_node_ready_for_slurm_submit(job_dir: str, node_id: str) -> Optiona
             hints=[_STALE_SUBMISSION_HINT.format(job_dir=job_dir, node_id=node_id)],
             code="slurm_node_already_submitted",
         )
+        error["next_action"] = already_submitted_action(job_dir, node_id, str(existing), node.get("status"))
+        return error
     intent = (node.get("metadata") or {}).get("slurm_submission_intent_id")
     if intent:
         uncertain_at = (node.get("metadata") or {}).get("slurm_submission_uncertain_at")
@@ -169,14 +198,18 @@ def _reserve_slurm_submission_on_node(
             metadata = data.setdefault("metadata", {})
             existing = metadata.get("slurm_job_id")
             if existing:
-                return create_validation_error(
+                error = create_validation_error(
                     "node_id",
                     f"Node {node_id!r} already has slurm_job_id={existing!r}.",
                     expected="node without existing SLURM submission metadata",
                     actual=f"slurm_job_id={existing!r}",
                     hints=[_STALE_SUBMISSION_HINT.format(job_dir=job_dir, node_id=node_id)],
                     code="slurm_node_already_submitted",
-                ), None
+                )
+                # No queue lookup while node.lock is held.
+                error["next_action"] = already_submitted_action(
+                    job_dir, node_id, str(existing), data.get("status"), look_up=False)
+                return error, None
             intent = metadata.get("slurm_submission_intent_id")
             if intent:
                 return create_validation_error(
@@ -570,6 +603,30 @@ def settle_uncertain_submission(job_dir: str, node_id: str, *,
     return {"outcome": "unknown", "slurm_job_id": None}
 
 
+def _superseded_job(job_dir: str, node_id: str, slurm_job_id: Optional[str]) -> Optional[str]:
+    """A message when Slurm job ``slurm_job_id`` is not the node's current
+    submission: a resubmitted node records its new job in
+    ``metadata.slurm_job_id``, and the end of the old one is an event only, not
+    the node's failure (reported from the v5 runs, 2026-10-29)."""
+    if not slurm_job_id:
+        return None
+    try:
+        meta = read_node(str(job_dir), node_id).get("metadata") or {}
+    except Exception:  # noqa: BLE001 - a lookup never breaks a sync
+        return None
+    recorded = meta.get("slurm_job_id")
+    if not recorded:
+        return None
+    # An array child is stamped as ``<parent>_<task>`` while check_job may be
+    # asked about the parent: the same submission, not a superseded one.
+    base = lambda job: str(job).split("_", 1)[0]  # noqa: E731
+    known = {base(recorded), base(meta.get("slurm_parent_job_id") or recorded)}
+    if base(slurm_job_id) in known:
+        return None
+    return (f"Slurm job {slurm_job_id} is not node {node_id}'s current submission "
+            f"(job {recorded}); its end is recorded as an event only")
+
+
 def _live_owner_elsewhere(job_dir: str, node_id: str, slurm_job_id: Optional[str]) -> Optional[str]:
     """A message when a live process other than Slurm job ``slurm_job_id``
     owns the running node: that job's end is recorded as an event, not as
@@ -722,6 +779,9 @@ def _sync_slurm_state_to_node(
                 f"node {node_id} already completed but SLURM reports {state}; "
                 f"not demoting node status"
             )
+        superseded = _superseded_job(str(job_dir), node_id, slurm_job_id)
+        if superseded:
+            return superseded
         if current == "running":
             keeper = _live_owner_elsewhere(str(job_dir), node_id, slurm_job_id)
             if keeper:
@@ -771,6 +831,9 @@ def _sync_slurm_state_to_node(
             return None
         if current == "failed":
             return None
+        superseded = _superseded_job(str(job_dir), node_id, slurm_job_id)
+        if superseded:
+            return superseded
         if current == "running":
             keeper = _live_owner_elsewhere(str(job_dir), node_id, slurm_job_id)
             if keeper:

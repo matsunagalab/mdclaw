@@ -507,6 +507,7 @@ def run_fep(
         disk), ``indexed_windows`` (every window that index lists) and
         ``sampled_windows`` (the subset this node finished).
     """
+    _call = dict(locals())
     from mdclaw._node import fail_tool
 
     result: dict = {"success": False, "tool": "run_fep", "errors": [], "warnings": [], "windows": []}
@@ -683,33 +684,34 @@ def run_fep(
 
     # --- node context -----------------------------------------------------
     if node_mode:
-        from mdclaw._node import fail_node_from_result
+        from mdclaw.simulation.run_guard import context_refusal, md_preflight
 
-        ctx = validate_node_execution_context(
-            job_dir, node_id, "fep",
-            actual_conditions={
-                # Echo the user's own spelling ("0-6") so a declared condition
-                # written the same way matches; the resolved list is recorded
-                # in metadata.
-                "lambda_indices": (str(lambda_indices) if lambda_indices not in (None, "", "all")
-                                   else ",".join(str(i) for i in indices)),
-                "sampling_time_ns": sampling_time_ns,
-                "equilibration_time_ns": equilibration_time_ns,
-                "sample_interval_ps": sample_interval_ps,
-                "temperature_kelvin": temperature_kelvin,
-                "pressure_bar": pressure_bar,
-                "timestep_fs": timestep_fs,
-                "hmr": hmr,
-                "restraint_atoms": restraint_atoms,
-                "restraint_force_constant": restraint_force_constant if restraint_atoms else None,
-                "platform": platform,
-                "random_seed": random_seed,
-            },
-        )
+        actual = {
+            # Echo the user's own spelling ("0-6") so a declared condition
+            # written the same way matches; the resolved list is recorded
+            # in metadata.
+            "lambda_indices": (str(lambda_indices) if lambda_indices not in (None, "", "all")
+                               else ",".join(str(i) for i in indices)),
+            "sampling_time_ns": sampling_time_ns,
+            "equilibration_time_ns": equilibration_time_ns,
+            "sample_interval_ps": sample_interval_ps,
+            "temperature_kelvin": temperature_kelvin,
+            "pressure_bar": pressure_bar,
+            "timestep_fs": timestep_fs,
+            "hmr": hmr,
+            "restraint_atoms": restraint_atoms,
+            "restraint_force_constant": restraint_force_constant if restraint_atoms else None,
+            "platform": platform,
+            "random_seed": random_seed,
+        }
+        ctx = validate_node_execution_context(job_dir, node_id, "fep", actual_conditions=actual)
         if not ctx["success"]:
-            return fail_node_from_result(
-                job_dir, node_id, {"success": False, "error_type": "ValidationError", **ctx},
-                default_error="run_fep node execution context invalid")
+            return context_refusal(run_fep, _call, job_dir, node_id, ctx, actual, keep_pending=True)
+        # Where and on which platform the windows may integrate: refused
+        # before begin_node, so the node stays pending.
+        refusal = md_preflight(run_fep, _call, job_dir, node_id)
+        if refusal is not None:
+            return refusal
         out_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
         begin_node(job_dir, node_id)

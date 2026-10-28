@@ -1,5 +1,6 @@
 """Shared test fixtures for MDClaw test suite."""
 
+import os
 import re
 import sys
 import textwrap
@@ -10,6 +11,12 @@ import pytest
 # Add servers directory to path for direct imports
 servers_dir = Path(__file__).parent.parent / "mdclaw"
 sys.path.insert(0, str(servers_dir))
+
+# The suite integrates tiny systems on the CPU in node mode. On a Slurm login
+# node the MD stage tools refuse that (md_outside_allocation); set before any
+# test runs so CLI subprocesses inherit it. tests/test_md_run_guard.py removes
+# it to exercise the refusal.
+os.environ["MDCLAW_ALLOW_LOCAL_MD"] = "1"
 
 
 
@@ -61,6 +68,14 @@ def pytest_runtest_makereport(item, call):
         passed = getattr(cls, "_steps_passed", set())
         passed.add(n)
         cls._steps_passed = passed
+
+
+@pytest.fixture(autouse=True)
+def _allow_host_local_submit_paths(monkeypatch):
+    """pytest's tmp_path lives under /tmp, which submit_job refuses for a
+    compute node (``submission_path_not_shared``). Tests of that refusal
+    delete the variable."""
+    monkeypatch.setenv("MDCLAW_ALLOW_LOCAL_SUBMIT_PATHS", "1")
 
 
 # --- Minimal PDB fixtures ---

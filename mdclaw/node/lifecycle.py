@@ -13,7 +13,7 @@ from mdclaw._lock import file_lock
 logger = logging.getLogger(__name__)
 
 from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPE_ORDER, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, STAGE_CHAIN_TEXT, STRUCTURED_NODE_ID_RE, TERMINAL_NODE_STATUSES, _ALLOWED_PARENT_TYPES, _AUTO_PARENT_PREFERENCE, normalize_node_type, suggest_node_type  # noqa: E402
-from mdclaw.node.condition_hints import describe_condition_key, resolve_condition_key  # noqa: E402
+from mdclaw.node.condition_hints import comparable_condition_values, describe_condition_key, resolve_condition_key  # noqa: E402
 from mdclaw.node.io import _atomic_write_json, _values_match, normalize_artifact_paths  # noqa: E402
 from mdclaw.node.progress import _load_progress_v3, _next_node_id, _node_progress_summary  # noqa: E402
 from mdclaw.node.snapshot import cap_ids, dag_snapshot, describe_nodes, node_missing_error, nodes_of_type  # noqa: E402
@@ -339,6 +339,63 @@ def _eq_under_topo_error(topo_id: str, nodes_index: dict, jd) -> Optional[dict]:
     }
 
 
+def _referenced_node_missing_error(ref: str, node_type: str, parents: list[str], deps: list[str],
+                                   nodes_index: dict, jd) -> dict:
+    """A parent/dependency id that is not in the job, with the ids that are.
+
+    Agents passed a stage name (``--parent-node-ids eq``) or a guessed id;
+    the reply names the nodes of that type and the command with the one the
+    DAG would choose.
+    """
+    ref_type = normalize_node_type(ref)
+    if ref_type is None:
+        prefix = str(ref).split("_", 1)[0]
+        ref_type = normalize_node_type(prefix) if prefix != ref else None
+    same = nodes_of_type(nodes_index, ref_type) if ref_type else []
+    usable = [nid for nid in same if nodes_index[nid].get("status") != "failed"]
+    referenced = {p for info in nodes_index.values() for p in (info.get("parents") or [])}
+    leaves = [nid for nid in usable if nid not in referenced]
+    pick = leaves[0] if len(leaves) == 1 else (usable[0] if len(usable) == 1 else None)
+    is_type = normalize_node_type(ref) is not None
+    message = (f"Referenced node '{ref}' does not exist in this job"
+               + (f": '{ref}' is a node type; parents are node ids such as "
+                  f"{', '.join(same[:3]) or ref_type + '_001'}" if is_type else ""))
+    hints = []
+    if ref_type:
+        shown, omitted = cap_ids(same)
+        hints.append(f"{ref_type} nodes in this job: "
+                     + (describe_nodes(nodes_index, shown) + (f" (+{omitted} more)" if omitted else "")
+                        if same else "none"))
+    else:
+        shown, omitted = cap_ids(list(nodes_index))
+        hints.append("Nodes in this job: " + (describe_nodes(nodes_index, shown) or "none"))
+    if pick:
+        fixed_parents = [pick if p == ref else p for p in parents]
+        fixed_deps = [pick if d == ref else d for d in deps]
+        next_action = f"mdclaw create_node --job-dir {shlex.quote(str(jd))} --node-type {node_type}"
+        if fixed_parents:
+            next_action += " --parent-node-ids " + " ".join(fixed_parents)
+        if fixed_deps:
+            next_action += " --dependency-node-ids " + " ".join(fixed_deps)
+    else:
+        next_action = f"mdclaw create_node --job-dir {shlex.quote(str(jd))} --node-type {node_type}"
+        hints.append("Without --parent-node-ids the parent is auto-resolved when the frontier is "
+                     "unambiguous (parent_required lists the candidates otherwise).")
+    return {
+        "success": False,
+        "code": "referenced_node_missing",
+        "error": message,
+        "message": message,
+        "errors": [message],
+        "warnings": [],
+        "hints": hints,
+        "candidate_parent_node_ids": usable[:20],
+        "next_action": next_action,
+        "dag": dag_snapshot(nodes_index),
+        "recoverable": True,
+    }
+
+
 def _invalid_node_type_error(requested, job_dir) -> dict:
     order = " > ".join(NODE_TYPE_ORDER)
     suggestion = suggest_node_type(requested)
@@ -461,6 +518,10 @@ def create_node(
     if not prepared.get("ok"):
         return prepared
     jd = prepared["jd"]
+    screened = _screen_conditions(jd, prepared, conditions, label)
+    if screened.get("success") is False:
+        return screened
+    conditions = screened["conditions"]
     with file_lock(jd / "progress.lock"):
         pj = jd / "progress.json"
         progress = _load_progress_v3(pj, create_if_missing=True)
@@ -471,7 +532,84 @@ def create_node(
         if not outcome.get("_created"):
             return outcome
         _atomic_write_json(pj, progress)
-    return _create_node_finish(job_dir, jd, outcome)
+    result = _create_node_finish(job_dir, jd, outcome)
+    if screened["warnings"]:
+        result["warnings"] = [*result.get("warnings", []), *screened["warnings"]]
+    return result
+
+
+def _screen_conditions(jd: Path, prepared: dict, conditions, label: Optional[str]) -> dict:
+    """Refuse declared conditions no stage tool of the node type can verify.
+
+    ``condition_key_unknown`` before anything is written, with the reported
+    key (and the value converted to its unit) each refused key most likely
+    meant and the corrected ``create_node`` command. Curated aliases
+    (``chains`` -> ``select_chains``) are recorded under the reported key.
+    """
+    if not isinstance(conditions, dict) or not conditions:
+        return {"conditions": conditions, "warnings": []}
+    from mdclaw.node.condition_hints import screen_declared_conditions
+    from mdclaw.node.condition_vocabulary import node_types_reporting, stage_condition_vocabulary
+
+    node_type = prepared["node_type"]
+    vocabulary = stage_condition_vocabulary(node_type)
+    if vocabulary is None:
+        return {"conditions": conditions, "warnings": []}
+    screened = screen_declared_conditions(vocabulary, conditions)
+    warnings = [f"declared condition {old!r} recorded as {new!r} (the key the stage tool reports)"
+                for old, new in screened["renamed"].items()]
+    if not screened["unknown"]:
+        return {"conditions": screened["conditions"], "warnings": warnings}
+    suggested = dict(screened["conditions"])
+    described, dropped = [], []
+    for entry in screened["unknown"]:
+        key = entry["key"]
+        if "suggested_key" in entry:
+            suggested[entry["suggested_key"]] = entry["suggested_value"]
+            described.append(f"{key!r} (use {entry['suggested_key']!r}: {entry['suggested_value']!r})")
+            continue
+        dropped.append(key)
+        text = repr(key)
+        if entry.get("did_you_mean"):
+            text += f" (did you mean {' or '.join(repr(k) for k in entry['did_you_mean'])}?)"
+        elsewhere = [t for t in node_types_reporting(key) if t != node_type]
+        if elsewhere:
+            text += f" (a {'/'.join(elsewhere)} condition: declare it on that node)"
+        described.append(text)
+    message = (f"--conditions of a {node_type} node: {', '.join(described)} "
+               f"{'is' if len(described) == 1 else 'are'} not reported by any {node_type} stage tool, "
+               "so the node could never run (a declared condition must be cross-checked). "
+               "Nothing was created.")
+    command = f"mdclaw create_node --job-dir {shlex.quote(str(jd))} --node-type {node_type}"
+    if prepared.get("continue_from"):
+        command += f" --continue-from {prepared['continue_from']}"
+    elif prepared.get("parents"):
+        command += " --parent-node-ids " + " ".join(prepared["parents"])
+    if prepared.get("deps"):
+        command += " --dependency-node-ids " + " ".join(prepared["deps"])
+    if label:
+        command += f" --label {shlex.quote(label)}"
+    if suggested:
+        command += f" --conditions {shlex.quote(json.dumps(suggested))}"
+    hints = [f"Keys a {node_type} node can declare: {', '.join(sorted(vocabulary))}",
+             "Declare only values you also pass to the stage tool; record other intent in --label "
+             "or the study plan."]
+    if dropped:
+        hints.insert(0, f"The corrected command drops {', '.join(repr(k) for k in dropped)}.")
+    return {
+        "success": False,
+        "code": "condition_key_unknown",
+        "error": message,
+        "message": message,
+        "errors": [message],
+        "warnings": warnings,
+        "hints": hints,
+        "unknown_condition_keys": [entry["key"] for entry in screened["unknown"]],
+        "suggested_conditions": suggested,
+        "accepted_condition_keys": sorted(vocabulary),
+        "next_action": command,
+        "recoverable": True,
+    }
 
 
 def _create_nodes_bulk(job_dir: str, specs: list[dict]) -> list[dict]:
@@ -684,11 +822,7 @@ def _create_node_in_progress(
     # Validate parent/dependency references
     for ref in parents + deps:
         if ref not in nodes_index:
-            return {
-                "success": False,
-                "code": "referenced_node_missing",
-                "error": f"Referenced node '{ref}' does not exist in progress.json",
-            }
+            return _referenced_node_missing_error(ref, node_type, parents, deps, nodes_index, jd)
 
     # If continue_from was used, the referenced node must be a prod node.
     if continue_from is not None:
@@ -1160,13 +1294,14 @@ def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
             node_id, current.get("status"), node=current, job_dir=job_dir)
     if canonical_status in TERMINAL_NODE_STATUSES:
         node_type = current.get("node_type") or "<type>"
-        run_command = (
-            f"mdclaw --job-dir {job_dir} --node-id {node_id} <{node_type} stage tool> ..."
-        )
+        # explain_node answers with the exact stage-tool command for this node;
+        # a "<stage tool> ..." template here got pasted verbatim (v5, 2026-10-29).
+        run_command = f"mdclaw explain_node --job-dir {job_dir} --node-id {node_id}"
         message = (
             f"Status {canonical_status!r} is set by the node's stage tool when it "
             "finishes, not by update_workflow_state. Standalone helpers do not "
-            f"complete nodes. Run the stage tool for this {node_type} node: {run_command}"
+            f"complete nodes. Run the stage tool for this {node_type} node; "
+            f"{run_command} prints its exact command"
         )
         return {
             "success": False,
@@ -1790,8 +1925,8 @@ def _context_fix(job_dir, node_id, node, expected_node_type, blocking_codes, blo
         if status in ("pending", "queued", None):
             hints.append("Parents must be completed first; the CLI does not run them for you. "
                          "To chain stages in one Slurm submission use --dependency afterok.")
-            return (f"Run {role} '{bid}' ({btype}, {status or 'pending'}) first: "
-                    f"mdclaw --job-dir {job_dir} --node-id {bid} <{btype} stage tool> ...; "
+            return (f"Run {role} '{bid}' ({btype}, {status or 'pending'}) first "
+                    f"(its exact command: mdclaw explain_node --job-dir {job_dir} --node-id {bid}), "
                     f"then rerun this node"), hints
         if status == "running":
             return (f"Wait for {role} '{bid}' ({btype}, running): "
@@ -1866,30 +2001,9 @@ def validate_declared_conditions(declared_conditions, actual_conditions):
                 + branch_advice
             )
             continue
-        # CLI accepts comma-separated ranges or a list. Preserve join-group
-        # boundaries: two groups must never compare equal to one joined group.
-        def range_tokens(value):
-            if not isinstance(value, (str, list, tuple)):
-                raise TypeError("ranges must be strings or lists")
-            items = [value] if isinstance(value, str) else value
-            return sorted(part.strip() for item in items
-                          for part in item.split(",") if part.strip())
-
-        comparable_expected, comparable_actual = expected, actual
-        if isinstance(actual, (list, tuple)) and isinstance(expected, str) and "," in expected:
-            # "A,B,E" declared against a list the tool reports (018_antibody_1mlc)
-            comparable_expected = [part.strip() for part in expected.split(",") if part.strip()]
-        if key in {"residue_ranges", "join_range_groups"}:
-            try:
-                if key == "residue_ranges":
-                    comparable_expected, comparable_actual = map(range_tokens, (expected, actual))
-                else:
-                    def groups(value):
-                        return sorted(range_tokens(item) for item in
-                                      ([value] if isinstance(value, str) else value))
-                    comparable_expected, comparable_actual = map(groups, (expected, actual))
-            except (TypeError, AttributeError):
-                pass  # Malformed values still fail the ordinary strict comparison.
+        # Equivalent forms ("A,B" / "A B" for a list, chain-less ranges, force
+        # field spellings) compare equal; join-group boundaries are kept.
+        comparable_expected, comparable_actual = comparable_condition_values(key, expected, actual)
         if not _values_match(comparable_expected, comparable_actual):
             add_error(
                 "condition_mismatch",

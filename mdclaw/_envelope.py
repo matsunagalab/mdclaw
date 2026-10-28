@@ -195,47 +195,52 @@ def _alchemical_analyze_next(job_dir: str, node_id: str, node: dict, nodes: dict
         folded, unfolded = (node_id, partner) if my_role == base_role else (partner, node_id)
         create = (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} --node-type analyze "
                   f"--parent-node-ids {folded} {unfolded} --conditions {shlex.quote(_DDG_ANALYZE_CONDITIONS)}")
-        return {"action": "create", "node_type": "analyze", "create_command": create,
-                "stage_tools": [final_tool], "run_command": _run_command(job_dir, "<new>", final_tool),
-                "inputs": "auto_resolved",
-                "note": f"both legs are analysed ({base_role} {folded}, {derived_role} {unfolded}): "
-                        f"{final_tool} combines them"
-                + (f"; other {derived_role} analyses: {sorted(set(partners) - {partner})}" if len(partners) > 1 else "")}
+        return _with_capture({
+            "action": "create", "node_type": "analyze", "create_command": create,
+            "stage_tools": [final_tool], **_command_fields(job_dir, NEW_NODE, final_tool, tools),
+            "inputs": "auto_resolved",
+            "note": f"both legs are analysed ({base_role} {folded}, {derived_role} {unfolded}): "
+                    f"{final_tool} combines them"
+            + (f"; other {derived_role} analyses: {sorted(set(partners) - {partner})}" if len(partners) > 1 else "")})
     if my_role != base_role:
         return None
     prep = _nearest_ancestor(job_dir, node_id, nodes, "prep")
     if prep is None:
         return None
     if abfe:
-        ligand = str((node.get("metadata") or {}).get("mutation") or "").split(":", 1)[-1] or "<RESNAME>"
+        ligand = str((node.get("metadata") or {}).get("mutation") or "").split(":", 1)[-1]
         stage_tools = stage_tools_for("prep", tools, params)
         if "extract_ligand" in stage_tools:
             stage_tools.remove("extract_ligand")
             stage_tools.insert(0, "extract_ligand")
-        return {"action": "create", "node_type": "prep",
-                "create_command": (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} --node-type prep "
-                                   f"--parent-node-ids {prep}"),
-                "stage_tools": stage_tools,
-                "run_command": (f"mdclaw --job-dir {shlex.quote(job_dir)} --node-id <new> extract_ligand "
-                                f"--ligand {shlex.quote(ligand)}"),
-                "inputs": "auto_resolved",
-                "note": "the complex leg is analysed; the solvent leg (ligand alone) starts as a prep child of the "
-                        "complex's prep node, then solv -> topo (build_decoupled_system, same options) -> min -> eq "
-                        "-> fep -> analyze_fep, and estimate_binding_dg combines the legs"}
-    mutation = (node.get("metadata") or {}).get("mutation") or "<mutation>"
+        fields = _command_fields(job_dir, NEW_NODE, "extract_ligand", tools,
+                                 args=f"--ligand {shlex.quote(ligand)}" if ligand else "")
+        if not ligand:
+            fields["required_args"] = ["--ligand", *fields.get("required_args", [])]
+        return _with_capture({
+            "action": "create", "node_type": "prep",
+            "create_command": (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} --node-type prep "
+                               f"--parent-node-ids {prep}"),
+            "stage_tools": stage_tools, **fields,
+            "inputs": "auto_resolved",
+            "note": "the complex leg is analysed; the solvent leg (ligand alone) starts as a prep child of the "
+                    "complex's prep node, then solv -> topo (build_decoupled_system, same options) -> min -> eq "
+                    "-> fep -> analyze_fep, and estimate_binding_dg combines the legs"})
+    mutation = (node.get("metadata") or {}).get("mutation")
     stage_tools = stage_tools_for("prep", tools, params)
     if "extract_tripeptide" in stage_tools:
         stage_tools.remove("extract_tripeptide")
         stage_tools.insert(0, "extract_tripeptide")
-    run = (f"mdclaw --job-dir {shlex.quote(job_dir)} --node-id <new> extract_tripeptide "
-           f"--mutation {shlex.quote(str(mutation))}")
-    return {"action": "create", "node_type": "prep",
-            "create_command": (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} --node-type prep "
-                               f"--parent-node-ids {prep}"),
-            "stage_tools": stage_tools, "run_command": run, "inputs": "auto_resolved",
-            "note": "the folded leg is analysed; the unfolded leg (capped peptide) starts as a prep child of the "
-                    "protein's prep node, then solv -> topo (build_hybrid_system, same --mutation) -> min -> eq -> "
-                    "fep -> analyze_fep, and a comparison analyze node over both legs estimates ddG"}
+    fields = _command_fields(job_dir, NEW_NODE, "extract_tripeptide", tools,
+                             args=f"--mutation {shlex.quote(str(mutation))}" if mutation else "")
+    return _with_capture({
+        "action": "create", "node_type": "prep",
+        "create_command": (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} --node-type prep "
+                           f"--parent-node-ids {prep}"),
+        "stage_tools": stage_tools, **fields, "inputs": "auto_resolved",
+        "note": "the folded leg is analysed; the unfolded leg (capped peptide) starts as a prep child of the "
+                "protein's prep node, then solv -> topo (build_hybrid_system, same --mutation) -> min -> eq -> "
+                "fep -> analyze_fep, and a comparison analyze node over both legs estimates ddG"})
 _OPEN = frozenset({"pending", "queued", "running"})
 
 # Standalone helpers agents reach for when they mean a stage. The helper does
@@ -260,7 +265,7 @@ def helper_stage_hint(tool_name: str, job_dir: Optional[str] = None,
         return None
     stage, stage_tool = entry
     command = (f"mdclaw --job-dir {job_dir or '<job_dir>'} "
-               f"--node-id {node_id or f'<{stage} node id>'} {stage_tool} ...")
+               f"--node-id {node_id or f'<{stage} node id>'} {stage_tool}")
     return (f"{tool_name} is a standalone helper: it reads and writes no node state. "
             f"Inside a job the {stage} stage is one tool with inputs auto-resolved "
             f"from the DAG: {command}")
@@ -318,6 +323,54 @@ def order_envelope(result: dict, *, node_id: Optional[str] = None,
         if key not in ordered:
             ordered[key] = value
     return ordered
+
+
+STATUS_LINE_KEY = "status_line"
+_STATUS_LINE_LIMIT = 600
+
+
+def _next_command_text(payload: dict) -> Optional[str]:
+    step = payload.get("next")
+    if not isinstance(step, dict):
+        return None
+    action = step.get("action")
+    if action == "done":
+        return "done"
+    for key in {"create": ("create_command",), "run": ("run_command",),
+                "wait": ("chain_command", "wait_command"),
+                "branch": ("trace_command", "create_command")}.get(action, ()):
+        if step.get(key):
+            return str(step[key])
+    return step.get("reason") and f"blocked: {step['reason']}"
+
+
+def status_line(payload: dict) -> str:
+    """One line that repeats the head of the envelope at its end.
+
+    Agents read long results through ``| tail -N``; in MDDataBench v5 that cut
+    ``success`` and ``code`` from 1,237 results in 441 attempts. This value is
+    the last key, so ``tail -2`` and up still show it.
+    """
+    parts = [f"success={'true' if payload.get('success') else 'false'}"]
+    for label, key in (("code", "code"), ("node", "node_id"), ("status", "node_status")):
+        if payload.get(key):
+            parts.append(f"{label}={payload[key]}")
+    if payload.get("success") is False and payload.get("next_action"):
+        nxt = str(payload["next_action"])
+    else:
+        nxt = _next_command_text(payload)
+    line = " ".join(parts)
+    if nxt:
+        room = max(_STATUS_LINE_LIMIT - len(line) - 6, 80)
+        line += " next=" + (nxt if len(nxt) <= room else nxt[:room - 1] + "~")
+    return line
+
+
+def with_status_line(payload: dict) -> dict:
+    """``payload`` with ``status_line`` moved to (or added as) its last key."""
+    out = {key: value for key, value in payload.items() if key != STATUS_LINE_KEY}
+    out[STATUS_LINE_KEY] = status_line(out)
+    return out
 
 
 def write_result_file(result: dict, job_dir: Optional[str], node_id: Optional[str]) -> Optional[str]:
@@ -392,14 +445,109 @@ def stage_tools_for(node_type: Optional[str], tools: dict, params: dict, *, alch
     return names
 
 
-def _run_command(job_dir: str, node_id: str, tool: Optional[str]) -> str:
+# Commands in ``next`` are pasted verbatim, into shells and into sbatch
+# scripts (MDDataBench v5: ``run_minimization ...`` and ``[--dependency
+# afterok:<job>]`` went into three submitted jobs). Every command string is
+# therefore executable as written: what is known is filled in, a node that
+# does not exist yet is the shell variable ``$NODE_ID`` that ``node_id_capture``
+# sets, and an argument only the caller can supply is listed in
+# ``required_args`` instead of being written as a placeholder.
+NEW_NODE = "<new>"
+NODE_ID_VAR = "NODE_ID"
+
+
+def _node_ref(node_id: str, *, in_double_quotes: bool = False) -> str:
+    if node_id == NEW_NODE:
+        return f"${NODE_ID_VAR}" if in_double_quotes else f'"${NODE_ID_VAR}"'
+    return shlex.quote(node_id)
+
+
+def _run_command(job_dir: str, node_id: str, tool: Optional[str], args: str = "", *,
+                 in_double_quotes: bool = False) -> str:
     tool = tool or "<stage tool>"
-    return f"mdclaw --job-dir {shlex.quote(job_dir)} --node-id {shlex.quote(node_id)} {tool} ..."
+    command = (f"mdclaw --job-dir {shlex.quote(job_dir)} "
+               f"--node-id {_node_ref(node_id, in_double_quotes=in_double_quotes)} {tool}")
+    return f"{command} {args}".rstrip()
 
 
-def _batch_command(job_dir: str, node_id: str, run_command: str) -> str:
-    return (f"mdclaw submit_job --job-dir {shlex.quote(job_dir)} --node-id {shlex.quote(node_id)} "
-            f"--script {shlex.quote(run_command)} --gpus 1 [--dependency afterok:<job>]")
+def _batch_command(job_dir: str, node_id: str, tool: Optional[str], args: str = "",
+                   dependency_job_ids: Optional[list[str]] = None) -> str:
+    """``submit_job`` for one node. For a node still to be created the script
+    is double-quoted, so ``$NODE_ID`` expands when the command is submitted,
+    not later inside the batch job where it is unset."""
+    if node_id == NEW_NODE:
+        script = '"' + _run_command(job_dir, node_id, tool, args, in_double_quotes=True) + '"'
+    else:
+        script = shlex.quote(_run_command(job_dir, node_id, tool, args))
+    command = (f"mdclaw submit_job --job-dir {shlex.quote(job_dir)} --node-id {_node_ref(node_id)} "
+               f"--script {script} --gpus 1")
+    if dependency_job_ids:
+        command += f" --dependency afterok:{':'.join(dependency_job_ids)}"
+    return command
+
+
+def _capture_command(create_command: str) -> str:
+    """``NODE_ID=$(mdclaw --output id create_node ...)``: create the node and
+    keep its id for ``run_command`` / ``batch_command`` in the same shell."""
+    return f"{NODE_ID_VAR}=$({create_command.replace('mdclaw create_node', 'mdclaw --output id create_node', 1)})"
+
+
+def _required_args(tools: dict, tool: Optional[str], given: str = "") -> list[str]:
+    """Flags the tool requires that the command does not carry."""
+    info = tools.get(tool or "") or {}
+    fn = info.get("fn")
+    if fn is None:
+        return []
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return []
+    flags = []
+    for name, param in params.items():
+        if name.startswith("_") or name in ("job_dir", "node_id"):
+            continue
+        if param.default is inspect.Parameter.empty:
+            flag = "--" + name.replace("_", "-")
+            if flag not in given.split():
+                flags.append(flag)
+    return flags
+
+
+def _command_fields(job_dir: str, node_id: str, tool: Optional[str], tools: dict, *,
+                    args: str = "", batch: bool = False,
+                    dependency_job_ids: Optional[list[str]] = None) -> dict:
+    """``run_command`` (and ``batch_command``) plus ``required_args``."""
+    fields = {"run_command": _run_command(job_dir, node_id, tool, args)}
+    if batch:
+        fields["batch_command"] = _batch_command(job_dir, node_id, tool, args, dependency_job_ids)
+    required = _required_args(tools, tool, args)
+    if required:
+        fields["required_args"] = required
+    if tool:
+        fields["options_from"] = f"mdclaw --list-json {tool}"
+    return fields
+
+
+def _with_capture(step: dict) -> dict:
+    """A create step whose commands name ``$NODE_ID`` says how to set it."""
+    if step.get("action") == "create" and step.get("create_command") and (
+            f"${NODE_ID_VAR}" in str(step.get("run_command") or "")):
+        step["node_id_capture"] = _capture_command(step["create_command"])
+    return step
+
+
+def _slurm_job_ids(job_dir: str, node_ids: list[str]) -> Optional[list[str]]:
+    """Slurm job ids of queued/running nodes, or None when any lacks one."""
+    ids = []
+    for nid in node_ids:
+        node = _read_node(job_dir, nid) or {}
+        job = (node.get("metadata") or {}).get("slurm_job_id")
+        if node.get("status") not in ("queued", "running") or not job:
+            return None
+        ids.append(str(job))
+    return ids or None
 
 
 def _extension_next(job_dir: str, node_id: str, node: dict, nodes: dict, tools: dict,
@@ -417,17 +565,18 @@ def _extension_next(job_dir: str, node_id: str, node: dict, nodes: dict, tools: 
         if step:
             return step
     meta = node.get("metadata") or {}
-    run = (f"mdclaw --job-dir {shlex.quote(job_dir)} --node-id <new> run_production "
-           f"--simulation-time-ns {remaining:g} ...")
     create = (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} --node-type prod "
               f"--continue-from {node_id}")
     reason = (f"{node_id} stopped at its job's time limit after {meta.get('simulation_time_ns')} of "
               f"{meta.get('requested_simulation_time_ns')} ns; {remaining:g} ns remain")
     if meta.get("ns_per_day"):
         reason += f" (measured {meta['ns_per_day']} ns/day)"
-    return {"action": "create", "node_type": "prod", "create_command": create,
-            "stage_tools": ["run_production"], "run_command": run, "inputs": "auto_resolved",
-            "reason": reason, "batch_command": _batch_command(job_dir, "<new>", run)}
+    return _with_capture({
+        "action": "create", "node_type": "prod", "create_command": create,
+        "stage_tools": ["run_production"],
+        **_command_fields(job_dir, NEW_NODE, "run_production", tools,
+                          args=f"--simulation-time-ns {remaining:g}", batch=True),
+        "inputs": "auto_resolved", "reason": reason})
 
 
 def blocking_ancestor(node: dict, nodes: dict) -> Optional[tuple[str, str]]:
@@ -438,6 +587,79 @@ def blocking_ancestor(node: dict, nodes: dict) -> Optional[tuple[str, str]]:
         if status != "completed":
             return ref, str(status or "missing")
     return None
+
+
+def _forward_create_step(job_dir: str, parent_id: str, parent_type: Optional[str], forward: str,
+                         tools: dict, params: dict, *, alchemical: bool = False,
+                         dependency_job_ids: Optional[list[str]] = None) -> dict:
+    """Create the forward node under ``parent_id`` and run (or submit) it."""
+    stage_tools = stage_tools_for(forward, tools, params, alchemical=alchemical)
+    create = (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} "
+              f"--node-type {forward} --parent-node-ids {parent_id}")
+    if forward == "analyze" and parent_type == "fep":
+        create += f" --conditions {shlex.quote(_ALCHEMICAL_ANALYZE_CONDITIONS)}"
+    return _with_capture({
+        "action": "create", "node_type": forward, "create_command": create,
+        "stage_tools": stage_tools,
+        **_command_fields(job_dir, NEW_NODE, stage_tools[0] if stage_tools else None, tools,
+                          batch=forward in _BATCH_STAGES, dependency_job_ids=dependency_job_ids),
+        "inputs": "auto_resolved", "optional": forward == "analyze"})
+
+
+def _chain_command(job_dir: str, node_id: str, node: dict, nodes: dict, tools: dict,
+                   params: dict) -> Optional[dict]:
+    """``submit_job --dependency afterok:<parent jobs>`` for a pending batch
+    node whose unfinished parents are all queued or running under Slurm."""
+    node_type = node.get("node_type") or node.get("type")
+    if node_type not in _BATCH_STAGES:
+        return None
+    refs = [ref for ref in list(node.get("parent_node_ids") or []) + list(node.get("dependency_node_ids") or [])
+            if (nodes.get(ref) or {}).get("status") != "completed"]
+    job_ids = _slurm_job_ids(job_dir, refs)
+    if not job_ids:
+        return None
+    tools_for = stage_tools_for(node_type, tools, params, alchemical=_is_alchemical(job_dir, node_id, nodes))
+    return {"chain_command": _batch_command(job_dir, node_id, tools_for[0] if tools_for else None,
+                                            dependency_job_ids=job_ids),
+            "chain_note": (f"submits {node_id} now; Slurm holds it until job {':'.join(job_ids)} "
+                           "succeeds (afterok), so there is nothing to wait for")}
+
+
+def _wait_step(job_dir: str, node_id: str, node: dict, nodes: dict, tools: dict,
+               params: dict) -> dict:
+    """A queued or running node: wait for it, or chain the forward stage
+    behind its Slurm job."""
+    node_type = node.get("node_type") or node.get("type")
+    step = {"action": "wait", "node_id": node_id, "node_type": node_type,
+            "wait_command": (f"mdclaw wait_node --job-dir {shlex.quote(job_dir)} "
+                             f"--node-id {shlex.quote(node_id)}")}
+    job = (node.get("metadata") or {}).get("slurm_job_id")
+    if not job:
+        return step
+    step["slurm_job_id"] = str(job)
+    alchemical = _is_alchemical(job_dir, node_id, nodes)
+    forward = CANONICAL_FORWARD_NODE_TYPE.get(node_type)
+    if alchemical:
+        forward = _ALCHEMICAL_FORWARD.get(node_type, forward)
+    if forward not in _BATCH_STAGES:
+        return step
+    children = [child for child, info in nodes.items()
+                if node_id in (info.get("parents") or []) and info.get("type") == forward
+                and info.get("status") in _OPEN]
+    if any((nodes.get(child) or {}).get("status") != "pending" for child in children) or len(children) > 1:
+        return step  # the chain is already submitted, or a branch point to choose by hand
+    if children:
+        chain = _chain_command(job_dir, children[0], _read_node(job_dir, children[0]) or {}, nodes, tools, params)
+        if chain:
+            step.update(chain)
+        return step
+    create = _forward_create_step(job_dir, node_id, node_type, forward, tools, params,
+                                  alchemical=alchemical, dependency_job_ids=[str(job)])
+    if create.get("node_id_capture") and create.get("batch_command"):
+        step["chain_command"] = f"{create['node_id_capture']} && {create['batch_command']}"
+        step["chain_note"] = (f"creates the {forward} node and submits it now; Slurm holds it until "
+                              f"job {job} succeeds (afterok), so there is nothing to wait for")
+    return step
 
 
 def next_step(job_dir: str, node_id: Optional[str], tools: dict,
@@ -456,13 +678,14 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
     if not node_id:
         if nodes:
             return None
-        return {
+        source_tool = (stage_tools_for("source", tools, params) or [None])[0]
+        return _with_capture({
             "action": "create", "node_type": "source",
             "create_command": f"mdclaw create_node --job-dir {shlex.quote(job_dir)} --node-type source",
             "stage_tools": stage_tools_for("source", tools, params),
-            "run_command": _run_command(job_dir, "<new>", (stage_tools_for("source", tools, params) or [None])[0]),
+            **_command_fields(job_dir, NEW_NODE, source_tool, tools),
             "inputs": "auto_resolved",
-        }
+        })
     node = _read_node(job_dir, node_id)
     if node is None:
         return None
@@ -471,6 +694,11 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
     scheme = (node.get("metadata") or {}).get("scheme")
     if isinstance(scheme, dict) and scheme.get("scheme_id"):
         return _scheme_next(job_dir, node_id, node_type, str(scheme["scheme_id"]), params)
+    if status in ("queued", "running"):
+        # Its own job runs it; running it here would collide with that job.
+        # The next useful command on a batch cluster is the forward stage,
+        # submitted now and held by Slurm until this node's job succeeds.
+        return _wait_step(job_dir, node_id, node, nodes, tools, params)
     if status in _OPEN:
         blocker = blocking_ancestor(node, nodes)
         if blocker and _depth < 32:
@@ -480,6 +708,9 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
                         "node_type": (nodes.get(blocker_id) or {}).get("type"),
                         "wait_command": (f"mdclaw wait_node --job-dir {shlex.quote(job_dir)} "
                                          f"--node-id {shlex.quote(blocker_id)}")}
+                chain = _chain_command(job_dir, node_id, node, nodes, tools, params)
+                if chain:
+                    step.update(chain)
             else:
                 step = next_step(job_dir, blocker_id, tools, nodes, params, _depth=_depth + 1)
             if step:
@@ -500,11 +731,11 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
             # we_resample policy nodes.
             stage_tools.remove("analyze_we")
             stage_tools.insert(0, "analyze_we")
-        run = _run_command(job_dir, node_id, stage_tools[0] if stage_tools else None)
         step = {"action": "run", "node_id": node_id, "node_type": node_type,
-                "stage_tools": stage_tools, "run_command": run, "inputs": "auto_resolved"}
-        if node_type in _BATCH_STAGES:
-            step["batch_command"] = _batch_command(job_dir, node_id, run)
+                "stage_tools": stage_tools,
+                **_command_fields(job_dir, node_id, stage_tools[0] if stage_tools else None, tools,
+                                  batch=node_type in _BATCH_STAGES),
+                "inputs": "auto_resolved"}
         return step
     if status == "completed":
         if node_type == "analyze":
@@ -534,23 +765,15 @@ def next_step(job_dir: str, node_id: Optional[str], tools: dict,
             step = next_step(job_dir, open_children[0], tools, nodes, params, _depth=_depth + 1)
             if step:
                 return step
-        stage_tools = stage_tools_for(forward, tools, params, alchemical=alchemical)
-        run = _run_command(job_dir, "<new>", stage_tools[0] if stage_tools else None)
-        create = (f"mdclaw create_node --job-dir {shlex.quote(job_dir)} "
-                  f"--node-type {forward} --parent-node-ids {node_id}")
-        if forward == "analyze" and node_type == "fep":
-            create += f" --conditions {shlex.quote(_ALCHEMICAL_ANALYZE_CONDITIONS)}"
-        step = {"action": "create", "node_type": forward, "create_command": create,
-                "stage_tools": stage_tools, "run_command": run, "inputs": "auto_resolved",
-                "optional": forward == "analyze"}
-        if forward in _BATCH_STAGES:
-            step["batch_command"] = _batch_command(job_dir, "<new>", run)
+        step = _forward_create_step(job_dir, node_id, node_type, forward, tools, params,
+                                    alchemical=alchemical)
         if node_type == "source":
             # The prep's chains and residue ranges are chosen from the
             # inspection; its short form travels with the source node.
             step["inspect_command"] = (
                 f"mdclaw --job-dir {shlex.quote(job_dir)} --node-id {shlex.quote(node_id)} "
-                "inspect_molecules  (first: chain ids, residue ranges, gaps, ligands)")
+                "inspect_molecules")
+            step["inspect_note"] = "run first: chain ids, residue ranges, gaps, ligands"
             chain_ranges = (node.get("metadata") or {}).get("chain_ranges")
             if chain_ranges:
                 step["chain_ranges"] = chain_ranges

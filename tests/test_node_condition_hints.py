@@ -8,10 +8,15 @@ message is the only place the caller can learn what to declare instead.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from mdclaw.node.condition_hints import (
+    comparable_condition_values,
     describe_condition_key,
+    resolve_condition_key,
+    screen_declared_conditions,
     suggest_condition_keys,
 )
 from mdclaw.node.lifecycle import create_node, validate_node_execution_context
@@ -74,13 +79,30 @@ def _prep_node(tmp_path, conditions, node_type="prep"):
     """A real node built through create_node, not hand-written JSON.
 
     Asserting success here is half the point: an earlier attempt at this fix
-    made create_node reject unsupported keys, and rejecting a legitimate topo
-    declaration was the regression that came out of it.
+    made create_node reject unsupported keys from a hand-kept table, and
+    rejecting a legitimate topo declaration was the regression that came out
+    of it. create_node now screens against the keys the stage tools
+    themselves report (``condition_vocabulary``).
     """
     job = tmp_path / "job_conditions"
     job.mkdir(exist_ok=True)
     node = create_node(str(job), node_type, conditions=conditions)
     assert node["success"], node
+    return job, node["node_id"]
+
+
+def _legacy_node(tmp_path, conditions, node_type="prep"):
+    """A node whose conditions bypassed the create-time screen (made before
+    it existed, or by a driver through ``_create_nodes_bulk``): the run-time
+    check is still the contract for it."""
+    job = tmp_path / "job_conditions"
+    job.mkdir(exist_ok=True)
+    node = create_node(str(job), node_type)
+    assert node["success"], node
+    path = job / "nodes" / node["node_id"] / "node.json"
+    data = json.loads(path.read_text())
+    data["conditions"] = conditions
+    path.write_text(json.dumps(data))
     return job, node["node_id"]
 
 
@@ -104,14 +126,29 @@ def test_a_unique_alias_is_read_as_the_reported_key(tmp_path):
     (job / "nodes" / source / "artifacts").mkdir(parents=True, exist_ok=True)
     (job / "nodes" / source / "artifacts" / "sb.json").write_text("{}")
     complete_node(str(job), source, artifacts={"source_bundle": "artifacts/sb.json"})
-    node_id = create_node(str(job), "prep", conditions={"chains": ["A"], "ph": 7.0},
-                          parent_node_ids=[source])["node_id"]
+    created = create_node(str(job), "prep", conditions={"chains": ["A"], "ph": 7.0},
+                          parent_node_ids=[source])
+    node_id = created["node_id"]
+    # create_node records it under the reported key, and says so ...
+    assert any("'chains' recorded as 'select_chains'" in w for w in created["warnings"])
+    node = json.loads((job / "nodes" / node_id / "node.json").read_text())
+    assert node["conditions"] == {"select_chains": ["A"], "ph": 7.0}
     result = validate_node_execution_context(
         str(job), node_id, "prep",
         actual_conditions={"select_chains": ["A"], "ph": 7.0,
                            "solvent_type": "explicit"},
         validate_conditions=True)
+    assert result["success"], result
 
+    # ... and a node that still carries the alias is read the same way at run time.
+    legacy = create_node(str(job), "prep", parent_node_ids=[source])["node_id"]
+    path = job / "nodes" / legacy / "node.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), "conditions": {"chains": ["A"], "ph": 7.0}}))
+    result = validate_node_execution_context(
+        str(job), legacy, "prep",
+        actual_conditions={"select_chains": ["A"], "ph": 7.0,
+                           "solvent_type": "explicit"},
+        validate_conditions=True)
     assert result["success"], result
     assert result["condition_aliases"] == {"chains": "select_chains"}
     assert result["warnings"] == ["declared condition 'chains' was read as 'select_chains'"]
@@ -120,7 +157,7 @@ def test_a_unique_alias_is_read_as_the_reported_key(tmp_path):
 def test_the_runtime_failure_names_the_vocabulary_and_the_likely_keys(tmp_path):
     # ``ligands`` has several honest readings, so it stays a refusal that
     # names them all.
-    job, node_id = _prep_node(tmp_path, {"ligands": ["ATP"], "ph": 7.0})
+    job, node_id = _legacy_node(tmp_path, {"ligands": ["ATP"], "ph": 7.0})
     result = validate_node_execution_context(
         str(job), node_id, "prep",
         actual_conditions={"include_ligand_ids": ["ATP"], "process_ligands": True,
@@ -140,7 +177,7 @@ def test_a_key_reported_as_none_is_not_offered_as_available(tmp_path):
     # A None value is rejected as unverifiable, so advertising the key as
     # something the tool cross-checks would send the caller back into the same
     # failure.
-    job, node_id = _prep_node(tmp_path, {"ligands": ["ATP"]})
+    job, node_id = _legacy_node(tmp_path, {"ligands": ["ATP"]})
     result = validate_node_execution_context(
         str(job), node_id, "prep",
         actual_conditions={"select_chains": ["A"], "include_ligand_ids": ["ATP"],
@@ -195,3 +232,125 @@ def test_create_node_does_not_pre_judge_a_topo_declaration(tmp_path):
                            "nucleic_forcefield": "auto", "is_membrane": False},
         validate_conditions=True)
     assert _condition_messages(result) == ""
+
+
+# ---------------------------------------------------------------------------
+# Unit suffixes are never crossed (MDDataBench v5: 2500 ps compared with 2.5 ns)
+# ---------------------------------------------------------------------------
+
+PROD_REPORTED = {"simulation_time_ns", "temperature_kelvin", "pressure_bar", "timestep_fs",
+                 "output_frequency_ps", "platform", "random_seed"}
+
+
+def test_a_key_in_another_unit_is_never_resolved_to_the_reported_key():
+    assert resolve_condition_key(PROD_REPORTED, "total_simulation_time_ps") is None
+    assert "simulation_time_ns" not in suggest_condition_keys(PROD_REPORTED, "total_simulation_time_ps")
+    # the same unit spelled differently is still the same key
+    assert resolve_condition_key(PROD_REPORTED, "temperature_k") == "temperature_kelvin"
+
+
+@pytest.mark.parametrize("key,value,meant,converted", [
+    ("total_time_ps", 2500, "simulation_time_ns", 2.5),
+    ("total_simulation_time_ps", 2500, "simulation_time_ns", 2.5),
+    ("duration_ps", 1000, "simulation_time_ns", 1.0),
+    ("simulation_time_ps", 500, "simulation_time_ns", 0.5),
+    ("production_duration_ns", 3, "simulation_time_ns", 3),
+])
+def test_create_time_screen_suggests_the_reported_key_in_its_unit(key, value, meant, converted):
+    screened = screen_declared_conditions(PROD_REPORTED, {key: value})
+    (entry,) = screened["unknown"]
+    assert entry["suggested_key"] == meant
+    assert entry["suggested_value"] == pytest.approx(converted)
+
+
+def test_create_time_screen_renames_curated_aliases_and_keeps_reported_keys():
+    vocabulary = {"select_chains", "residue_ranges", "dist", "saltcon", "water_model", "ph"}
+    screened = screen_declared_conditions(vocabulary, {
+        "chain_selection": ["A"], "chain_ranges": ["A:16-214"], "buffer_distance_angstrom": 12,
+        "ph": 7.0})
+    assert screened["unknown"] == []
+    assert screened["conditions"] == {"select_chains": ["A"], "residue_ranges": ["A:16-214"],
+                                      "dist": 12, "ph": 7.0}
+    # an alias in another unit is converted, not renamed silently
+    screened = screen_declared_conditions(vocabulary, {"buffer_distance_nm": 1.2,
+                                                       "salt_concentration_mm": 150})
+    suggested = {e["suggested_key"]: e["suggested_value"] for e in screened["unknown"]}
+    assert suggested == {"dist": pytest.approx(12.0), "saltcon": pytest.approx(0.15)}
+
+
+def test_create_node_refuses_a_key_no_stage_tool_reports(tmp_path):
+    job = tmp_path / "job_screen"
+    job.mkdir()
+    result = create_node(str(job), "prod", conditions={"total_time_ps": 2500, "temperature_kelvin": 300},
+                         label="2.5 ns")
+    assert result["success"] is False
+    assert result["code"] == "condition_key_unknown"
+    assert result["unknown_condition_keys"] == ["total_time_ps"]
+    assert result["suggested_conditions"] == {"temperature_kelvin": 300, "simulation_time_ns": 2.5}
+    assert "simulation_time_ns" in result["accepted_condition_keys"]
+    assert '"simulation_time_ns": 2.5' in result["next_action"]
+    assert "--label '2.5 ns'" in result["next_action"]
+    assert not (job / "nodes").exists() or not any((job / "nodes").iterdir())
+
+
+def test_create_node_names_the_stage_that_reports_a_misplaced_key(tmp_path):
+    job = tmp_path / "job_screen"
+    job.mkdir()
+    result = create_node(str(job), "min", conditions={"max_iterations": 5000, "temperature_kelvin": 300})
+    assert result["code"] == "condition_key_unknown"
+    assert "declare it on that node" in result["message"]
+    assert result["suggested_conditions"] == {"max_iterations": 5000}
+
+
+def test_create_node_does_not_screen_source_conditions(tmp_path):
+    job = tmp_path / "job_screen"
+    job.mkdir()
+    assert create_node(str(job), "source", conditions={"anything": 1})["success"]
+
+
+# ---------------------------------------------------------------------------
+# Equivalent forms compare equal at run time
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("key,declared,reported", [
+    ("select_chains", "A B", ["A", "B"]),
+    ("select_chains", "A,B,E", ["A", "B", "E"]),
+    ("select_chains", "A:B", ["A", "B"]),
+    ("residue_ranges", "45-86", ["A:45-86"]),
+    ("residue_ranges", "29-155", ["A:29-155"]),
+    ("forcefield", "ff99SB-ILDN", "ff99SBildn"),
+    ("water_model", "TIP3P", "tip3p"),
+])
+def test_equivalent_forms_compare_equal(key, declared, reported):
+    from mdclaw.node.io import _values_match
+
+    assert _values_match(*comparable_condition_values(key, declared, reported))
+
+
+@pytest.mark.parametrize("key,declared,reported", [
+    ("residue_ranges", ["1-60"], []),
+    ("residue_ranges", "1-60", ["A:1-60", "B:1-60"]),
+    ("select_chains", "A B", ["A", "C"]),
+    ("water_model", "tip3p", "opc"),
+])
+def test_different_values_still_differ(key, declared, reported):
+    from mdclaw.node.io import _values_match
+
+    assert not _values_match(*comparable_condition_values(key, declared, reported))
+
+
+def test_a_one_item_list_keeps_its_spaces():
+    from mdclaw.node.io import _values_match
+
+    assert _values_match(*comparable_condition_values("label", "my label", ["my label"]))
+
+
+def test_stage_vocabulary_reads_a_named_actual_conditions_dict():
+    # run_equilibration passes ``actual_conditions=_actual``; the vocabulary
+    # must read the dict assigned to that name, or create_node refuses keys
+    # such as ``ensemble`` that eq does report (found 2026-10-29).
+    from mdclaw.node.condition_vocabulary import stage_condition_vocabulary
+
+    eq_keys = stage_condition_vocabulary("eq")
+    assert {"ensemble", "temperature_kelvin", "nvt_time_ns", "npt_time_ns"} <= eq_keys
+    assert "ensemble" in stage_condition_vocabulary("prod")

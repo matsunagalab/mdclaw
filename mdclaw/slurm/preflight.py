@@ -2,16 +2,16 @@
 before ``sbatch``.
 
 No shell evaluation or input resolution: queued parents need not exist yet.
-Inherited/derived conditions are deliberately left to the runtime guard.
+Conditions that depend on a parent that has not run are left to the runtime
+guard. ``submission_preflight`` runs every check a submitted task gets: the
+node's place in the DAG, the script's arguments (``script_check``), the
+declared conditions (``condition_check``) and the Slurm dependency on the
+parents' jobs (``dependency``).
 """
 
-import contextlib
-import inspect
-import io
 import json
 import math
 from pathlib import Path
-import shlex
 from typing import Optional
 
 
@@ -27,23 +27,22 @@ def _node_type(job_dir, node_id):
 
 
 def _literal_mdclaw_argv(command):
-    """The argv of a literal ``mdclaw ...`` or ``python -m mdclaw._cli ...``
-    command, or None for anything the shell would evaluate (expansions,
-    redirections, compound scripts, wrappers)."""
-    if any(c in command for c in "$`\n;&|<>()"):
-        return None
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return None
-    if not tokens:
-        return None
-    if Path(tokens[0]).name == "mdclaw":
-        return tokens[1:]
-    if (Path(tokens[0]).name in {"python", "python3"}
-            and tokens[1:3] == ["-m", "mdclaw._cli"]):
-        return tokens[3:]
-    return None
+    """The argv of the first literal ``mdclaw ...`` (or ``python -m
+    mdclaw._cli ...``) line of a script that runs a stage tool, or None when
+    no line is literal (expansions, redirections, compound commands)."""
+    from mdclaw._cli import _detect_subcommand
+    from mdclaw.slurm.script_check import literal_mdclaw_argv, script_lines
+
+    first = None
+    for line in script_lines(command):
+        argv = literal_mdclaw_argv(line)
+        if argv is None:
+            continue
+        first = first if first is not None else argv
+        tool = _detect_subcommand(argv)
+        if tool and _tool_node_type(tool):
+            return argv
+    return first
 
 
 def _tool_node_type(tool_name):
@@ -270,85 +269,141 @@ def _time_budget_refusal(budget, declared, time_limit):
             "next_action": next_action, "time_budget": budget}
 
 
+def _production_report(check, job_dir, node_id, time_limit):
+    """The condition report of a parsed run_production command, with the
+    time budget when ``time_limit`` is known."""
+    from mdclaw.slurm.condition_check import condition_report
+
+    report = condition_report(check, job_dir, node_id)
+    if report.get("status") != "checked" or not time_limit:
+        return report
+    declared = (json.loads((Path(job_dir) / "nodes" / node_id / "node.json").read_text())
+                .get("conditions") or {})
+    budget = production_time_budget(job_dir, node_id, check.values.get("simulation_time_ns"),
+                                    check.values.get("platform"), time_limit)
+    if budget:
+        report["time_budget"] = budget
+        if budget["exceeds_time_limit"]:
+            return {**report, **_time_budget_refusal(budget, declared.get("simulation_time_ns"), time_limit)}
+    return report
+
+
 def production_preflight(command, job_dir, node_id, time_limit=None):
     """Cross-check a literal ``run_production`` command against the node's
     declared conditions before it is submitted, and, given the job's
     ``time_limit``, against the throughput its parent measured.
 
     ``status``: ``checked`` (validated), ``failed`` (a mismatch, a
-    production command that cannot be parsed, or a run that does not fit
-    the time limit: ``production_exceeds_time_limit`` with ``time_budget``),
-    ``skipped`` (an opaque command on a ``prod`` node — shell constructs,
-    wrapper scripts — so the runtime guard is the only check) or
-    ``not_applicable`` (the node is not a ``prod`` node, or the literal
-    command runs another tool).
+    production command the CLI would refuse -- ``script_arguments_invalid``
+    with argparse's own message and the corrected command -- or a run that
+    does not fit the time limit: ``production_exceeds_time_limit`` with
+    ``time_budget``), ``skipped`` (an opaque command on a ``prod`` node --
+    shell constructs, wrapper scripts -- so the runtime guard is the only
+    check) or ``not_applicable`` (the node is not a ``prod`` node, or the
+    literal command runs another tool).
     """
+    from mdclaw._cli import _detect_subcommand
+    from mdclaw.slurm.script_check import _INFORMATIONAL, _arguments_error, check_command, \
+        literal_mdclaw_tokens, script_lines
+
     node_type = _node_type(job_dir, node_id)
     if node_type and node_type != "prod":
         return {"status": "not_applicable",
                 "reason": f"{node_type} node: production conditions do not apply"}
     report = {"status": "skipped", "reason": "not a literal production CLI command"}
-    argv = _literal_mdclaw_argv(command)
-    if argv is None:
+    lines = script_lines(command)
+    parsed = literal_mdclaw_tokens(lines[0]) if len(lines) == 1 else None
+    if parsed is None:
         return report
-    from mdclaw._cli import _build_parser, _coerce_value, _detect_subcommand, _tool_param_specs
+    prefix, argv = parsed
     subcommand = _detect_subcommand(argv)
     if subcommand != "run_production":
         return {"status": "not_applicable",
                 "reason": f"literal mdclaw command runs {subcommand or 'no tool'}, not run_production"}
-    if any(a in {"--help", "-h", "--version", "--list", "--list-json"} for a in argv):
+    if any(a.split("=", 1)[0] in _INFORMATIONAL for a in argv):
         return {"status": "not_applicable", "reason": "informational mdclaw invocation"}
-    from mdclaw.simulation.production import run_production
-    from mdclaw._node import read_node
-    from mdclaw.node.lifecycle import validate_declared_conditions
+    check = check_command(lines[0], prefix, argv, job_dir=job_dir, node_id=node_id)
+    if not check.ok:
+        return {**_arguments_error(check, "script", None, 1), "status": "failed"}
+    return _production_report(check, job_dir, node_id, time_limit)
 
+
+def _same_node(check, job_dir, node_id) -> bool:
+    if not (check.target_job_dir and check.target_node_id):
+        return False
     try:
-        parser = _build_parser({"run_production": {
-            "fn": run_production, "description": "", "requires_node": True}})
-        with contextlib.redirect_stderr(io.StringIO()):
-            args = parser.parse_args(argv)
-        values = vars(args)
-        if args.json_input:
-            values = json.loads(args.json_input)
-            if not isinstance(values, dict):
-                raise ValueError("--json-input must be an object")
-            specs = {s.name: s for s in _tool_param_specs(run_production, requires_node=True)}
-            values = {k: _coerce_value(v, specs[k].hint) if k in specs and v is not None else v
-                      for k, v in values.items()}
-        target_job = args._global_job_dir or values.get("job_dir")
-        target_node = args._global_node_id or values.get("node_id")
-        if not target_job or not target_node:
-            raise ValueError("production command requires --job-dir and --node-id")
-        if Path(target_job).resolve() != Path(job_dir).resolve() or target_node != node_id:
-            raise ValueError("production command targets a different job/node than submit_job")
-        # These parameters reach actual_conditions unchanged. Never pre-judge
-        # topology-inherited timestep/HMR, pressure, membrane state or bias.
-        keys = {"simulation_time_ns", "temperature_kelvin", "output_frequency_ps",
-                "trajectory_format", "platform", "device_index", "random_seed",
-                "steering_time_ns", "steering_update_interval_ps"}
-        defaults = inspect.signature(run_production).parameters
-        actual = {k: values.get(k, defaults[k].default) for k in keys}
-        # An omitted --temperature-kelvin is resolved at run time from the node
-        # the state restarts from, which may still be pending when a chain is
-        # submitted: defer it to the runtime condition check instead of
-        # comparing a declared value with None. An explicit value is compared.
-        if actual.get("temperature_kelvin") is None:
-            keys = keys - {"temperature_kelvin"}
-            actual.pop("temperature_kelvin", None)
-        declared = read_node(job_dir, node_id).get("conditions") or {}
-        result = validate_declared_conditions({k: v for k, v in declared.items() if k in keys}, actual)
-        report = {**result, "status": "checked" if result["success"] else "failed",
-                  "checked_conditions": sorted(keys & declared.keys()),
-                  "deferred_conditions": sorted(declared.keys() - keys)}
-        if result["success"] and time_limit:
-            budget = production_time_budget(
-                job_dir, node_id, actual["simulation_time_ns"], actual.get("platform"), time_limit)
-            if budget:
-                report["time_budget"] = budget
-                if budget["exceeds_time_limit"]:
-                    return {**report, **_time_budget_refusal(
-                        budget, declared.get("simulation_time_ns"), time_limit)}
-        return report
-    except (SystemExit, ValueError, TypeError) as exc:
-        return {"status": "failed", "success": False, "code": "node_execution_context_invalid",
-                "errors": [f"Cannot validate production CLI before submission: {exc}"]}
+        return (Path(check.target_job_dir).resolve() == Path(job_dir).resolve()
+                and check.target_node_id == node_id)
+    except OSError:
+        return False
+
+
+def stage_condition_preflight(script, job_dir, node_id, time_limit=None) -> dict:
+    """The declared-condition report for the stage-tool command(s) of a
+    checked script that run this node (``script`` is a ``ScriptCheck``)."""
+    from mdclaw.slurm.condition_check import condition_report
+
+    node_type = _node_type(job_dir, node_id)
+    targeted = [c for c in script.commands
+                if c.tool and c.info and c.info.get("requires_node") and not c.informational
+                and _same_node(c, job_dir, node_id)]
+    if not targeted:
+        if node_type == "prod":
+            return {"status": "skipped", "reason": "not a literal production CLI command"}
+        return {"status": "not_applicable",
+                "reason": "no literal stage-tool command for this node in the script"}
+    report: dict = {}
+    for check in targeted:
+        if check.tool == "run_production":
+            report = _production_report(check, job_dir, node_id, time_limit)
+        else:
+            report = condition_report(check, job_dir, node_id)
+        report.setdefault("tool", check.tool)
+        if report.get("status") == "failed":
+            return report
+    return report
+
+
+def submission_preflight(command, job_dir=None, node_id=None, *, time_limit=None, dependency=None,
+                         state_cache=None, script_file=None, field_name="script") -> dict:
+    """Every pre-sbatch check of one submitted task.
+
+    Returns ``{"error", "condition_preflight", "warnings", "dependency",
+    "dependency_added"}``: ``error`` is the refusal (None when the task may be
+    submitted); ``dependency`` the spec the job must carry (the caller's,
+    plus ``afterok`` on a queued parent's job it left out).
+    """
+    from mdclaw.slurm.dependency import dependency_preflight
+    from mdclaw.slurm.script_check import check_script
+
+    out = {"error": None, "condition_preflight": None, "warnings": [], "dependency": dependency,
+           "dependency_added": []}
+    linked = bool(job_dir and node_id)
+    if linked:
+        structure_error = node_structure_preflight(command, job_dir, node_id)
+        if structure_error:
+            out["error"] = structure_error
+            return out
+    script = check_script(command, job_dir=job_dir if linked else None, node_id=node_id if linked else None,
+                          field_name=field_name, script_file=script_file)
+    if script.error:
+        out["error"] = script.error
+        return out
+    if not linked:
+        return out
+    report = stage_condition_preflight(script, job_dir, node_id, time_limit)
+    out["condition_preflight"] = report
+    if report.get("status") == "failed":
+        out["error"] = report
+        return out
+    if report.get("status") == "skipped":
+        out["warnings"].append("Production condition preflight skipped: " + report["reason"]
+                               + "; runtime validation remains required.")
+    dep = dependency_preflight(job_dir, node_id, dependency, state_cache=state_cache)
+    if dep["error"]:
+        out["error"] = dep["error"]
+        return out
+    out["dependency"] = dep["dependency"]
+    out["dependency_added"] = dep["added"]
+    out["warnings"].extend(dep["warnings"])
+    return out

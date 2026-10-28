@@ -29,6 +29,8 @@ WORKING_DIR = Path("outputs").resolve()
 from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fail_node_if_running, _node_artifact_path, _resolve_implicit_solvent_model, _resolve_topology_run_settings  # noqa: E402
 from mdclaw.simulation.restraints import RESTRAINT_SELECTIONS, select_restraint_atoms  # noqa: E402
 from mdclaw.simulation.restart import _save_state_atomic  # noqa: E402
+from mdclaw.node.lifecycle import NodeAlreadyRunningError, NodeSealedError  # noqa: E402
+from mdclaw.simulation.run_guard import context_refusal, md_preflight  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _load_xml_topology_inputs, _system_signature, _validate_xml_system_contract  # noqa: E402
 
 
@@ -91,6 +93,7 @@ def run_minimization(
     auto-resolve the minimized state and therefore do not embed minimization in
     the equilibration node.
     """
+    _call = dict(locals())
     if max_iterations < 0:
         return create_validation_error(
             "max_iterations",
@@ -163,23 +166,19 @@ def run_minimization(
             err["errors"] = _topo_solvent_mismatch["errors"]
             return err
 
-        _ctx = validate_node_execution_context(
-            job_dir,
-            node_id,
-            "min",
-            actual_conditions={
-                "max_iterations": max_iterations,
-                "restraint_atoms": restraint_atoms,
-                "restraint_force_constant": restraint_force_constant,
-                "is_membrane": is_membrane,
-                "implicit_solvent": implicit_solvent,
-                "platform": platform,
-                "device_index": device_index,
-                "hmr": hmr,
-            },
-        )
+        _actual = {
+            "max_iterations": max_iterations,
+            "restraint_atoms": restraint_atoms,
+            "restraint_force_constant": restraint_force_constant,
+            "is_membrane": is_membrane,
+            "implicit_solvent": implicit_solvent,
+            "platform": platform,
+            "device_index": device_index,
+            "hmr": hmr,
+        }
+        _ctx = validate_node_execution_context(job_dir, node_id, "min", actual_conditions=_actual)
         if not _ctx["success"]:
-            return {"success": False, "error_type": "ValidationError", **_ctx}
+            return context_refusal(run_minimization, _call, job_dir, node_id, _ctx, _actual)
 
     if not _node_mode:
         hmr, implicit_solvent, _ = _resolve_topology_run_settings(
@@ -253,6 +252,12 @@ def run_minimization(
     IMPLICIT_MODELS = {
         "HCT": HCT, "OBC1": OBC1, "OBC2": OBC2, "GBn": GBn, "GBn2": GBn2,
     }
+
+    # Where and on which platform the run may integrate: refused before
+    # begin_node, so the node stays pending for the corrected command.
+    _refusal = md_preflight(run_minimization, _call, job_dir, node_id)
+    if _refusal is not None:
+        return _refusal
 
     try:
         if _node_mode:
@@ -556,6 +561,10 @@ def run_minimization(
             hmr=hmr,
         )
         result["success"] = True
+    except (NodeAlreadyRunningError, NodeSealedError):
+        # begin_node refused: another live run owns the node, or it is sealed.
+        # Nothing ran here; failing the node would seal it under its owner.
+        raise
     except _ModernSystemContractError as exc:
         logger.error("Minimization aborted by modern-system contract: %s", exc)
         result["errors"].append(str(exc))

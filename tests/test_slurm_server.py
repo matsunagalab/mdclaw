@@ -390,7 +390,7 @@ class TestSubmitJob:
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 10000\n")
 
         result = submit_job(
-            script="singularity exec -nv image.sif mdclaw run",
+            script="singularity exec -nv image.sif mdclaw --list",
             allow_container_command=True,
             output_dir=str(tmp_path),
         )
@@ -463,7 +463,7 @@ class TestSubmitJob:
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 44444\n")
 
         result = submit_job(
-            script="mdclaw --job-dir /abs/jd --node-id prod_001 run_production "
+            script=f"mdclaw --job-dir {tmp_path} --node-id prod_001 run_production "
             "--simulation-time-ns 100 --platform CUDA",
             job_name="cuda_job",
             output_dir=str(tmp_path),
@@ -492,7 +492,7 @@ class TestSubmitJob:
         # No --gpus passed: autodetection from --platform CUDA must both flip
         # gpus to 1 and steer partition auto-selection to the GPU partition.
         result = submit_job(
-            script="mdclaw run_production --platform CUDA",
+            script=f"mdclaw --job-dir {tmp_path} --node-id prod_001 run_production --platform CUDA",
             output_dir=str(tmp_path),
         )
         assert result["success"] is True
@@ -509,7 +509,7 @@ class TestSubmitJob:
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 44466\n")
 
         result = submit_job(
-            script="mdclaw run_production --platform CUDA",
+            script=f"mdclaw --job-dir {tmp_path} --node-id prod_001 run_production --platform CUDA",
             gpus=2,
             output_dir=str(tmp_path),
         )
@@ -527,7 +527,7 @@ class TestSubmitJob:
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 44477\n")
 
         result = submit_job(
-            script="mdclaw run_production --platform CUDA",
+            script=f"mdclaw --job-dir {tmp_path} --node-id prod_001 run_production --platform CUDA",
             gres="gpu:a100:2",
             output_dir=str(tmp_path),
         )
@@ -547,8 +547,8 @@ class TestSubmitJob:
 
         # --platform CPU and --platform auto must NOT trigger a GPU allocation.
         for cmd in (
-            "mdclaw run_minimization --max-iterations 5000 --platform CPU",
-            "mdclaw run_minimization --max-iterations 5000",
+            f"mdclaw --job-dir {tmp_path} --node-id min_001 run_minimization --max-iterations 5000 --platform CPU",
+            f"mdclaw --job-dir {tmp_path} --node-id min_001 run_minimization --max-iterations 5000",
         ):
             result = submit_job(script=cmd, output_dir=str(tmp_path))
             assert result["success"] is True
@@ -1512,30 +1512,35 @@ class TestContainerExecution:
     @patch("mdclaw.slurm._base.run_command")
     def test_container_wrap(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        scratch = tmp_path / "scratch"
+        data = tmp_path / "data"
+        scratch.mkdir()
+        data.mkdir()
         config = {
             "partitions": [{"name": "gpu", "gpus_per_node": 4}],
             "container": {
                 "image": "/opt/containers/mdclaw.sif",
                 "extra_flags": "--nv",
-                "bind_paths": ["/scratch"],
+                "bind_paths": [str(scratch)],
             },
         }
         (tmp_path / ".mdclaw_cluster.json").write_text(json.dumps(config))
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 10001\n")
 
         result = submit_job(
-            script="mdclaw run_production --system-xml-file /data/sys.system.xml",
+            script=f"mdclaw export_molstar_page --structure-file {data}/top.pdb --trajectory-file {data}/traj.dcd",
             partition="gpu",
             gpus=1,
             output_dir=str(tmp_path),
         )
-        assert result["success"] is True
+        assert result["success"] is True, result
 
         content = Path(result["script_file"]).read_text()
         assert "singularity exec" in content
         assert "--nv" in content
         assert "/opt/containers/mdclaw.sif" in content
-        assert "/scratch" in content
+        assert str(scratch) in content
+        assert str(data) in content
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
     @patch("mdclaw.slurm._base.run_command")
@@ -1900,7 +1905,9 @@ class TestSubmitJobNodeIntegration:
 
         assert result["success"] is False
         assert result["code"] == "slurm_node_already_submitted"
-        mock_run.assert_not_called()
+        assert not [c for c in mock_run.call_args_list if c.args and c.args[0][0] == "sbatch"]
+        assert "77777" in result["next_action"] and str(jd) in result["next_action"]
+        assert "<job_dir>" not in result["next_action"]
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
     @patch("mdclaw.slurm._base.run_command")
@@ -2945,16 +2952,35 @@ class TestResolveContainerRuntime:
         warnings: list = []
         assert resolve_container_runtime(container, warnings=warnings) is None
         assert "runtime_resolved" not in container
-        assert len(warnings) == 1 and "inside the image" in warnings[0]
+        assert len(warnings) == 1 and "inside this image" in warnings[0]
         preamble = "\n".join(_container_runtime_preamble(container))
         assert "command -v singularity" in preamble and ". /etc/profile" in preamble
 
     def test_missing_configured_absolute_runtime_is_refused(self, tmp_path, monkeypatch):
         from mdclaw.slurm.config import resolve_container_runtime
 
+        monkeypatch.delenv("SINGULARITY_CONTAINER", raising=False)
+        monkeypatch.delenv("APPTAINER_CONTAINER", raising=False)
         container = {"image": "/opt/mdclaw.sif", "runtime": str(tmp_path / "nope")}
         error = resolve_container_runtime(container)
         assert error["code"] == "container_runtime_not_found"
+        # the fix is not the refused path again
+        assert str(tmp_path / "nope") not in error["next_action"]
+        assert "--runtime singularity" in error["next_action"]
+
+    def test_missing_absolute_runtime_is_used_unchecked_inside_the_image(self, tmp_path, monkeypatch):
+        """glm 033/063 and kimi 023 (MDDataBench v5) pinned the host's
+        /shared/software/apptainer/bin/singularity from inside the SIF and were
+        refused with advice to pin an absolute path."""
+        from mdclaw.slurm.config import resolve_container_runtime
+
+        monkeypatch.setenv("SINGULARITY_CONTAINER", "/data/mdclaw.sif")
+        host_runtime = str(tmp_path / "host" / "singularity")
+        container = {"image": "/opt/mdclaw.sif", "runtime": host_runtime}
+        notes: list = []
+        assert resolve_container_runtime(container, warnings=[], notes=notes) is None
+        assert container["runtime_resolved"] == host_runtime
+        assert notes and "not visible from inside this image" in notes[0]
 
     def test_outside_image_without_runtime_only_warns(self, tmp_path, monkeypatch):
         from mdclaw.slurm.config import resolve_container_runtime
@@ -2971,9 +2997,17 @@ class TestResolveContainerRuntime:
 
     def test_configure_container_rejects_missing_absolute_runtime(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("SINGULARITY_CONTAINER", raising=False)
+        monkeypatch.delenv("APPTAINER_CONTAINER", raising=False)
         result = configure_container(image="/opt/mdclaw.sif", runtime=str(tmp_path / "nope"))
         assert result["success"] is False
         assert result["code"] == "container_runtime_not_found"
+        assert str(tmp_path / "nope") not in result["next_action"]
+        monkeypatch.setenv("SINGULARITY_CONTAINER", "/data/mdclaw.sif")
+        inside = configure_container(image="/opt/mdclaw.sif", runtime="/shared/software/apptainer/bin/singularity")
+        assert inside["success"] is True
+        assert inside["container"]["runtime"] == "/shared/software/apptainer/bin/singularity"
+        assert any("not visible from inside this image" in w for w in inside["warnings"])
         _, exe = self._fake_runtime(tmp_path)
         result = configure_container(image="/opt/mdclaw.sif", runtime=str(exe))
         assert result["success"] is True
@@ -2991,9 +3025,11 @@ class TestResolveContainerRuntime:
             "container": {"image": "/opt/containers/mdclaw.sif", "extra_flags": "--nv"},
         }))
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 10003\n")
-        result = submit_job(script="mdclaw run_production", partition="gpu", gpus=1, output_dir=str(tmp_path))
+        result = submit_job(script=f"mdclaw --job-dir {tmp_path} --node-id prod_001 run_production",
+                            partition="gpu", gpus=1, output_dir=str(tmp_path))
         assert result["success"] is True, result
-        assert any("inside the image" in w for w in result["warnings"])
+        assert any("inside this image" in n and "do not cancel" in n for n in result["notes"])
+        assert not any("runtime" in w for w in result["warnings"])
         content = Path(result["script_file"]).read_text()
         assert ". /etc/profile" in content
         assert content.index("command -v singularity") < content.index("singularity exec --nv")
@@ -3010,7 +3046,8 @@ class TestResolveContainerRuntime:
             "container": {"image": "/opt/containers/mdclaw.sif", "extra_flags": "--nv"},
         }))
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 10002\n")
-        result = submit_job(script="mdclaw run_production", partition="gpu", gpus=1, output_dir=str(tmp_path))
+        result = submit_job(script=f"mdclaw --job-dir {tmp_path} --node-id prod_001 run_production",
+                            partition="gpu", gpus=1, output_dir=str(tmp_path))
         assert result["success"] is True, result
         content = Path(result["script_file"]).read_text()
         assert f"{exe} exec --nv" in content

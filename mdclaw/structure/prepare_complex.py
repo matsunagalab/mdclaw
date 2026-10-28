@@ -71,7 +71,7 @@ from mdclaw.structure.merge import _build_nucleic_residue_mapping, _build_residu
 from mdclaw.structure.pdb_utils import _apply_component_disposition_to_split_result, _component_disposition_payload, _normalize_prepare_solvent_type  # noqa: E402
 from mdclaw.structure.phosphorylation import _build_source_to_merged_chain_map, _build_source_to_topology_index_map, _remap_detected_ptm_chains, _remap_disulfide_chains, _remap_histidine_state_chains, _remap_protonation_state_chains, _resolve_source_site_mapping  # noqa: E402
 from mdclaw.structure.protonation import _normalize_protonation_state_overrides  # noqa: E402
-from mdclaw.structure.split import _inspect_molecules_impl, split_molecules  # noqa: E402
+from mdclaw.structure.split import _inspect_molecules_impl, _split_listed_ids, split_molecules  # noqa: E402
 from mdclaw.structure.terminal_caps import _resolve_terminal_cap_settings  # noqa: E402
 
 
@@ -295,7 +295,7 @@ def _disulfide_pairs_in_merged_frame(disulfide_pairs, chain_mapping_entries):
                 break
             moved.append({"chain": target, "resnum": resnum, "icode": icode})
         if len(moved) == 2:
-            pairs.append({"cys1": moved[0], "cys2": moved[1]})
+            pairs.append({"cys1": moved[0], "cys2": moved[1], "source_pair": pair})
         else:
             unmapped.append(
                 f"{sites[0][0]}:{sites[0][1]}-{sites[1][0]}:{sites[1][1]}"
@@ -582,29 +582,57 @@ def _expand_covalently_linked_glycan_selection(
     include_types: Optional[List[str]],
     inspection: dict,
     linkages: list[dict],
+    selected_labels: Optional[List[str]] = None,
+    excluded_labels: Optional[set] = None,
 ) -> tuple[Optional[List[str]], list[dict], Optional[dict]]:
-    """Include glycan label chains covalently linked to selected proteins."""
+    """Include glycan label chains covalently linked to selected proteins.
+
+    ``selected_labels`` is the request as the split resolves it
+    (``resolve_chain_selection``); without it the names are read label first.
+    A glycan chain in ``excluded_labels`` (named by ``--exclude-ligand-ids``)
+    is neither added nor kept among the linkages: an explicit exclusion
+    outranks the closure (069_soluble_1aol, glm v5).
+    """
+    excluded_labels = {str(label) for label in (excluded_labels or ())}
+    chains = inspection.get("chains", [])
+    if excluded_labels:
+        excluded_residues = {
+            (str(chain.get("author_chain")), str(record.get("resnum")),
+             str(record.get("resname")).upper())
+            for chain in chains
+            if str(chain.get("chain_id")) in excluded_labels
+            for record in (chain.get("residue_numbering") or {}).get("ordered_residues") or []
+        }
+        linkages = [
+            linkage for linkage in linkages or []
+            if (str((linkage.get("glycan") or {}).get("chain")),
+                str((linkage.get("glycan") or {}).get("resnum")),
+                str((linkage.get("glycan") or {}).get("resname", "")).upper())
+            not in excluded_residues
+        ]
     if (include_types is not None and "glycan" not in include_types) or not linkages:
         return select_chains, [], None
     if select_chains is None:
         return None, list(linkages), None
 
-    chains = inspection.get("chains", [])
-    selected_labels: set[str] = set()
-    for requested in select_chains:
-        label_hits = {
-            str(chain.get("chain_id"))
-            for chain in chains
-            if chain.get("chain_id") == requested
-        }
-        if label_hits:
-            selected_labels.update(label_hits)
-        else:
-            selected_labels.update(
+    if selected_labels is not None:
+        selected_labels = {str(label) for label in selected_labels}
+    else:
+        selected_labels = set()
+        for requested in select_chains:
+            label_hits = {
                 str(chain.get("chain_id"))
                 for chain in chains
-                if chain.get("author_chain") == requested
-            )
+                if chain.get("chain_id") == requested
+            }
+            if label_hits:
+                selected_labels.update(label_hits)
+            else:
+                selected_labels.update(
+                    str(chain.get("chain_id"))
+                    for chain in chains
+                    if chain.get("author_chain") == requested
+                )
 
     selected_protein_authors = {
         str(chain.get("author_chain"))
@@ -629,6 +657,7 @@ def _expand_covalently_linked_glycan_selection(
             if chain.get("chain_type") == "glycan"
             and str(chain.get("author_chain")) in linked_glycan_authors
             and str(chain.get("chain_id")) not in selected_labels
+            and str(chain.get("chain_id")) not in excluded_labels
         }
     )
     if not added_labels:
@@ -890,42 +919,363 @@ def _drop_detections_outside_ranges(result, split_result, disulfide_bonds, metal
     return kept_bonds, kept_sites
 
 
-def _detected_disulfides_not_declared(structure_path, declared_pairs, select_chains) -> list[dict]:
-    """Bonded disulfides the deposit shows that a declared list leaves out.
+def _source_pair_key(pair):
+    """An unordered pair of (chain, resnum, icode) in source (author) ids; None if unreadable.
 
-    A declared ``--disulfide-pairs`` list replaces detection entirely, and
-    ``'[]'`` means none. That is deliberate, but the omission was silent:
-    096_soluble_1ay7 cli_skill_sif r2 (campaign v2) passed ``'[]'`` with a
-    long protonation list, lost the deposit's C7-C96 (2.04 A) and failed the
-    reference's disulfide check without any warning naming the bond. Returns
-    the detected pairs (SSBOND/_struct_conn merged with S-S distances, filtered
-    to the selected chains) whose geometry is a bond or an overlap and which
-    the declared list neither names nor names with ``form_bond: false``.
+    ``form_bond`` does not matter here: a pair named with ``form_bond: false``
+    is still named.
     """
-    from mdclaw.structure.clean_protein import _disulfide_pair_sites
+    try:
+        ends = []
+        for end in ("cys1", "cys2"):
+            site = pair.get(end) or {}
+            ends.append((str(site.get("chain") or "").strip(), int(site.get("resnum")),
+                         str(site.get("icode") or "").strip()))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return frozenset(ends)
+
+
+def _inside_windows(pair, windows) -> bool:
+    """Both cysteines inside the residue ranges of their chains (chains without a range pass)."""
+    for end in ("cys1", "cys2"):
+        site = pair.get(end) or {}
+        spans = (windows or {}).get(str(site.get("chain") or "").strip())
+        if not spans:
+            continue
+        try:
+            number = int(site.get("resnum"))
+        except (TypeError, ValueError):
+            continue
+        if not any(low <= number <= high for low, high in spans):
+            return False
+    return True
+
+
+def deposit_disulfides(structure_path, select_chains=None, range_windows=None) -> list[dict]:
+    """The disulfides the deposit says are there, on the selected chains and ranges.
+
+    SSBOND / ``_struct_conn`` records merged with S-S distances (metal-bridged
+    pairs excluded by detection), kept when the two sulfurs are bonded or
+    overlapping, or when a record names a pair whose sulfur is unobserved
+    (the bond is built with the residue). This is the set a preparation may
+    only leave unformed when the caller names the pair with ``form_bond: false``.
+    """
     from mdclaw.structure.disulfide import (
         _detect_disulfide_candidates,
         _merge_disulfide_pairs,
         _parse_ssbond_records,
     )
 
-    def _key(pair):
-        sites = _disulfide_pair_sites(pair)
-        if sites is None:
-            return None
-        return frozenset((chain, int(resnum), (icode or "").strip()) for chain, resnum, icode in sites)
-
     try:
         detected = _merge_disulfide_pairs(
-            _parse_ssbond_records(structure_path),
-            _detect_disulfide_candidates(structure_path),
+            _parse_ssbond_records(Path(structure_path)),
+            _detect_disulfide_candidates(Path(structure_path)),
             select_chains=select_chains,
         )
-    except Exception:  # noqa: BLE001 - a warning must never break the preparation
+    except Exception:  # noqa: BLE001 - detection is evidence, never a crash
         return []
-    declared_keys = {_key(pair) for pair in declared_pairs or []} - {None}
-    return [pair for pair in detected
-            if pair.get("geometry") in ("bonded", "overlap") and _key(pair) not in declared_keys]
+    if select_chains is not None and not select_chains:
+        return []
+    kept = []
+    for pair in detected:
+        recorded = "ssbond" in str(pair.get("source") or "")
+        if pair.get("geometry") in ("bonded", "overlap") or (
+                recorded and pair.get("distance_angstrom") is None):
+            if _inside_windows(pair, range_windows):
+                kept.append(pair)
+    return kept
+
+
+def _detected_disulfides_not_declared(structure_path, declared_pairs, select_chains,
+                                      range_windows=None) -> list[dict]:
+    """Bonded disulfides the deposit shows that a declared list leaves out.
+
+    A declared ``--disulfide-pairs`` list replaces detection entirely, and
+    ``'[]'`` means none. The omission used to be silent: 096_soluble_1ay7
+    cli_skill_sif r2 (campaign v2) passed ``'[]'`` with a long protonation
+    list, lost the deposit's C7-C96 (2.04 A) and failed the reference's
+    disulfide check without any warning naming the bond; a warning followed,
+    and now a refusal. Returns the :func:`deposit_disulfides` pairs that the
+    declared list neither names nor names with ``form_bond: false``.
+    """
+    declared_keys = {_source_pair_key(pair) for pair in declared_pairs or []} - {None}
+    return [pair for pair in deposit_disulfides(structure_path, select_chains, range_windows)
+            if _source_pair_key(pair) not in declared_keys]
+
+
+def _unformed_disulfides_in_merged(merged_pdb, disulfide_bonds, deposit_pairs=None,
+                                   chain_mapping_entries=None) -> list[dict]:
+    """Disulfides the prepared structure should carry and does not.
+
+    The invariant behind every disulfide path, checked on the merged file
+    itself, so a pair lost anywhere upstream -- a chain filter that read the
+    wrong chain (2DD8's heavy chain, campaign v5), a declared list that left
+    a bond out -- is caught however it was lost:
+
+    - two cysteines whose sulfurs sit within the S-S bond window (or closer)
+      with no metal bridging them, and
+    - every deposit record (``deposit_pairs``, source ids) that maps onto two
+      cysteines of the merged file,
+
+    must be CYX and named by ``disulfide_bonds`` (merged ids), unless
+    ``disulfide_bonds`` names the pair with ``form_bond: false``. Returns
+    ``{"merged": "A:22-A:96", "source": ..., "distance_angstrom": ...,
+    "reason": ...}`` per pair that is not formed.
+    """
+    from mdclaw.structure.disulfide import (
+        DISULFIDE_BOND_MAX_ANGSTROM,
+        DISULFIDE_METAL_ELEMENTS,
+        close_sulfur_pairs,
+    )
+    from mdclaw.structure.pdb_utils import resolve_residue_site
+
+    cysteines: dict[tuple[str, int, str], dict] = {}
+    metals: list[tuple[float, float, float]] = []
+    for line in Path(merged_pdb).read_text(errors="ignore").splitlines():
+        if not line.startswith(("ATOM  ", "HETATM")) or len(line) < 54:
+            continue
+        try:
+            xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+        except ValueError:
+            continue
+        element = (line[76:78].strip() if len(line) >= 78 else "") or line[12:14].strip()
+        if element.upper() in DISULFIDE_METAL_ELEMENTS and line.startswith("HETATM"):
+            metals.append(xyz)
+        resname = line[17:20].strip()
+        if resname not in ("CYS", "CYX", "CYM"):
+            continue
+        try:
+            key = (line[21].strip(), int(line[22:26]), line[26].strip())
+        except ValueError:
+            continue
+        record = cysteines.setdefault(key, {"resname": resname, "sg": None})
+        if line[12:16].strip() == "SG":
+            record["sg"] = xyz
+
+    def resolve(site):
+        if not isinstance(site, dict) or site.get("chain") is None or site.get("resnum") is None:
+            return None
+        try:
+            key, _problem = resolve_residue_site(
+                cysteines, site.get("chain"), site.get("resnum"), site.get("icode"))
+        except (TypeError, ValueError):
+            return None
+        return key
+
+    formed, excluded = set(), set()
+    for bond in disulfide_bonds or []:
+        ends = (resolve(bond.get("cys1")), resolve(bond.get("cys2")))
+        if None in ends:
+            continue
+        (excluded if bond.get("form_bond") is False else formed).add(frozenset(ends))
+
+    def spelled(key):
+        return f"{key[0]}:{key[1]}{key[2]}"
+
+    problems: dict[frozenset, dict] = {}
+
+    def check(ends, source, distance, reason):
+        pair = frozenset(ends)
+        if len(pair) != 2 or pair in excluded or pair in problems:
+            return
+        if pair in formed and all(cysteines[end]["resname"] == "CYX" for end in ends):
+            return
+        problems[pair] = {
+            "merged": "-".join(spelled(end) for end in sorted(ends)),
+            "source": source,
+            "distance_angstrom": distance,
+            "resnames": [cysteines[end]["resname"] for end in sorted(ends)],
+            "reason": reason,
+        }
+
+    sulfurs = {key: rec["sg"] for key, rec in cysteines.items() if rec["sg"] is not None}
+    for one, two, distance in close_sulfur_pairs(sulfurs, metals, DISULFIDE_BOND_MAX_ANGSTROM):
+        check((one, two), None, distance, "sulfurs_within_bond_distance")
+
+    if deposit_pairs:
+        mapped, _unmapped = _disulfide_pairs_in_merged_frame(
+            deposit_pairs, chain_mapping_entries or [])
+        for pair in mapped:
+            ends = (resolve(pair["cys1"]), resolve(pair["cys2"]))
+            if None in ends:
+                continue
+            original = pair.get("source_pair") or {}
+            check(ends, _spell_pair(original) if original else None,
+                  original.get("distance_angstrom"), "recorded_in_deposit")
+    return list(problems.values())
+
+
+def _spell_pair(pair) -> str:
+    one, two = (pair.get("cys1") or {}), (pair.get("cys2") or {})
+    return (f"{one.get('chain', '')}:{one.get('resnum')}{(one.get('icode') or '').strip()}-"
+            f"{two.get('chain', '')}:{two.get('resnum')}{(two.get('icode') or '').strip()}")
+
+
+def _public_pair(pair, form_bond=None) -> dict:
+    """A pair in the public ``--disulfide-pairs`` shape (chain, resnum, icode)."""
+    out = {}
+    for end in ("cys1", "cys2"):
+        site = pair.get(end) or {}
+        entry = {"chain": site.get("chain"), "resnum": site.get("resnum")}
+        if (site.get("icode") or "").strip():
+            entry["icode"] = site["icode"].strip()
+        out[end] = entry
+    if form_bond is not None:
+        out["form_bond"] = form_bond
+    elif pair.get("form_bond") is False:
+        out["form_bond"] = False
+    return out
+
+
+def _suppressed_disulfides_next_action(declared_pairs, suppressed) -> str:
+    """The exact commands that either form or deliberately reduce the omitted pairs."""
+    declared = [_public_pair(pair) for pair in declared_pairs or []]
+    formed = json.dumps(declared + [_public_pair(pair) for pair in suppressed])
+    reduced = json.dumps(declared + [_public_pair(pair, form_bond=False) for pair in suppressed])
+    return (
+        "Run the same (still pending) node again with one of: omit --disulfide-pairs "
+        "(detection forms every bonded pair); form them: "
+        f"--disulfide-pairs '{formed}'; keep them reduced on purpose: "
+        f"--disulfide-pairs '{reduced}'."
+    )
+
+
+def _ligand_id_for_file(ligand_file, cinfo: dict, all_chains_lookup: dict) -> Optional[str]:
+    """The residue name a split ligand file is prepared under (step 5's rule)."""
+    component = cinfo.get("ligand_component")
+    if component:
+        return component["residue_name"]
+    chain_data = all_chains_lookup.get(cinfo.get("chain_id"), {})
+    unique = ((chain_data.get("residue_names") or {}).get("unique_residues") or [])
+    if unique:
+        return unique[0]
+    try:
+        for line in Path(ligand_file).read_text(errors="ignore").splitlines():
+            if line.startswith(("HETATM", "ATOM")) and line[17:20].strip():
+                return line[17:20].strip()
+    except OSError:
+        return None
+    return None
+
+
+def _expected_ligand_net_charge(ligand_net_charges, instance_id, ligand_id, sa_spec):
+    """Instance id, then residue name, then structure_analysis; None when unstated."""
+    for key in (instance_id, ligand_id):
+        if key and ligand_net_charges and key in ligand_net_charges:
+            return int(ligand_net_charges[key])
+    if sa_spec and sa_spec.get("net_charge") is not None:
+        return int(sa_spec["net_charge"])
+    return None
+
+
+def _structure_analysis_ligand_spec(structure_analysis, ligand_id, chain_id):
+    for spec in (structure_analysis or {}).get("ligands", []) or []:
+        if spec.get("resname") == ligand_id or spec.get("chain") == chain_id:
+            return spec
+    return None
+
+
+def _ligand_chemistry_preflight(split_result, *, ligand_smiles, ligand_net_charges,
+                                structure_analysis, protonate_ligands, ph) -> Optional[dict]:
+    """Refusals the ligand step would reach after the whole preparation, decided now.
+
+    - ``invalid_ligand_net_charges``: a ``--ligand-net-charges`` key names no
+      selected ligand (residue name or instance id).
+    - ``ligand_smiles_ccd_mismatch``: a supplied SMILES has the CCD ligand's
+      heavy atoms wired differently (``smiles_ccd_mismatch``).
+    - ``ligand_protonation_ambiguous``: Dimorphite-DL offers states of
+      different net charge and nothing says which is meant.
+    - ``ligand_protonation_charge_unreachable``: no state has the stated charge.
+    """
+    from mdclaw.structure import ligand_chemistry as lc
+
+    all_chains_lookup = {c.get("chain_id"): c for c in split_result.get("all_chains", []) or []}
+    infos = {str(info.get("file")): info for info in split_result.get("chain_file_info", []) or []}
+    seen_keys: set[str] = set()
+    for ligand_file in split_result.get("ligand_files", []) or []:
+        cinfo = infos.get(str(ligand_file), {})
+        ligand_id = _ligand_id_for_file(ligand_file, cinfo, all_chains_lookup)
+        if not ligand_id:
+            continue
+        instance_id = cinfo.get("unique_id")
+        seen_keys.update({ligand_id, ligand_id[:3].upper(), str(instance_id or "")})
+        if cinfo.get("ligand_component"):
+            continue
+        sa_spec = _structure_analysis_ligand_spec(structure_analysis, ligand_id, cinfo.get("chain_id"))
+        if sa_spec and not sa_spec.get("include", True):
+            continue
+        user_smiles = (ligand_smiles or {}).get(ligand_id)
+        if sa_spec and sa_spec.get("smiles"):
+            user_smiles = sa_spec["smiles"]
+        expected = _expected_ligand_net_charge(ligand_net_charges, instance_id, ligand_id, sa_spec)
+
+        if user_smiles and not cinfo.get("covalent_members"):
+            mismatch = lc.smiles_ccd_mismatch(ligand_id, user_smiles)
+            if mismatch is not None:
+                return {
+                    "errors": [
+                        f"--ligand-smiles for {ligand_id} has the CCD definition's heavy atoms "
+                        f"but bonds them differently: given {mismatch['user_skeleton']}, CCD "
+                        f"{mismatch['ccd_skeleton']} (charges, hydrogens and stereo ignored). "
+                        "It would template-match the deposited atoms and build another molecule."],
+                    "code": "ligand_smiles_ccd_mismatch",
+                    "context": {"ligand_id": ligand_id, **mismatch},
+                    "next_action": (
+                        f"Drop {ligand_id} from --ligand-smiles to use the CCD definition, or give "
+                        f"a SMILES with the CCD bond orders (charges may differ), e.g. "
+                        f"--ligand-smiles '{{\"{ligand_id}\": \"{mismatch['ccd_smiles']}\"}}', then "
+                        "run the same (still pending) node again."),
+                }
+
+        if not protonate_ligands:
+            continue
+        smiles = user_smiles or lc._get_ligand_smiles(ligand_id, user_smiles=None, fetch_from_ccd=True)
+        if not smiles or lc._smiles_has_explicit_charge(smiles):
+            continue
+        candidates = lc._protonate_smiles_dimorphite(smiles, ph)
+        choice = lc.choose_protonation_state(candidates, expected)
+        if choice["status"] == "ambiguous":
+            spelled = "; ".join(f"{c['smiles']} (net charge {c['charge']})"
+                                for c in choice["candidates"])
+            return {
+                "errors": [
+                    f"Ligand {ligand_id} ({instance_id or ligand_file}): Dimorphite-DL offers "
+                    f"protonation states of different net charge at pH {ph}: {spelled}. Its "
+                    "order is not a ranking, so the charge is not picked for you."],
+                "code": "ligand_protonation_ambiguous",
+                "context": {"ligand_id": ligand_id, "ligand_instance_id": instance_id,
+                            "ph": ph, "candidates": choice["candidates"]},
+                "next_action": lc.ligand_protonation_next_action(ligand_id, choice["candidates"]),
+            }
+        if choice["status"] == "unreachable":
+            charges = sorted({c["charge"] for c in choice["candidates"]})
+            return {
+                "errors": [
+                    f"Ligand {ligand_id}: no Dimorphite-DL protonation state at pH {ph} has "
+                    f"net charge {expected}; the states offered have {charges}."],
+                "code": "ligand_protonation_charge_unreachable",
+                "context": {"ligand_id": ligand_id, "candidates": choice["candidates"]},
+                "next_action": (
+                    f"Give {ligand_id} a charged SMILES that encodes net charge {expected} "
+                    f"(--ligand-smiles '{{\"{ligand_id}\": \"...\"}}'), or state one of "
+                    f"{charges} in --ligand-net-charges, then run the same (still pending) "
+                    "node again."),
+            }
+
+    unknown = sorted(key for key in (ligand_net_charges or {}) if key not in seen_keys)
+    if unknown:
+        offered = sorted(key for key in seen_keys if key)
+        return {
+            "errors": [f"--ligand-net-charges names {', '.join(unknown)}, which no selected "
+                       f"ligand answers to (selected: {', '.join(offered) or 'none'})"],
+            "code": "invalid_ligand_net_charges",
+            "next_action": (
+                "Key --ligand-net-charges by a selected ligand's residue name or instance id "
+                f"({', '.join(offered) or 'none selected'}), then run the same (still pending) "
+                "node again."),
+        }
+    return None
 
 
 def _declared_disulfide_site_problems(disulfide_pairs, split_result, *, terminal_builds: bool) -> list[str]:
@@ -1316,6 +1666,7 @@ def prepare_complex(
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
     ligand_components: Optional[List[Dict[str, str]]] = None,
+    ligand_net_charges: Optional[Dict[str, int]] = None,
 ) -> dict:
     """Prepare a protein-ligand complex for MD simulation (complete workflow).
 
@@ -1420,6 +1771,15 @@ def prepare_complex(
             This cannot cut external covalent links or implicitly cap fragments.
         ligand_ph: pH used for Dimorphite-DL ligand protonation of neutral
                    SMILES. Defaults to the protein ``ph`` when None.
+        ligand_net_charges: Expected formal net charge per ligand, keyed by
+                   residue name or instance id (e.g. ``{"9V2": 0}`` or
+                   ``{"A:AMH:80": 0}``). Picks the Dimorphite-DL state of that
+                   charge and is checked against the final graph. When
+                   Dimorphite-DL offers states of different net charge and no
+                   charge is stated, the run is refused
+                   (``ligand_protonation_ambiguous``) with the node pending.
+                   A key that names no selected ligand is refused
+                   (``invalid_ligand_net_charges``).
         protonate_ligands: When True (default), neutral CCD/dictionary ligand
                            SMILES are protonated to a pH-appropriate state via
                            Dimorphite-DL. Set False to keep SMILES as-is.
@@ -1574,6 +1934,22 @@ def prepare_complex(
                 hints=["An empty list means no disulfides at all; omit the option to auto-detect."],
                 code="invalid_disulfide_pairs",
             )
+    if ligand_net_charges is not None:
+        bad = (["expected a JSON object"] if not isinstance(ligand_net_charges, dict) else [
+            f"{key!r}: {value!r}" for key, value in ligand_net_charges.items()
+            if not isinstance(key, str) or isinstance(value, bool) or not (
+                isinstance(value, int)
+                or (isinstance(value, str) and value.strip().lstrip("+-").isdigit()))
+        ])
+        if bad:
+            return create_validation_error(
+                "ligand_net_charges",
+                "entries must map a residue name or ligand id to an integer: " + ", ".join(bad),
+                expected='a JSON object such as {"9V2": 0} or {"A:AMH:80": 0}',
+                actual=repr(ligand_net_charges)[:200],
+                code="invalid_ligand_net_charges",
+            )
+        ligand_net_charges = {str(key).strip(): int(value) for key, value in ligand_net_charges.items()}
     from mdclaw.source_bundle import source_selection_from_values
 
     _source_selection = source_selection_from_values(
@@ -1752,17 +2128,6 @@ def prepare_complex(
         # ``openmmforcefields.SystemGenerator`` bundle.
         from mdclaw.research.inspection import detect_ptm_sites
         detected_ptm_residues = detect_ptm_sites(str(structure_file))
-        detected_glycan_linkages = _parse_glycan_link_records(Path(structure_file))
-        (
-            effective_select_chains,
-            selected_glycan_linkages,
-            glycan_selection_adjustment,
-        ) = _expand_covalently_linked_glycan_selection(
-            select_chains=select_chains,
-            include_types=include_types,
-            inspection=inspection,
-            linkages=detected_glycan_linkages,
-        )
 
         # Token optimization: Store only essential inspection info (not full chains/entities)
         result["inspection"] = {
@@ -1784,24 +2149,61 @@ def prepare_complex(
                    f"{summary['num_ligand_chains']} ligands, "
                    f"{summary['num_ion_chains']} ions")
 
-        # Translate select_chains (label_asym_id per Fix B) into the author_chain
-        # values that SSBOND / _struct_conn records and gemmi's ``chain.name``
-        # actually carry, for both PDB and mmCIF. Without this mapping a chain
-        # filter silently drops everything whose auth_asym_id differs from the
-        # user-supplied label (e.g. 7QVK label "B" <-> auth "BBB"). Computed
-        # here rather than inside disulfide detection because metal-site
-        # detection filters on the same selection.
-        ss_select_chains: Optional[List[str]] = None
-        if select_chains is not None:
-            chain_id_map = inspection.get("summary", {}).get("chain_id_map", {})
-            author_chains_set = set(chain_id_map.values())
-            ss_select_chains = []
-            for ch in select_chains:
-                if ch in chain_id_map:
-                    ss_select_chains.append(chain_id_map[ch])   # label -> auth
-                elif ch in author_chains_set:
-                    ss_select_chains.append(ch)                 # already auth (fallback)
-                # else: unknown ID — let split_molecules raise the error.
+        # The chain request, resolved once by the rule split_molecules applies
+        # (label first, author ids when the ranges say so, a water-only label
+        # read as the author chain), and in author space: SSBOND /
+        # _struct_conn records, metal sites and gemmi's ``chain.name`` carry
+        # author ids. Mapping each requested name through chain_id_map instead
+        # read 2DD8's "H" as label H -- the water of author S -- and filtered
+        # out every disulfide of the heavy chain (13 attempts of campaign v5
+        # across 2DD8, 1DFJ and 3RVW). Ranges without select_chains select the
+        # chains they name, here and in the split alike.
+        from mdclaw.structure.split import (
+            default_select_chains_from_ranges,
+            exclusion_targets,
+            resolve_chain_selection,
+            unmatched_exclusion_refusal,
+        )
+        select_chains, range_default = default_select_chains_from_ranges(
+            select_chains, residue_ranges, inspection)
+        if range_default is not None:
+            result.setdefault("selection_adjustments", []).append(range_default)
+            result["warnings"].append(f"{range_default['code']}: {range_default['message']}")
+        include_ligand_ids = _split_listed_ids(include_ligand_ids)
+        exclude_ligand_ids = _split_listed_ids(exclude_ligand_ids)
+        if exclude_ligand_ids:
+            exclusion_refusal = unmatched_exclusion_refusal(inspection, exclude_ligand_ids)
+            if exclusion_refusal is not None:
+                for key in ("code", "message", "errors", "hints", "context", "next_action"):
+                    if key in exclusion_refusal:
+                        result[key] = exclusion_refusal[key]
+                return _refused(result)
+        excluded_labels = set()
+        if exclude_ligand_ids:
+            targets = exclusion_targets(inspection)
+            excluded_labels = {label for entry in exclude_ligand_ids for label in targets[entry]}
+        chain_selection = resolve_chain_selection(
+            structure_file, select_chains, include_types=include_types,
+            residue_ranges=residue_ranges, analysis=inspection)
+        ss_select_chains: Optional[List[str]] = chain_selection["author_chains"]
+
+        detected_glycan_linkages = _parse_glycan_link_records(Path(structure_file))
+        (
+            _glycan_select_chains,
+            selected_glycan_linkages,
+            glycan_selection_adjustment,
+        ) = _expand_covalently_linked_glycan_selection(
+            select_chains=select_chains,
+            include_types=include_types,
+            inspection=inspection,
+            linkages=detected_glycan_linkages,
+            selected_labels=chain_selection["label_ids"],
+            excluded_labels=excluded_labels,
+        )
+        # Added to the split as resolved labels, not appended to the request:
+        # a glycan label among author-read names would change how they read.
+        glycan_extra_labels = list(
+            (glycan_selection_adjustment or {}).get("added_chain_ids") or [])
 
         # Step 1.5: Aggregate disulfide bonds. When the caller supplies
         # ``disulfide_pairs`` explicitly, it is a **complete replacement** of
@@ -1846,22 +2248,25 @@ def prepare_complex(
                 DISULFIDE_BOND_MAX_ANGSTROM as _ss_max,
                 DISULFIDE_BOND_MIN_ANGSTROM as _ss_min,
             )
+            # A declared list is a complete replacement, and a bonded disulfide
+            # it leaves out is refused rather than dropped: omission is not a
+            # decision (096_soluble_1ay7 v2 passed '[]' and lost C7-C96). A
+            # pair is kept reduced only when it is named with form_bond false.
             suppressed = _detected_disulfides_not_declared(
-                structure_path, disulfide_bonds, ss_select_chains)
+                structure_path, disulfide_bonds, ss_select_chains,
+                range_windows=chain_selection["range_windows_by_author"])
             if suppressed:
-                spelled = ", ".join(
-                    f"{b['cys1'].get('chain', '')}:{b['cys1'].get('resnum')}-"
-                    f"{b['cys2'].get('chain', '')}:{b['cys2'].get('resnum')}"
-                    f" ({b.get('distance_angstrom')} A)" for b in suppressed)
-                result["warnings"].append(
-                    f"detected_disulfides_suppressed: the deposit shows {len(suppressed)} "
-                    f"bonded disulfide(s) the declared list leaves out, so they will not be "
-                    f"formed: {spelled}. Pass nothing to keep detection, or list them.")
-                result.setdefault("warning_records", []).append({
-                    "code": "detected_disulfides_suppressed",
-                    "pairs": [f"{b['cys1'].get('chain', '')}:{b['cys1'].get('resnum')}-"
-                              f"{b['cys2'].get('chain', '')}:{b['cys2'].get('resnum')}" for b in suppressed],
-                })
+                spelled = ", ".join(_spell_pair(b) + f" ({b.get('distance_angstrom')} A)"
+                                    for b in suppressed)
+                result["errors"].append(
+                    f"The declared --disulfide-pairs list leaves out {len(suppressed)} "
+                    f"disulfide(s) the deposit shows bonded: {spelled}. Omitting a bonded "
+                    "pair does not reduce it; name it with form_bond false to keep it reduced.")
+                result["code"] = "detected_disulfides_suppressed"
+                result["context"] = {"suppressed_disulfides": [_spell_pair(b) for b in suppressed]}
+                result["next_action"] = _suppressed_disulfides_next_action(
+                    disulfide_pairs, suppressed)
+                return _refused(result)
             unbonded = [entry for entry, bond in zip(input_geometry, disulfide_bonds)
                         if entry.get("geometry") == "not_formed"
                         and bond.get("form_bond", True) is not False]
@@ -2016,7 +2421,8 @@ def prepare_complex(
         split_result = split_molecules(
             str(structure_file),
             output_dir=str(base_dir),
-            select_chains=effective_select_chains,
+            select_chains=select_chains,
+            extra_label_ids=glycan_extra_labels or None,
             include_types=include_types,
             include_ligand_ids=include_ligand_ids,
             include_ligand_resnames=include_ligand_resnames,
@@ -2026,6 +2432,10 @@ def prepare_complex(
             join_range_pieces=join_range_pieces,
             join_range_groups=join_range_groups,
         )
+        if range_default is not None:
+            # Decided here, so the split saw an explicit request and did not
+            # record it; carried into its adjustments for the receipt.
+            split_result.setdefault("selection_adjustments", []).insert(0, range_default)
         if glycan_selection_adjustment is not None:
             split_result.setdefault("selection_adjustments", []).append(
                 glycan_selection_adjustment
@@ -2107,6 +2517,7 @@ def prepare_complex(
                 "context",
                 "ligand_selection",
                 "selection_adjustments",
+                "next_action",
             ):
                 if key in split_result:
                     result[key] = split_result[key]
@@ -2188,6 +2599,58 @@ def prepare_complex(
                     "inside its requested range, or drop the entry.",
                 ]
                 return _refused(result)
+
+        # A cap stands in for the rest of a chain; on the polymer's own end
+        # there is no rest, so a cap there changes the molecule.
+        if terminal_caps_requested and split_result.get("protein_files"):
+            from mdclaw.structure.terminal_caps import (
+                native_terminus_cap_next_action,
+                native_terminus_caps,
+            )
+            native = native_terminus_caps(
+                structure_file, split_result,
+                n_cap=resolved_n_terminal_cap, c_cap=resolved_c_terminal_cap,
+                build_terminal_missing_residues=build_terminal_missing_residues)
+            if native:
+                result["errors"].append(
+                    "Terminal cap requested on the polymer's own end: " + "; ".join(
+                        f"{item['cap']} on {item['terminus']}-terminus {item['residue']} "
+                        "(nothing of the entity sequence lies beyond it)" for item in native))
+                result["code"] = "terminal_cap_on_native_terminus"
+                result["context"] = {"native_termini": native}
+                result["next_action"] = native_terminus_cap_next_action(
+                    native, n_cap=resolved_n_terminal_cap, c_cap=resolved_c_terminal_cap)
+                return _refused(result)
+
+        # Ligand chemistry the arguments must decide: which protonation state,
+        # and whether a supplied SMILES is the deposited molecule. Both are
+        # known from the split alone, so they are refused with the node pending.
+        if process_ligands and split_result.get("ligand_files"):
+            ligand_refusal = _ligand_chemistry_preflight(
+                split_result,
+                ligand_smiles=ligand_smiles,
+                ligand_net_charges=ligand_net_charges,
+                structure_analysis=structure_analysis,
+                protonate_ligands=protonate_ligands,
+                ph=ligand_ph if ligand_ph is not None else ph,
+            )
+            if ligand_refusal is not None:
+                for key, value in ligand_refusal.items():
+                    if key == "errors":
+                        result["errors"].extend(value)
+                    else:
+                        result[key] = value
+                return _refused(result)
+        elif ligand_net_charges:
+            result["errors"].append(
+                "--ligand-net-charges names " + ", ".join(sorted(ligand_net_charges))
+                + " but no ligand is selected for preparation")
+            result["code"] = "invalid_ligand_net_charges"
+            result["next_action"] = (
+                "Drop --ligand-net-charges, or select the ligand (--include-ligand-ids "
+                "with its id from inspect_molecules), then run the same (still pending) "
+                "node again.")
+            return _refused(result)
 
         # The selection is delivered and the arguments are accepted: from here
         # on the node has run, and a failure seals it.
@@ -2846,6 +3309,12 @@ def prepare_complex(
                                 f"{expected_net_charge} for {ligand_id}"
                             )
 
+                    # The direct argument outranks structure_analysis.
+                    stated = _expected_ligand_net_charge(
+                        ligand_net_charges, ligand_instance_id, ligand_id, None)
+                    if stated is not None:
+                        expected_net_charge = stated
+
                     if component:
                         if user_smiles and user_smiles != component["smiles"]:
                             raise ValueError("conflicting ligand component SMILES")
@@ -3274,12 +3743,69 @@ def prepare_complex(
                             )
                         unresolved = reconcile.get("unresolved_endpoints") or []
                         if unresolved:
+                            declared_here = disulfide_source == "user_override"
+                            origin = ("declared" if declared_here else
+                                      "detected (deposit SSBOND/_struct_conn or S-S distance)")
                             result["errors"].extend(
                                 f"CYS/CYX reconciliation could not resolve a "
-                                f"declared disulfide endpoint: {problem}"
+                                f"{origin} disulfide endpoint: {problem}"
                                 for problem in unresolved
                             )
                             result["code"] = "disulfide_endpoint_unresolvable"
+                            if declared_here:
+                                result["next_action"] = (
+                                    "On a new prep node, name each declared cysteine as "
+                                    "<author chain>:<resnum>[icode] of a selected chain "
+                                    "(inspect_molecules lists them) or drop the pair.")
+                            else:
+                                # Not the caller's list: detection named a cysteine
+                                # the selection does not hold (a tool defect, now
+                                # guarded by the shared chain resolution).
+                                result["next_action"] = (
+                                    "This pair came from detection, not from your "
+                                    "arguments. On a new prep node pass --disulfide-pairs "
+                                    "listing the selected chains' disulfides explicitly "
+                                    "(inspect_molecules / disulfide_bonds.json name them), "
+                                    "and report the selection that produced it.")
+                            result["overall_status"] = "failed"
+                            return result
+                        # The invariant behind every route: a disulfide the
+                        # deposit shows on the delivered chains, or two sulfurs
+                        # at bonding distance, is formed -- or the caller named
+                        # it with form_bond false. 2DD8 (campaign v5) reached
+                        # MD with its heavy chain's SG-SG 2.03 A left as two CYS.
+                        written_authors = sorted({
+                            str(info.get("author_chain"))
+                            for info in split_result.get("chain_file_info", []) or []
+                            if info.get("chain_type") == "protein"
+                        })
+                        unformed = _unformed_disulfides_in_merged(
+                            merge_result["output_file"],
+                            result.get("disulfide_bonds", []),
+                            deposit_pairs=deposit_disulfides(
+                                structure_path, written_authors,
+                                chain_selection["range_windows_by_author"],
+                            ) if written_authors else [],
+                            chain_mapping_entries=merge_result.get("chain_mapping_entries") or [],
+                        )
+                        if unformed:
+                            result["unformed_disulfides"] = unformed
+                            result["errors"].append(
+                                "Disulfide(s) the deposit shows are not formed in the prepared "
+                                "structure: " + "; ".join(
+                                    f"{item['merged']} (merged ids"
+                                    + (f", source {item['source']}" if item.get("source") else "")
+                                    + (f", SG-SG {item['distance_angstrom']} A"
+                                       if item.get("distance_angstrom") is not None else "")
+                                    + f", {'/'.join(item['resnames'])})"
+                                    for item in unformed))
+                            result["code"] = "detected_disulfide_not_formed"
+                            result["next_action"] = (
+                                "Create a new prep node (this one is sealed) and pass "
+                                "--disulfide-pairs naming every disulfide of the selected "
+                                "chains in source author ids -- these with form_bond false "
+                                "only if they must stay reduced -- then report the selection "
+                                "that lost them.")
                             result["overall_status"] = "failed"
                             return result
                     except Exception as e:

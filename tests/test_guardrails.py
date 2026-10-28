@@ -119,7 +119,7 @@ def test_build_amber_system_rejects_unknown_water_model_even_without_box_dimensi
 
 
 def test_workflow_missing_inputs_are_structured():
-    solvate = solvate_structure(pdb_file=None)
+    solvate = solvate_structure(pdb_file=None, water_model="opc")
     assert solvate["success"] is False
     assert solvate["error_type"] == "ValidationError"
     assert solvate["code"] == "missing_pdb_file"

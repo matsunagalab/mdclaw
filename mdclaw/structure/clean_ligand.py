@@ -47,7 +47,7 @@ SUPPORTED_PREP_SOLVENT_TYPES = {"explicit", "implicit", "vacuum"}
 pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 
-from mdclaw.structure.ligand_chemistry import _assign_bond_orders_from_smiles, _fetch_smiles_from_ccd, _get_ligand_smiles, _optimize_ligand_rdkit, _protonate_smiles_dimorphite, _select_protonation_state, _smiles_has_explicit_charge  # noqa: E402
+from mdclaw.structure.ligand_chemistry import _assign_bond_orders_from_smiles, _fetch_smiles_from_ccd, _get_ligand_smiles, _optimize_ligand_rdkit, _protonate_smiles_dimorphite, _smiles_has_explicit_charge, choose_protonation_state, ligand_protonation_next_action  # noqa: E402
 
 
 def clean_ligand(
@@ -243,10 +243,22 @@ def clean_ligand(
                     "intended protonation state explicitly."
                 )
             else:
+                choice = choose_protonation_state(candidates, expected_net_charge)
                 selected_smiles, selected_charge, candidate_meta = (
-                    _select_protonation_state(candidates, expected_net_charge)
-                )
+                    choice["smiles"], choice["charge"], choice["candidates"])
                 result["protonation_candidates"] = candidate_meta
+                if choice["status"] == "ambiguous":
+                    spelled = "; ".join(
+                        f"{c['smiles']} (charge {c['charge']})" for c in candidate_meta)
+                    result["errors"].append(
+                        f"Dimorphite-DL returned protonation states of different net "
+                        f"charge for {ligand_id} at pH {effective_ph}: {spelled}. Its "
+                        "order is not a ranking, so no state is picked for you.")
+                    result["code"] = "ligand_protonation_ambiguous"
+                    result["next_action"] = ligand_protonation_next_action(
+                        ligand_id, candidate_meta, prepare_complex=False)
+                    logger.error(result["errors"][-1])
+                    return result
                 if selected_smiles is None:
                     result["errors"].append(
                         f"No Dimorphite-DL protonation state at pH "
@@ -263,12 +275,13 @@ def clean_ligand(
                     logger.error(result["errors"][-2])
                     return result
                 if len(candidate_meta) > 1 and expected_net_charge is None:
+                    # Same net charge throughout; the states differ only in
+                    # which site carries it.
                     result["warnings"].append(
                         f"Dimorphite-DL returned {len(candidate_meta)} "
                         f"protonation states for {ligand_id} at pH "
-                        f"{effective_ph}; selected the dominant state "
-                        f"(charge {selected_charge}). Candidates: "
-                        f"{candidate_meta}."
+                        f"{effective_ph}, all of net charge {selected_charge}; "
+                        f"used the first. Candidates: {candidate_meta}."
                     )
                 result["protonation_method"] = "dimorphite"
                 result["smiles_protonated"] = selected_smiles

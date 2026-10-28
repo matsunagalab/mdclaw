@@ -46,7 +46,7 @@ mdclaw create_node --job-dir <job_dir> --node-type solv
 mdclaw explain_node --job-dir <job_dir> --node-id <solv_node_id>
 mdclaw --job-dir <job_dir> --node-id <solv_node_id> embed_in_membrane \
   --lipids POPC --ratio "1" --dist 15.0 --dist-wat 17.5 \
-  --water-model <requested-or-decided-model> --salt --saltcon 0.15
+  --water-model <opc|tip3p> --salt --saltcon 0.15
 ```
 
 ## What decides the embed time
@@ -54,10 +54,14 @@ mdclaw --job-dir <job_dir> --node-id <solv_node_id> embed_in_membrane \
 Embedding is fast when the lipid patch comes from the cache and slow when it
 has to be built. The cache key is the patch, not the protein: `--lipids`,
 `--ratio`, `--water-model`, `--salt`/`--saltcon`, `--dist-wat`, `--leaflet`
-and `--patch-side` select the cached patch; `--dist` (lateral buffer) does not.
-Changing any key value, even `--dist-wat 10.0` to get a smaller box, misses
-the cache and rebuilds the patch on the host running `embed_in_membrane`:
-minutes on a GPU, 25 minutes or more on a CPU-only login node.
+and `--membrane-patch-side` select the cached patch; `--dist` (lateral buffer)
+does not. Changing any key value, even `--dist-wat 10.0` to get a smaller box,
+misses the cache and rebuilds the patch on the host running
+`embed_in_membrane`: minutes on a GPU, about 20 minutes on a CPU login node.
+Outside a Slurm job a miss is refused before any work
+(`membrane_patch_cache_miss`); its `next_action` names the values of the
+closest cached patch. Use them, or, when the request fixes the uncached
+values, rerun with `--allow-patch-build` (or through `submit_job`).
 
 The image bundles equilibrated patches for POPC, POPE, DPPC, DOPC,
 POPC:CHL1 4:1, POPC:POPE:CHL1 2:1:1 and DPPC:DOPC:CHL1 1:1:1, each with TIP3P
@@ -73,8 +77,9 @@ say whether the patch was built or reused.
 `pdb_file` auto-resolves from the `prep` parent's `merged_pdb` artifact. If a
 manually oriented structure is required, register it on an explicit prep
 branch instead of overriding the solv input path. On success the solv node
-records `is_membrane=true`, so build topology with
-`build_amber_system --is-membrane --forcefield <chosen-forcefield> --water-model <requested-or-decided-model>` (see `explicit-water.md`).
+records `is_membrane=true` and its water model, so build topology with
+`build_amber_system --forcefield <chosen-forcefield>`; both are inherited
+(see `explicit-water.md`).
 
 ## Orientation
 
@@ -83,7 +88,7 @@ records `is_membrane=true`, so build topology with
 ```bash
 mdclaw --job-dir <job_dir> --node-id <solv_node_id> embed_in_membrane \
   --lipids POPC --ratio "1" --dist 15.0 --dist-wat 17.5 \
-  --water-model <requested-or-decided-model> --salt --saltcon 0.15
+  --water-model <opc|tip3p> --salt --saltcon 0.15
 ```
 
 `auto` transfers the membrane frame from an OPM homolog when one passes the
@@ -135,25 +140,14 @@ full-box packing struggles with.
 
 ## Timing and cold-build
 
-The first time a given lipid composition is requested (and it is not in the
-writable or bundled patch cache), the `solv` step runs a one-time OpenMM
-equilibration of the patch (minimization + a few hundred ps of MD), which can
-take several minutes on CPU. When this happens the tool prints a
-`[mdclaw] patch-tile: ...` notice to stderr, adds it to `warnings`, sets
-`patch_cold_build_notice`, and reports `patch_build` /
+When the patch is not in the writable or bundled cache and the build is
+allowed (`--allow-patch-build`, or inside a Slurm job), the `solv` step packs
+and equilibrates it once (minimization + a few hundred ps of MD) and caches
+it. The tool prints a `[mdclaw] patch-tile: ...` notice to stderr, adds it to
+`warnings`, sets `patch_cold_build_notice`, and reports `patch_build` /
 `parameters.patch_equilibration_ran`. Tell the user up front that the first
-build of a new composition takes a few extra minutes and is cached for reuse.
-Common compositions are pre-built into a read-only bundled cache (the list is
-in "What decides the embed time" above).
-
-The patch equilibration is part of preparation and runs wherever
-`embed_in_membrane` runs; it is not the production MD that belongs on Slurm,
-and switching backends to keep it off the login node makes the build slower,
-not faster. On a shared CPU-only host, do not start a cold build at all: keep
-a bundled composition at the default geometry, or stop and ask before
-requesting a new one. If the stderr shows the
-`[mdclaw] patch-tile: no cached membrane patch` notice on such a host, the
-node will run for a long time; report that rather than waiting it out.
+build of a new composition takes extra time. Switching backends to keep the
+build off the login node makes it slower, not faster.
 
 Membrane embedding is long-running: tens of minutes are normal for large or
 mixed systems, and CPU runs (including a cold patch equilibration) may exceed an

@@ -20,8 +20,11 @@ signature, update the relevant section here and the matching skill examples.
 - `register_local_structure(...)`: copy or symlink a local source structure.
 - `list_source_candidates(...)`: list normalized source-bundle candidates,
   including IDs, ranks, files, origin metadata, and candidate metrics.
+  `node_id` is optional: `--job-dir` alone lists the job's source node
+  (`node_id_required` with the candidates when the job has none or several).
 - `inspect_molecules(...)`: chain, nucleic acid, glycan, ligand, ion, and PTM
-  inspection. In node mode, defaults to the primary source candidate and accepts
+  inspection. `--job-dir` without `--node-id` inspects the job's source node
+  (same `node_id_required` refusal). In node mode, defaults to the primary source candidate and accepts
   the same source candidate selectors as prep. Writes `inspection.json` and
   emits an event without changing node status. `chain_ranges` (one line per
   polymer chain: `first`, `last`, `count`, `span`, `gaps` in the author
@@ -82,7 +85,27 @@ signature, update the relevant section here and the matching skill examples.
   deliberate `include_associated_ligands=True`; otherwise prep fails with
   `code="associated_ligands_require_selection"` instead of silently dropping
   ligand components. That refusal, like every refusal raised before the split
-  has delivered the selection, leaves the prep node pending and rerunnable.
+  has delivered the selection, leaves the prep node pending and rerunnable;
+  its `next_action` spells the include and the exclude command with the ids.
+  The chain request is resolved once (`split.resolve_chain_selection`, the
+  split's own rule) for the split, the disulfide and metal-site filters and
+  the glycan closure; a name whose label holds only water is read as the
+  author chain (`chain_id_read_as_author_over_water_label`), and ranges
+  without `select_chains` select only the chains they name
+  (`select_chains_defaulted_to_range_chains`). Disulfide invariants: a declared
+  `disulfide_pairs` list (including `[]`) that omits a pair the deposit shows
+  bonded is refused before the split (`detected_disulfides_suppressed`; keep a
+  pair reduced only by naming it with `form_bond: false`), and after the merge
+  a deposit disulfide on the delivered chains, or two sulfurs within 2.3 A
+  that no metal bridges, left unformed fails the prep
+  (`detected_disulfide_not_formed`). A cap on a polymer's own end (nothing of
+  the entity sequence beyond it) is refused (`terminal_cap_on_native_terminus`).
+  `ligand_net_charges={"9V2": 0}` (residue name or instance id) states a
+  ligand's net charge; Dimorphite-DL states of different charge with none
+  stated are refused before the run (`ligand_protonation_ambiguous`), as is a
+  `ligand_smiles` entry that bonds the CCD ligand's heavy atoms differently
+  (`ligand_smiles_ccd_mismatch`) and a `ligand_net_charges` key that names no
+  selected ligand (`invalid_ligand_net_charges`).
 - `clean_protein(...)`: PDBFixer plus pdb2pqr protonation
   (`protonation_method="propka"` predicts states at `ph`; `"no-prediction"`
   keeps the force field's fixed states and ignores `ph`; `"standard"` is a
@@ -114,7 +137,12 @@ signature, update the relevant section here and the matching skill examples.
   `include_associated_ligands=True` remains available only for deliberately
   including all same-author ligand candidates; otherwise selection blocks with
   `code="associated_ligands_require_selection"` when `ligand` is in
-  `include_types`.
+  `include_types`. `exclude_ligand_ids` names ligand or ion instances
+  (`unique_id`) or a residue of a glycan chain (`<author>:<resname>:<resnum>`,
+  dropping that glycan); an entry that names nothing is refused
+  (`exclude_ligand_id_unmatched`, with the matching ids in `next_action`).
+  `extra_label_ids` adds already-resolved label chains to a `select_chains`
+  request (prepare_complex's covalently linked glycans).
 - `merge_structures(...)`: merge prepared PDB fragments and emit
   `chain_identity_map` / `*.chain_identity_map.json`; PDB chain IDs are short
   compatibility labels and may repeat in large assemblies.
@@ -190,12 +218,36 @@ signature, update the relevant section here and the matching skill examples.
 
 ## `solvation/`
 
+- Both solvation tools share the preflight in `mdclaw/solvation/preflight.py`,
+  run before `begin_node` so a refusal leaves the node pending:
+  `water_model` has no default and an omitted one is taken from the node's
+  declared `--conditions` (`water_model`), else refused `water_model_required`
+  (`parameters.water_model_source` / `metadata.water_model_source`:
+  `argument` or `node_conditions`); `--no-salt` on a solute whose
+  packmol-memgen-style charge (residue table plus the nucleic/lipid/metal/ligand
+  `charge_pdb_delta` corrections, `estimate_solute_charge`, recorded as
+  `solute_charge_estimate`) is not zero is refused
+  `solvation_charged_without_ions` in node mode and warned about outside it.
 - `solvate_structure(...)`: explicit water box generation. In node mode the PDB
   resolves from the nearest prep ancestor. It first tries the requested salt
   concentration and records a warning if it must rerun packmol-memgen with
   `--salt_override` to satisfy neutralization. Results expose the prepared
-  `solute_net_charge_e` and output-PDB `ion_counts` at top level.
-- `embed_in_membrane(...)`: membrane embedding and solvation.
+  `solute_net_charge_e` and output-PDB `ion_counts` at top level. Before
+  packing, `box_advisory` predicts packmol-memgen's cubic and rectangular
+  boxes and atom counts from the solute (principal extents and ratio included);
+  an elongated solute (extent ratio >= 1.5) in a cubic box whose rectangular
+  box would hold >= 30 % fewer atoms adds a warning naming `--no-cubic`, and a
+  finished system of 500k atoms or more adds one to run topo and min through
+  `submit_job`. Node-mode warnings are now recorded on the solv node.
+- `embed_in_membrane(...)`: membrane embedding and solvation. The patch cache
+  is probed before orientation: a patch-tile miss with
+  `membrane_cache_mode="read-only"` is refused `membrane_patch_cache_miss`, and
+  an `auto`-mode miss is refused the same way in node mode outside a Slurm job
+  (`SLURM_JOB_ID` unset) unless `allow_patch_build=True`
+  (`--allow-patch-build`). The refusal's `next_action` names the arguments of
+  the closest cached patch (`cached_patch_alternatives` in
+  `patch_membrane.py`), and `membrane_patch_cache.cached_alternatives` lists up
+  to three.
   Optional `disulfide_bonds` and `ligand_chemistry` describe standalone inputs;
   node mode resolves chemistry from the same nearest prep as `merged_pdb`.
   Patch-tile charge evaluation builds a force-field System with that bond plan,
@@ -428,6 +480,40 @@ signature, update the relevant section here and the matching skill examples.
 
 - `inspect_openmm_platforms(...)`: lightweight OpenMM platform inventory and
   atom-count feasibility guidance before local explicit-water runs.
+- Run guard (`mdclaw/simulation/run_guard.py`, not a tool): every MD stage
+  tool in node mode (`run_minimization`, `run_equilibration`,
+  `run_production`, `run_metadynamics`, `run_sst2`, `run_fep`,
+  `add_boresch_restraint`) calls `md_preflight` after its argument and DAG
+  checks and right before `begin_node`; a refusal leaves a pending node
+  pending (`metadata.last_refusal`). `md_outside_allocation`: the host is a
+  Slurm cluster (see `MDCLAW_ALLOW_LOCAL_MD` in `configuration.md` for the
+  detection and the escape) and `SLURM_JOB_ID` is unset; `next_action` is the
+  node's exact `submit_job --job-dir --node-id --job-name --gpus 1 --script
+  '<the call, --platform CUDA, no --device-index>'` (plus the policy's
+  `max_time_limit`), or `wait_node` when the node is already queued/running
+  (that node is not touched). `platform_unavailable`: the named platform
+  (with `--device-index`) cannot create a Context in this process; the
+  result lists the usable platforms and the rerun command.
+  `gpu_allocated_platform_unavailable`: inside a job Slurm gave GPUs
+  (`SLURM_JOB_GPUS` / `SLURM_STEP_GPUS` / `SLURM_GPUS_ON_NODE` /
+  `CUDA_VISIBLE_DEVICES`) no GPU platform works (a container without
+  `--nv`), so `auto` would run on the CPU; an explicit `CPU` is left alone.
+  Inside its own job the queued node would be failed by the job's end
+  anyway, so there it is failed with that code and the branch command.
+  MDDataBench v5 qwen3.6-35b: 97 attempts integrated on the login node, 21
+  sealed a node on a missing CUDA. `run_rounds --executor local` refuses
+  `md_outside_allocation` before any segment (`--executor mps` only submits).
+  The non-node calls inside `embed_in_membrane` (lipid-patch min/eq) are
+  not checked.
+- Declared conditions at run time: when `validate_node_execution_context`
+  fails only on `condition_mismatch` and every mismatched key is a flag of
+  the tool that the call did not already set to the declared value,
+  `context_refusal` keeps the node pending and `next_action` is the same
+  command with the declared values (`--nvt-time-ns 0.5`, replacing
+  `--nvt-steps`; the `submit_job` form on a login node; `rerun_command`
+  holds the bare rerun). Other context failures keep their old result
+  (36 eq/prod nodes of MDDataBench v5 qwen were sealed for a declared
+  length the bare command did not pass).
 - `export_state_pdb(...)`: export a PDB by combining atom/residue records from
   `topology.pdb` with positions from `state.xml`. Useful for report artifacts
   and MDPrepBench `minimized_structure.pdb` submissions.
@@ -1054,18 +1140,67 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
   it (010_membrane_6kux r3 of campaign v4 resubmitted on the generic
   `unhandled_error` advice and two jobs computed the node). Every other
   sbatch failure is `slurm_submit_failed` and frees the node.
-  For a linked node and a literal `mdclaw ... run_production` (or
-  `python -m mdclaw._cli ...`) command, `condition_preflight` reports the
-  declaration/argument check before sbatch, using CLI defaults and the runtime
-  comparator. Inherited conditions are deferred: with `--temperature-kelvin`
-  omitted, a declared `temperature_kelvin` is listed under
-  `deferred_conditions` and not compared before submission (the run takes
-  it from the node it restarts from, which may still be queued when a chain
-  is submitted), while an explicit one is compared; shell scripts/wrappers on a
-  `prod` node that cannot be checked are explicitly marked `skipped` (a
-  warning), not validated; a node of another type, or a literal command that
-  runs another tool, is `not_applicable` (no warning). The runtime guard
-  remains authoritative. Neither check changes requested conditions.
+  Every literal `mdclaw ...` (or `python -m mdclaw._cli ...`) line of the
+  script, inline or in a script file, is parsed by the CLI's own parser
+  before sbatch (`mdclaw/slurm/script_check.py`; lines the shell evaluates --
+  `$VAR`, pipes, redirections -- are left to the job). What the CLI would
+  refuse is refused as `script_arguments_invalid` with argparse's own message
+  (until 2026-10 it was swallowed: "Cannot validate production CLI before
+  submission: 2"), `suggestions` per unknown argument and, when every fix is
+  unambiguous, `corrected_command` in `next_action`: `--nvt_time_ns` ->
+  `--nvt-time-ns`, `--duration-ps 1` -> `--simulation-time-ns 0.001`,
+  `--simulation-time-ns 100ps` -> `0.1`, submit_job options (`--gpus`) and
+  create_node options (`--continue-from`) dropped from the script,
+  `--timestep-fs` dropped from `run_minimization`; an ambiguous one
+  (`--equilibration-time-ns`) names its candidates only. Also refused there:
+  an unknown tool (`mdclaw slurm ...`), a workflow tool without
+  `--job-dir/--node-id` (corrected with the submission's node) or with
+  another job/node than the submission's, `--job-dir/--node-id` on a
+  standalone helper. Example text -- a bare `...`, `<job_dir>`, `<node_id>`,
+  `[--dependency afterok:<job>]` -- in `--script` or `--dependency` is
+  `script_placeholder_unfilled` (filled from the submission when known).
+  For a linked node, `condition_preflight` (`mdclaw/slurm/condition_check.py`)
+  compares the node's declared conditions with the values the command will
+  use -- its arguments, the tool's defaults and, for `run_minimization` /
+  `run_equilibration`, the completed topo ancestor it inherits HMR, implicit
+  solvent and the timestep from (so an omitted `--nvt-time-ns` is 250000
+  steps: 1 ns at 4 fs, 0.5 ns at 2 fs) -- with the runtime comparator. A
+  mismatch is `node_execution_context_invalid` / `condition_mismatch` with the
+  command plus the flags giving the declared values in `next_action`
+  (verified to match before it is offered; a declared `ensemble` is met
+  through `--pressure-bar`). Keys that depend on a parent that has not run
+  are `deferred_conditions` (an omitted production `--temperature-kelvin`,
+  pressure, membrane state); a declared key the tool never reports under that
+  name or unit (`total_time_ps`, `simulation_time_ps`; the vocabulary is read
+  from the `actual_conditions` literal of the tool's source) is refused as
+  `condition_missing` with `unreported_conditions` and a `next_action` that
+  abandons the node and recreates it with the reported key, unit-converted
+  (`{"simulation_time_ns": 100.0}`). A `prod` node whose script cannot be
+  read is `skipped` (a warning); the runtime guard remains authoritative.
+  The dependency (`mdclaw/slurm/dependency.py`): for each unfinished parent
+  (and `dependency_node_ids`) of a linked node, a parent queued or running as
+  a Slurm job and missing from `--dependency` is added as `afterok:<its
+  slurm_job_id>` (`dependency_added`, a warning; the returned `dependency` is
+  what the job carries); a parent that was never submitted is
+  `parent_not_submitted` (`next_action` lists the order to submit the chain
+  in; a parent running outside Slurm is told to `wait_node`, a preparation
+  stage to finish on the login node); a job of a node that is neither an
+  ancestor nor of the node's own stage is `dependency_not_parent_job`
+  (siblings may be chained to serialise them); an afterok on a job that
+  already ended FAILED / CANCELLED / TIMEOUT / ... (read-only `squeue --me`
+  then `sacct`), or COMPLETED without completing its node, is
+  `dependency_unsatisfiable` with the parent's recovery (a node still queued:
+  `update_workflow_state --clear-slurm-metadata` and resubmit; a running one:
+  `check_job`, then a new node). An unparseable or `?` (OR) spec is never
+  rewritten (`parent_dependency_missing`).
+  Paths (`mdclaw/slurm/paths.py`): the output directory, the working
+  directory, the job directory and the script's `--*-dir` / `--*-file`
+  values must be visible from a compute node; one under `/tmp`, `/var/tmp`,
+  `/dev/shm`, `/run/user`, or on a memory filesystem (`tmpfs`/`ramfs` by
+  `/proc/self/mounts`, which also catches a typo directory created on an
+  agent sandbox's tmpfs root), or a `--job-dir` that does not exist, is
+  `submission_path_not_shared`. `MDCLAW_ALLOW_LOCAL_SUBMIT_PATHS=1` lifts the
+  host-local check for a single-machine Slurm.
   When the run command requests a GPU OpenMM platform (`--platform CUDA`/
   `OpenCL`) but no `--gpus`/`--gres` is given, it auto-sets `--gpus 1` (warning
   emitted) so a CUDA run is never scheduled on a CPU-only node. Container
@@ -1077,10 +1212,23 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
   (`resolve_container_runtime`); when it cannot be resolved (a submission from
   inside the image), the script keeps the bare name and its preamble sources
   the node's `/etc/profile` (and the module init) first
-  (`_container_runtime_preamble`), with a warning on the result. Only a
-  configured absolute `--runtime` that does not exist is refused
-  (`container_runtime_not_found`). `configure_container --runtime` pins the
-  binary or its command name.
+  (`_container_runtime_preamble`). Inside an image that is the expected case
+  and is said in `notes` ("do not cancel it"), not `warnings` (kimi 023 r3
+  read the warning as an error and cancelled its own job); outside an image
+  it stays a warning. A configured absolute `--runtime` that does not exist
+  is refused outside an image (`container_runtime_not_found`, `next_action`:
+  a bare `--runtime singularity`, never the refused path again); inside an
+  image, where host binaries are not mounted, it is used unchecked with a
+  note. `configure_container --runtime` pins the binary or its command name.
+  The container's bind list is built from the script split as the shell
+  splits it (`--job-dir '/data1/x'` binds `/data1/x`; before 2026-10 the
+  quotes were kept and the container died at start). A bind source that does
+  not exist here is `container_bind_missing` (`next_action` keeps the
+  configured binds that do exist); a missing `--*-dir` of the script whose
+  parent exists is created first. A GPU job (`gpus > 0` or a gpu `gres`)
+  under Singularity/Apptainer whose flags lack `--nv` gets `--nv` for that
+  submission with a `container_gpu_flag_added:` warning. A partition copied
+  from sinfo with its default mark (`gpu*`) is submitted as `gpu` (warning).
 - `submit_array_job(...)`: submit one SLURM array where each task maps to a DAG
   node command. The array parent id is returned as both `parent_job_id` and
   `slurm_job_id` (the latter is what `submit_job` returns, so
@@ -1088,8 +1236,10 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
   Shares the same `--platform`-driven GPU autodetection as
   `submit_job`; a single GPU-platform task command flips the whole array to
   `--gpus 1`, and it applies the same container-command guard.
-  Each task also receives the same production condition preflight before any
-  task is submitted; results are indexed by `task_index`.
+  Each task also receives the same script, condition, dependency and path
+  checks before any task is submitted (refusals prefixed `tasks[i]: `);
+  `condition_preflight` is indexed by `task_index`, and parents' jobs missing
+  from the one `--dependency` of the array are added to it.
 - `submit_mps_job(...)`: run several DAG nodes concurrently on one GPU
   allocation under NVIDIA MPS (Multi-Process Service). Takes the same
   `tasks` list as `submit_array_job`; one sbatch job holds `gpus` whole GPUs
@@ -1109,7 +1259,7 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
   packed node, using each slot's own stderr as failure evidence, and
   `list_tracked_jobs --sync` queries Slurm once per job id. Container wrapping
   binds each task's `job_dir` plus `$CUDA_MPS_PIPE_DIRECTORY`. Same policy,
-  partition, container and production-preflight handling as `submit_array_job`.
+  partition, container, `--nv`, script/condition/dependency/path checks as `submit_array_job`.
   Rationale and GB200 measurements: `docs/memo.md` (2026-09-16).
 - `check_job(...)`: query squeue → scontrol → sacct, sync SLURM state and
   reflect failures into linked nodes. Returns `state_source` and `checked_at`.
@@ -1169,7 +1319,19 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
 - `create_node(...)`: create a DAG node. `continue_from=<prod_id>` is restricted
   to production continuation and records explicit extension intent. Analyze nodes
   require `conditions.analysis_data_scope`; comparison analyses also require
-  explicit subjects and mapping. When `parent_node_ids` is omitted, the
+  explicit subjects and mapping. Declared `conditions` of the other stages are
+  screened against the keys the node type's stage tools report
+  (`node/condition_vocabulary.py`, read from the tools' `actual_conditions`
+  literals): a key none reports is refused with `condition_key_unknown`
+  before anything is written (`accepted_condition_keys`,
+  `suggested_conditions` with keys renamed and values converted to the
+  reported unit, e.g. `total_time_ps: 2500` -> `simulation_time_ns: 2.5`, and
+  the corrected command in `next_action`); curated aliases (`chains`,
+  `chain_ranges`, `force_field`, `buffer_distance`, ...) are recorded under the
+  reported key with a warning. `source` and `analyze` are not screened. A
+  parent id that is not in the job (`--parent-node-ids eq`) answers
+  `referenced_node_missing` with the ids of that type
+  (`candidate_parent_node_ids`) and the command with the frontier one. When `parent_node_ids` is omitted, the
   canonical forward parent auto-resolves from the current completed frontier
   (the single completed leaf of the preferred parent type) and is reported as
   `auto_resolved_parent`. In canonical study jobs, ambiguous or empty frontiers
@@ -1214,7 +1376,10 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
   or fails). A node whose record names another live process — a duplicate
   Slurm job, 010_membrane_6kux r3 of campaign v4 — is refused with
   `node_already_running` (the CLI maps `NodeAlreadyRunningError` to it and
-  does not fail the node); a dead owner's node is taken over; a record this
+  neither fails the node nor records a failure on it; `run_equilibration`
+  and `run_minimization`, whose `begin_node` sits inside their generic
+  `except`, re-raise it and `NodeSealedError` instead of failing the node);
+  a dead owner's node is taken over; a record this
   process or one of its ancestors wrote (an in-process rounds driver, also
   when it runs the tool through the launcher) is kept. Slurm's terminal
   report of a job other than the owner's never seals a `running` node.
@@ -1236,7 +1401,14 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
 ## `study/`
 
 - `init_study(...)`: create a study directory used by both direct runs and
-  campaigns.
+  campaigns. A new study is refused in a non-empty directory that is not a
+  study (`study_dir_not_empty`; dot files do not count) and inside another
+  study or a job directory (`study_dir_nested`); `bootstrap_md_workflow`
+  applies the same checks, with the corrected bootstrap command as
+  `next_action`. A relative `--study-dir` that resolved under `$HOME` inside a
+  container (`singularity exec --containall` starts there) and a study that is
+  not at `$MDCLAW_STUDY_DIR` (when a harness sets it) are flagged in
+  `warnings` (`study_dir_under_home`, `study_dir_mismatch`) and in `message`.
 - `bootstrap_md_workflow(...)`: create or reuse the canonical
   `study_dir/study.json` + `study_plan.json` + `jobs/<job_id>/progress.json`
   layout for any MD workflow, including simple one-system direct runs. Default
@@ -1682,6 +1854,10 @@ Topology validation distinguishes `input_conservation` (prepared heavy-atom
 identities across loading) from `core.atom_count_preserved` (output artifact
 consistency). S–S validation checks specific atom pairs in Topology and System
 (bond force or constraints), and checks CYX connectivity even without a plan.
-`disulfide_chemistry_conflict` fails before System generation. Inspection and
+`disulfide_chemistry_conflict` fails before System generation, and so does
+`unbonded_disulfide_geometry`: two cysteine sulfurs within 2.5 A with no S-S
+bond and no metal within 3.5 A of both (pairs declared `form_bond: false`
+pass); the final validation repeats the check on the relaxed positions
+(`disulfides.unbonded_disulfide_geometry`). Inspection and
 split share AMBER sequence aliases; `cap_count` reports ACE/NME separately
 from `sequence_length`.

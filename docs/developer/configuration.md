@@ -74,6 +74,27 @@ Notes:
   (e.g. the host PATH for clients bound into a SIF); when explicitly set it
   does not fall back to a different installation. It selects executables,
   not mounts: files and their dependencies must already be visible.
+- `MDCLAW_ALLOW_LOCAL_MD=1` lets the MD stage tools (`run_minimization`,
+  `run_equilibration`, `run_production`, `run_metadynamics`, `run_sst2`,
+  `run_fep`, `add_boresch_restraint`, `run_rounds --executor local`)
+  integrate on a Slurm cluster outside an allocation. Without it a
+  node-mode run on a host that looks like a Slurm cluster (`SLURM_CONF`,
+  `SLURM_CONF_SERVER`, `sbatch`/`squeue` on `MDCLAW_SLURM_PATH` or `PATH`, a
+  `slurm.conf` under `/etc/slurm*`, `/usr/local/etc` or `/opt/slurm/etc`, or
+  a `.mdclaw_cluster.json` in the working directory or above the job) and
+  outside a Slurm job (no `SLURM_JOB_ID`, and no `job_<id>` Slurm cgroup in
+  `/proc/self/cgroup`, which still names the job when a container dropped
+  the variables with `--cleanenv`) is refused with `md_outside_allocation` and the
+  node's `submit_job` command (`mdclaw/simulation/run_guard.py`). For a
+  deliberate test, or a workstation that only looks like a cluster. Refusals
+  do not mention it: an agent should submit, not bypass. The test suite sets
+  it in `tests/conftest.py`.
+- `MDCLAW_ALLOW_LOCAL_SUBMIT_PATHS=1` lets `submit_job` / `submit_array_job` /
+  `submit_mps_job` accept job, output and script paths under `/tmp`,
+  `/var/tmp`, `/dev/shm` or on a memory filesystem, which a compute node
+  normally cannot see (`submission_path_not_shared`). Set it only on a
+  single-machine Slurm, where jobs run on the submitting host; the test
+  suite sets it because pytest's `tmp_path` lives under `/tmp`.
 - `MDCLAW_SST2_HOME` is a development override for `run_sst2`: a checkout of
   the matsunagalab/SST2 fork (branch `mdclaw`) whose `src` (and optional
   `.pylib` side-install for `pdb_numpy`) go on the driver's `PYTHONPATH`
@@ -155,7 +176,7 @@ mdclaw --version
 mdclaw fetch_structure --help
 mdclaw fetch_structure --source pdb --pdb-id 1AKE
 mdclaw inspect_molecules --structure-file 1AKE.cif
-mdclaw solvate_structure --pdb-file merged.pdb --dist 15.0 --salt --saltcon 0.15
+mdclaw solvate_structure --pdb-file merged.pdb --water-model opc --dist 15.0 --salt --saltcon 0.15
 mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "select_chains": ["A"]}'
 ```
 

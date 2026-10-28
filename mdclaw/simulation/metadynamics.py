@@ -57,6 +57,7 @@ from mdclaw.simulation.restart import (  # noqa: E402
     _load_state_into_simulation,
     _save_state_atomic,
 )
+from mdclaw.simulation.run_guard import context_refusal, md_preflight  # noqa: E402
 from mdclaw.simulation.xml_contract import (  # noqa: E402
     WORKING_DIR,
     _deserialize_xml_system,
@@ -361,6 +362,7 @@ def run_metadynamics(
         depositions, coordinate range visited, free-energy minimum and
         range, files loaded from ``bias_dir``).
     """
+    _call = dict(locals())
     result: dict = {
         "success": False,
         "sampling_method": SAMPLING_METHOD,
@@ -433,32 +435,30 @@ def run_metadynamics(
                     result["warnings"].append(
                         f"temperature_kelvin=300.0 (default): restart node "
                         f"'{restart_from_node_id}' records no temperature to inherit.")
-        _ctx = validate_node_execution_context(
-            job_dir, node_id, "prod",
-            actual_conditions={
-                "sampling_method": SAMPLING_METHOD,
-                "simulation_time_ns": simulation_time_ns,
-                "temperature_kelvin": temperature_kelvin,
-                "pressure_bar": pressure_bar,
-                "ensemble": "NPT" if (pressure_bar is not None and pressure_bar > 0) else "NVT",
-                "timestep_fs": timestep_fs,
-                "output_frequency_ps": output_frequency_ps,
-                "distance_cv": distance_cv,
-                "cv_min_nm": cv_min_nm,
-                "cv_max_nm": cv_max_nm,
-                "bias_width_nm": bias_width_nm,
-                "bias_height_kj_mol": bias_height_kj_mol,
-                "bias_factor": bias_factor,
-                "deposition_interval_ps": deposition_interval_ps,
-                "bias_dir": bias_dir,
-                "platform": platform,
-                "device_index": device_index,
-                "hmr": hmr,
-                "random_seed": random_seed,
-            },
-        )
+        _actual = {
+            "sampling_method": SAMPLING_METHOD,
+            "simulation_time_ns": simulation_time_ns,
+            "temperature_kelvin": temperature_kelvin,
+            "pressure_bar": pressure_bar,
+            "ensemble": "NPT" if (pressure_bar is not None and pressure_bar > 0) else "NVT",
+            "timestep_fs": timestep_fs,
+            "output_frequency_ps": output_frequency_ps,
+            "distance_cv": distance_cv,
+            "cv_min_nm": cv_min_nm,
+            "cv_max_nm": cv_max_nm,
+            "bias_width_nm": bias_width_nm,
+            "bias_height_kj_mol": bias_height_kj_mol,
+            "bias_factor": bias_factor,
+            "deposition_interval_ps": deposition_interval_ps,
+            "bias_dir": bias_dir,
+            "platform": platform,
+            "device_index": device_index,
+            "hmr": hmr,
+            "random_seed": random_seed,
+        }
+        _ctx = validate_node_execution_context(job_dir, node_id, "prod", actual_conditions=_actual)
         if not _ctx["success"]:
-            return {"success": False, "error_type": "ValidationError", **_ctx}
+            return context_refusal(run_metadynamics, _call, job_dir, node_id, _ctx, _actual)
         result["warnings"].extend(_ctx.get("warnings") or [])
     else:
         if temperature_kelvin is None:
@@ -481,6 +481,11 @@ def run_metadynamics(
                 return fail_node_from_result(job_dir, node_id, result)
             return result
 
+    # Where and on which platform the run may integrate: refused before
+    # begin_node, so the node stays pending for the corrected command.
+    _refusal = md_preflight(run_metadynamics, _call, job_dir, node_id)
+    if _refusal is not None:
+        return _refusal
     if _node_mode:
         from mdclaw._node import begin_node
         out_dir = Path(job_dir) / "nodes" / node_id / "artifacts"

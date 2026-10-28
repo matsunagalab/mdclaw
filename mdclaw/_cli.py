@@ -19,6 +19,8 @@ import inspect
 import json
 import logging
 import os
+import re
+import shlex
 import sys
 import threading
 import types
@@ -41,9 +43,26 @@ from mdclaw._envelope import (
     helper_stage_hint,
     order_envelope,
     stage_tools_for,
+    with_status_line,
     write_result_file,
 )
 from mdclaw._registry import SERVER_REGISTRY
+from mdclaw._cli_names import (
+    GLOBAL_FLAG_OPTIONS,
+    GLOBAL_VALUE_OPTIONS,
+    LIST_REQUESTS,
+    NODE_ID_SHAPE,
+    PREFIX_WORDS,
+    TOOL_ALIASES,
+    canonical_tool_name,
+    command_text,
+    nearest_tools,
+    node_id_value_problem,
+    option_value,
+    subcommand_index,
+    tool_option_rewrite,
+    tools_taking,
+)
 from mdclaw.node.snapshot import describe_nodes, node_missing_error, nodes_of_type
 from mdclaw.node.constants import CANONICAL_FORWARD_NODE_TYPE, DAG_GUIDANCE, NODE_TYPE_ORDER, STAGE_CHAIN_TEXT
 from mdclaw._tool_meta import (
@@ -80,13 +99,19 @@ _RENAMED_TOOLS = {
 
 # Global options that consume a following value, used to locate the subcommand
 # token when scanning argv for a renamed tool.
-_GLOBAL_VALUE_OPTIONS = {"--job-dir", "--node-id", "--list-json", "--output", "--log-file",
-                         "--heartbeat-seconds"}
+_GLOBAL_VALUE_OPTIONS = GLOBAL_VALUE_OPTIONS
+_GLOBAL_FLAG_OPTIONS = GLOBAL_FLAG_OPTIONS
 
 # Set once per invocation from the global flags; read by the emit helpers.
 _OUTPUT_MODE = "brief"
 _TOOLS: dict[str, dict] = {}
 _HEARTBEAT_DEFAULT_SECONDS = 30.0
+# The command line as the CLI read it (after argv normalization), for
+# next_action commands that repeat it with one thing corrected.
+_ARGV: list[str] = []
+# Notes on how the command line was read (a server prefix dropped, options
+# moved behind the tool); added to the result's warnings.
+_ARGV_NOTES: list[str] = []
 
 
 def _attach_dag_handoff(result, job_dir, node_id):
@@ -311,6 +336,9 @@ def _emit_result(
     payload = result
     if isinstance(result, dict):
         payload = dict(result)
+        if _ARGV_NOTES:
+            existing = list(payload.get("warnings") or [])
+            payload["warnings"] = existing + [note for note in _ARGV_NOTES if note not in existing]
         context = dag_context(job_dir, node_id, _TOOLS) if job_dir else {}
         for key, value in context.items():
             payload.setdefault(key, value)
@@ -326,6 +354,7 @@ def _emit_result(
             write_result_file(payload, job_dir, node_id)
         if _OUTPUT_MODE == "brief":
             payload = brief_result(payload, result_file=result_file)
+        payload = with_status_line(payload)
     stream = stderr_stream or sys.stderr
     if stderr_tail.strip():
         # Agents often merge stderr into the JSON stream; give a parser that
@@ -337,7 +366,18 @@ def _emit_result(
             pass
     try:
         if _OUTPUT_MODE == "id" and isinstance(payload, dict):
-            print(payload.get("node_id") or payload.get("job_dir") or "")
+            if payload.get("success") is False:
+                # ``NODE=$(mdclaw --output id ...)`` used to get an empty
+                # string and no word of why (MDDataBench v5, ~36 attempts):
+                # stdout stays empty so the capture is visibly empty, and the
+                # reason goes to stderr as one JSON line.
+                brief = {key: payload.get(key) for key in (
+                    "success", "code", "message", "node_id", "next_action") if payload.get(key) is not None}
+                stream.write("mdclaw error: " + json.dumps(brief, default=str) + "\n")
+                stream.flush()
+                exit_code = exit_code or 1
+            else:
+                print(payload.get("node_id") or payload.get("job_dir") or "")
         else:
             json.dump(payload, sys.stdout, indent=2, default=str)
             print()
@@ -351,6 +391,39 @@ def _emit_result(
             pass
         exit_code = exit_code or 0
     sys.exit(exit_code)
+
+
+class _WarningDigest:
+    """Show each Python warning site a few times, then only count it.
+
+    OpenMM's PDB reader warns once per residue pair ("two consecutive
+    residues with same number") on a lipid bilayer; MDDataBench v5 had 51 KB
+    of it in seven attempts, burying the result for agents that merge stderr.
+    A site is (category, file, line); after ``limit`` lines the rest is one
+    summary line at the end.
+    """
+
+    def __init__(self, limit: int = 3):
+        self._limit = limit
+        self._counts: dict[tuple, int] = {}
+
+    def show(self, message, category, filename, lineno, file=None, line=None):
+        key = (getattr(category, "__name__", str(category)), filename, lineno)
+        self._counts[key] = self._counts.get(key, 0) + 1
+        if self._counts[key] > self._limit:
+            return
+        import warnings
+
+        stream = file or sys.stderr
+        try:
+            stream.write(warnings.formatwarning(message, category, filename, lineno, line))
+        except Exception:  # noqa: BLE001 - a warning must never break the tool
+            pass
+
+    def summary(self) -> list[str]:
+        return [f"[mdclaw] {count - self._limit} more {name} warnings from {filename}:{lineno} "
+                f"suppressed (first {self._limit} shown)"
+                for (name, filename, lineno), count in self._counts.items() if count > self._limit]
 
 
 def _flush_c_stdio() -> None:
@@ -684,9 +757,72 @@ def _parse_cli_bool(value: str) -> bool:
 # argparse construction
 # ---------------------------------------------------------------------------
 
+class _CliUsageError(SystemExit):
+    """An argparse usage error, raised instead of a usage dump on stderr.
+
+    A ``SystemExit`` (code 2) so callers that parse a command line to vet it
+    (``slurm.preflight``) keep catching it; ``str()`` is argparse's message,
+    where a bare ``SystemExit(2)`` made those callers report "2".
+    """
+
+    def __init__(self, message: str):
+        super().__init__(2)
+        self.message = message
+
+    def __str__(self) -> str:
+        return self.message
+
+
+class _CliArgumentParser(argparse.ArgumentParser):
+    def error(self, message):  # noqa: D102 - argparse hook
+        raise _CliUsageError(message)
+
+
+# A flag written without its unit or plural ending still means the one flag
+# that adds only that ending (``--temperature`` for ``--temperature-kelvin``,
+# ``--residue-range`` for ``--residue-ranges``); every other prefix is refused.
+# argparse's own prefix matching read ``--output /tmp/x`` as ``--output-dir``
+# and ``--forcefield ff14SB`` as build_openmm_system's ``--forcefield-xml``.
+_FLAG_COMPLETIONS = frozenset({
+    "s", "-kelvin", "-k", "-bar", "-atm", "-fs", "-ps", "-ns", "-us", "-nm", "-angstrom",
+    "-molar", "-seconds", "-ns-per-day",
+})
+
+
+def _complete_flag(token: str, option_strings) -> str:
+    """``token`` with a unit/plural-only abbreviation completed, else unchanged."""
+    if not token.startswith("--") or token == "--":
+        return token
+    option, sep, value = token.partition("=")
+    if option in option_strings:
+        return token
+    matches = [o for o in option_strings if o.startswith("--") and o.startswith(option)]
+    if len(matches) == 1 and matches[0][len(option):] in _FLAG_COMPLETIONS:
+        return matches[0] + (sep + value if sep else "")
+    return token
+
+
+class _ToolArgumentParser(_CliArgumentParser):
+    """A tool's parser: exact flags only, plus unit/plural completions."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
+
+    def parse_known_args(self, args=None, namespace=None):  # noqa: D102 - argparse hook
+        if args is not None:
+            completed = []
+            for token in args:
+                if token == "--":
+                    break
+                completed.append(_complete_flag(token, self._option_string_actions))
+            args = completed + list(args)[len(completed):]
+        return super().parse_known_args(args, namespace)
+
+
 def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
     """Build the top-level parser and one subparser per tool."""
-    parser = argparse.ArgumentParser(
+    parser = _CliArgumentParser(
         prog="mdclaw",
         description=(
             "MDClaw CLI: MD workflow stages as one job DAG. Each stage is "
@@ -744,7 +880,8 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
     # ``metavar`` and no per-parser ``help`` keep ``mdclaw --help`` to one
     # screen; the 80-tool index is ``--list`` and one tool's help is
     # ``mdclaw <tool> --help`` (both unchanged).
-    subparsers = parser.add_subparsers(dest="tool_name", metavar="<tool>")
+    subparsers = parser.add_subparsers(dest="tool_name", metavar="<tool>",
+                                       parser_class=_ToolArgumentParser)
 
     for tool_name, info in sorted(tools.items()):
         if info.get("contract_error"):
@@ -911,14 +1048,20 @@ def _record_cli_node_failure(
         # ``fail_node_from_result`` path: prepare_complex refusing at the
         # split) - is a corrected invocation of the same pending node, not a
         # failed attempt. Recording it here without ``keep_pending`` would
-        # seal the node the tool deliberately left open.
-        if read_node(job_dir, node_id).get("status") == "pending" and (
+        # seal the node the tool deliberately left open. A refusal that names
+        # the node's status as queued or running left a node another run owns
+        # untouched (an MD stage refused on the login node while its Slurm job
+        # holds it): sealing it here would fail that job's node.
+        status = read_node(job_dir, node_id).get("status")
+        if status == "pending" and (
             result.get("node_status") == "pending"
             or (
                 result.get("error_type") == "ValidationError"
                 and result.get("recoverable") is True
             )
         ):
+            return
+        if status in ("queued", "running") and result.get("node_status") == status:
             return
 
         record_node_failure(
@@ -967,8 +1110,9 @@ def _json_error_and_exit(
     job_dir: str | None = None,
     node_id: str | None = None,
     requires_node: bool = False,
+    exit_code: int = 1,
 ) -> None:
-    _emit_result(finalize_error(error), exit_code=1, job_dir=job_dir, node_id=node_id,
+    _emit_result(finalize_error(error), exit_code=exit_code, job_dir=job_dir, node_id=node_id,
                  requires_node=requires_node)
 
 
@@ -1062,6 +1206,39 @@ def _node_type_preflight_error(
     return error
 
 
+def _argv_without_node_context() -> str | None:
+    """This invocation with ``--job-dir`` / ``--node-id`` (and their values) removed."""
+    if not _ARGV:
+        return None
+    kept, skip = [], False
+    for tok in _ARGV:
+        if skip:
+            skip = False
+            continue
+        option = tok.split("=", 1)[0]
+        if option in ("--job-dir", "--node-id"):
+            skip = "=" not in tok
+            continue
+        kept.append(tok)
+    return command_text(kept)
+
+
+def _argv_command(node_id: str | None = None, *, fallback: str | None = None) -> str:
+    """This invocation as a command line, optionally with another --node-id."""
+    argv = list(_ARGV)
+    if not argv and fallback:
+        return fallback
+    if node_id is not None:
+        for i, tok in enumerate(argv):
+            if tok == "--node-id" and i + 1 < len(argv):
+                argv[i + 1] = node_id
+                break
+            if tok.startswith("--node-id="):
+                argv[i] = f"--node-id={node_id}"
+                break
+    return command_text(argv)
+
+
 def _preflight_fix(code, *, tool_name, job_dir, node_id, expected_node_type,
                    actual_status, node=None):
     """Hints and the next command for a preflight refusal.
@@ -1072,24 +1249,29 @@ def _preflight_fix(code, *, tool_name, job_dir, node_id, expected_node_type,
     """
     nodes, params = _load_nodes(job_dir)
     if code == "parent_not_completed":
+        from mdclaw._envelope import _chain_command
+
         blocker_id, blocker_status = blocking_ancestor(node or {}, nodes) or (None, None)
         blocker_type = (nodes.get(blocker_id) or {}).get("type")
-        rerun = f"mdclaw --job-dir {job_dir} --node-id {node_id} {tool_name} ..."
+        rerun = _argv_command(fallback=f"mdclaw --job-dir {job_dir} --node-id {node_id} {tool_name}")
         hints = ["Parents run first; the CLI does not run them for you. This node is not "
                  "spent: rerun the same command once the parent is completed, or submit "
-                 "the chain with submit_job --dependency afterok:<parent job>."]
+                 "it now behind the parent's Slurm job (submit_job --dependency afterok)."]
         if blocker_status == "failed":
             trace = f"mdclaw trace_failure --job-dir {job_dir} --node-id {blocker_id}"
             hints.append(f"'{blocker_id}' failed; re-running '{node_id}' cannot succeed.")
             return hints, (f"{trace}, then create a NEW {blocker_type} node and a NEW "
                            f"{expected_node_type} node from it")
         if blocker_status in {"running", "queued"}:
+            chain = _chain_command(job_dir, node_id, node or {}, nodes, _TOOLS, params)
+            if chain:
+                hints.append(f"To not wait: {chain['chain_command']}")
             return hints, (f"mdclaw wait_node --job-dir {job_dir} --node-id {blocker_id}; "
-                           f"then {rerun}")
+                           f"then rerun: {rerun}")
         tools = stage_tools_for(blocker_type, _TOOLS, params)
         tool = tools[0] if tools else f"<{blocker_type} stage tool>"
-        return hints, (f"mdclaw --job-dir {job_dir} --node-id {blocker_id} {tool} ...; "
-                       f"then {rerun}")
+        return hints, (f"Run the parent first: mdclaw --job-dir {job_dir} --node-id {blocker_id} {tool} "
+                       f"(with its stage options); then rerun: {rerun}")
     if code == "node_missing":
         missing = node_missing_error(job_dir, node_id, expected_type=expected_node_type)
         return missing["hints"], missing["next_action"]
@@ -1102,7 +1284,8 @@ def _preflight_fix(code, *, tool_name, job_dir, node_id, expected_node_type,
                else f"this job has no {expected_node_type} node yet")
         ]
         if len(open_same) == 1:
-            return hints, f"mdclaw --job-dir {job_dir} --node-id {open_same[0]} {tool_name} ..."
+            return hints, _argv_command(open_same[0], fallback=(
+                f"mdclaw --job-dir {job_dir} --node-id {open_same[0]} {tool_name}"))
         actual_type = (nodes.get(node_id) or {}).get("type")
         if (CANONICAL_FORWARD_NODE_TYPE.get(actual_type) == expected_node_type
                 and actual_status == "completed"):
@@ -1186,7 +1369,7 @@ def _node_context_not_applicable_error(tool_name, *, job_dir=None, node_id=None)
         "warnings": [],
         "hints": hints,
         "next_action": (stage_hint.split(": ", 2)[-1] if stage_hint
-                        else f"mdclaw {tool_name} ... (without --job-dir/--node-id)"),
+                        else _argv_without_node_context() or f"mdclaw {tool_name}"),
         "context": {"tool": tool_name, "job_dir": job_dir, "node_id": node_id,
                     "code": "node_context_not_applicable"},
         "recoverable": True,
@@ -1357,7 +1540,8 @@ def _tool_parameter_schemas(tool_name: str, fn) -> list[dict]:
     return params
 
 
-def _missing_tool_error(tool_name: str, tools: dict[str, dict]) -> dict:
+def _missing_tool_error(tool_name: str, tools: dict[str, dict], *,
+                        argv: list[str] | None = None, sub: int | None = None) -> dict:
     """Explain a name the CLI cannot run, however the agent asked for it.
 
     A consolidated name yields the replacement command; anything else yields
@@ -1367,7 +1551,7 @@ def _missing_tool_error(tool_name: str, tools: dict[str, dict]) -> dict:
     """
     replacement = _RENAMED_TOOLS.get(tool_name)
     if replacement is None:
-        return _unknown_tool_error(tool_name, tools)
+        return _unknown_tool_error(tool_name, tools, argv=argv, sub=sub)
     return {
         "success": False,
         "error_type": "ValidationError",
@@ -1388,23 +1572,75 @@ def _missing_tool_error(tool_name: str, tools: dict[str, dict]) -> dict:
     }
 
 
-def _unknown_tool_error(tool_name: str, tools: dict[str, dict]) -> dict:
+def _unknown_tool_error(tool_name: str, tools: dict[str, dict], *,
+                        argv: list[str] | None = None, sub: int | None = None) -> dict:
     """Structured 'no such tool' reply for any name the CLI does not have.
 
     Typos, invented names, and tools dropped in an earlier release all land
     here. The CLI must never answer an unknown name with an argparse dump on
     stderr: agents recover from a stable ``code`` on stdout, so a name they
-    guessed wrong has to come back as JSON like every other failure.
+    guessed wrong has to come back as JSON like every other failure. The reply
+    always names the nearest tools, and the corrected command when the slip
+    is recognisable (``_cli_names``).
     """
-    suggestions = difflib.get_close_matches(tool_name, tools, n=3, cutoff=0.85)
-    hints = ["Run 'mdclaw --list-json' to see exact available tool names."]
+    from mdclaw._cli_names import first_tool_option
+
+    argv = list(argv or [])
+    key = tool_name.strip().lower().replace("-", "_")
+    suggestions = nearest_tools(tool_name, tools)
+    message = f"Unknown MDClaw tool '{tool_name}'"
+    hints: list[str] = []
+    next_action = None
+    in_argv = bool(argv) and sub is not None and 0 <= sub < len(argv) and argv[sub] == tool_name
+    if key in LIST_REQUESTS:
+        message += "; the tool index is mdclaw --list"
+        next_action = "mdclaw --list"
+        hints.append("Stages and their tools: mdclaw --workflow; one tool: mdclaw --list-json <tool>")
+    elif key in TOOL_ALIASES:
+        target, extra, note = TOOL_ALIASES[key]
+        message += f"; use {target}: {note}"
+        if in_argv:
+            next_action = command_text(argv[:sub] + [target] + argv[sub + 1:]
+                                       + [arg for arg in extra if arg not in argv])
+        else:
+            next_action = f"mdclaw {target} --help"
+    elif NODE_ID_SHAPE.match(tool_name) and in_argv:
+        given = option_value(argv, "--node-id")
+        later = next((j for j in range(sub + 1, len(argv)) if argv[j] in tools), None)
+        message += f": '{tool_name}' is a node id, not a tool"
+        fixed = None
+        if given == tool_name:
+            message += " (and --node-id already names it)"
+            fixed = argv[:sub] + argv[sub + 1:]
+        elif given:
+            message += f" (and --node-id {given} is given as well)"
+        else:
+            message += "; a node id follows --node-id"
+            fixed = argv[:sub] + ["--node-id", tool_name] + argv[sub + 1:]
+        if fixed and later is not None:
+            next_action = command_text(fixed)
+        hints.append("Form: mdclaw --job-dir <job_dir> --node-id <node_id> <tool> [tool options]")
+    elif in_argv and first_tool_option(argv, sub) is not None:
+        flag = argv[sub - 1]
+        message += (f": '{tool_name}' is the value of {flag}, and no tool name is given "
+                    "(tool options go after the tool name)")
+        takers = tools_taking({flag}, tools, _tool_flags)
+        if len(takers) == 1:
+            start = first_tool_option(argv, sub)
+            next_action = command_text(argv[:start] + [takers[0]] + argv[start:])
+        if takers:
+            suggestions = takers[:5]
+    elif in_argv and sub > 0 and argv[sub - 1].startswith("--") and "=" not in argv[sub - 1]:
+        message += (f": '{tool_name}' follows {argv[sub - 1]}; put mdclaw's own options (--job-dir, "
+                    "--node-id, --output) before the tool name and the tool's options after it")
     if suggestions:
         hints.insert(0, f"Did you mean: {', '.join(suggestions)}?")
-    return {
+    hints.append("Run 'mdclaw --list' (index) or 'mdclaw --list-json <tool>' (one tool's parameters).")
+    error = {
         "success": False,
         "error_type": "ValidationError",
         "code": "tool_not_available",
-        "message": f"Unknown MDClaw tool '{tool_name}'",
+        "message": message,
         "errors": [f"Tool '{tool_name}' is not present in CLI discovery"],
         "warnings": [],
         "hints": hints,
@@ -1413,6 +1649,209 @@ def _unknown_tool_error(tool_name: str, tools: dict[str, dict]) -> dict:
             "code": "tool_not_available",
             "suggestions": suggestions,
         },
+        "suggestions": suggestions,
+        "recoverable": True,
+    }
+    if next_action:
+        error["next_action"] = next_action
+    return error
+
+
+_TOOL_FLAG_CACHE: dict[str, frozenset] = {}
+
+
+def _tool_flags(tool_name: str) -> frozenset:
+    """Every flag a tool's parser accepts."""
+    if tool_name in _TOOL_FLAG_CACHE:
+        return _TOOL_FLAG_CACHE[tool_name]
+    info = _TOOLS.get(tool_name) or {}
+    flags = {"--json-input", "--help", "-h"}
+    if info.get("fn") is not None and not info.get("contract_error"):
+        for spec in _tool_param_specs(info["fn"], requires_node=bool(info.get("requires_node"))):
+            flags.add(spec.cli_flag)
+            if spec.inner is bool:
+                flags.add(f"--no-{spec.name.replace('_', '-')}")
+    _TOOL_FLAG_CACHE[tool_name] = frozenset(flags)
+    return _TOOL_FLAG_CACHE[tool_name]
+
+
+def _resolve_tool_token(argv: list[str], sub: int, tools: dict[str, dict]) -> list[str] | None:
+    """The command line with an unambiguous tool-name slip corrected, or None.
+
+    Spelling variants (``Build_Amber-System``, ``slurm_submit_job``), a
+    server or stage word before the tool (``mdclaw slurm submit_job``) and
+    tool options written before the tool name (``--node-type solv
+    create_node``) are read as the tool; each reading is noted in the
+    result's warnings.
+    """
+    token = argv[sub]
+    if token in _RENAMED_TOOLS:
+        return None
+    # The value of a tool option written before the tool (``--node-type
+    # source create_node``) is not a tool name, even when it is a stage word.
+    moved = tool_option_rewrite(argv, sub, tools, _tool_flags)
+    if moved:
+        rewritten, tool = moved
+        _ARGV_NOTES.append(f"options written before the tool name were moved after '{tool}'")
+        return rewritten
+    canonical = canonical_tool_name(token, tools)
+    if canonical:
+        _ARGV_NOTES.append(f"tool name '{token}' read as '{canonical}'")
+        return argv[:sub] + [canonical] + argv[sub + 1:]
+    if token.lower() in PREFIX_WORDS and sub + 1 < len(argv):
+        following = canonical_tool_name(argv[sub + 1], tools)
+        if following:
+            _ARGV_NOTES.append(f"'{token} {argv[sub + 1]}' read as '{following}' "
+                               "(tool names take no server or stage prefix)")
+            return argv[:sub] + [following] + argv[sub + 2:]
+    return None
+
+
+_NODE_ID_PLACEHOLDER = "__MDCLAW_NODE_ID__"
+
+
+def _node_id_value_error(problem: dict, argv: list[str], tools: dict[str, dict]) -> dict:
+    """``--node-id`` with no usable value, usually an empty shell variable.
+
+    Without this the tool name became the node id and the next value the
+    "tool" (``tool_not_available`` for 'DPPC', 'A', 'tip3p' in MDDataBench v5),
+    or the CLI printed its help and exited 0.
+    """
+    index, value = problem["index"], problem["value"]
+    drop = 1 if problem["joined"] or value is None or value.startswith("-") or value in tools else 2
+    rest = argv[:index] + argv[index + drop:]
+    sub = subcommand_index(rest, GLOBAL_VALUE_OPTIONS)
+    tool = rest[sub] if sub is not None and rest[sub] in tools else None
+    job_dir = option_value(argv, "--job-dir")
+    node_type = (tools.get(tool) or {}).get("node_type") if tool else None
+    message = (f"--node-id has no value: {problem['reason']}. An empty or unset shell variable "
+               "(--node-id $NODE_ID) does this; nothing was run.")
+    hints = ["Capture the id first and check it: NODE_ID=$(mdclaw --output id create_node ...); "
+             "an empty capture means create_node failed (its reason is on stderr)."]
+    fixed = rest[:index] + ["--node-id", _NODE_ID_PLACEHOLDER] + rest[index:]
+    next_action = None
+    if job_dir and node_type:
+        nodes, _params = _load_nodes(str(Path(job_dir).resolve()))
+        open_ids = nodes_of_type(nodes, node_type, {"pending"})
+        hints.append(f"pending {node_type} nodes in {job_dir}: "
+                     + (describe_nodes(nodes, open_ids) if open_ids else "none"))
+        if len(open_ids) == 1:
+            next_action = command_text(fixed).replace(_NODE_ID_PLACEHOLDER, open_ids[0])
+        elif not open_ids:
+            create = (f"mdclaw --output id create_node --job-dir {shlex.quote(job_dir)} "
+                      f"--node-type {node_type}")
+            next_action = (f'NODE_ID=$({create}) && test -n "$NODE_ID" && '
+                           + command_text(fixed).replace(_NODE_ID_PLACEHOLDER, '"$NODE_ID"'))
+    if next_action is None:
+        next_action = (command_text(fixed).replace(_NODE_ID_PLACEHOLDER, "<node_id>")
+                       + "  (with the node id from create_node or inspect_job)")
+    return {
+        "success": False,
+        "error_type": "ValidationError",
+        "code": "node_id_value_missing",
+        "message": message,
+        "errors": [message],
+        "warnings": [],
+        "hints": hints,
+        "next_action": next_action,
+        "context": {"code": "node_id_value_missing", "tool": tool, "job_dir": job_dir,
+                    "token_after_node_id": value},
+        "recoverable": True,
+    }
+
+
+_PLACEHOLDER_VALUE = re.compile(r"^(\.\.\.|…|<[^>]*>|\[[^\]]*\])$")
+
+
+def _unrecognized_error(extras: list[str], argv: list[str], tools: dict[str, dict]) -> dict:
+    """``unknown_parameter`` for tokens the tool's parser did not take."""
+    sub = subcommand_index(argv, GLOBAL_VALUE_OPTIONS)
+    tool = argv[sub] if sub is not None and argv[sub] in tools else None
+    flags = sorted(_tool_flags(tool)) if tool else sorted(GLOBAL_VALUE_OPTIONS | GLOBAL_FLAG_OPTIONS)
+    unknown_flags = [tok.split("=", 1)[0] for tok in extras if tok.startswith("-")]
+    values = [tok for tok in extras if not tok.startswith("-")]
+    hints: list[str] = []
+    # A near flag is named, never substituted: the closest spelling can mean
+    # the opposite (--exclude-ligand-resnames is one letter group away from
+    # --include-ligand-resnames) or something else (--output vs --output-dir).
+    for flag in unknown_flags:
+        prefixed = [f for f in flags if f.startswith(flag)]
+        close = difflib.get_close_matches(flag, flags, n=3, cutoff=0.6)
+        if prefixed:
+            hints.append(f"{flag}: abbreviated flags are not accepted (only a missing unit or plural "
+                         f"ending is completed); the flags starting so are {' or '.join(prefixed[:3])}")
+        elif close:
+            hints.append(f"{flag}: no such option; near: {' or '.join(close)} (check the meaning "
+                         f"with mdclaw --list-json {tool})" if tool else f"{flag}: did you mean {' or '.join(close)}?")
+        else:
+            hints.append(f"{flag}: {tool or 'mdclaw'} has no such option")
+    info = tools.get(tool) or {}
+    if tool and {"--job-dir", "--node-id"} & set(unknown_flags) and not info.get("requires_node"):
+        hints.append(helper_stage_hint(tool, option_value(argv, "--job-dir"), option_value(argv, "--node-id"))
+                     or f"{tool} takes no --job-dir/--node-id; it reads and writes no node state.")
+    placeholders = [v for v in values if _PLACEHOLDER_VALUE.match(v)]
+    if values:
+        hints.append(f"{', '.join(repr(v) for v in values)}: a value without a flag"
+                     + (" (a placeholder from an example; remove it)" if placeholders else ""))
+    if tool:
+        hints.append(f"Accepted parameters: mdclaw --list-json {tool}")
+    if not unknown_flags and placeholders and len(placeholders) == len(values):
+        dropped = list(placeholders)
+        fixed = []
+        for tok in argv:
+            if tok in dropped:
+                dropped.remove(tok)
+                continue
+            fixed.append(tok)
+        next_action = command_text(fixed)
+    else:
+        next_action = f"mdclaw --list-json {tool}" if tool else "mdclaw --help"
+    message = f"{tool or 'mdclaw'} does not accept: {' '.join(extras)}"
+    return {
+        "success": False,
+        "error_type": "ValidationError",
+        "code": "unknown_parameter",
+        "message": message,
+        "errors": [message],
+        "warnings": [],
+        "hints": hints,
+        "next_action": next_action,
+        "context": {"tool": tool, "unknown_parameters": unknown_flags, "unexpected_values": values,
+                    "code": "unknown_parameter"},
+        "recoverable": True,
+    }
+
+
+def _usage_error(message: str, argv: list[str], tools: dict[str, dict]) -> dict:
+    """Any other argparse refusal (a flag without its value, a bad value)."""
+    sub = subcommand_index(argv, GLOBAL_VALUE_OPTIONS)
+    tool = argv[sub] if sub is not None and argv[sub] in tools else None
+    match = re.match(r"argument ([^\s:]+)(?:/[^\s:]+)?: (.*)", message)
+    flag = match.group(1) if match else None
+    detail = match.group(2) if match else message
+    hints = []
+    code = "invalid_parameter_value"
+    if "expected one argument" in detail or "expected at least one argument" in detail:
+        text = f"{flag} needs a value"
+        hints.append("An empty or unset shell variable leaves a flag without its value "
+                     "(--flag $VAR with VAR empty); a value starting with '-' needs --flag=VALUE.")
+    elif message.startswith("ambiguous option"):
+        code = "unknown_parameter"
+        text = message
+    else:
+        text = f"{flag}: {detail}" if flag else detail
+    if tool:
+        hints.append(f"Parameters and types: mdclaw --list-json {tool}")
+    return {
+        "success": False,
+        "error_type": "ValidationError",
+        "code": code,
+        "message": f"{tool or 'mdclaw'}: {text}",
+        "errors": [message],
+        "warnings": [],
+        "hints": hints,
+        "next_action": f"mdclaw --list-json {tool}" if tool else "mdclaw --help",
+        "context": {"tool": tool, "parameter": flag, "argparse_message": message, "code": code},
         "recoverable": True,
     }
 
@@ -1422,8 +1861,12 @@ def _tool_list_json(
     requested_tool: str | None = None,
 ) -> dict:
     """Build a machine-readable projection of all tools or one exact tool."""
+    read_as = None
     if requested_tool is not None and requested_tool not in tools:
-        return _missing_tool_error(requested_tool, tools)
+        canonical = None if requested_tool in _RENAMED_TOOLS else canonical_tool_name(requested_tool, tools)
+        if canonical is None:
+            return _missing_tool_error(requested_tool, tools)
+        read_as, requested_tool = requested_tool, canonical
 
     selected_tools = (
         {requested_tool: tools[requested_tool]}
@@ -1436,6 +1879,8 @@ def _tool_list_json(
         "total": len(selected_tools),
         "tools": [],
     }
+    if read_as is not None:
+        payload["warnings"] = [f"tool name '{read_as}' read as '{requested_tool}'"]
     if requested_tool is not None and tools[requested_tool].get("contract_error"):
         return _tool_contract_error(requested_tool, tools[requested_tool])
     for tool_name, info in sorted(selected_tools.items()):
@@ -1583,10 +2028,11 @@ def _workflow_text(tools: dict[str, dict]) -> str:
         "  - Node status becomes completed only through the stage tool, never via "
         "update_workflow_state.",
         "",
-        "Batch execution (min/eq/prod on a cluster):",
+        "Batch execution (min/eq/prod on a cluster): each result's next block has the filled-in",
+        "  batch_command, and chain_command submits the next stage behind a queued parent:",
         "  mdclaw submit_job --job-dir <job_dir> --node-id <node_id> "
-        "--script \"mdclaw --job-dir <job_dir> --node-id <node_id> run_minimization ...\" "
-        "--gpus 1 [--dependency afterok:<slurm_job_id>]",
+        "--script 'mdclaw --job-dir <job_dir> --node-id <node_id> run_minimization' "
+        "--gpus 1 --dependency afterok:<parent slurm_job_id>  (omit --dependency when the parent is completed)",
         "  Replicates of small systems (<~100k atoms) share one GPU under NVIDIA MPS: "
         "mdclaw submit_mps_job --tasks '[{\"job_dir\":..,\"node_id\":..,"
         "\"command\":\"mdclaw ... --platform CUDA\"}, ...]' (one call per stage; "
@@ -1618,32 +2064,48 @@ def main(argv: list[str] | None = None) -> None:
         return
     _configure_logging()
 
+    global _OUTPUT_MODE, _TOOLS
     tools = _discover_tools()
+    _TOOLS = tools
+    _TOOL_FLAG_CACHE.clear()
+    _ARGV_NOTES.clear()
+    _ARGV[:] = raw_argv
+    # Errors before the output mode is parsed still honour --output id.
+    _OUTPUT_MODE = option_value(raw_argv, "--output") if option_value(raw_argv, "--output") in OUTPUT_MODES \
+        else os.getenv("MDCLAW_OUTPUT", "brief")
+
+    # ``--node-id`` that lost its value to an empty shell variable swallows
+    # the tool name; say so before the next token is taken for the tool.
+    problem = node_id_value_problem(raw_argv, tools)
+    if problem:
+        _json_error_and_exit(_node_id_value_error(problem, raw_argv, tools), exit_code=2)
 
     # Catch any name the CLI does not have before argparse sees it, so the
     # agent gets a structured code on stdout instead of an "invalid choice"
-    # dump on stderr.
+    # dump on stderr; read unambiguous slips as the tool they name.
+    sub = subcommand_index(raw_argv, GLOBAL_VALUE_OPTIONS)
+    if sub is not None and raw_argv[sub] not in tools:
+        resolved = _resolve_tool_token(raw_argv, sub, tools)
+        if resolved is None:
+            _json_error_and_exit(_missing_tool_error(raw_argv[sub], tools, argv=raw_argv, sub=sub))
+        raw_argv = resolved
     subcommand = _detect_subcommand(raw_argv)
-    if subcommand is not None and subcommand not in tools:
-        _json_error_and_exit(_missing_tool_error(subcommand, tools))
     if subcommand is not None and tools[subcommand].get("contract_error"):
         _json_error_and_exit(_tool_contract_error(subcommand, tools[subcommand]))
     if subcommand is not None:
-        info = tools[subcommand]
-        tool_flags = {
-            spec.cli_flag
-            for spec in _tool_param_specs(info["fn"], requires_node=bool(info.get("requires_node")))
-        }
-        hoisted = _hoist_global_options(raw_argv, tool_flags)
+        hoisted = _hoist_global_options(raw_argv, set(_tool_flags(subcommand)))
         if hoisted is not raw_argv:
             raw_argv = hoisted
-            argv = hoisted
+    _ARGV[:] = raw_argv
 
     parser = _build_parser(tools)
-    args = parser.parse_args(argv)
-    global _OUTPUT_MODE, _TOOLS
+    try:
+        args, extras = parser.parse_known_args(raw_argv)
+    except _CliUsageError as exc:
+        _json_error_and_exit(_usage_error(exc.message, raw_argv, tools), exit_code=2)
+    if extras:
+        _json_error_and_exit(_unrecognized_error(extras, raw_argv, tools), exit_code=2)
     _OUTPUT_MODE = args._output_mode
-    _TOOLS = tools
     if args._log_file:
         _configure_logging(args._log_file)
     heartbeat_seconds = (
@@ -1833,6 +2295,30 @@ def main(argv: list[str] | None = None) -> None:
             "context": {"tool": tool_name, "code": "node_id_requires_job_dir"},
             "recoverable": True,
         })
+    if requires_node and effective_job_dir and not effective_node_id and expected_node_type:
+        # ``--job-dir`` without ``--node-id`` on a stage tool: name the node.
+        nodes, _params = _load_nodes(effective_job_dir)
+        pending = nodes_of_type(nodes, expected_node_type, {"pending"})
+        capture = (f"NODE_ID=$(mdclaw --output id create_node --job-dir {shlex.quote(effective_job_dir)} "
+                   f"--node-type {expected_node_type}) && test -n \"$NODE_ID\" && ")
+        with_id = command_text(["--node-id", _NODE_ID_PLACEHOLDER] + _ARGV) if _ARGV else None
+        next_action = None
+        if with_id and len(pending) == 1:
+            next_action = with_id.replace(_NODE_ID_PLACEHOLDER, pending[0])
+        elif with_id and not pending:
+            next_action = capture + with_id.replace(_NODE_ID_PLACEHOLDER, '"$NODE_ID"')
+        message = (f"{tool_name} requires --node-id: pending {expected_node_type} nodes in this job: "
+                   + (describe_nodes(nodes, pending) if pending else "none"))
+        _json_error_and_exit({
+            "success": False, "error_type": "ValidationError", "code": "node_context_required",
+            "message": message, "errors": [message], "warnings": [],
+            "hints": ["A stage tool runs on one node: pass its id with --node-id (create_node returns it)."],
+            **({"next_action": next_action} if next_action else {}),
+            "candidate_node_ids": pending,
+            "context": {"tool": tool_name, "job_dir": effective_job_dir, "node_id": None,
+                        "code": "node_context_required"},
+            "recoverable": True,
+        }, job_dir=effective_job_dir)
     if requires_node and (not effective_job_dir or not effective_node_id):
         _json_error_and_exit({
             "success": False,
@@ -1890,8 +2376,16 @@ def main(argv: list[str] | None = None) -> None:
             if heartbeat_seconds and heartbeat_seconds > 0:
                 heartbeat = _Heartbeat(tool_name, stderr_capture, heartbeat_seconds).start()
             old_stdout.flush()
-            with _NativeStdoutToStderr():
-                result = _run_tool(fn, is_async, kwargs)
+            import warnings
+
+            digest = _WarningDigest()
+            with _NativeStdoutToStderr(), warnings.catch_warnings():
+                warnings.showwarning = digest.show
+                try:
+                    result = _run_tool(fn, is_async, kwargs)
+                finally:
+                    for line in digest.summary():
+                        sys.stderr.write(line + "\n")
         finally:
             if heartbeat is not None:
                 heartbeat.stop()
@@ -2041,7 +2535,9 @@ def main(argv: list[str] | None = None) -> None:
         )
         if sealed_here:
             error_out.setdefault("context", {})["node_failed_by_cli"] = True
-        if requires_node or sealed_here:
+        # Recording a failure on a node another live run owns would seal it
+        # under that run (the owner is still integrating); this run did nothing.
+        if (requires_node or sealed_here) and not isinstance(e, NodeAlreadyRunningError):
             _record_cli_node_failure(
                 job_dir=effective_job_dir,
                 node_id=effective_node_id,

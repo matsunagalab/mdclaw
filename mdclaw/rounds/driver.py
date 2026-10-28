@@ -22,6 +22,7 @@ Two executors run the segments:
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import math
 import shlex
@@ -78,8 +79,23 @@ _POLICY_MODE = None      # None: choose by interpreter; "inprocess" | "launcher"
 _SLEEP = time.sleep
 
 
-def _stage_args_to_flags(stage_args: dict) -> list[str]:
-    """CLI flags for a stage tool's keyword arguments (JSON for structures)."""
+def _stage_args_to_flags(stage_args: dict, stage_fn=None) -> list[str]:
+    """CLI flags for a stage tool's keyword arguments (JSON for structures).
+
+    A ``list[str]`` parameter is an argparse ``nargs='+'`` option, so its
+    elements follow the flag one by one; a JSON string there would arrive as a
+    one-element list holding the JSON text. The stage tool's annotations say
+    which lists those are; without them a list of plain strings is taken as one.
+    """
+    from mdclaw._cli import _is_list_of_str
+
+    hints: dict[str, Any] = {}
+    if stage_fn is not None:
+        try:
+            hints = {name: param.annotation
+                     for name, param in inspect.signature(stage_fn).parameters.items()}
+        except (TypeError, ValueError):
+            hints = {}
     flags: list[str] = []
     for key, value in (stage_args or {}).items():
         if value is None:
@@ -87,6 +103,10 @@ def _stage_args_to_flags(stage_args: dict) -> list[str]:
         flag = "--" + str(key).replace("_", "-")
         if isinstance(value, bool):
             flags.extend([flag, "true" if value else "false"])
+        elif isinstance(value, list) and value and (
+                _is_list_of_str(hints[key]) if key in hints
+                else all(isinstance(item, str) for item in value)):
+            flags.extend([flag, *(str(item) for item in value)])
         elif isinstance(value, (dict, list)):
             flags.extend([flag, json.dumps(value)])
         else:
@@ -419,7 +439,7 @@ class _Driver:
         args.pop("device_index", None)
         args["random_seed"] = meta.get("random_seed")
         parts = ["mdclaw", "--job-dir", self.job_dir, "--node-id", node_id, self.scheme["stage_tool"],
-                 *_stage_args_to_flags(args), "--platform", "CUDA"]
+                 *_stage_args_to_flags(args, self.stage_fn), "--platform", "CUDA"]
         return " ".join(shlex.quote(str(p)) for p in parts)
 
     def _batch_command(self, node_ids: list[str]) -> str:
@@ -904,6 +924,19 @@ def run_rounds(
                 message=f"scheme {scheme_id!r} was {closed_note}; nothing of it runs again "
                         "(analyze it, or setup_rounds with a new scheme_id)",
             )
+        if executor == "local":
+            # The local executor integrates every segment in this process: on
+            # a login node that is MD outside an allocation. Refused here,
+            # before a segment is touched (the stage tool would refuse each
+            # one with md_outside_allocation).
+            from mdclaw.simulation.run_guard import rounds_outside_allocation
+
+            refusal = rounds_outside_allocation(job_dir, scheme_id, max_rounds=max_rounds,
+                                                max_aggregate_ns=max_aggregate_ns,
+                                                max_wall_hours=max_wall_hours)
+            if refusal is not None:
+                return {**refusal, "job_dir": job_dir, "scheme_id": scheme_id, "rounds_completed": 0,
+                        "segments_run": 0}
         driver = _Driver(job_dir, scheme, executor=executor, platform=platform, device_index=device_index,
                          mps_tasks_per_gpu=mps_tasks_per_gpu, mps_gpus=mps_gpus,
                          mps_segments_per_task=mps_segments_per_task, mps_max_jobs=mps_max_jobs,

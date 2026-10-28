@@ -34,7 +34,7 @@ from mdclaw._common import (
 from mdclaw.slurm import _base
 from mdclaw.slurm.config import validate_container_flags
 from mdclaw.slurm._base import _SUBMITTED_BATCH_JOB_RE
-from mdclaw.slurm.config import resolve_container_runtime, resolve_container_source, uncontained_mdclaw_warning, _command_requests_gpu, _get_container_config, _get_policy, _is_partition_allowed, _load_cluster_config, _resolve_job_command, _validate_against_policy, _validate_sbatch_directive_values
+from mdclaw.slurm.config import container_bind_error, ensure_gpu_passthrough, normalize_partition, resolve_container_runtime, resolve_container_source, uncontained_mdclaw_warning, _command_requests_gpu, _get_container_config, _get_policy, _is_partition_allowed, _load_cluster_config, _resolve_job_command, _validate_against_policy, _validate_sbatch_directive_values
 from mdclaw.slurm.node_sync import _clear_slurm_submission_intent, _mark_slurm_submission_uncertain, _reserve_slurm_submission_on_node, _rollback_slurm_stamp_on_node, _stamp_slurm_on_node, _try_scancel_submitted_job, _validate_node_ready_for_slurm_submit, find_marked_job, sbatch_outcome_uncertain, submission_marker
 from mdclaw.slurm.sbatch import _generate_array_sbatch_script, _generate_sbatch_script
 from mdclaw.slurm.tracker import _append_job_record
@@ -125,6 +125,29 @@ def _check_container_command(
     return None, None
 
 
+def _script_file(script: str) -> Optional[str]:
+    """The path when ``script`` names an existing file (a long inline command
+    is not a path: ``is_file`` raises ENAMETOOLONG on some systems)."""
+    try:
+        return str(Path(script)) if Path(script).is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
+def submission_paths(command: str, out_dir: Path, job_dirs: list[str]) -> list[tuple[str, object, bool]]:
+    """``(role, path, must_exist)`` of every path the job reads or writes."""
+    from mdclaw.slurm.paths import command_path_arguments, literal_path
+
+    items: list[tuple[str, object, bool]] = [("output_dir", out_dir, False),
+                                             ("working directory", Path.cwd(), True)]
+    items += [("job_dir", jd, True) for jd in job_dirs]
+    for flag, value in command_path_arguments(command):
+        path = literal_path(value)
+        if path is not None:
+            items.append((flag, path, flag in {"--job-dir", "--study-dir"}))
+    return items
+
+
 def submit_job(
     script: str,
     job_name: Optional[str] = None,
@@ -154,14 +177,20 @@ def submit_job(
 
     Args:
         script: Path to a script file, or a command string to execute.
-            A submission linked to a DAG node is refused before sbatch when
-            the node's parents are of a type its stage cannot hang from, a
-            parent has failed, or the literal command's tool runs on another
-            stage (``node_execution_context_invalid``; pending parents pass).
-            Literal run_production commands also receive a read-only
-            condition preflight. Unsupported shell forms are reported as
-            skipped; inherited conditions remain runtime checks. See
-            condition_preflight in the result.
+            Every literal ``mdclaw`` line is parsed by the CLI's own parser
+            before sbatch: an argument it would refuse is answered with
+            ``script_arguments_invalid`` (argparse's message, near-miss
+            suggestions and the corrected command when unambiguous), text
+            left from an example (``...``, ``<job_dir>``) with
+            ``script_placeholder_unfilled``. A submission linked to a DAG
+            node is also refused when the node's parents are of a type its
+            stage cannot hang from, a parent has failed, the literal
+            command's tool runs on another stage
+            (``node_execution_context_invalid``), or the declared conditions
+            of a run_minimization / run_equilibration / run_production node
+            do not match what the command will use (same code, with the
+            corrected command); see condition_preflight in the result.
+            Lines the shell evaluates are left to the runtime checks.
             If the path exists as a file, it is wrapped with SBATCH headers.
             Otherwise, a complete script is generated from the command string.
         job_name: Job name (default: mdclaw_<random>).
@@ -185,7 +214,20 @@ def submit_job(
             Maps to --dependency in sbatch. Common patterns:
             - "afterok:JOB_ID": start after JOB_ID completes successfully
             - "afterany:JOB_ID": start after JOB_ID finishes (any exit code)
+            For a DAG node, an unfinished parent queued as a Slurm job is
+            added as ``afterok:<its job>`` when missing (``dependency_added``
+            in the result); a parent that was never submitted
+            (``parent_not_submitted``), a job of a non-ancestor node
+            (``dependency_not_parent_job``) and an afterok on a job that
+            already failed or was cancelled (``dependency_unsatisfiable``)
+            are refused.
         output_dir: Directory for logs and generated script. Default: cwd.
+            It, the working directory, the job directory and the script's
+            path arguments must be visible from a compute node: a path under
+            /tmp, /var/tmp, /dev/shm or on a memory filesystem is refused
+            (``submission_path_not_shared``; ``MDCLAW_ALLOW_LOCAL_SUBMIT_PATHS=1``
+            lifts it on a single-machine Slurm), and a container bind
+            source that does not exist with ``container_bind_missing``.
         account: SLURM account/project.
         qos: Quality of service.
         extra_sbatch: Additional #SBATCH lines (newline-separated).
@@ -247,21 +289,13 @@ def submit_job(
         if node_error:
             return {**result, **node_error}
 
-    command = _resolve_job_command(script)
-    if job_dir and node_id:
-        from mdclaw.slurm.preflight import node_structure_preflight, production_preflight
+    from mdclaw.slurm.dependency import unsatisfiable_without_node
+    from mdclaw.slurm.preflight import submission_preflight
+    from mdclaw.slurm.script_check import find_placeholders, placeholder_error
 
-        structure_error = node_structure_preflight(command, job_dir, node_id)
-        if structure_error:
-            return {**result, **structure_error}
-        preflight = production_preflight(command, job_dir, node_id, time_limit=time_limit)
-        result["condition_preflight"] = preflight
-        if preflight["status"] == "failed":
-            return {**result, **preflight}
-        if preflight["status"] == "skipped":
-            result["warnings"].append(
-                "Production condition preflight skipped: " + preflight["reason"]
-                + "; runtime validation remains required.")
+    if dependency and find_placeholders(dependency):
+        return {**result, **placeholder_error("dependency", find_placeholders(dependency))}
+    command = _resolve_job_command(script)
     container_error, container_message = _check_container_command(
         "script",
         command,
@@ -272,7 +306,23 @@ def submit_job(
     if container_message:
         result["message"] = container_message
         result["warnings"].append(container_message)
-
+    script_file = _script_file(script)
+    preflight = submission_preflight(command, job_dir, node_id, time_limit=time_limit,
+                                     dependency=dependency, script_file=script_file)
+    if preflight["condition_preflight"] is not None:
+        result["condition_preflight"] = preflight["condition_preflight"]
+    if preflight["error"]:
+        return {**result, **preflight["error"]}
+    result["warnings"].extend(preflight["warnings"])
+    if preflight["dependency_added"]:
+        result["dependency_added"] = preflight["dependency_added"]
+    dependency = preflight["dependency"]
+    if dependency and not (job_dir and node_id):
+        dependency_error = unsatisfiable_without_node(dependency)
+        if dependency_error:
+            return {**result, **dependency_error}
+    if dependency:
+        result["dependency"] = dependency
     if not _base.check_external_tool("sbatch"):
         return {**result, **create_tool_not_available_error(
             "sbatch", "SLURM is not installed or not in PATH."
@@ -284,6 +334,11 @@ def submit_job(
     result["job_name"] = job_name
 
     out_dir = Path(output_dir) if output_dir else Path.cwd()
+    from mdclaw.slurm.paths import check_paths
+
+    path_error = check_paths(submission_paths(command, out_dir, [job_dir] if job_dir else []))
+    if path_error:
+        return {**result, **path_error}
     ensure_directory(out_dir)
     out_dir = out_dir.resolve()
     result["output_dir"] = str(out_dir)
@@ -292,6 +347,7 @@ def submit_job(
     config = _load_cluster_config()
     policy = _get_policy(config)
     defaults = policy.get("defaults", {})
+    partition = normalize_partition(partition, result["warnings"])
 
     # Apply policy defaults (only when user didn't specify)
     if not partition and defaults.get("partition"):
@@ -397,9 +453,16 @@ def submit_job(
         container_error = resolve_container_source(container)
         if container_error:
             return {**result, **container_error}
-        runtime_error = resolve_container_runtime(container, warnings=result.setdefault("warnings", []))
+        runtime_error = resolve_container_runtime(container, warnings=result.setdefault("warnings", []),
+                                                  notes=result.setdefault("notes", []))
         if runtime_error:
             return {**result, **runtime_error}
+        ensure_gpu_passthrough(container, gpus, gres, result["warnings"])
+        bind_error = container_bind_error([(command, str(out_dir))], container, result["warnings"])
+        if bind_error:
+            return {**result, **bind_error}
+    if not result.get("notes"):
+        result.pop("notes", None)
     uncontained = uncontained_mdclaw_warning([command], container, environment)
     if uncontained:
         result.setdefault("warnings", []).append(uncontained)
@@ -581,6 +644,8 @@ def submit_job(
             "stdout_log": result["stdout_log"],
             "stderr_log": result["stderr_log"],
         }
+        if dependency:
+            tracker_record["dependency"] = dependency
         if job_dir:
             tracker_record["job_dir"] = str(Path(job_dir).resolve())
         if node_id:
@@ -750,30 +815,14 @@ def submit_array_job(
 
     # Resolve job_dirs to absolute and check node.json existence
     normalized_tasks: list[dict] = []
-    for idx, task in enumerate(tasks):
-        jd = Path(task["job_dir"]).resolve()
-        nid = task["node_id"]
-        node_error = _validate_node_ready_for_slurm_submit(str(jd), nid)
-        if node_error:
-            node_error["message"] = f"tasks[{idx}]: {node_error.get('message', '')}"
-            return {**result, **node_error}
-        from mdclaw.slurm.preflight import node_structure_preflight, production_preflight
-
-        structure_error = node_structure_preflight(str(task["command"]), str(jd), nid)
-        if structure_error:
-            structure_error["message"] = f"tasks[{idx}]: {structure_error['message']}"
-            return {**result, **structure_error}
-        preflight = production_preflight(str(task["command"]), str(jd), nid, time_limit=time_limit)
-        result.setdefault("condition_preflight", []).append({"task_index": idx, **preflight})
-        if preflight["status"] == "failed":
-            return {**result, "code": preflight["code"], "errors": preflight["errors"],
-                    **{k: preflight[k] for k in ("message", "hints", "next_action", "time_budget")
-                       if k in preflight}}
-        if preflight["status"] == "skipped":
-            result["warnings"].append(f"tasks[{idx}]: production condition preflight skipped; runtime validation required.")
+    task_errors = preflight_tasks(tasks, result, time_limit=time_limit, dependency=dependency)
+    if task_errors:
+        return {**result, **task_errors}
+    dependency = result.get("dependency", dependency)
+    for task in tasks:
         normalized_tasks.append({
-            "job_dir": str(jd),
-            "node_id": nid,
+            "job_dir": str(Path(task["job_dir"]).resolve()),
+            "node_id": task["node_id"],
             "command": task["command"],
         })
 
@@ -782,6 +831,9 @@ def submit_array_job(
     result["output_dir"] = None
 
     out_dir = Path(output_dir) if output_dir else Path.cwd()
+    path_error = tasks_path_error(normalized_tasks, out_dir)
+    if path_error:
+        return {**result, **path_error}
     ensure_directory(out_dir)
     out_dir = out_dir.resolve()
     result["output_dir"] = str(out_dir)
@@ -790,6 +842,7 @@ def submit_array_job(
     config = _load_cluster_config()
     policy = _get_policy(config)
     defaults = policy.get("defaults", {})
+    partition = normalize_partition(partition, result["warnings"])
 
     if not partition and defaults.get("partition"):
         partition = defaults["partition"]
@@ -884,9 +937,17 @@ def submit_array_job(
         container_error = resolve_container_source(container)
         if container_error:
             return {**result, **container_error}
-        runtime_error = resolve_container_runtime(container, warnings=result.setdefault("warnings", []))
+        runtime_error = resolve_container_runtime(container, warnings=result.setdefault("warnings", []),
+                                                  notes=result.setdefault("notes", []))
         if runtime_error:
             return {**result, **runtime_error}
+        ensure_gpu_passthrough(container, gpus, gres, result["warnings"])
+        bind_error = container_bind_error([(t["command"], t["job_dir"]) for t in normalized_tasks],
+                                          container, result["warnings"])
+        if bind_error:
+            return {**result, **bind_error}
+    if not result.get("notes"):
+        result.pop("notes", None)
     uncontained = uncontained_mdclaw_warning(
         [t["command"] for t in normalized_tasks], container, environment)
     if uncontained:
@@ -1061,3 +1122,67 @@ def submit_array_job(
                 _clear_slurm_submission_intent(jd, nid, intent_id)
 
     return result
+
+
+def preflight_tasks(tasks: list[dict], result: dict, *, time_limit: Optional[str],
+                    dependency: Optional[str]) -> Optional[dict]:
+    """Per-task pre-sbatch checks of an array or MPS submission; the refusal
+    of the first task that fails (its message prefixed ``tasks[i]: ``), or
+    None. On success ``result`` carries each task's ``condition_preflight``
+    and, when a queued parent's job was missing from ``dependency``, the
+    widened ``dependency`` (one spec holds the whole job)."""
+    from mdclaw.slurm.preflight import submission_preflight
+    from mdclaw.slurm.script_check import find_placeholders, placeholder_error
+
+    if dependency and find_placeholders(dependency):
+        return placeholder_error("dependency", find_placeholders(dependency))
+    state_cache: dict = {}
+    added: list[dict] = []
+    for idx, task in enumerate(tasks):
+        jd = Path(task["job_dir"]).resolve()
+        nid = task["node_id"]
+        node_error = _validate_node_ready_for_slurm_submit(str(jd), nid)
+        if node_error:
+            node_error["message"] = f"tasks[{idx}]: {node_error.get('message', '')}"
+            return node_error
+        preflight = submission_preflight(str(task["command"]), str(jd), nid, time_limit=time_limit,
+                                         dependency=dependency, state_cache=state_cache,
+                                         field_name=f"tasks[{idx}].command")
+        if preflight["condition_preflight"] is not None:
+            result.setdefault("condition_preflight", []).append(
+                {"task_index": idx, **preflight["condition_preflight"]})
+        if preflight["error"]:
+            error = dict(preflight["error"])
+            error["message"] = f"tasks[{idx}]: {error.get('message') or ''}"
+            return error
+        result["warnings"].extend(f"tasks[{idx}]: {w}" for w in preflight["warnings"])
+        added.extend({"task_index": idx, **a} for a in preflight["dependency_added"])
+        dependency = preflight["dependency"]
+    if added:
+        result["dependency_added"] = added
+    if dependency:
+        from mdclaw.slurm.dependency import unsatisfiable_without_node
+
+        if not added:
+            error = unsatisfiable_without_node(dependency, state_cache)
+            if error:
+                return error
+        result["dependency"] = dependency
+    return None
+
+
+def tasks_path_error(tasks: list[dict], out_dir: Path) -> Optional[dict]:
+    """``submission_path_not_shared`` for the first task path a compute node
+    cannot see (output directory, working directory, job directories and
+    the commands' path arguments)."""
+    from mdclaw.slurm.paths import check_paths
+
+    items: list = []
+    seen: set = set()
+    for task in tasks:
+        for item in submission_paths(str(task["command"]), out_dir, [task["job_dir"]]):
+            key = (item[0], str(item[1]))
+            if key not in seen:
+                seen.add(key)
+                items.append(item)
+    return check_paths(items)

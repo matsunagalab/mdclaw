@@ -507,8 +507,7 @@
     "job_dir_is_data": false,
     "node_type": null,
     "required_params": [
-      "job_dir",
-      "node_id"
+      "job_dir"
     ],
     "requires_node": false,
     "server": "research"

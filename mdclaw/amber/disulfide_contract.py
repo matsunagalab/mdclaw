@@ -111,6 +111,88 @@ def sulfur_chemistry_errors(topology: Any) -> list[str]:
     return errors
 
 
+# Below the S-S bond window's upper edge (2.3 A) plus slack for a minimized or
+# rebuilt structure: two cysteine sulfurs this close and not bonded are a
+# disulfide the topology lost, never a non-bonded contact (two sulfur van der
+# Waals radii are 3.6 A; metal-ligating pairs measure 2.9-3.0 A).
+UNBONDED_DISULFIDE_ANGSTROM = 2.5
+
+
+def _excluded_sulfur_pairs(topology: Any, pairs: list[dict] | None) -> set[frozenset]:
+    """Atom-index pairs of disulfides the caller kept reduced (``form_bond: false``)."""
+    residues = [r for r in topology.residues() if r.name in {"CYS", "CYX", "CYM"}]
+    out = set()
+    for pair in pairs or []:
+        if not isinstance(pair, dict) or pair.get("form_bond") is not False:
+            continue
+        atoms = []
+        try:
+            for number in (1, 2):
+                chain, resid, icode = _endpoint(pair, number)
+                matches = [
+                    r for r in residues
+                    if str(r.chain.id or "").strip() == chain and str(r.id) == resid
+                    and (icode is None
+                         or str(getattr(r, "insertionCode", "") or "").strip() == icode)
+                ]
+                sg = [a for r in matches[:1] for a in r.atoms() if a.name == "SG"]
+                if len(matches) != 1 or not sg:
+                    break
+                atoms.append(sg[0].index)
+        except DisulfidePlanError:
+            continue
+        if len(atoms) == 2:
+            out.add(frozenset(atoms))
+    return out
+
+
+def unbonded_disulfide_geometry_errors(topology: Any, positions: Any,
+                                       pairs: list[dict] | None = None) -> list[str]:
+    """Cysteine sulfur pairs closer than ``UNBONDED_DISULFIDE_ANGSTROM`` with no SG-SG bond.
+
+    The last line of defence for a disulfide lost before the topology: a pair
+    the prepared structure holds at bonding distance but the System does not
+    bond becomes two thiols pressed together (2DD8, campaign v5: SG-SG 2.03 A
+    built and simulated as two CYS). Pairs with a metal within 3.5 A of both
+    sulfurs (a zinc site) and pairs declared with ``form_bond: false`` pass.
+    ``positions`` are OpenMM positions (a Quantity or nm Vec3 list).
+    """
+    from mdclaw.structure.disulfide import DISULFIDE_METAL_ELEMENTS, close_sulfur_pairs
+
+    from openmm import unit
+
+    if hasattr(positions, "value_in_unit"):
+        xyz = positions.value_in_unit(unit.angstrom)
+    else:
+        # A plain list: Quantity Vec3s, or bare nm triples.
+        xyz = [p.value_in_unit(unit.angstrom) if hasattr(p, "value_in_unit")
+               else (p[0] * 10.0, p[1] * 10.0, p[2] * 10.0) for p in positions]
+    sulfurs, metals = {}, []
+    for atom in topology.atoms():
+        if atom.residue.name in {"CYS", "CYX", "CYM"} and atom.name == "SG":
+            sulfurs[atom.index] = tuple(float(v) for v in xyz[atom.index])
+        element = getattr(atom.element, "symbol", "") or ""
+        if element.upper() in DISULFIDE_METAL_ELEMENTS:
+            metals.append(tuple(float(v) for v in xyz[atom.index]))
+    if len(sulfurs) < 2:
+        return []
+    bonded = {frozenset((a.index, b.index)) for a, b in topology.bonds()
+              if a.name == b.name == "SG"}
+    excluded = _excluded_sulfur_pairs(topology, pairs)
+    atoms = {atom.index: atom for atom in topology.atoms() if atom.index in sulfurs}
+    errors = []
+    for one, two, distance in close_sulfur_pairs(sulfurs, metals, UNBONDED_DISULFIDE_ANGSTROM):
+        key = frozenset((one, two))
+        if key in bonded or key in excluded:
+            continue
+        ends = [atoms[one].residue, atoms[two].residue]
+        errors.append(
+            " - ".join(f"{r.chain.id}:{r.id}{getattr(r, 'insertionCode', '') or ''} {r.name}"
+                       for r in ends)
+            + f": SG-SG {distance} A and no S-S bond")
+    return errors
+
+
 def remap_disulfides_after_pdb_transform(before, after, pairs):
     """Carry sulfur sites through a coordinate-preserving PDB renumbering.
 
@@ -174,6 +256,21 @@ def remap_disulfides_after_pdb_transform(before, after, pairs):
             }
         )
     resolve_disulfides(new.topology, remapped)
+    # Pairs kept reduced on purpose travel too, so the geometry guard after
+    # the transform still knows they were declared (best effort: a pair that
+    # cannot be located is simply not carried).
+    for index_pair in _excluded_sulfur_pairs(old.topology, pairs):
+        atoms_by_index = {a.index: a for a in old.topology.atoms()}
+        endpoints = []
+        for index in sorted(index_pair):
+            matches = candidates[signature(atoms_by_index[index].residue, old_xyz)]
+            if len(matches) != 1:
+                break
+            r = matches[0]
+            endpoints.append({"chain": r.chain.id, "resnum": r.id,
+                              "icode": str(r.insertionCode or "").strip()})
+        if len(endpoints) == 2:
+            remapped.append({"cys1": endpoints[0], "cys2": endpoints[1], "form_bond": False})
     return remapped, records
 
 

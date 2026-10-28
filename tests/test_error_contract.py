@@ -148,7 +148,8 @@ def test_representative_tool_failures_satisfy_contract():
     # only the finalized envelope would still pass if a tool stopped
     # classifying its own failure.
     failures = [
-        ("missing_pdb_file", solvate_structure(pdb_file=None)),
+        ("missing_pdb_file", solvate_structure(pdb_file=None, water_model="opc")),
+        ("water_model_required", solvate_structure(pdb_file=None)),
         (
             "missing_xml_topology_inputs",
             run_equilibration(system_xml_file=None, topology_pdb_file=None),

@@ -61,8 +61,20 @@ def test_inspect_reports_chain_ranges_in_the_default_output(pdb):
     assert brief["chains"].get("_omitted") is True
 
 
-def test_split_reports_what_each_chain_kept(pdb, tmp_path):
+def test_ranges_without_select_chains_select_the_named_chains(pdb, tmp_path):
+    """049_nucleic_1iv6 (qwen v5): the chain no range named came through whole."""
     out = split_molecules(str(pdb), output_dir=str(tmp_path / "split"), residue_ranges=["A:1-6"])
+    assert out["success"], out["errors"]
+    assert {e["author_chain"] for e in out["delivered_chain_ranges"]} == {"A"}
+    adjustment = next(a for a in out["selection_adjustments"]
+                      if a["code"] == "select_chains_defaulted_to_range_chains")
+    assert adjustment["select_chains"] == ["A"]
+    assert any("select_chains_defaulted_to_range_chains" in w for w in out["warnings"])
+
+
+def test_split_reports_what_each_chain_kept(pdb, tmp_path):
+    out = split_molecules(str(pdb), output_dir=str(tmp_path / "split"),
+                          select_chains=["A", "B"], residue_ranges=["A:1-6"])
     assert out["success"], out["errors"]
     kept = {e["author_chain"]: e for e in out["delivered_chain_ranges"]}
     assert kept["A"]["requested"] == ["A:1-6"]

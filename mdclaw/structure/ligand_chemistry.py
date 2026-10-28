@@ -101,8 +101,23 @@ def _fetch_smiles_from_ccd(ligand_id: str, timeout: int = 10) -> Optional[str]:
         return None
     
     ligand_id = ligand_id.upper().strip()
+    if ligand_id in _CCD_SMILES_CACHE:
+        return _CCD_SMILES_CACHE[ligand_id]
     url = f"https://data.rcsb.org/rest/v1/core/chemcomp/{ligand_id}"
-    
+    smiles = _fetch_smiles_from_ccd_uncached(requests, ligand_id, url, timeout)
+    if smiles:
+        _CCD_SMILES_CACHE[ligand_id] = smiles
+    return smiles
+
+
+# Successful CCD lookups, per process: prepare_complex reads each ligand's
+# definition in its pre-run checks and again while cleaning it.
+_CCD_SMILES_CACHE: dict[str, str] = {}
+
+
+def _fetch_smiles_from_ccd_uncached(requests, ligand_id: str, url: str,
+                                    timeout: int) -> Optional[str]:
+    """One RCSB chem-comp request; see :func:`_fetch_smiles_from_ccd`."""
     try:
         response = requests.get(url, timeout=timeout)
         if response.status_code != 200:
@@ -360,31 +375,145 @@ def _protonate_smiles_dimorphite(smiles: str, ph: float) -> list[Tuple[str, int]
     return candidates
 
 
+def choose_protonation_state(
+    candidates: list[Tuple[str, int]],
+    expected_net_charge: Optional[int],
+) -> dict:
+    """Choose one protonation state from Dimorphite-DL candidates, or say why not.
+
+    Returns ``{"status", "smiles", "charge", "candidates"}`` where ``status`` is
+
+    - ``"selected"``: the expected net charge picked a candidate, or every
+      candidate carries the same net charge;
+    - ``"ambiguous"``: no expected charge and the candidates differ in net
+      charge. Dimorphite-DL's order is not a ranking: 5OH3's 9V2 came back
+      neutral in one run and as the imide anion in another, and 1CEB's
+      tranexamic acid as the anion instead of the zwitterion (campaign v5),
+      so a first-is-dominant pick decided the ligand's charge by chance;
+    - ``"unreachable"``: no candidate carries the expected charge;
+    - ``"empty"``: no candidates.
+
+    ``candidates`` is a JSON-friendly list of ``{"smiles", "charge"}``.
+    """
+    unique: list[Tuple[str, int]] = []
+    for smi, charge in candidates or []:
+        if all(smi != seen for seen, _charge in unique):
+            unique.append((smi, int(charge)))
+    meta = [{"smiles": smi, "charge": charge} for smi, charge in unique]
+    out = {"status": "empty", "smiles": None, "charge": None, "candidates": meta}
+    if not unique:
+        return out
+    if expected_net_charge is not None:
+        target = int(expected_net_charge)
+        for smi, charge in unique:
+            if charge == target:
+                return {**out, "status": "selected", "smiles": smi, "charge": charge}
+        return {**out, "status": "unreachable"}
+    if len({charge for _smi, charge in unique}) == 1:
+        smi, charge = unique[0]
+        return {**out, "status": "selected", "smiles": smi, "charge": charge}
+    return {**out, "status": "ambiguous"}
+
+
+def ligand_protonation_next_action(ligand_id: str, candidates: list[dict],
+                                   *, prepare_complex: bool = True) -> str:
+    """The exact flags that choose one of ``candidates`` for ``ligand_id``."""
+    charges = sorted({int(c["charge"]) for c in candidates})
+    if prepare_complex:
+        options = "; ".join(
+            f"--ligand-net-charges '{{\"{ligand_id}\": {charge}}}'" for charge in charges)
+        return (
+            f"State the net charge of {ligand_id} the task means and run the same (still "
+            f"pending) node again with one of: {options}. A charged SMILES via "
+            f"--ligand-smiles '{{\"{ligand_id}\": \"...\"}}' also decides it.")
+    options = "; ".join(f"--expected-net-charge {charge}" for charge in charges)
+    return (f"State the net charge of {ligand_id} and run again with one of: {options}, "
+            "or pass a charged SMILES with --smiles.")
+
+
 def _select_protonation_state(
     candidates: list[Tuple[str, int]],
     expected_net_charge: Optional[int],
 ) -> Tuple[Optional[str], Optional[int], list[dict]]:
-    """Choose one protonation state from Dimorphite-DL candidates.
+    """``(smiles, charge, candidate_meta)`` from :func:`choose_protonation_state`.
 
-    Selection policy:
-    - If ``expected_net_charge`` is given, pick the candidate whose formal charge
-      matches it; return ``(None, None, meta)`` when no candidate matches so the
-      caller can fail-fast and ask for a charged SMILES/SDF.
-    - Otherwise pick the first (dominant) candidate.
-
-    Returns ``(selected_smiles, selected_charge, candidate_meta)`` where
-    ``candidate_meta`` is a JSON-friendly list of ``{"smiles", "charge"}`` dicts.
+    ``(None, None, meta)`` when nothing is selected: no expected charge and
+    candidates of different charge (ambiguous), or no candidate of the
+    expected charge (unreachable).
     """
-    meta = [{"smiles": smi, "charge": charge} for smi, charge in candidates]
-    if not candidates:
-        return None, None, meta
+    choice = choose_protonation_state(candidates, expected_net_charge)
+    return choice["smiles"], choice["charge"], choice["candidates"]
 
-    if expected_net_charge is not None:
-        target = int(expected_net_charge)
-        for smi, charge in candidates:
-            if charge == target:
-                return smi, charge, meta
-        return None, None, meta
 
-    selected_smiles, selected_charge = candidates[0]
-    return selected_smiles, selected_charge, meta
+# Residue names that are placeholders in user-made files, not CCD identities.
+_GENERIC_LIGAND_NAMES = frozenset({"LIG", "UNL", "UNK", "UNX", "MOL", "DRG", "INH", "LGD"})
+
+
+def _heavy_atom_composition(smiles: str) -> Optional[dict]:
+    try:
+        from rdkit import Chem
+    except ImportError:
+        return None
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    counts: dict[str, int] = {}
+    for atom in mol.GetAtoms():
+        if atom.GetAtomicNum() > 1:
+            counts[atom.GetSymbol()] = counts.get(atom.GetSymbol(), 0) + 1
+    return counts
+
+
+def smiles_ccd_mismatch(ligand_id: str, user_smiles: Optional[str]) -> Optional[dict]:
+    """``{"ccd_smiles", "user_skeleton", "ccd_skeleton"}`` when a user SMILES rewires a CCD ligand.
+
+    Refused only when the two have the same heavy atoms but a different
+    skeleton -- the case nothing downstream notices, because the SMILES still
+    template-matches the deposited atoms (037_ligand_1g74, campaign v5: a
+    stearate SMILES for OLA built oleate without its double bond). A SMILES
+    of a different composition is left to template matching, which fails on
+    it, and generic residue names (LIG, UNL, ...) are not CCD identities. None
+    when they agree or the CCD definition cannot be read.
+    """
+    name = str(ligand_id or "").upper().strip()
+    if not user_smiles or not name or name in _GENERIC_LIGAND_NAMES:
+        return None
+    user_skeleton = smiles_skeleton(user_smiles)
+    if user_skeleton is None:
+        return None
+    ccd = _fetch_smiles_from_ccd(name)
+    ccd_skeleton = smiles_skeleton(ccd)
+    if ccd_skeleton is None or ccd_skeleton == user_skeleton:
+        return None
+    if _heavy_atom_composition(ccd) != _heavy_atom_composition(user_smiles):
+        return None
+    return {"ccd_smiles": ccd, "user_skeleton": user_skeleton, "ccd_skeleton": ccd_skeleton}
+
+
+def smiles_skeleton(smiles: Optional[str]) -> Optional[str]:
+    """Heavy atoms, connectivity and bond orders of a SMILES; charges, H and stereo ignored.
+
+    Two SMILES of one compound in different protonation states share a
+    skeleton (``C(=O)O`` and ``C(=O)[O-]``); stearate and oleate do not
+    (037_ligand_1g74, campaign v5: a stearate SMILES was given for OLA and
+    the ligand lost its double bond). None when the SMILES does not parse.
+    """
+    if not smiles:
+        return None
+    try:
+        from rdkit import Chem
+    except ImportError:
+        return None
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    mol = Chem.RWMol(Chem.RemoveHs(mol))
+    for atom in mol.GetAtoms():
+        atom.SetFormalCharge(0)
+        atom.SetNumExplicitHs(0)
+        atom.SetNoImplicit(True)
+        atom.SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
+    for bond in mol.GetBonds():
+        bond.SetStereo(Chem.BondStereo.STEREONONE)
+    mol.UpdatePropertyCache(strict=False)
+    return Chem.MolToSmiles(mol, isomericSmiles=False)
