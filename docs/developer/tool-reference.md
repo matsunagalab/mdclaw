@@ -1054,18 +1054,67 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
   it (010_membrane_6kux r3 of campaign v4 resubmitted on the generic
   `unhandled_error` advice and two jobs computed the node). Every other
   sbatch failure is `slurm_submit_failed` and frees the node.
-  For a linked node and a literal `mdclaw ... run_production` (or
-  `python -m mdclaw._cli ...`) command, `condition_preflight` reports the
-  declaration/argument check before sbatch, using CLI defaults and the runtime
-  comparator. Inherited conditions are deferred: with `--temperature-kelvin`
-  omitted, a declared `temperature_kelvin` is listed under
-  `deferred_conditions` and not compared before submission (the run takes
-  it from the node it restarts from, which may still be queued when a chain
-  is submitted), while an explicit one is compared; shell scripts/wrappers on a
-  `prod` node that cannot be checked are explicitly marked `skipped` (a
-  warning), not validated; a node of another type, or a literal command that
-  runs another tool, is `not_applicable` (no warning). The runtime guard
-  remains authoritative. Neither check changes requested conditions.
+  Every literal `mdclaw ...` (or `python -m mdclaw._cli ...`) line of the
+  script, inline or in a script file, is parsed by the CLI's own parser
+  before sbatch (`mdclaw/slurm/script_check.py`; lines the shell evaluates --
+  `$VAR`, pipes, redirections -- are left to the job). What the CLI would
+  refuse is refused as `script_arguments_invalid` with argparse's own message
+  (until 2026-10 it was swallowed: "Cannot validate production CLI before
+  submission: 2"), `suggestions` per unknown argument and, when every fix is
+  unambiguous, `corrected_command` in `next_action`: `--nvt_time_ns` ->
+  `--nvt-time-ns`, `--duration-ps 1` -> `--simulation-time-ns 0.001`,
+  `--simulation-time-ns 100ps` -> `0.1`, submit_job options (`--gpus`) and
+  create_node options (`--continue-from`) dropped from the script,
+  `--timestep-fs` dropped from `run_minimization`; an ambiguous one
+  (`--equilibration-time-ns`) names its candidates only. Also refused there:
+  an unknown tool (`mdclaw slurm ...`), a workflow tool without
+  `--job-dir/--node-id` (corrected with the submission's node) or with
+  another job/node than the submission's, `--job-dir/--node-id` on a
+  standalone helper. Example text -- a bare `...`, `<job_dir>`, `<node_id>`,
+  `[--dependency afterok:<job>]` -- in `--script` or `--dependency` is
+  `script_placeholder_unfilled` (filled from the submission when known).
+  For a linked node, `condition_preflight` (`mdclaw/slurm/condition_check.py`)
+  compares the node's declared conditions with the values the command will
+  use -- its arguments, the tool's defaults and, for `run_minimization` /
+  `run_equilibration`, the completed topo ancestor it inherits HMR, implicit
+  solvent and the timestep from (so an omitted `--nvt-time-ns` is 250000
+  steps: 1 ns at 4 fs, 0.5 ns at 2 fs) -- with the runtime comparator. A
+  mismatch is `node_execution_context_invalid` / `condition_mismatch` with the
+  command plus the flags giving the declared values in `next_action`
+  (verified to match before it is offered; a declared `ensemble` is met
+  through `--pressure-bar`). Keys that depend on a parent that has not run
+  are `deferred_conditions` (an omitted production `--temperature-kelvin`,
+  pressure, membrane state); a declared key the tool never reports under that
+  name or unit (`total_time_ps`, `simulation_time_ps`; the vocabulary is read
+  from the `actual_conditions` literal of the tool's source) is refused as
+  `condition_missing` with `unreported_conditions` and a `next_action` that
+  abandons the node and recreates it with the reported key, unit-converted
+  (`{"simulation_time_ns": 100.0}`). A `prod` node whose script cannot be
+  read is `skipped` (a warning); the runtime guard remains authoritative.
+  The dependency (`mdclaw/slurm/dependency.py`): for each unfinished parent
+  (and `dependency_node_ids`) of a linked node, a parent queued or running as
+  a Slurm job and missing from `--dependency` is added as `afterok:<its
+  slurm_job_id>` (`dependency_added`, a warning; the returned `dependency` is
+  what the job carries); a parent that was never submitted is
+  `parent_not_submitted` (`next_action` lists the order to submit the chain
+  in; a parent running outside Slurm is told to `wait_node`, a preparation
+  stage to finish on the login node); a job of a node that is neither an
+  ancestor nor of the node's own stage is `dependency_not_parent_job`
+  (siblings may be chained to serialise them); an afterok on a job that
+  already ended FAILED / CANCELLED / TIMEOUT / ... (read-only `squeue --me`
+  then `sacct`), or COMPLETED without completing its node, is
+  `dependency_unsatisfiable` with the parent's recovery (a node still queued:
+  `update_workflow_state --clear-slurm-metadata` and resubmit; a running one:
+  `check_job`, then a new node). An unparseable or `?` (OR) spec is never
+  rewritten (`parent_dependency_missing`).
+  Paths (`mdclaw/slurm/paths.py`): the output directory, the working
+  directory, the job directory and the script's `--*-dir` / `--*-file`
+  values must be visible from a compute node; one under `/tmp`, `/var/tmp`,
+  `/dev/shm`, `/run/user`, or on a memory filesystem (`tmpfs`/`ramfs` by
+  `/proc/self/mounts`, which also catches a typo directory created on an
+  agent sandbox's tmpfs root), or a `--job-dir` that does not exist, is
+  `submission_path_not_shared`. `MDCLAW_ALLOW_LOCAL_SUBMIT_PATHS=1` lifts the
+  host-local check for a single-machine Slurm.
   When the run command requests a GPU OpenMM platform (`--platform CUDA`/
   `OpenCL`) but no `--gpus`/`--gres` is given, it auto-sets `--gpus 1` (warning
   emitted) so a CUDA run is never scheduled on a CPU-only node. Container
@@ -1077,10 +1126,23 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
   (`resolve_container_runtime`); when it cannot be resolved (a submission from
   inside the image), the script keeps the bare name and its preamble sources
   the node's `/etc/profile` (and the module init) first
-  (`_container_runtime_preamble`), with a warning on the result. Only a
-  configured absolute `--runtime` that does not exist is refused
-  (`container_runtime_not_found`). `configure_container --runtime` pins the
-  binary or its command name.
+  (`_container_runtime_preamble`). Inside an image that is the expected case
+  and is said in `notes` ("do not cancel it"), not `warnings` (kimi 023 r3
+  read the warning as an error and cancelled its own job); outside an image
+  it stays a warning. A configured absolute `--runtime` that does not exist
+  is refused outside an image (`container_runtime_not_found`, `next_action`:
+  a bare `--runtime singularity`, never the refused path again); inside an
+  image, where host binaries are not mounted, it is used unchecked with a
+  note. `configure_container --runtime` pins the binary or its command name.
+  The container's bind list is built from the script split as the shell
+  splits it (`--job-dir '/data1/x'` binds `/data1/x`; before 2026-10 the
+  quotes were kept and the container died at start). A bind source that does
+  not exist here is `container_bind_missing` (`next_action` keeps the
+  configured binds that do exist); a missing `--*-dir` of the script whose
+  parent exists is created first. A GPU job (`gpus > 0` or a gpu `gres`)
+  under Singularity/Apptainer whose flags lack `--nv` gets `--nv` for that
+  submission with a `container_gpu_flag_added:` warning. A partition copied
+  from sinfo with its default mark (`gpu*`) is submitted as `gpu` (warning).
 - `submit_array_job(...)`: submit one SLURM array where each task maps to a DAG
   node command. The array parent id is returned as both `parent_job_id` and
   `slurm_job_id` (the latter is what `submit_job` returns, so
@@ -1088,8 +1150,10 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
   Shares the same `--platform`-driven GPU autodetection as
   `submit_job`; a single GPU-platform task command flips the whole array to
   `--gpus 1`, and it applies the same container-command guard.
-  Each task also receives the same production condition preflight before any
-  task is submitted; results are indexed by `task_index`.
+  Each task also receives the same script, condition, dependency and path
+  checks before any task is submitted (refusals prefixed `tasks[i]: `);
+  `condition_preflight` is indexed by `task_index`, and parents' jobs missing
+  from the one `--dependency` of the array are added to it.
 - `submit_mps_job(...)`: run several DAG nodes concurrently on one GPU
   allocation under NVIDIA MPS (Multi-Process Service). Takes the same
   `tasks` list as `submit_array_job`; one sbatch job holds `gpus` whole GPUs
@@ -1109,7 +1173,7 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
   packed node, using each slot's own stderr as failure evidence, and
   `list_tracked_jobs --sync` queries Slurm once per job id. Container wrapping
   binds each task's `job_dir` plus `$CUDA_MPS_PIPE_DIRECTORY`. Same policy,
-  partition, container and production-preflight handling as `submit_array_job`.
+  partition, container, `--nv`, script/condition/dependency/path checks as `submit_array_job`.
   Rationale and GB200 measurements: `docs/memo.md` (2026-09-16).
 - `check_job(...)`: query squeue → scontrol → sacct, sync SLURM state and
   reflect failures into linked nodes. Returns `state_source` and `checked_at`.

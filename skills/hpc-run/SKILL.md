@@ -77,7 +77,16 @@ from the DAG.
   `--dependency afterok:<min_slurm_id>`, and production with
   `--dependency afterok:<eq_slurm_id>`. Production must be the final `sbatch`.
   Report all three job IDs and the DAG handoff, then exit without polling unless
-  the caller explicitly asked you to see the run finish.
+  the caller explicitly asked you to see the run finish. Submit parents before
+  children: a child whose parent has no Slurm job is refused
+  (`parent_not_submitted`), and an `afterok` you left out on a queued parent's
+  job is added for you (`dependency_added`).
+- `submit_job` parses every literal `mdclaw` line of `--script` with the CLI's
+  own parser and checks the node's declared conditions before sbatch. On
+  `script_arguments_invalid`, `script_placeholder_unfilled` or a
+  `condition_mismatch`, resubmit with the `corrected_command` in `next_action`;
+  never paste `...` or `<job_dir>` from an example. Keep job and output
+  directories on shared storage (`submission_path_not_shared` names the path).
 - A shared-SIF deployment calls host SLURM clients through standard binds;
   follow [sif-slurm.md](sif-slurm.md), including bind-environment cleanup.
   A checkout deployment may instead use its existing `bin/mdclaw`. Do not
@@ -86,7 +95,9 @@ from the DAG.
   `skills/hpc-run/sif-slurm.md` describes. The CLI writes the container
   runtime's absolute path into the sbatch script (host PATH read from the
   launcher process); if it reports `container_runtime_not_found`, follow its
-  hint rather than submitting by hand.
+  `next_action` rather than submitting by hand. A `notes` entry saying the
+  runtime is not visible inside the image is normal: the job is fine, do not
+  cancel it.
 - Always pass both `--job-dir` and `--node-id` when submitting or running a DAG
   workflow node.
 - Do not pass `--system-xml-file`, `--topology-pdb-file`, `--state-xml-file`, or `--restart-from` in normal
