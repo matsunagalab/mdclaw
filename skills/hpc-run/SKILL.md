@@ -75,7 +75,8 @@ from the DAG.
   chain, then stop.** Invoke `submit_job` through the selected MDClaw runtime
   for minimization, equilibration with
   `--dependency afterok:<min_slurm_id>`, and production with
-  `--dependency afterok:<eq_slurm_id>`. Production must be the final `sbatch`.
+  `--dependency afterok:<eq_slurm_id>`; each `submit_job` result's
+  `next.chain_command` is that next submission, filled in. Production must be the final `sbatch`.
   Report all three job IDs and the DAG handoff, then exit without polling unless
   the caller explicitly asked you to see the run finish.
 - A shared-SIF deployment calls host SLURM clients through standard binds;
