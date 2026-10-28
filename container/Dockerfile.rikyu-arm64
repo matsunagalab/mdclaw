@@ -11,9 +11,9 @@
 #   apptainer pull mdclaw-rikyu-arm64-cuda13-dev.sif \
 #     docker://ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev
 
-ARG MINIFORGE_IMAGE="condaforge/miniforge3:24.11.3-0@sha256:bcfc04b3562faa8dfd48f3767e2bd7b73a8529f9611b508d42e5bd227db1342d"
-ARG CUDA_DEVEL_IMAGE="nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:5dc1bca23d05bd37b011be68ec470c03b403a5da07ec3a86e41af9470e9d0cc6"
-ARG CUDA_RUNTIME_IMAGE="nvidia/cuda:13.0.2-runtime-ubuntu24.04@sha256:6a0e31b59e70890446f2c17356d6efc0d54260090a8c63d6ca7c2ad049db95d2"
+ARG MINIFORGE_IMAGE="docker.io/condaforge/miniforge3:24.11.3-0@sha256:bcfc04b3562faa8dfd48f3767e2bd7b73a8529f9611b508d42e5bd227db1342d"
+ARG CUDA_DEVEL_IMAGE="docker.io/nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:5dc1bca23d05bd37b011be68ec470c03b403a5da07ec3a86e41af9470e9d0cc6"
+ARG CUDA_RUNTIME_IMAGE="docker.io/nvidia/cuda:13.0.2-runtime-ubuntu24.04@sha256:6a0e31b59e70890446f2c17356d6efc0d54260090a8c63d6ca7c2ad049db95d2"
 
 # =============================================================================
 # Stage 1: Build and pack the arm64 conda environment
