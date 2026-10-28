@@ -116,3 +116,64 @@ def test_a_constrained_hydrogen_pushed_along_its_bond_still_leaves_the_clash():
     positions = simulation.context.getState(getPositions=True).getPositions(asNumpy=True).value_in_unit(unit.nanometer)
     assert abs(np.linalg.norm(positions[1] - positions[0]) - 0.101) < 1e-4     # constraint holds
     assert np.linalg.norm(positions[2] - positions[1]) > 0.2                  # the clash is gone
+
+
+class _SaturatedState:
+    """A State whose forces point the wrong way and stop at the GPU limit."""
+
+    def __init__(self, state):
+        self._state = state
+
+    def __getattr__(self, name):
+        return getattr(self._state, name)
+
+    def getForces(self, asNumpy=False):
+        from openmm import unit
+
+        forces = self._state.getForces(asNumpy=True).value_in_unit(unit.kilojoule_per_mole / unit.nanometer)
+        return unit.Quantity(-np.clip(forces, -3.7e9, 3.7e9), unit.kilojoule_per_mole / unit.nanometer)
+
+
+class _CudaLikeContext:
+    """A Reference Context that answers like CUDA with saturated forces."""
+
+    def __init__(self, context):
+        self._context = context
+
+    def __getattr__(self, name):
+        return getattr(self._context, name)
+
+    def getPlatform(self):
+        class _Platform:
+            def getName(self):
+                return "CUDA"
+
+            def getPropertyNames(self):
+                return ()
+
+        return _Platform()
+
+    def getState(self, **kwargs):
+        state = self._context.getState(**kwargs)
+        return _SaturatedState(state) if kwargs.get("getForces") else state
+
+
+def test_a_saturated_gpu_descent_is_redone_on_the_cpu():
+    # CUDA sums forces in fixed point: a packed POPC patch read 1.6e14 kJ/mol/nm
+    # on the CPU and 3.7e9 on CUDA, no descent step was accepted there and the
+    # built cell stayed at 6.5e11 kJ/mol (2026-10-29).
+    simulation = _lj_pair_simulation(0.03)
+    before = _energy(simulation)
+    report = capped_steepest_descent(_CudaLikeContext(simulation.context))
+    assert report["engaged"] is True
+    assert report["accepted"] == 0                     # wrong-way forces on the "GPU"
+    fallback = report["cpu_fallback"]
+    assert fallback["platform"] == "CPU" and fallback["from_platform"] == "CUDA"
+    assert fallback["accepted"] >= 1
+    assert _energy(simulation) < before / 1e6          # the pair was parted
+
+
+def test_a_cpu_descent_has_no_fallback():
+    simulation = _lj_pair_simulation(0.03)
+    report = capped_steepest_descent(simulation.context)
+    assert report["accepted"] >= 1 and "cpu_fallback" not in report

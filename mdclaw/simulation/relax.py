@@ -42,6 +42,14 @@ MIN_STEP_NM = 1.0e-6
 CONSTRAINT_SPRING_KJ_MOL_NM2 = 1.0e7
 # A constraint projection that moves any atom farther than this did not converge.
 MAX_PROJECTION_NM = 0.05
+# GPU platforms sum forces in 64-bit fixed point (2**32 per kJ/mol/nm), so a
+# component past ~2e9 saturates and its direction is lost. A packed POPC patch
+# reads 1.6e14 kJ/mol/nm on the CPU and 3.7e9 on CUDA; the descent there
+# accepted none of 15 steps and the built cell stayed at 6.5e11 kJ/mol
+# (tests/test_pipeline_membrane_dag inside a GPU job, 2026-10-29). Past this
+# force, or with nothing accepted, the descent is redone on the CPU platform.
+GPU_SATURATED_FORCE_KJ_MOL_NM = 1.0e9
+_DOUBLE_ACCUMULATING_PLATFORMS = frozenset({"CPU", "Reference"})
 
 
 def _snapshot(context: Any) -> tuple[float, np.ndarray, np.ndarray]:
@@ -102,24 +110,31 @@ def _descend(context: Any, movable: np.ndarray, *, force_threshold: float,
     return positions
 
 
-def _spring_context(context: Any) -> Any:
-    """A Context on a copy of the System with every constraint made a stiff bond."""
+def _spring_context(context: Any, platform: Any = None) -> Any:
+    """A Context on a copy of the System with every constraint made a stiff bond.
+
+    On ``context``'s own platform unless ``platform`` names another one (the
+    CPU fallback of a saturated GPU descent); a copy without constraints is a
+    plain copy.
+    """
     from openmm import Context, HarmonicBondForce, VerletIntegrator, XmlSerializer
 
     system = context.getSystem()
     copy = XmlSerializer.deserialize(XmlSerializer.serialize(system))
-    springs = HarmonicBondForce()
-    for index in range(copy.getNumConstraints()):
-        particle_a, particle_b, length = copy.getConstraintParameters(index)
-        springs.addBond(particle_a, particle_b, length, CONSTRAINT_SPRING_KJ_MOL_NM2)
-    for index in range(copy.getNumConstraints() - 1, -1, -1):
-        copy.removeConstraint(index)
-    copy.addForce(springs)
-    platform = context.getPlatform()
+    if copy.getNumConstraints():
+        springs = HarmonicBondForce()
+        for index in range(copy.getNumConstraints()):
+            particle_a, particle_b, length = copy.getConstraintParameters(index)
+            springs.addBond(particle_a, particle_b, length, CONSTRAINT_SPRING_KJ_MOL_NM2)
+        for index in range(copy.getNumConstraints() - 1, -1, -1):
+            copy.removeConstraint(index)
+        copy.addForce(springs)
     properties = {}
-    for name in ("Precision", "DeviceIndex", "Threads"):
-        if name in platform.getPropertyNames():
-            properties[name] = platform.getPropertyValue(context, name)
+    if platform is None:
+        platform = context.getPlatform()
+        for name in ("Precision", "DeviceIndex", "Threads"):
+            if name in platform.getPropertyNames():
+                properties[name] = platform.getPropertyValue(context, name)
     spring_context = Context(copy, VerletIntegrator(0.001), platform, properties)
     state = context.getState(getPositions=True)
     spring_context.setPositions(state.getPositions())
@@ -169,41 +184,71 @@ def capped_steepest_descent(
     report["engaged"] = True
     system = context.getSystem()
     movable = _movable(system)
-    if system.getNumConstraints():
-        report["constraints_as_springs"] = True
-        _energy, _forces, before = _snapshot(context)
-        spring_context = _spring_context(context)
-        try:
-            positions = _descend(spring_context, movable, force_threshold=force_threshold,
-                                 max_steps=max_steps, max_step_nm=max_step_nm, report=report)
-            if report["accepted"]:
-                # Settle the geometry the descent distorted before the
-                # constraints are projected: CCMA diverges on a methyl whose
-                # hydrogens the descent pushed together (THR C139 of 3WD5:
-                # deviations of 0.005 nm, corrections of 1e8 nm).
-                from openmm import LocalEnergyMinimizer
+    _descent_pass(context, movable, report, platform=None, force_threshold=force_threshold,
+                  max_steps=max_steps, max_step_nm=max_step_nm,
+                  settle_iterations=settle_iterations)
+    energy, forces, _positions = _snapshot(context)
+    largest = _max_force(forces)
+    platform_name = context.getPlatform().getName()
+    if (platform_name not in _DOUBLE_ACCUMULATING_PLATFORMS
+            and (not report["accepted"] or not math.isfinite(largest)
+                 or largest >= GPU_SATURATED_FORCE_KJ_MOL_NM)):
+        from openmm import Platform
 
-                LocalEnergyMinimizer.minimize(spring_context, 10.0, settle_iterations)
-                _energy, _forces, positions = _snapshot(spring_context)
-        finally:
-            del spring_context
-        if report["accepted"]:
-            _set_positions(context, positions, constrain=True)
-            _energy, _forces, projected = _snapshot(context)
-            moved = float(np.max(np.linalg.norm(projected - positions, axis=1))) if len(positions) else 0.0
-            report["projection_moved_nm"] = moved if math.isfinite(moved) else None
-            if not math.isfinite(moved) or moved > MAX_PROJECTION_NM:
-                # The projection ran away; the descent is withdrawn.
-                report["projection_failed"] = True
-                _set_positions(context, before, constrain=True)
-    else:
+        fallback = {"platform": "CPU", "from_platform": platform_name, "steps": 0, "accepted": 0,
+                    "constraints_as_springs": False, "projection_moved_nm": None,
+                    "projection_failed": False}
+        _descent_pass(context, movable, fallback, platform=Platform.getPlatformByName("CPU"),
+                      force_threshold=force_threshold, max_steps=max_steps,
+                      max_step_nm=max_step_nm, settle_iterations=settle_iterations)
+        report["cpu_fallback"] = fallback
+        energy, forces, _positions = _snapshot(context)
+        largest = _max_force(forces)
+    report["energy_final_kj_mol"] = energy
+    report["max_force_final_kj_mol_nm"] = largest
+    report["finite"] = bool(math.isfinite(energy) and math.isfinite(largest))
+    return report
+
+
+def _descent_pass(context: Any, movable: np.ndarray, report: dict, *, platform: Any,
+                  force_threshold: float, max_steps: int, max_step_nm: float,
+                  settle_iterations: int) -> None:
+    """One descent onto ``context``: on a spring copy when the System has
+    constraints, or when ``platform`` asks for another platform; directly on
+    ``context`` otherwise. The result is written back to ``context``."""
+    system = context.getSystem()
+    if not system.getNumConstraints() and platform is None:
         _descend(context, movable, force_threshold=force_threshold,
                  max_steps=max_steps, max_step_nm=max_step_nm, report=report)
-    energy, forces, _positions = _snapshot(context)
-    report["energy_final_kj_mol"] = energy
-    report["max_force_final_kj_mol_nm"] = _max_force(forces)
-    report["finite"] = bool(math.isfinite(energy) and math.isfinite(report["max_force_final_kj_mol_nm"]))
-    return report
+        return
+    constrained = bool(system.getNumConstraints())
+    report["constraints_as_springs"] = constrained
+    _energy, _forces, before = _snapshot(context)
+    accepted_before = report["accepted"]
+    spring_context = _spring_context(context, platform)
+    try:
+        positions = _descend(spring_context, movable, force_threshold=force_threshold,
+                             max_steps=max_steps, max_step_nm=max_step_nm, report=report)
+        if report["accepted"] > accepted_before and constrained:
+            # Settle the geometry the descent distorted before the
+            # constraints are projected: CCMA diverges on a methyl whose
+            # hydrogens the descent pushed together (THR C139 of 3WD5:
+            # deviations of 0.005 nm, corrections of 1e8 nm).
+            from openmm import LocalEnergyMinimizer
+
+            LocalEnergyMinimizer.minimize(spring_context, 10.0, settle_iterations)
+            _energy, _forces, positions = _snapshot(spring_context)
+    finally:
+        del spring_context
+    if report["accepted"] > accepted_before:
+        _set_positions(context, positions, constrain=True)
+        _energy, _forces, projected = _snapshot(context)
+        moved = float(np.max(np.linalg.norm(projected - positions, axis=1))) if len(positions) else 0.0
+        report["projection_moved_nm"] = moved if math.isfinite(moved) else None
+        if not math.isfinite(moved) or moved > MAX_PROJECTION_NM:
+            # The projection ran away; the descent is withdrawn.
+            report["projection_failed"] = True
+            _set_positions(context, before, constrain=True)
 
 
 def _diverged(energy_before: float, energy_after: float) -> bool:
