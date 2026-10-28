@@ -433,9 +433,20 @@ class TestArgparseConstruction:
         assert exc_info.value.code == 0
         assert seen["output_dir"] is None
         capsys.readouterr()
-        # a path after --output is still the tool's --output-dir, as before
-        with pytest.raises(SystemExit):
+        # A path after --output is no longer read as the tool's --output-dir
+        # by argparse prefix matching (qwen 060: submit_job --output <log
+        # file> made a directory of that name): it is refused, naming the flag.
+        seen.clear()
+        with pytest.raises(SystemExit) as exc_info:
             _cli.main(["fake_tool", "--output", str(tmp_path / "out")])
+        assert exc_info.value.code == 2
+        assert seen == {}
+        out = json.loads(capsys.readouterr().out)
+        assert out["code"] == "unknown_parameter"
+        assert any("--output-dir" in hint for hint in out["hints"])
+        # the explicit flag still works
+        with pytest.raises(SystemExit):
+            _cli.main(["fake_tool", "--output-dir", str(tmp_path / "out")])
         assert seen["output_dir"] == str(tmp_path / "out")
 
     def test_hoisting_leaves_a_tool_option_of_the_same_name_alone(self):

@@ -16,7 +16,9 @@ tool produced it:
 
 Every result (success or failure) starts with the same envelope keys, in this
 order: `success`, `code`, `message`, `node_id`, `node_status`, `next_action`,
-`next`, `warnings_count`, `result_file`, `dag`. Workflow results carry:
+`next`, `warnings_count`, `result_file`, `dag`, and ends with `status_line`
+(the same in one line, so `| tail -2` keeps it). With `--output id` a failure
+prints nothing on stdout and its reason on stderr. Workflow results carry:
 
 - `applied`: the receipt of a completed stage. `applied.options` lists every
   option you passed with the value the tool used (`applied`, `changed`,
@@ -30,9 +32,13 @@ order: `success`, `code`, `message`, `node_id`, `node_status`, `next_action`,
 - `dag`: the job's frontier (`leaves`) and the ids per status.
 - `next`: the structurally next command (`action` = `run`, `create`, `wait`,
   `branch` or `done`, with `run_command` / `create_command` / `batch_command`
-  and `stage_tools`). It names tools and ids, never scientific parameters;
-  when a parent blocks the node it names the parent and sets
-  `blocked_node_id`. `explain_node` answers `action` = `blocked` with
+  and `stage_tools`). It names tools and ids, never scientific parameters:
+  add the stage's options after the tool name (`options_from`) and the flags
+  in `required_args`. Its commands run as written; `"$NODE_ID"` is the node
+  `node_id_capture` creates in the same shell. `chain_command` submits the
+  next stage behind a queued parent (`--dependency afterok:<its job>`), so
+  there is nothing to wait for. When a parent blocks the node it names the
+  parent and sets `blocked_node_id`. `explain_node` answers `action` = `blocked` with
   `blocking_codes` and `reason` when the node's inputs cannot be assembled
   (`ready_to_run: false`); do not run it, branch on the code.
 - `result_file`: `<job_dir>/nodes/<node_id>/result.json`, the complete result.

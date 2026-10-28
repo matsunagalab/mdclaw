@@ -20,8 +20,11 @@ signature, update the relevant section here and the matching skill examples.
 - `register_local_structure(...)`: copy or symlink a local source structure.
 - `list_source_candidates(...)`: list normalized source-bundle candidates,
   including IDs, ranks, files, origin metadata, and candidate metrics.
+  `node_id` is optional: `--job-dir` alone lists the job's source node
+  (`node_id_required` with the candidates when the job has none or several).
 - `inspect_molecules(...)`: chain, nucleic acid, glycan, ligand, ion, and PTM
-  inspection. In node mode, defaults to the primary source candidate and accepts
+  inspection. `--job-dir` without `--node-id` inspects the job's source node
+  (same `node_id_required` refusal). In node mode, defaults to the primary source candidate and accepts
   the same source candidate selectors as prep. Writes `inspection.json` and
   emits an event without changing node status. `chain_ranges` (one line per
   polymer chain: `first`, `last`, `count`, `span`, `gaps` in the author
@@ -1227,7 +1230,19 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
 - `create_node(...)`: create a DAG node. `continue_from=<prod_id>` is restricted
   to production continuation and records explicit extension intent. Analyze nodes
   require `conditions.analysis_data_scope`; comparison analyses also require
-  explicit subjects and mapping. When `parent_node_ids` is omitted, the
+  explicit subjects and mapping. Declared `conditions` of the other stages are
+  screened against the keys the node type's stage tools report
+  (`node/condition_vocabulary.py`, read from the tools' `actual_conditions`
+  literals): a key none reports is refused with `condition_key_unknown`
+  before anything is written (`accepted_condition_keys`,
+  `suggested_conditions` with keys renamed and values converted to the
+  reported unit, e.g. `total_time_ps: 2500` -> `simulation_time_ns: 2.5`, and
+  the corrected command in `next_action`); curated aliases (`chains`,
+  `chain_ranges`, `force_field`, `buffer_distance`, ...) are recorded under the
+  reported key with a warning. `source` and `analyze` are not screened. A
+  parent id that is not in the job (`--parent-node-ids eq`) answers
+  `referenced_node_missing` with the ids of that type
+  (`candidate_parent_node_ids`) and the command with the frontier one. When `parent_node_ids` is omitted, the
   canonical forward parent auto-resolves from the current completed frontier
   (the single completed leaf of the preferred parent type) and is reported as
   `auto_resolved_parent`. In canonical study jobs, ambiguous or empty frontiers
@@ -1297,7 +1312,14 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
 ## `study/`
 
 - `init_study(...)`: create a study directory used by both direct runs and
-  campaigns.
+  campaigns. A new study is refused in a non-empty directory that is not a
+  study (`study_dir_not_empty`; dot files do not count) and inside another
+  study or a job directory (`study_dir_nested`); `bootstrap_md_workflow`
+  applies the same checks, with the corrected bootstrap command as
+  `next_action`. A relative `--study-dir` that resolved under `$HOME` inside a
+  container (`singularity exec --containall` starts there) and a study that is
+  not at `$MDCLAW_STUDY_DIR` (when a harness sets it) are flagged in
+  `warnings` (`study_dir_under_home`, `study_dir_mismatch`) and in `message`.
 - `bootstrap_md_workflow(...)`: create or reuse the canonical
   `study_dir/study.json` + `study_plan.json` + `jobs/<job_id>/progress.json`
   layout for any MD workflow, including simple one-system direct runs. Default
