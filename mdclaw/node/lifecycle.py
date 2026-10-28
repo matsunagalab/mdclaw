@@ -1294,13 +1294,14 @@ def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
             node_id, current.get("status"), node=current, job_dir=job_dir)
     if canonical_status in TERMINAL_NODE_STATUSES:
         node_type = current.get("node_type") or "<type>"
-        run_command = (
-            f"mdclaw --job-dir {job_dir} --node-id {node_id} <{node_type} stage tool> ..."
-        )
+        # explain_node answers with the exact stage-tool command for this node;
+        # a "<stage tool> ..." template here got pasted verbatim (v5, 2026-10-29).
+        run_command = f"mdclaw explain_node --job-dir {job_dir} --node-id {node_id}"
         message = (
             f"Status {canonical_status!r} is set by the node's stage tool when it "
             "finishes, not by update_workflow_state. Standalone helpers do not "
-            f"complete nodes. Run the stage tool for this {node_type} node: {run_command}"
+            f"complete nodes. Run the stage tool for this {node_type} node; "
+            f"{run_command} prints its exact command"
         )
         return {
             "success": False,
@@ -1924,8 +1925,8 @@ def _context_fix(job_dir, node_id, node, expected_node_type, blocking_codes, blo
         if status in ("pending", "queued", None):
             hints.append("Parents must be completed first; the CLI does not run them for you. "
                          "To chain stages in one Slurm submission use --dependency afterok.")
-            return (f"Run {role} '{bid}' ({btype}, {status or 'pending'}) first: "
-                    f"mdclaw --job-dir {job_dir} --node-id {bid} <{btype} stage tool> ...; "
+            return (f"Run {role} '{bid}' ({btype}, {status or 'pending'}) first "
+                    f"(its exact command: mdclaw explain_node --job-dir {job_dir} --node-id {bid}), "
                     f"then rerun this node"), hints
         if status == "running":
             return (f"Wait for {role} '{bid}' ({btype}, running): "

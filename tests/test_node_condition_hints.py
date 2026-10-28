@@ -343,3 +343,14 @@ def test_a_one_item_list_keeps_its_spaces():
     from mdclaw.node.io import _values_match
 
     assert _values_match(*comparable_condition_values("label", "my label", ["my label"]))
+
+
+def test_stage_vocabulary_reads_a_named_actual_conditions_dict():
+    # run_equilibration passes ``actual_conditions=_actual``; the vocabulary
+    # must read the dict assigned to that name, or create_node refuses keys
+    # such as ``ensemble`` that eq does report (found 2026-10-29).
+    from mdclaw.node.condition_vocabulary import stage_condition_vocabulary
+
+    eq_keys = stage_condition_vocabulary("eq")
+    assert {"ensemble", "temperature_kelvin", "nvt_time_ns", "npt_time_ns"} <= eq_keys
+    assert "ensemble" in stage_condition_vocabulary("prod")

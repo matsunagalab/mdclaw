@@ -92,6 +92,17 @@ def reported_condition_keys(fn) -> Optional[frozenset]:
         tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
     except (OSError, TypeError, SyntaxError):
         return frozenset(_parameters(fn))
+    # ``actual_conditions=_actual`` passes a dict built a few lines earlier
+    # (run_equilibration since the 2026-10-29 run guard): read the literal
+    # assigned to that name instead of falling back to the parameters.
+    assigned: dict[str, list[ast.AST]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assigned.setdefault(target.id, []).append(node.value)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value:
+            assigned.setdefault(node.target.id, []).append(node.value)
     keys: set[str] = set()
     found = open_ = False
     for node in ast.walk(tree):
@@ -100,9 +111,12 @@ def reported_condition_keys(fn) -> Optional[frozenset]:
         for keyword in node.keywords:
             if keyword.arg == "actual_conditions":
                 found = True
-                literal, is_open = _literal_keys(keyword.value)
-                keys |= literal
-                open_ = open_ or is_open
+                values = ([keyword.value] if not isinstance(keyword.value, ast.Name)
+                          else assigned.get(keyword.value.id) or [keyword.value])
+                for value in values:
+                    literal, is_open = _literal_keys(value)
+                    keys |= literal
+                    open_ = open_ or is_open
     if not found or open_:
         keys |= _parameters(fn)
     return frozenset(keys)
