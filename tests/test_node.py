@@ -248,10 +248,14 @@ class TestCreateNode:
         result = create_node(str(job_dir), "solv",
                              parent_node_ids=[prep_id],
                              label="300K",
-                             conditions={"temperature_kelvin": 300.0})
+                             conditions={"water_model": "tip3p", "dist": 12.0})
         node = read_node(str(job_dir), result["node_id"])
         assert node["label"] == "300K"
-        assert node["conditions"]["temperature_kelvin"] == 300.0
+        assert node["conditions"]["dist"] == 12.0
+        # a key no solv stage tool reports is refused before the node exists
+        refused = create_node(str(job_dir), "solv", parent_node_ids=[prep_id],
+                              conditions={"temperature_kelvin": 300.0})
+        assert refused["success"] is False and refused["code"] == "condition_key_unknown"
 
     def test_analyze_requires_analysis_data_scope(self, job_dir):
         create_node(str(job_dir), "prod")
@@ -868,8 +872,12 @@ class TestValidateNodeExecutionContext:
         complete_node(str(job_dir), "topo_001",
                       artifacts={"system_xml": "artifacts/system.xml",
                                  "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
-        create_node(str(job_dir), "eq", parent_node_ids=["topo_001"],
-                    conditions={"mutations": "S111C", "temperature_kelvin": "300"})
+        create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+        # an eq tool does not report "mutations", so create_node would refuse
+        # it; the comparison is what is under test here
+        node_path = job_dir / "nodes" / "eq_001" / "node.json"
+        node_path.write_text(json.dumps({**json.loads(node_path.read_text()),
+                                         "conditions": {"mutations": "S111C", "temperature_kelvin": "300"}}))
         ctx = validate_node_execution_context(
             str(job_dir), "eq_001", "eq",
             actual_conditions={"mutations": ["S111C"], "temperature_kelvin": 300.0})
