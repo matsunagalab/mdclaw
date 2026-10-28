@@ -27,7 +27,9 @@ GUARDRAIL_CODES: dict[str, str] = {
     "tool_renamed": "The tool was consolidated; call the replacement tool named in the message.",
     "file_not_found": "Verify the path and rerun only after the file exists.",
     "missing_local_file_path": "Provide a valid local file path for the input.",
-    "tool_not_available": "Confirm the exact name with 'mdclaw --list-json'; if an external binary is missing, report it.",
+    "tool_not_available": "Use the tool in suggestions (or run next_action when it is given: the corrected command); tool names take no server prefix (mdclaw submit_job, not mdclaw slurm submit_job); the index is mdclaw --list. If an external binary is missing, report it.",
+    "node_id_value_missing": "--node-id lost its value (an empty or unset shell variable): capture the id with NODE_ID=$(mdclaw --output id create_node ...), check it is non-empty, and rerun; next_action names the pending node when there is one.",
+    "node_id_required": "Pass --node-id; the error lists the candidate node ids (the job's source node is used when it is the only one).",
     "missing_required_arguments": "Add the listed required flags (see `mdclaw --list-json`).",
     "input_resolution_blocked": "Resolve inputs via the DAG or provide explicit paths.",
 
@@ -213,7 +215,8 @@ GUARDRAIL_CODES: dict[str, str] = {
     "node_abandon_refused": "Only a pending node with no SLURM job and no live children can be abandoned; cancel the job and run update_workflow_state --clear-slurm-metadata first, or abandon the children first.",
     "update_state_status_requires_node_id": "Pass node_id together with status to update_workflow_state.",
     "parent_node_not_completed": "Complete or repair the parent node before running this node.",
-    "referenced_node_missing": "A parent/dependency id does not exist; use IDs from inspect_job.",
+    "referenced_node_missing": "A parent/dependency id does not exist (a node type such as 'eq' is not an id); use an id from candidate_parent_node_ids, or run next_action.",
+    "condition_key_unknown": "A declared --conditions key is not reported by any stage tool of that node type, so the node could never run; nothing was created. Run next_action (keys renamed, values converted to the reported unit) or declare only keys from accepted_condition_keys.",
     "study_context_missing": "Job is not under a study; run bootstrap_md_workflow and create the source node in the returned job_dir.",
     "progress_missing_or_invalid": "progress.json is missing/invalid; reinspect the job to rebuild.",
 
@@ -511,6 +514,8 @@ GUARDRAIL_CODES: dict[str, str] = {
     # --- study logging ---
     "invalid_study_record_type": "Use record_study_log --record-type one of: decision, question, token_usage.",
     "study_dir_required": "Provide a non-empty study directory path.",
+    "study_dir_not_empty": "The directory holds files that are not a study (a workspace root); nothing was created. Use a fresh subdirectory, as next_action does (e.g. <workspace>/study).",
+    "study_dir_nested": "The directory is inside another study or job; nothing was created. Add a job to the outer study (next_action) or choose a directory outside it.",
     "study_record_fields_missing": "Provide the fields required by the chosen study record_type.",
 
     # --- Boltz-2 ---
