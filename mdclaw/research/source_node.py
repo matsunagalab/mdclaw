@@ -3,6 +3,7 @@
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 
 # Configure logging
@@ -45,8 +46,11 @@ def register_local_structure(
 # =============================================================================
 
 
-def list_source_candidates(job_dir: str, node_id: str) -> dict:
-    """List normalized source candidates for a source node or descendant."""
+def list_source_candidates(job_dir: str, node_id: Optional[str] = None) -> dict:
+    """List normalized source candidates for a source node or descendant.
+
+    Without ``node_id`` the job's (single) source node is used.
+    """
     result = {
         "success": False,
         "job_dir": job_dir,
@@ -58,6 +62,18 @@ def list_source_candidates(job_dir: str, node_id: str) -> dict:
         "errors": [],
         "warnings": [],
     }
+    if not node_id:
+        from mdclaw.research.source_core import job_source_node
+
+        chosen = job_source_node(job_dir, "list_source_candidates")
+        if chosen.get("error"):
+            error = chosen["error"]
+            result.update(code=error["code"], message=error["input_resolution_error"],
+                          next_action=error["next_action"], candidate_node_ids=error["candidate_node_ids"])
+            result["errors"].append(error["input_resolution_error"])
+            return result
+        node_id = result["node_id"] = chosen["node_id"]
+        result["warnings"].append(f"--node-id not given: listed the job's source node {node_id}")
     resolved = _resolve_source_bundle_file(job_dir, node_id)
     if resolved.get("input_resolution_error"):
         result["errors"].append(resolved["input_resolution_error"])

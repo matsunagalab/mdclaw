@@ -192,6 +192,45 @@ def _source_bundle_inputs_with_assemblies(
 # =============================================================================
 
 
+def job_source_node(job_dir: str, tool: str) -> dict:
+    """The job's source node when ``--node-id`` was left out.
+
+    A job has one source node, so ``inspect_molecules --job-dir J`` and
+    ``list_source_candidates --job-dir J`` mean that one; they used to fail
+    with "structure_file is required" (53 attempts in MDDataBench v5) or a
+    missing-argument error (38). Returns ``{"node_id": ...}`` or ``{"error":
+    {...}}`` with code ``node_id_required`` and the candidates.
+    """
+    from mdclaw.node.progress import _load_progress_v3
+
+    try:
+        progress = _load_progress_v3(Path(job_dir) / "progress.json") or {}
+    except Exception as exc:  # noqa: BLE001 - reported as the error below
+        progress = {"_error": str(exc)}
+    nodes = progress.get("nodes") or {}
+    sources = [nid for nid, info in nodes.items() if info.get("type") == "source"]
+    if len(sources) == 1:
+        return {"node_id": sources[0]}
+    if sources:
+        message = (f"--node-id is required: {job_dir} has {len(sources)} source nodes "
+                   f"({', '.join(sources)})")
+    elif not nodes:
+        message = (f"--node-id is required and {job_dir} has no nodes"
+                   + (f" ({progress['_error']})" if progress.get("_error") else "")
+                   + "; create the job with bootstrap_md_workflow and fetch the structure first")
+    else:
+        message = (f"--node-id is required: {job_dir} has no source node "
+                   f"(nodes: {', '.join(list(nodes)[:10])})")
+    return {"error": {
+        "code": "node_id_required",
+        "input_resolution_error": message,
+        "input_resolution_errors": [message],
+        "candidate_node_ids": sources,
+        "next_action": (f"mdclaw --job-dir {job_dir} --node-id {sources[0]} {tool}" if sources
+                        else f"mdclaw inspect_job --job-dir {job_dir}"),
+    }}
+
+
 def _resolve_source_bundle_file(job_dir: str, node_id: str) -> dict:
     """Resolve a source_bundle artifact from a source node or descendant."""
     from mdclaw._node import get_ancestors, read_node, resolve_artifact
