@@ -13,6 +13,38 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-29 — RIKYU の共有 SIF を `/data1/rkp00079/mdclaw.sif` に（main `6d252ca` から一からビルド）。旧パスは別名のまま使える。GPU で膜 patch を新規に作ると壊れる既存の不具合を見つけた
+
+ユーザー依頼「修正後に SIF を更新」「名前をシンプルに、例えば mdclaw.sif。RIKYU.md の案内も更新」。
+
+- **ビルド**: `container/scripts/build-rikyu-arm64.sh` を RIKYU のログインノードの Podman 4.9.3 で実行した（rootless、graphroot は `/tmp`、`BUILD_JOBS=16`、tmux の中、約 1 時間）。依存関係が動いた（SST2 `ba48461`、`mcp==1.30.0`）ので、overlay ではなく一から作った。
+- **Podman で通すための Dockerfile の修正（2 つ、push 済み）**
+  - `RUN <<'PY'` の heredoc を Podman 4.9（buildah 1.33）が読めず、Python の `from pathlib import Path` の行を Dockerfile の FROM として読んでいた（「FROM requires either one argument, or three」）。3 つの検査を `container/scripts/check-rikyu-image.py` に移した（`6bcdba0`）。
+  - ベースイメージの短い名前を、`docker.io/...` から始まる名前にした（`6d252ca`）。
+- **スクリプトの不具合**: `KEY_MODELLER10v8` が設定されていると、ライセンスつきの MODELLER の確認が `import modeller` を素のまま呼ぶ。そのため `config.py` の仮の値 `XXXX` が読まれて落ち、trap が出来上がった SIF ごと消した。変換と検証は手で流し直した（`/tmp/mdclaw-sifbuild/convert.sh`）。直す候補: この確認を MDClaw の `KEY_MODELLER*` の経路で行う。
+- **出来上がった SIF**: `/data1/rkp00079/sif/mdclaw-0.6.12-6d252ca16783-arm64-cuda13.sif`（7,472,701,440 bytes、sha256 `e1947084…bdd6`）。
+- **受け入れ**（作業場所 `/data1/rkp00079/rku00161/mdclaw-validation/sif-20261029/`）
+  - 焼き込まれたパッケージは 254 ファイルすべてが `6d252ca` と一致した。
+  - smoke はイメージで 27 passed、SIF でも 27 passed。
+  - GPU ジョブ（Slurm 241422、c240、38 分）: `test-rikyu-gpu.sh` が PASS、OpenMM に CUDA があり、MODELLER は `KEY_MODELLER` の経路でライセンスつきで起動した。
+  - SIF の中でのログインノードの判定: `SLURM_CONF_SERVER` が見えるので、割り当ての外として扱われる。
+  - fast suite（新しい SIF、ログインノード）: 3,085 passed / 1 failed。落ちたのは Molstar の `[wrapper]` 版で、checkout の pixi 環境が要るため。修正前の main で落ちていた `test_mddb_export` は、新しい SIF では通る。
+  - slow suite（GPU）: 135 passed / 1 failed。
+- **膜の不具合（既存）**: `test_pipeline_membrane_dag::test_step3_embed_in_membrane` は GPU ジョブの中で、緩和後のエネルギー 6.521e+11 kJ/mol で topo を拒否された。
+  - 修正前のコード `82bc431` でも、古い SIF・新しい SIF の両方で同じ値で落ちた（Slurm 241482）。
+  - ログインノード（CPU、`SLURM_JOB_ID` を仮に設定）では 3 工程とも通った（45 分）。
+  - このため、POPC の patch を CUDA で新しく作る経路の、もとからある不具合と見る。バンドルされたキャッシュの膜は影響を受けない。
+  - 今回の `membrane_patch_cache_miss` は、キャッシュに当たらない構築をログインノードで止め、Slurm の中へ誘導する。そのため、この不具合に当たりやすくなる。次の MDDataBench を流す前に直す必要がある（未着手）。
+- **張り替え**（04:45 JST）
+  - `mdclaw.sif` → `sif/mdclaw-0.6.12-6d252ca16783-arm64-cuda13.sif` のリンクを作った。
+  - 旧パス `…-fusefix-6f171d2f0fa5.sif` は `mdclaw.sif` へのリンクにした（`mv -T` で一度に切り替えた）。
+  - 戻し用に `mdclaw.pre-toolfixes-20261029.sif` → v4fix（`2f97517d…`、`b82e7db`）を作った。
+  - 両方のパスで mdclaw 0.6.12 / OpenMM 8.5.1 が動くことを確かめた。
+  - RIKYU.md は「Current SIF」の節を書き直し、以前の内容は「Image history」に残した。書き換え前の控えは同じ作業場所にある。
+- **MDDataBench への影響**
+  - pi の skill checkout は `b82e7db` のまま、イメージは `6d252ca`。skill も変わったので、次のキャンペーンの前に pi の skills を `6d252ca` 以降に上げ、spec の `sif` を `mdclaw.sif` に、`sif_sha256` を `e1947084…` にする。
+  - MDDataBench の runbook と spec は、まだ旧パスを書いている（別名なので動く）。
+
 ## 2026-10-29 — v5 の調査で見つかった MDClaw のツール側の欠陥をまとめて修正（branch `v5-tool-fixes`）
 
 ユーザー依頼「まとめて直して」（2026-10-27 の調査の項の 1〜8 すべて）。main `82bc431` から 5 つの作業ツリーで並行して直し、統合ブランチ `v5-tool-fixes` にまとめた。統合のときに出た食い違いも直した。テストは RIKYU の v4fix SIF に checkout を重ねて流した（`test_molstar_mcp.py` は古いイメージに `mcp` が無いので除外）。修正前の main の fast suite は 2,892 passed / 1 failed で、この 1 件（`test_mddb_export.py::test_concat_tool_then_cli_export_preserves_conditions`）は、子プロセスがイメージの中の古い mdclaw を読み込むためで、コードの不具合ではない。
