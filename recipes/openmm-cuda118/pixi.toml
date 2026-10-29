@@ -1,0 +1,22 @@
+# OpenMM built from source against CUDA 11.8 for GPU drivers older than R575
+# (floyd R550, n1-n5 R530), which no conda-forge or PyPI OpenMM >= 8.5.1
+# supports. Consumed by the `cuda118` environment of the workspace pixi.toml;
+# pixi builds it once on install (see recipe/recipe.yaml).
+[workspace]
+# Lets `pixi build --path recipes/openmm-cuda118` run standalone; the CUDA
+# 11.8 toolkit packages exist only on NVIDIA's cuda-11.8.0 label.
+channels = ["conda-forge", "nvidia/label/cuda-11.8.0"]
+platforms = ["linux-64"]
+preview = ["pixi-build"]
+
+[package]
+name = "openmm"
+version = "8.6.1"
+
+[package.build.backend]
+name = "pixi-build-rattler-build"
+version = "*"
+channels = [
+  "https://prefix.dev/pixi-build-backends",
+  "https://prefix.dev/conda-forge",
+]

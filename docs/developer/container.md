@@ -428,15 +428,22 @@ SIF as well as the container build; import-only tests are insufficient.
 
 ## SST2 (solute tempering)
 
-`run_sst2` runs the SST2 package as a separate process. Both images install
-the matsunagalab/SST2 fork (branch `mdclaw`) with pip, pinned to a commit. The
-pin is declared in **five** places, and a bump changes all five:
+`run_sst2` runs the SST2 package as a separate process. Every runtime installs
+the matsunagalab/SST2 fork (branch `mdclaw`), pinned to a commit. The pin is
+declared in **five** places, a bump changes all five, and
+`test_sst2_pin_is_the_same_in_every_declaration` in
+`tests/test_deployment_scripts.py` fails when they disagree:
 
 | file | what |
 | --- | --- |
+| `pixi.toml` | `sst2` git `rev` (the standard image installs it from the lock) |
 | `environment.yml` | pip section |
-| `container/Dockerfile` | the `pip install` line, and `ENV MDCLAW_SST2_REVISION` |
+| `container/Dockerfile` | `ENV MDCLAW_SST2_REVISION` |
 | `container/Dockerfile.rikyu-arm64` | the `pip install` line, and `MDCLAW_SST2_REVISION` |
+
+Since `3dc7013` the fork lists `openmm` only as the `SST2[openmm]` extra: a
+hard pip requirement made uv add a PyPI OpenMM wheel on top of the source-built
+OpenMM of the pixi `cuda118` environment, which pixi cannot map to PyPI.
 
 The install pulls `pdb_numpy` from PyPI. "Bump the three places" used to be the
 wording here and it undercounted the two `MDCLAW_SST2_REVISION` declarations;

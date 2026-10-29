@@ -13,6 +13,19 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-29 — pixi の `cuda118` 環境: OpenMM を CUDA 11.8 でソースビルドし、R575 未満のドライバでも pixi で GPU 実行
+
+本人の問い「Mol-1 の `-e ".[cuda12]"` のように、pixi で複数の CUDA ドライバ版に対応できないか」「pixi でも SIF のように OpenMM を自前ビルドできないか」。
+
+- 前提の調査: Mol-1 は PyPI の torch の版範囲で CUDA 13/12 を選ぶだけ（CUDA 11 なし）。MDClaw の問題は torch でなく OpenMM >= 8.5.1: conda-forge の 8.6.1 CUDA 版は `cuda-nvrtc >=12.9.86` を要求（R575 以上）、PyPI の `openmm[cuda12|cuda13]` は全 wheel が manylinux_2_34（floyd の Ubuntu 20.04 は glibc 2.31、n1–n5 の Ubuntu 18.04 は 2.27）。CUDA 13 環境を足しても、12.9 版が R580 以上でも動くので救えるマシンは増えない。
+- `recipes/openmm-cuda118`（pixi-build + rattler-build）: OpenMM 8.6.1 を NVIDIA `cuda-11.8.0` ラベルの nvcc/NVRTC/cuFFT、gcc 11、sysroot 2.17 でビルド（約 3 分）。成果物は `libnvrtc.so.11.2`・`libcufft.so.10` にリンク、glibc 要求は最大 2.14。つまずき: NVIDIA の 11.8 `-dev` は runtime `>=11.8` しか要求しないので conda-forge の CUDA 13 runtime が混入する（`cuda-version 11.8.*` と runtime 一式を固定）、conda の `CMAKE_ARGS` はライブラリを host prefix しか探さない（`CMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH`）。
+- `pixi.toml`: CUDA 12.9 の固定を `cuda129` feature に移し、`linux-64-cuda118` プラットフォーム（`cuda = "11.8"`, `glibc = "2.17"`）の `cuda118` 環境を追加。既定環境の lock は SST2 の rev 以外、全プラットフォームで変更前と同一。`cuda118` は 425 パッケージ、PyTorch/jaxlib は CPU 版、glibc 2.28 以上を要求するものは 0。
+- **PyPI の OpenMM が上書きする問題**: SST2 の pip 依存 `openmm>=7.7.0` のため uv が PyPI の OpenMM 8.1.1 wheel を足した。pixi v0.83.0 のソースで確認: ソースパッケージの PyPI 名は自身の PURL からしか取らず、pixi-build-rattler-build は常に `purls: None` → `conda-pypi-map` は効かない。代案の検証結果: (a) ビルド物をローカルチャンネルに置き `conda-pypi-map` で対応 → 動くが lock がチャンネルを絶対パスで記録し、別の checkout では `--locked` が「channels do not match」で失敗。(b) `[pypi-options.dependency-overrides]` に不成立の env-marker → wheel は消えるが lock の鮮度判定が override を考慮せず、全環境の `--locked`（CI・Dockerfile）が失敗。採用: SST2 フォークで openmm を `SST2[openmm]` extra に移した（`matsunagalab/SST2` mdclaw ブランチ `3dc7013`、本人承認で push、0.0.1+mdclaw.2）。5 か所のピンを更新し、一致を検査するテストを追加（10/1 の残件を解消）。
+- lock は相対パス（`openmm @ recipes/openmm-cuda118`）で、別の checkout でも `cuda118`・`default` とも `--locked` を通過。Dockerfile は `recipes/` が無いと全体が stale になるので `COPY recipes/` を追加し、Dockerfile と同じファイル構成で `pixi install --locked` を確認。ビルドの作業ツリー（数 GB）は `.gitignore`/`.dockerignore` で除外。lock 生成は `__cuda >= 12.9` の既定環境の Python が要るので floyd では `CONDA_OVERRIDE_CUDA=12.9 pixi lock`。
+- GPU 実測（CLN025 19,572 原子、4 fs、10 ps、pixi `cuda118` / SIF v0.6.12）: floyd A6000 R550 772/800、n1 TITAN X R530 487/477、n2 1080 Ti 493/487、n4 1080 Ti 500/499、n5 2080 Ti 647/652 ns/day。全ノードで `test-gpu.py` の OpenMM CUDA 検査と PME の Reference 照合に合格（−130.075944）。`test-gpu.py` は torch CUDA を必須にするため、CPU torch の `cuda118` では OpenMM 部分だけを流用した（`/data/mdclaw/accept-cuda118/`）。floyd は Slurm 上 `down` だったのでログインホストの GPU 0 で実行。
+- `bin/mdclaw`（`runtime.sh`）: `/proc/driver/nvidia/version`（nvidia-smi の 0.1 s に対し 3 ms）でドライバ版を読み、R575 未満なら `cuda118`（未導入なら `default` で警告と `pixi install -e cuda118` を表示）。`MDCLAW_PIXI_ENV` で明示でき、未導入なら他の runtime に黙って切り替えず止める。途中で、ドライバの無いホストでは `awk` の終了コードが `set -e` で launcher ごと落とすことに気づき修正。テストはホストのドライバを隠して決定的にした。
+- 未解決・既存: `test_container_setup_skips_when_pixi_env_exists` は SIF 内で実行するとホストの `MDCLAW_RUNTIME`/`MDCLAW_SIF` が漏れて失敗（main でも同じ）。openmm-torch/PLUMED と GPU PyTorch は `cuda118` に無い（SIF のみ）。
+
 ## 2026-10-29 — 膜 patch を GPU で新しく作ると壊れる既存の不具合を直した: CUDA は力を固定小数点で足すので、重なった原子の steepest descent が進まなかった。CPU でやり直す（`relax.py`）
 
 ユーザー依頼「元からある不具合を直して」（SIF の受け入れで見つけた `test_pipeline_membrane_dag::test_step3_embed_in_membrane` の GPU での失敗）。調べた場所は `/data1/rkp00079/rku00161/mdclaw-validation/membrane-cuda-20261029/`。

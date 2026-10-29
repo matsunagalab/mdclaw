@@ -31,11 +31,16 @@ channels = ["conda-forge"]
 # CPU/OpenCL-only. The standard container uses this lock as its seed, then
 # replaces the GPU stack with pinned CUDA 11.8 wheels and source-built OpenMM
 # for older cluster drivers. RIKYU retains its separate CUDA 13 environment.
+# The `cuda118` environment adds its own linux-64 platform with __cuda=11.8 and
+# OpenMM built from source against CUDA 11.8 (recipes/openmm-cuda118), for
+# drivers R520-R574 (floyd R550, n1-n5 R530): `pixi install -e cuda118`.
 platforms = [
     { name = "linux-64-cuda", platform = "linux-64", cuda = "12.9" },
     { name = "linux-aarch64-cuda", platform = "linux-aarch64", cuda = "12.9" },
+    { name = "linux-64-cuda118", platform = "linux-64", cuda = "11.8", glibc = "2.17" },
     "osx-arm64",
 ]
+preview = ["pixi-build"]
 
 [dependencies]
 python = "3.12.*"
@@ -79,11 +84,9 @@ pip = "*"
 # source or provide `hole` on PATH (docs/developer/conda-env-parity-plan.md).
 [target.linux-64.dependencies]
 hole2 = "2.3.1.*"
-cuda-version = "12.9.*"
 
 [target.linux-aarch64.dependencies]
 hole2 = "2.3.1.*"
-cuda-version = "12.9.*"
 
 [target.linux-aarch64.activation.env]
 # The official ARM MODELLER tarball is installed by install-modeller-arm64.py.
@@ -99,8 +102,10 @@ mdclaw = { path = ".", editable = true }
 # Pre-1.0, not on conda-forge / PyPI; pin the tag (same as environment.yml).
 openff-pablo = { git = "https://github.com/openforcefield/openff-pablo.git", tag = "v0.2.2" }
 # SST2 (simulated solute tempering), matsunagalab fork, pinned commit.
-# ba48461 is the floor for charge-unscaled solutes (run_sst2 refuses older).
-sst2 = { git = "https://github.com/matsunagalab/SST2.git", rev = "ba48461" }
+# ba48461 is the floor for charge-unscaled solutes (run_sst2 refuses older);
+# 3dc7013 moves openmm to the SST2[openmm] extra so a conda/source-built
+# OpenMM is not shadowed by a PyPI wheel.
+sst2 = { git = "https://github.com/matsunagalab/SST2.git", rev = "3dc7013" }
 
 [feature.dev.dependencies]
 pytest = ">=7.4"
@@ -123,5 +128,29 @@ modeller = "10.8.*"
 [feature.modeller.target.osx-arm64.dependencies]
 modeller = "10.8.*"
 
+# Default GPU stack: conda-forge's CUDA 12.9 builds (driver >= R575).
+[feature.cuda129]
+platforms = ["linux-64-cuda", "linux-aarch64-cuda", "osx-arm64"]
+
+[feature.cuda129.target.linux-64.dependencies]
+cuda-version = "12.9.*"
+
+[feature.cuda129.target.linux-aarch64.dependencies]
+cuda-version = "12.9.*"
+
+# Older drivers (R520-R574): OpenMM built from source against CUDA 11.8, with
+# the toolkit from NVIDIA's cuda-11.8.0 label. PyTorch falls back to its CPU
+# build (conda-forge has no CUDA 11.8 build); HPacker and NAGL run on CPU.
+# Its platform declares glibc 2.17 so the env installs on Ubuntu 18.04 nodes.
+[feature.cuda118]
+platforms = ["linux-64-cuda118"]
+channels = ["conda-forge", "nvidia/label/cuda-11.8.0"]
+
+[feature.cuda118.dependencies]
+openmm = { path = "recipes/openmm-cuda118" }
+cuda-version = "11.8.*"
+
+
 [environments]
-default = { features = ["dev", "modeller"], solve-group = "main" }
+default = { features = ["dev", "modeller", "cuda129"], solve-group = "main" }
+cuda118 = { features = ["dev", "modeller", "cuda118"], solve-group = "cuda118" }

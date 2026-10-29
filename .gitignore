@@ -160,3 +160,8 @@ scripts/umbrella_equilibration.py
 
 # Local acceptance studies contain user fixture copies and MD output.
 /.validation/
+
+# pixi-build work trees of source packages
+recipes/*/.pixi/
+# Source-package recipes are tracked despite the *.yaml rule above.
+!recipes/*/recipe/recipe.yaml

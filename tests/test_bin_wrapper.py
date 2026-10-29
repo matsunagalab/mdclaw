@@ -152,6 +152,9 @@ def _pixi_fixture(tmp_path: Path) -> tuple[Path, dict]:
     env = os.environ.copy()
     env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
     env.pop("MDCLAW_RUNTIME", None)
+    env.pop("MDCLAW_PIXI_ENV", None)
+    # Hide the host's NVIDIA driver: the pixi environment choice depends on it.
+    env["MDCLAW_NVIDIA_VERSION_FILE"] = str(tmp_path / "no-nvidia-driver")
     return wrapper_copy, env
 
 
@@ -169,7 +172,7 @@ def test_wrapper_autodetects_checkout_pixi_env_first(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.startswith(
-        f"run --frozen --no-install --manifest-path {tmp_path}/pixi.toml python -m mdclaw._cli"
+        f"run --frozen --no-install --manifest-path {tmp_path}/pixi.toml -e default python -m mdclaw._cli"
     ), result.stdout
 
 

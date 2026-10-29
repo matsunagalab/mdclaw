@@ -86,7 +86,9 @@ Developer references:
 ## Development Defaults
 
 Default to the checkout pixi environment for local development, linting, and
-tests (`pixi install` once; it materializes the committed `pixi.lock`):
+tests (`pixi install` once; it materializes the committed `pixi.lock`; on NVIDIA
+drivers older than R575 add `pixi install -e cuda118`, which `bin/mdclaw` then
+selects):
 
 ```bash
 pixi run ruff check mdclaw/

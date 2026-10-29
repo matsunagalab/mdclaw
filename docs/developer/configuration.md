@@ -154,7 +154,8 @@ Boltz-2 for multimers, ligands, and PTMs.
 Non-plugin harnesses do not need a special integration layer. Make `skills/`
 readable, put `mdclaw` on `PATH`, and provide one runtime:
 
-- pixi: `pixi install` in the checkout (locked env under `.pixi/`).
+- pixi: `pixi install` in the checkout (locked env under `.pixi/`); on NVIDIA
+  drivers older than R575 also `pixi install -e cuda118`.
 - conda: create `environment.yml` and install the package in that environment.
 - SIF: set `MDCLAW_SIF=/path/to/mdclaw.sif`.
 - Docker: set `MDCLAW_DOCKER_IMAGE` if using a non-default image.
@@ -165,6 +166,9 @@ a missing selected environment is an error. See
 [Runtime Selection](../agents/deployment.md#runtime-selection) for the full
 order and setup behavior. Pixi commands use the installed environment without
 automatically updating it; run `pixi install` explicitly when it needs updating.
+Within pixi, the environment follows the NVIDIA driver (`cuda118` below R575
+when installed, else `default`); `MDCLAW_PIXI_ENV=default|cuda118` overrides it
+and refuses when that environment is missing.
 The SIF and Docker options provide scientific dependencies, separately from
 the agent-facing skill files.
 

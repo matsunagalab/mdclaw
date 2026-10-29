@@ -68,8 +68,22 @@ scripts/mdclaw-doctor.sh                      # checks the selected runtime
 ```
 
 Linux x86-64 and ARM64 use the CUDA 12.9 lock (R575 or newer NVIDIA drivers
-for OpenMM GPU execution). For older-driver x86-64 nodes such as floyd/n1–n5,
-use the standard CUDA 11.8 SIF (conservative driver baseline 520.61.05);
+for OpenMM GPU execution). For older-driver x86-64 nodes such as floyd/n1–n5
+(R520–R574), add the `cuda118` environment:
+
+```bash
+pixi install -e cuda118     # builds OpenMM 8.6.1 against CUDA 11.8 once (~3 min)
+```
+
+It is the same lock with conda-forge's CUDA 12.9 OpenMM replaced by a source
+build from `recipes/openmm-cuda118` (toolkit from NVIDIA's `cuda-11.8.0`
+channel label, glibc 2.17 so Ubuntu 18.04 nodes install it). PyTorch is the
+CPU build there (no conda-forge CUDA 11.8 PyTorch), and openmm-torch/PLUMED
+remain SIF-only, as in the default environment. `bin/mdclaw` reads the driver
+version from `/proc/driver/nvidia/version` and runs `cuda118` below R575 when
+it is installed, otherwise `default` with a warning naming the command above;
+`MDCLAW_PIXI_ENV=default|cuda118` overrides. The standard CUDA 11.8 SIF
+(conservative driver baseline 520.61.05) remains the packaged alternative;
 verify each node with the shared GPU test before replacing its existing SIF.
 The RIKYU CUDA 13 image remains separate. Linux ARM64 MODELLER is available from the
 [official generic archive](https://salilab.org/modeller/download_installation.html),
