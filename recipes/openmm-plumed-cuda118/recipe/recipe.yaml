@@ -30,6 +30,9 @@ build:
     cd build/python
     swig -python -c++ -o PlumedPluginWrapper.cpp -I${PREFIX}/include ${SRC_DIR}/python/plumedplugin.i
     ${PYTHON} -m pip install --no-build-isolation --no-deps .
+    # Same provenance record as container/scripts/build-plumed.sh; the
+    # container smoke test reads it.
+    ${PYTHON} -c 'import json, pathlib, sys, openmm; p = pathlib.Path(sys.prefix) / "share/mdclaw"; p.mkdir(parents=True, exist_ok=True); (p / "plumed-build.json").write_text(json.dumps(dict(plumed="2.9.4", plugin="2.1", plugin_patch="box-pointer-lifetime-v1", plumed_commit="52da2bb76d37dbad0d19f59c6fe0b2ab939e3ded", plugin_commit="${{ commit }}", openmm=openmm.__version__), indent=2) + "\n")'
 
 requirements:
   build:
