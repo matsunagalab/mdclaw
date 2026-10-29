@@ -1,0 +1,88 @@
+# MDClaw runtime built from the pixi `cuda118` environment.
+#
+# One pixi.toml / pixi.lock for workstations and this image: OpenMM 8.6.1,
+# openmm-torch (PythonTorchForce) and PLUMED 2.9.4 + openmm-plumed come from
+# recipes/ (pixi-build), PyTorch 2.5.1 is conda-forge's CUDA 11.8 GPU build.
+# Targets NVIDIA drivers >= R520 (floyd, n1-n5). Only the packmol-memgen fixes
+# below remain outside pixi.
+#
+#   docker build -f container/Dockerfile.pixi -t mdclaw:pixi-cuda118 .
+#   singularity build mdclaw.sif docker-daemon://mdclaw:pixi-cuda118
+
+# Stage 1: install the locked environment (builds the recipes once)
+FROM --platform=linux/amd64 ghcr.io/prefix-dev/pixi:0.83.0@sha256:3dce86c6e87371c58035aa41b09f2b56ca8f011722320551e0c2bfc1c59da5fb AS build
+# git fetches the recipe sources; gfortran/make rebuild PPM3 below.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git ca-certificates gfortran make && \
+    rm -rf /var/lib/apt/lists/*
+# The build machine has no GPU; declare the CUDA 11.8 driver the environment's
+# platform requires, as container/Dockerfile does for its CUDA 12.9 lock.
+ENV CONDA_OVERRIDE_CUDA=11.8
+# The environment is not relocatable: it keeps this path in the runtime stage.
+WORKDIR /opt/mdclaw-src
+COPY pixi.toml pixi.lock pyproject.toml README.md ./
+COPY recipes/ recipes/
+COPY mdclaw/ mdclaw/
+RUN pixi install -e cuda118 --locked && \
+    rm -rf recipes/*/.pixi /root/.cache
+ENV MDCLAW_ENV=/opt/mdclaw-src/.pixi/envs/cuda118
+# Replace the editable checkout with a regular install, as the standard image does.
+RUN $MDCLAW_ENV/bin/python -m pip install --no-cache-dir --no-deps --force-reinstall . && \
+    rm -rf mdclaw build
+# packmol-memgen's NumPy compatibility patch, as in container/Dockerfile.
+RUN SITE_PACKAGES=$($MDCLAW_ENV/bin/python -c "import site; print(site.getsitepackages()[0])") && \
+    PATCH_FILE="$SITE_PACKAGES/packmol_memgen/lib/pdbremix/v3numpy.py" && \
+    if [ -f "$PATCH_FILE" ]; then sed -i "s/np\.float)/float)/g; s/np\.int)/int)/g" "$PATCH_FILE"; fi
+# Rebuild PPM3 (immers) with its FORMAT descriptor fixed, as in container/Dockerfile.
+RUN PPM3_DIR=$($MDCLAW_ENV/bin/python -c "import packmol_memgen, pathlib; print(pathlib.Path(packmol_memgen.__file__).parent / 'lib' / 'ppm3')") && \
+    sed -i "s/f7\.0''+-''/f7.0,''+-''/" "$PPM3_DIR/opm.f" && \
+    grep -q "f7.0,''+-''" "$PPM3_DIR/opm.f" && \
+    (make -C "$PPM3_DIR" clean >/dev/null 2>&1 || true) && \
+    make -C "$PPM3_DIR" && \
+    install -m 0755 "$PPM3_DIR/immers" "$MDCLAW_ENV/bin/immers" && \
+    { "$MDCLAW_ENV/bin/immers" < /dev/null 2>&1 | grep -q "Fortran runtime error: Missing comma" \
+      && { echo "PPM3 format bug still present after patch"; exit 1; } || true; }
+
+# Stage 2: runtime (same base as the standard image)
+FROM --platform=linux/amd64 nvidia/cuda:11.8.0-base-ubuntu22.04@sha256:f895871972c1c91eb6a896eee68468f40289395a1e58c492e1be7929d0f8703b
+LABEL org.opencontainers.image.title="MDClaw" \
+      org.opencontainers.image.description="Packaged Amber/OpenMM runtime for MDClaw skills and CLIs, built from the pixi cuda118 environment." \
+      org.opencontainers.image.source="https://github.com/matsunagalab/mdclaw" \
+      org.opencontainers.image.licenses="MIT"
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libgl1-mesa-glx libglib2.0-0 libxrender1 libsm6 ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=build /opt/mdclaw-src /opt/mdclaw-src
+RUN ln -s /opt/mdclaw-src/.pixi/envs/cuda118 /opt/mdclaw
+COPY container/scripts/test-gpu.py /opt/mdclaw/share/mdclaw/test-gpu.py
+ENV MDCLAW_CUDA_TOOLKIT_VERSION="11.8" \
+    MDCLAW_PLUMED_VERSION=2.9.4 \
+    MDCLAW_SST2_REVISION=3dc7013 \
+    MDCLAW_MODELLER_VERSION="10.8" \
+    MDCLAW_PPM3_PATCHED="1" \
+    MDCLAW_PIXI_ENV=cuda118
+# The environment's activation (pixi shell-hook + etc/conda/activate.d), fixed.
+ENV CONDA_PREFIX="/opt/mdclaw" \
+    PATH="/opt/mdclaw/bin:$PATH" \
+    LD_LIBRARY_PATH="/opt/mdclaw/lib" \
+    AMBERHOME="/opt/mdclaw" \
+    PERL5LIB="/opt/mdclaw/lib/perl/mm_pbsa" \
+    MKL_INTERFACE_LAYER="LP64,GNU" \
+    GSETTINGS_SCHEMA_DIR="/opt/mdclaw/share/glib-2.0/schemas" \
+    XML_CATALOG_FILES="file:///opt/mdclaw/etc/xml/catalog file:///etc/xml/catalog" \
+    OCL_ICD_VENDORS="/etc/OpenCL/vendors" \
+    OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins" \
+    PYTHONNOUSERSITE="1" \
+    PYTHONUTF8="1"
+RUN /opt/mdclaw/bin/python - <<'PY'
+import openmm, torch, openmmtorch, openmmplumed, mdclaw
+assert openmm.__version__ == "8.6.1", openmm.__version__
+assert torch.__version__.startswith("2.5.1") and torch.version.cuda == "11.8", (torch.__version__, torch.version.cuda)
+assert hasattr(openmmtorch, "PythonTorchForce")
+assert {"sm_60", "sm_61", "sm_75", "sm_86"} <= set(torch._C._cuda_getArchFlags().split())
+print("pixi cuda118 image: OpenMM", openmm.__version__, "PyTorch", torch.__version__, "mdclaw", mdclaw.__version__)
+PY
+COPY container/scripts/entrypoint-pixi.sh /opt/mdclaw/bin/entrypoint.sh
+WORKDIR /work
+ENTRYPOINT ["/opt/mdclaw/bin/entrypoint.sh"]
+CMD ["mdclaw", "--version"]

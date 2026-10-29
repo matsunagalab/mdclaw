@@ -181,12 +181,13 @@ def test_every_skill_is_mirrored_and_declares_frontmatter():
 
 
 def test_sst2_pin_is_the_same_in_every_declaration():
-    """The SST2 revision is declared five times; a drift once shipped a driver too old for run_sst2."""
+    """The SST2 revision is declared six times; a drift once shipped a driver too old for run_sst2."""
     sources = {
         "pixi.toml": (REPO_ROOT / "pixi.toml").read_text(),
         "environment.yml": (REPO_ROOT / "environment.yml").read_text(),
         "container/Dockerfile": (REPO_ROOT / "container" / "Dockerfile").read_text(),
         "container/Dockerfile.rikyu-arm64": (REPO_ROOT / "container" / "Dockerfile.rikyu-arm64").read_text(),
+        "container/Dockerfile.pixi": (REPO_ROOT / "container" / "Dockerfile.pixi").read_text(),
     }
     pins = {
         "pixi.toml rev": re.findall(r'sst2 = \{ git = "https://github.com/matsunagalab/SST2.git", rev = "([0-9a-f]+)" \}', sources["pixi.toml"]),
@@ -194,6 +195,7 @@ def test_sst2_pin_is_the_same_in_every_declaration():
         "Dockerfile MDCLAW_SST2_REVISION": re.findall(r"MDCLAW_SST2_REVISION=\"?([0-9a-f]+)", sources["container/Dockerfile"]),
         "Dockerfile.rikyu-arm64 pip": re.findall(r"SST2 @ git\+https://github.com/matsunagalab/SST2.git@([0-9a-f]+)", sources["container/Dockerfile.rikyu-arm64"]),
         "Dockerfile.rikyu-arm64 MDCLAW_SST2_REVISION": re.findall(r"MDCLAW_SST2_REVISION=\"?([0-9a-f]+)", sources["container/Dockerfile.rikyu-arm64"]),
+        "Dockerfile.pixi MDCLAW_SST2_REVISION": re.findall(r"MDCLAW_SST2_REVISION=\"?([0-9a-f]+)", sources["container/Dockerfile.pixi"]),
     }
     assert all(len(found) == 1 for found in pins.values()), pins
     assert len({found[0] for found in pins.values()}) == 1, pins
@@ -223,3 +225,16 @@ def test_cuda118_builds_the_container_only_pieces_from_recipes():
     assert torch_commit in (recipes / "openmm-torch-cuda118/recipe/recipe.yaml").read_text()
     assert plumed_commit in (recipes / "plumed/recipe/recipe.yaml").read_text()
     assert plugin_commit in (recipes / "openmm-plumed-cuda118/recipe/recipe.yaml").read_text()
+
+
+def test_pixi_image_bakes_in_the_environment_activation():
+    """`singularity exec` runs no activation script, so Dockerfile.pixi fixes it as ENV."""
+    dockerfile = (REPO_ROOT / "container" / "Dockerfile.pixi").read_text()
+    manifest = tomllib.loads((REPO_ROOT / "pixi.toml").read_text())
+    assert "pixi install -e cuda118 --locked" in dockerfile
+    expected = dict(manifest["activation"]["env"])
+    expected.update(manifest["feature"]["cuda118"]["activation"]["env"])
+    for name, value in expected.items():
+        assert re.search(rf'^\s*{name}="?{re.escape(value)}"?', dockerfile, re.M), name
+    for name in ("AMBERHOME", "MKL_INTERFACE_LAYER", "OPENMM_PLUGIN_DIR"):
+        assert re.search(rf"^\s*{name}=", dockerfile, re.M), name
