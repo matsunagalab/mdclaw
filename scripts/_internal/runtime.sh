@@ -6,10 +6,35 @@ _mdclaw_conda_exists() {
         && conda env list 2>/dev/null | awk '{print $1}' | grep -qx "$CONDA_ENV_NAME"
 }
 
+# Pick the pixi environment for this host's NVIDIA driver. The default
+# environment's conda-forge OpenMM is built against CUDA 12.9 (driver >= R575);
+# older drivers need `cuda118` (OpenMM built from source against CUDA 11.8,
+# driver >= R520). The kernel module's version file is read instead of
+# nvidia-smi: it costs microseconds on every call. MDCLAW_PIXI_ENV overrides.
+_mdclaw_pixi_env() {
+    PIXI_ENV_NOTE=""
+    if [ -n "${MDCLAW_PIXI_ENV:-}" ]; then
+        PIXI_ENV="$MDCLAW_PIXI_ENV"
+        return
+    fi
+    PIXI_ENV=default
+    local driver
+    driver="$(awk '/NVRM version/ { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+/) { print $i; exit } }' \
+        "${MDCLAW_NVIDIA_VERSION_FILE:-/proc/driver/nvidia/version}" 2>/dev/null || true)"
+    case "${driver%%.*}" in ''|*[!0-9]*) return ;; esac
+    [ "${driver%%.*}" -lt 575 ] || return 0
+    if [ -d "$PKG_ROOT/.pixi/envs/cuda118" ]; then
+        PIXI_ENV=cuda118
+    else
+        PIXI_ENV_NOTE="Warning: NVIDIA driver $driver predates R575, so the default pixi environment's CUDA 12.9 OpenMM cannot use this GPU.
+Next: run pixi install -e cuda118 in $PKG_ROOT (OpenMM built against CUDA 11.8, driver >= R520)."
+    fi
+}
+
 _mdclaw_pixi_exists() {
     command -v pixi >/dev/null 2>&1 \
         && [ -f "$PKG_ROOT/pixi.toml" ] \
-        && [ -d "$PKG_ROOT/.pixi/envs/default" ]
+        && [ -d "$PKG_ROOT/.pixi/envs/${PIXI_ENV:-default}" ]
 }
 
 mdclaw_select_runtime() {
@@ -34,6 +59,7 @@ mdclaw_select_runtime() {
     if [ -n "$LOCAL_MDCLAW" ] && [ "$LOCAL_MDCLAW" -ef "$PKG_ROOT/bin/mdclaw" ]; then
         LOCAL_MDCLAW=""
     fi
+    _mdclaw_pixi_env
     RUNTIME="${MDCLAW_RUNTIME:-}"
     case "$RUNTIME" in
         ""|pixi|conda|singularity|apptainer|docker) ;;
@@ -42,6 +68,11 @@ mdclaw_select_runtime() {
             echo "Next: choose pixi, conda, singularity, apptainer or docker." >&2
             return 1 ;;
     esac
+    # Naming a pixi environment chooses pixi; a missing one is refused below
+    # rather than silently replaced by another runtime.
+    if [ -z "$RUNTIME" ] && [ -n "${MDCLAW_PIXI_ENV:-}" ] && [ "$mode" != container ]; then
+        RUNTIME=pixi
+    fi
     if [ -z "$RUNTIME" ]; then
         if [ "$mode" != container ] && _mdclaw_pixi_exists; then
             RUNTIME=pixi
@@ -70,8 +101,12 @@ mdclaw_require_runtime() {
     case "$RUNTIME" in
         pixi)
             if ! _mdclaw_pixi_exists; then
-                echo "Error: selected pixi environment is not installed." >&2
-                echo "Next: install Pixi, then run pixi install in $PKG_ROOT." >&2
+                echo "Error: selected pixi environment '$PIXI_ENV' is not installed." >&2
+                if [ "$PIXI_ENV" = default ]; then
+                    echo "Next: install Pixi, then run pixi install in $PKG_ROOT." >&2
+                else
+                    echo "Next: install Pixi, then run pixi install -e $PIXI_ENV in $PKG_ROOT." >&2
+                fi
                 return 1
             fi ;;
         conda)
@@ -110,7 +145,7 @@ mdclaw_describe_runtime() {
     [ -n "${MDCLAW_RUNTIME:-}" ] && selection=explicit
     echo "Runtime: $RUNTIME ($selection)"
     case "$RUNTIME" in
-        pixi) echo "Environment: $PKG_ROOT/.pixi/envs/default" ;;
+        pixi) echo "Environment: $PKG_ROOT/.pixi/envs/$PIXI_ENV" ;;
         conda) echo "Environment: $CONDA_ENV_NAME" ;;
         singularity|apptainer) echo "Image: $SIF" ;;
         docker) echo "Image: $DOCKER_IMAGE" ;;
@@ -170,8 +205,9 @@ case "$RUNTIME" in
         # `pixi install` from pixi.toml + pixi.lock). --frozen uses the env
         # as installed without re-solving; --no-install prevents downloads; `pixi run` performs the full
         # activation (PATH, AMBERHOME, ...) like `conda run` does.
+        [ -z "$PIXI_ENV_NOTE" ] || echo "$PIXI_ENV_NOTE" >&2
         exec pixi run --frozen --no-install --manifest-path "$PKG_ROOT/pixi.toml" \
-            "$@"
+            -e "$PIXI_ENV" "$@"
         ;;
     conda)
         # Run mdclaw entirely inside the conda env. The env must contain

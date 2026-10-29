@@ -3,6 +3,9 @@
 # build-time helper scripts/warmup_membrane_cache.py. Everything else is
 # either noise or huge (SabDab job artifacts can reach many GB).
 
+# pixi-build work trees of source packages (multi-GB OpenMM builds)
+recipes/*/.pixi/
+
 # Python / build caches
 __pycache__/
 *.pyc

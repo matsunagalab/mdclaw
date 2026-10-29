@@ -1,0 +1,78 @@
+# Same source and CMake setup as conda-forge's openmm-feedstock (CUDA 11.8
+# branch), and the same OpenMM tag as the container's source build.
+context:
+  version: "8.6.1"
+
+package:
+  name: openmm
+  version: ${{ version }}
+
+source:
+  git: https://github.com/openmm/openmm.git
+  tag: ${{ version }}
+
+build:
+  number: 1000
+  string: cuda118_py312_${{ hash }}_1000
+  script: build.sh
+  dynamic_linking:
+    missing_dso_allowlist:
+      - "*/libcuda.*"
+      - "*/libOpenCL.*"
+
+requirements:
+  build:
+    # nvcc 11.8 accepts host gcc <= 11; sysroot 2.17 keeps the build usable on
+    # Ubuntu 18.04 (glibc 2.27) nodes.
+    - gcc_linux-64 11.*
+    - gxx_linux-64 11.*
+    - sysroot_linux-64 2.17.*
+    - cmake <4
+    - make
+    - swig
+    - doxygen
+    - libgl-devel
+    # The NVIDIA 11.8 -dev packages only ask for runtime >=11.8, so pin the
+    # whole toolkit or the solver mixes in conda-forge's CUDA 13 runtime.
+    - cuda-version 11.8.*
+    - cuda-nvcc ==11.8.89
+    - cuda-cudart ==11.8.89
+    - cuda-nvrtc ==11.8.89
+    - libcufft ==10.9.0.58
+    - cuda-cccl ==11.8.89
+    - cuda-cudart-dev ==11.8.89
+    - cuda-nvrtc-dev ==11.8.89
+    - libcufft-dev ==10.9.0.58
+    - cuda-driver-dev ==11.8.89
+    - cuda-profiler-api ==11.8.86
+  host:
+    - python 3.12.*
+    - swig
+    - pthread-stubs
+    - lxml
+    - numpy
+    - cython
+    - setuptools
+    - pip
+    - ocl-icd
+  run:
+    - python 3.12.*
+    - cuda-version 11.8.*
+    - numpy
+    - scipy
+    - ocl-icd
+    - ocl-icd-system
+    - cuda-nvrtc ==11.8.89
+    - cuda-cudart ==11.8.89
+    - libcufft ==10.9.0.58
+    - __cuda >=11.8
+
+tests:
+  - python:
+      imports:
+        - openmm
+
+about:
+  homepage: http://openmm.org
+  license: LGPL-3.0-or-later
+  summary: OpenMM built against CUDA 11.8 for older NVIDIA drivers (R520+).

@@ -46,6 +46,9 @@ RUN apt-get update && \
 # the package source present; the editable install is replaced by a real one
 # below.
 COPY pixi.toml pixi.lock pyproject.toml README.md ./
+# `pixi install --locked` checks every environment, and the cuda118 one names
+# a source package; without its manifest the whole lock reads as stale.
+COPY recipes/ recipes/
 COPY mdclaw/ mdclaw/
 COPY container/scripts/test-env-relocation.py /build/test-env-relocation.py
 COPY container/Dockerfile /build/Dockerfile
@@ -289,7 +292,7 @@ COPY container/scripts/test-gpu.py /opt/mdclaw/share/mdclaw/test-gpu.py
 # Set environment variables
 ENV MDCLAW_CUDA_TOOLKIT_VERSION="11.8"
 ENV MDCLAW_PLUMED_VERSION=2.9.4
-ENV MDCLAW_SST2_REVISION=ba48461
+ENV MDCLAW_SST2_REVISION=3dc7013
 ENV PATH="/opt/mdclaw/bin:$PATH"
 ENV AMBERHOME="/opt/mdclaw"
 ENV PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages"

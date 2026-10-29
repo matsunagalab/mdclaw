@@ -178,3 +178,22 @@ def test_every_skill_is_mirrored_and_declares_frontmatter():
         assert head[0] == "---", f"skills/{name}/SKILL.md lacks YAML frontmatter"
         for mirror in (".agents/skills", ".claude/skills"):
             assert (REPO_ROOT / mirror / name).exists(), f"{mirror}/{name} missing"
+
+
+def test_sst2_pin_is_the_same_in_every_declaration():
+    """The SST2 revision is declared five times; a drift once shipped a driver too old for run_sst2."""
+    sources = {
+        "pixi.toml": (REPO_ROOT / "pixi.toml").read_text(),
+        "environment.yml": (REPO_ROOT / "environment.yml").read_text(),
+        "container/Dockerfile": (REPO_ROOT / "container" / "Dockerfile").read_text(),
+        "container/Dockerfile.rikyu-arm64": (REPO_ROOT / "container" / "Dockerfile.rikyu-arm64").read_text(),
+    }
+    pins = {
+        "pixi.toml rev": re.findall(r'sst2 = \{ git = "https://github.com/matsunagalab/SST2.git", rev = "([0-9a-f]+)" \}', sources["pixi.toml"]),
+        "environment.yml pip": re.findall(r"SST2 @ git\+https://github.com/matsunagalab/SST2.git@([0-9a-f]+)", sources["environment.yml"]),
+        "Dockerfile MDCLAW_SST2_REVISION": re.findall(r"MDCLAW_SST2_REVISION=\"?([0-9a-f]+)", sources["container/Dockerfile"]),
+        "Dockerfile.rikyu-arm64 pip": re.findall(r"SST2 @ git\+https://github.com/matsunagalab/SST2.git@([0-9a-f]+)", sources["container/Dockerfile.rikyu-arm64"]),
+        "Dockerfile.rikyu-arm64 MDCLAW_SST2_REVISION": re.findall(r"MDCLAW_SST2_REVISION=\"?([0-9a-f]+)", sources["container/Dockerfile.rikyu-arm64"]),
+    }
+    assert all(len(found) == 1 for found in pins.values()), pins
+    assert len({found[0] for found in pins.values()}) == 1, pins

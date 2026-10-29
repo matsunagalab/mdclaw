@@ -74,4 +74,4 @@ dependencies:
     # pip install line plus MDCLAW_SST2_REVISION in each of the two Dockerfiles
     # (docs/developer/container.md). ba48461 is the floor for charge-unscaled
     # solutes; run_sst2 refuses them on an older driver.
-    - "SST2 @ git+https://github.com/matsunagalab/SST2.git@ba48461"
+    - "SST2 @ git+https://github.com/matsunagalab/SST2.git@3dc7013"

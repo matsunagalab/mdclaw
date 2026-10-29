@@ -45,7 +45,9 @@ def deployment(tmp_path):
     calls = tmp_path / "calls.jsonl"
     env = {key: val for key, val in os.environ.items()
            if not key.startswith(("MDCLAW_", "CLAUDE_PLUGIN_"))}
-    env.update(PATH=f"{stubs}:{utilities}", CALL_LOG=str(calls))
+    # Hide the host's NVIDIA driver unless a test supplies one.
+    env.update(PATH=f"{stubs}:{utilities}", CALL_LOG=str(calls),
+               MDCLAW_NVIDIA_VERSION_FILE=str(tmp_path / "no-nvidia-driver"))
     stub = f"#!{sys.executable}\n" + '''import json, os, sys
 from pathlib import Path
 name, args = Path(sys.argv[0]).name, sys.argv[1:]
@@ -329,3 +331,49 @@ def test_molstar_mcp_ships_with_the_codex_plugin_only():
     assert 'mcpServers' not in claude
     assert not (ROOT / '.mcp.json').exists(), 'Claude Code would load a root .mcp.json'
     assert {k: v for k, v in codex.items() if k != 'mcpServers'} == claude
+
+
+def _driver_file(tmp_path, version):
+    path = tmp_path / "nvidia-version"
+    path.write_text(f"NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  {version}  "
+                    "Release Build  (dvs-builder@U16)  Thu Feb 22 01:44:50 UTC 2024\n"
+                    "GCC version:  gcc version 12.3.0\n")
+    return str(path)
+
+
+def _pixi_env(calls):
+    (args,) = [args for name, args in calls if name == "pixi"]
+    return args[args.index("-e") + 1]
+
+
+@pytest.mark.parametrize("driver, cuda118, expected, warned", [
+    ("550.54.14", True, "cuda118", False),   # floyd: CUDA 11.8 OpenMM
+    ("530.30.02", False, "default", True),   # n1-n5 without the env: say how to add it
+    ("580.65.06", True, "default", False),   # the CUDA 12.9 build runs here
+    (None, True, "default", False),          # no NVIDIA kernel module
+])
+def test_pixi_environment_follows_the_nvidia_driver(deployment, tmp_path, driver, cuda118, expected, warned):
+    root, _, run = deployment
+    if cuda118:
+        (root / ".pixi/envs/cuda118").mkdir(parents=True)
+    version_file = _driver_file(tmp_path, driver) if driver else str(tmp_path / "absent")
+    proc, calls = run("bin/mdclaw", "--version", MDCLAW_NVIDIA_VERSION_FILE=version_file)
+    assert proc.returncode == 0, proc.stderr
+    assert _pixi_env(calls) == expected
+    assert ("pixi install -e cuda118" in proc.stderr) is warned
+
+
+def test_explicit_pixi_environment_wins_and_missing_one_is_refused(deployment, tmp_path):
+    root, _, run = deployment
+    newer = _driver_file(tmp_path, "580.65.06")
+    proc, calls = run("bin/mdclaw", "--version", MDCLAW_PIXI_ENV="cuda118",
+                      MDCLAW_NVIDIA_VERSION_FILE=newer)
+    assert proc.returncode != 0
+    assert "selected pixi environment 'cuda118' is not installed" in proc.stderr
+    assert "pixi install -e cuda118" in proc.stderr
+    assert not [name for name, _ in calls if name == "pixi"]
+    (root / ".pixi/envs/cuda118").mkdir(parents=True)
+    proc, calls = run("bin/mdclaw", "--version", MDCLAW_PIXI_ENV="cuda118",
+                      MDCLAW_NVIDIA_VERSION_FILE=newer)
+    assert proc.returncode == 0, proc.stderr
+    assert _pixi_env(calls) == "cuda118"
