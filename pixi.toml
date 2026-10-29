@@ -67,8 +67,8 @@ pyxdg = ">=0.28"
 # package at the same version.
 biopython = "1.81.*"
 # HPacker imports torch; keep torch on conda-forge to avoid mixing wheel
-# PyTorch with conda-forge protobuf on macOS.
-pytorch = ">=2.7,<2.8"
+# PyTorch with conda-forge protobuf on macOS. The version is set per GPU
+# stack: 2.7 in `cuda129`, conda-forge's last CUDA 11.8 build in `cuda118`.
 # Build toolchain so a local prefix can run container/scripts/build-plumed.sh
 # and the openmm-torch source build.
 cmake = ">=3.18,<4"
@@ -87,6 +87,11 @@ hole2 = "2.3.1.*"
 
 [target.linux-aarch64.dependencies]
 hole2 = "2.3.1.*"
+
+[activation.env]
+# Keep ~/.local/lib/pythonX.Y/site-packages out of the environment: a user's
+# own pytest/numpy there shadowed the locked ones on floyd.
+PYTHONNOUSERSITE = "1"
 
 [target.linux-aarch64.activation.env]
 # The official ARM MODELLER tarball is installed by install-modeller-arm64.py.
@@ -132,16 +137,19 @@ modeller = "10.8.*"
 [feature.cuda129]
 platforms = ["linux-64-cuda", "linux-aarch64-cuda", "osx-arm64"]
 
+[feature.cuda129.dependencies]
+pytorch = ">=2.7,<2.8"
+
 [feature.cuda129.target.linux-64.dependencies]
 cuda-version = "12.9.*"
 
 [feature.cuda129.target.linux-aarch64.dependencies]
 cuda-version = "12.9.*"
 
-# Older drivers (R520-R574): OpenMM built from source against CUDA 11.8, with
-# the toolkit from NVIDIA's cuda-11.8.0 label. PyTorch falls back to its CPU
-# build (conda-forge has no CUDA 11.8 build); HPacker and NAGL run on CPU.
-# Its platform declares glibc 2.17 so the env installs on Ubuntu 18.04 nodes.
+# Older drivers (R520-R574): OpenMM built from source against CUDA 11.8 (build
+# toolkit from NVIDIA's cuda-11.8.0 label, runtime from conda-forge's
+# cudatoolkit 11.8, shared with GPU PyTorch). Its platform declares glibc 2.17
+# so the env installs on Ubuntu 18.04 nodes.
 [feature.cuda118]
 platforms = ["linux-64-cuda118"]
 channels = ["conda-forge", "nvidia/label/cuda-11.8.0"]
@@ -149,6 +157,17 @@ channels = ["conda-forge", "nvidia/label/cuda-11.8.0"]
 [feature.cuda118.dependencies]
 openmm = { path = "recipes/openmm-cuda118" }
 cuda-version = "11.8.*"
+# GPU PyTorch on CUDA 11.8: conda-forge's last CUDA 11.8 build is 2.5.1
+# (glibc 2.17, cudatoolkit 11.8). NAGL 0.5.4 is the newest release that
+# accepts it (0.5.5+ require pytorch >= 2.6).
+pytorch = { version = "2.5.1.*", build = "cuda118*" }
+openff-nagl = "==0.5.4"
+
+# pixi does not run ocl-icd-system's post-link script, so the environment's
+# OpenCL vendor directory stays empty and OpenMM registers no OpenCL platform.
+# Point the loader at the host's ICDs (the NVIDIA driver installs one there).
+[feature.cuda118.activation.env]
+OCL_ICD_VENDORS = "/etc/OpenCL/vendors"
 
 
 [environments]

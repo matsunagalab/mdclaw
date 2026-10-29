@@ -76,10 +76,15 @@ pixi install -e cuda118     # builds OpenMM 8.6.1 against CUDA 11.8 once (~3 min
 ```
 
 It is the same lock with conda-forge's CUDA 12.9 OpenMM replaced by a source
-build from `recipes/openmm-cuda118` (toolkit from NVIDIA's `cuda-11.8.0`
-channel label, glibc 2.17 so Ubuntu 18.04 nodes install it). PyTorch is the
-CPU build there (no conda-forge CUDA 11.8 PyTorch), and openmm-torch/PLUMED
-remain SIF-only, as in the default environment. `bin/mdclaw` reads the driver
+build from `recipes/openmm-cuda118` (build toolkit from NVIDIA's `cuda-11.8.0`
+channel label, runtime from conda-forge's `cudatoolkit 11.8`, glibc 2.17 so
+Ubuntu 18.04 nodes install it). PyTorch is conda-forge's last CUDA 11.8 GPU
+build, 2.5.1, so OpenFF NAGL is held at 0.5.4 (0.5.5+ require PyTorch 2.6); its
+charges for the `openff-gnn-am1bcc-1.0.0` model match NAGL 0.6.1 exactly, as do
+HPacker structures and pymbar results with the older JAX. OpenCL uses the
+host's ICDs through `OCL_ICD_VENDORS=/etc/OpenCL/vendors`, because pixi does
+not run `ocl-icd-system`'s post-link script. openmm-torch/PLUMED remain
+SIF-only, as in the default environment. `bin/mdclaw` reads the driver
 version from `/proc/driver/nvidia/version` and runs `cuda118` below R575 when
 it is installed, otherwise `default` with a warning naming the command above;
 `MDCLAW_PIXI_ENV=default|cuda118` overrides. The standard CUDA 11.8 SIF

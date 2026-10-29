@@ -197,3 +197,12 @@ def test_sst2_pin_is_the_same_in_every_declaration():
     }
     assert all(len(found) == 1 for found in pins.values()), pins
     assert len({found[0] for found in pins.values()}) == 1, pins
+
+
+def test_pixi_activation_isolates_user_site_and_finds_host_opencl():
+    """User site-packages once shadowed the locked pytest; cuda118 needs the host ICDs."""
+    manifest = tomllib.loads((REPO_ROOT / "pixi.toml").read_text())
+    assert manifest["activation"]["env"]["PYTHONNOUSERSITE"] == "1"
+    cuda118 = manifest["feature"]["cuda118"]
+    assert cuda118["activation"]["env"]["OCL_ICD_VENDORS"] == "/etc/OpenCL/vendors"
+    assert cuda118["dependencies"]["pytorch"]["build"] == "cuda118*"

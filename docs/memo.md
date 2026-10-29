@@ -13,6 +13,18 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-29 — pixi `cuda118` を GPU 版 PyTorch 2.5.1（CUDA 11.8）に、NAGL 0.5.4 で揃える
+
+本人の指示「cuda118 でも PyTorch は GPU 版に」「NAGL は自前ビルドで PyTorch の版依存を外せないか」。前項（`cuda118` は CPU 版 PyTorch）を更新する。
+
+- 調査: conda で入る CUDA 11.8 の GPU 版 PyTorch は conda-forge・pytorch チャンネルとも 2.5.1 が最後。PyPI の `torch 2.7.1+cu118` は manylinux_2_28 で n1–n5（glibc 2.27）に入らない。NAGL の conda 版は 0.5.5 以降 `pytorch >=2.6`、0.5.4 は `>=2.0,<=2.8` なので、NAGL の自前ビルドは不要で版を戻すだけで済む。n1–n5 のドライバ更新は難しい: NVIDIA の Ubuntu 18.04 apt リポジトリは 530 で止まり（n1–n5 はカーネル 4.15、gcc 7.5、`cuda-drivers-530`）、floyd の Ubuntu 20.04 向けには `cuda-drivers-575` がある。
+- 変更: `cuda118` に `pytorch 2.5.1 cuda118*` と `openff-nagl ==0.5.4`。基底の `pytorch >=2.7,<2.8` は feature の指定と AND で合成されて解けなくなるので `cuda129` feature へ移した。OpenMM レシピの実行時依存を NVIDIA の分割パッケージから conda-forge の `cudatoolkit 11.8` に替え、PyTorch と CUDA ランタイムを共有（重複なし）。lock の差: 既定環境は全プラットフォームで同一。`cuda118` は torch/libtorch 2.5.1、NAGL 0.5.4、protobuf 5.28/abseil 2024.07/grpc 1.67/re2 2024.07、jax/jaxlib 0.9.0→0.5.2 と cudnn・nccl・magma の追加のみ（RDKit・AmberTools 等は不変、glibc > 2.27 の要求は 0）。
+- GPU 実測（全ノード、PyTorch CUDA 行列積/FFT、OpenMM CUDA/PME、CLN025 10 ps）: floyd A6000 765、n1 TITAN X 486、n2 1080 Ti 487、n4 1080 Ti 498、n5 2080 Ti 655 ns/day、すべて合格。torch の arch list に sm_61 を含み Pascal でも動作。
+- 等価性（`cuda118` 対 SIF v0.6.12）: NAGL 0.5.4 と 0.6.1 の `openff-gnn-am1bcc-1.0.0` 電荷は 8 分子（中性・陰陽イオン・両性イオン・イマチニブ 68 原子）で完全一致、pymbar MBAR（JAX 0.5.2 対 0.9.0）は差 1.8e-15、HPacker（CLN025 Y2F、全側鎖、torch 2.5.1 対 2.7.1）は重原子 93 個で RMSD 0.000 Å。`cuda118` 内の pytest（ABFE・FEP・tempering・NAGL 電荷手法・側鎖・WE と標準セット）は 564 passed / 5 failed、失敗は Slurm の 5 件でホストの `/usr/local/bin/singularity` を拾う環境依存（SIF 内では通る）。同じ組合せの初回実行では 11 件失敗し、再実行では再現しなかった 6 件は名前を控えていない。
+- 見つけて直した 2 件: (1) pixi は `ocl-icd-system` の post-link を実行しないため環境の OpenCL vendor ディレクトリが空で OpenMM が OpenCL を登録しない → `cuda118` の activation に `OCL_ICD_VENDORS=/etc/OpenCL/vendors`。(2) `~/.local/lib/python3.12/site-packages` の古い pytest が環境に紛れ込んだ → ワークスペース全体の activation に `PYTHONNOUSERSITE=1`。両方をテストで固定。
+- 既存（main でも同じ）: `test_runtime_selection.py` などはホストの `MDCLAW_RUNTIME=singularity`・conda base が有効なシェルから pixi 環境内で流すと 12 件失敗（main とブランチで同一の集合）。
+- 未了: openmm-torch（PythonTorchForce）と PLUMED のレシピ化は次の段階。
+
 ## 2026-10-29 — pixi の `cuda118` 環境: OpenMM を CUDA 11.8 でソースビルドし、R575 未満のドライバでも pixi で GPU 実行
 
 本人の問い「Mol-1 の `-e ".[cuda12]"` のように、pixi で複数の CUDA ドライバ版に対応できないか」「pixi でも SIF のように OpenMM を自前ビルドできないか」。
