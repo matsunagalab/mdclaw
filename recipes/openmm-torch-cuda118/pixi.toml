@@ -1,0 +1,27 @@
+# openmm-torch with PythonTorchForce, built against the source-built CUDA 11.8
+# OpenMM (../openmm-cuda118) and conda-forge's CUDA 11.8 PyTorch 2.5.1, for the
+# `cuda118` environment. conda-forge's openmm-torch 1.5.1 lacks PythonTorchForce
+# and pins openmm < 8.5.
+[workspace]
+# Lets `pixi build --path recipes/openmm-torch-cuda118` run standalone.
+channels = ["conda-forge", "nvidia/label/cuda-11.8.0"]
+platforms = ["linux-64"]
+preview = ["pixi-build"]
+
+[package]
+name = "openmm-torch"
+version = "1.5.1.20260624"
+
+[package.build.backend]
+name = "pixi-build-rattler-build"
+version = "*"
+channels = [
+  "https://prefix.dev/pixi-build-backends",
+  "https://prefix.dev/conda-forge",
+]
+
+[package.host-dependencies]
+openmm = { path = "../openmm-cuda118" }
+
+[package.run-dependencies]
+openmm = { path = "../openmm-cuda118" }

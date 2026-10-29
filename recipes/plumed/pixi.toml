@@ -1,0 +1,20 @@
+# PLUMED 2.9.4 from source, as the container builds it (container/scripts/
+# build-plumed.sh): conda-forge's 2.9 series stops at 2.9.2 and 2.10 needs
+# glibc 2.28. CUDA-agnostic; consumed by the openmm-plumed recipes.
+[workspace]
+# Lets `pixi build --path recipes/plumed` run standalone.
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+preview = ["pixi-build"]
+
+[package]
+name = "plumed"
+version = "2.9.4"
+
+[package.build.backend]
+name = "pixi-build-rattler-build"
+version = "*"
+channels = [
+  "https://prefix.dev/pixi-build-backends",
+  "https://prefix.dev/conda-forge",
+]

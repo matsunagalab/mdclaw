@@ -10,13 +10,12 @@
 # environment.yml, per-platform differences (hole2, MODELLER, CUDA) are
 # expressed here directly instead of in sed lines inside Dockerfiles.
 #
-# What this manifest deliberately does NOT contain — the source-built pieces
-# that no conda package can currently provide (see
-# docs/developer/conda-env-parity-plan.md):
-#   - openmm-torch with PythonTorchForce (conda-forge's 1.5.1 lacks it and
-#     pins openmm <8.5, unsolvable next to our openmm floor; the container
-#     builds the pinned commit from source)
-#   - PLUMED 2.9.4 + openmm-plumed (container/scripts/build-plumed.sh)
+# Source-built pieces no conda package provides live in recipes/ and are built
+# by pixi on install (pixi-build). The `cuda118` environment has all of them:
+# OpenMM against CUDA 11.8, openmm-torch with PythonTorchForce (conda-forge's
+# 1.5.1 lacks it and pins openmm <8.5), PLUMED 2.9.4 + openmm-plumed 2.1 with
+# the setBox patch. The default environment does not yet carry openmm-torch or
+# PLUMED (see docs/developer/conda-env-parity-plan.md). Still outside pixi:
 #   - packmol-memgen fixes (v3numpy patch, PPM3 immers rebuild)
 #   - hole2 on osx-arm64 (no conda-forge build; build from source or use
 #     host binaries)
@@ -162,6 +161,11 @@ cuda-version = "11.8.*"
 # accepts it (0.5.5+ require pytorch >= 2.6).
 pytorch = { version = "2.5.1.*", build = "cuda118*" }
 openff-nagl = "==0.5.4"
+# PythonTorchForce: openmm-torch built against the two packages above
+# (conda-forge's openmm-torch 1.5.1 lacks it and pins openmm < 8.5).
+openmm-torch = { path = "recipes/openmm-torch-cuda118" }
+# PLUMED 2.9.4 and openmm-plumed 2.1 with the setBox patch, as in the container.
+openmm-plumed = { path = "recipes/openmm-plumed-cuda118" }
 
 # pixi does not run ocl-icd-system's post-link script, so the environment's
 # OpenCL vendor directory stays empty and OpenMM registers no OpenCL platform.

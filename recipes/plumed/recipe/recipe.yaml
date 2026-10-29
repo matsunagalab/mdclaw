@@ -1,0 +1,42 @@
+# Same commit and configure options as container/scripts/build-plumed.sh; no
+# external BLAS/LAPACK/FFTW/GSL/zlib, matching the container's `plumed config`.
+context:
+  version: "2.9.4"
+  commit: 52da2bb76d37dbad0d19f59c6fe0b2ab939e3ded
+
+package:
+  name: plumed
+  version: ${{ version }}
+
+source:
+  git: https://github.com/plumed/plumed2.git
+  rev: ${{ commit }}
+
+build:
+  number: 0
+  script: |
+    # conda's LDFLAGS carry --as-needed, which drops libgomp from the kernel
+    # library's link; keep OpenMP on the link line as well.
+    export LDFLAGS="${LDFLAGS} -fopenmp"
+    ./configure --prefix=${PREFIX} --disable-mpi --disable-python --disable-libtorch \
+      --disable-external-blas --disable-external-lapack --disable-fftw --disable-gsl --disable-zlib
+    make -j${CPU_COUNT}
+    make install
+
+requirements:
+  build:
+    - gcc_linux-64 11.*
+    - gxx_linux-64 11.*
+    - sysroot_linux-64 2.17.*
+    - make
+  host:
+    - libgomp
+
+tests:
+  - script:
+      - plumed --no-mpi info --version
+
+about:
+  homepage: https://www.plumed.org
+  license: LGPL-3.0-only
+  summary: PLUMED 2.9.4 built as in the MDClaw container.

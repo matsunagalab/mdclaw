@@ -1,0 +1,28 @@
+# openmm-plumed v2.1 with the container's setBox lifetime patch, built against
+# the source-built CUDA 11.8 OpenMM and PLUMED 2.9.4 for the `cuda118`
+# environment. conda-forge's openmm-plumed 2.1 pins openmm < 8.5.
+[workspace]
+# Lets `pixi build --path recipes/openmm-plumed-cuda118` run standalone.
+channels = ["conda-forge", "nvidia/label/cuda-11.8.0"]
+platforms = ["linux-64"]
+preview = ["pixi-build"]
+
+[package]
+name = "openmm-plumed"
+version = "2.1"
+
+[package.build.backend]
+name = "pixi-build-rattler-build"
+version = "*"
+channels = [
+  "https://prefix.dev/pixi-build-backends",
+  "https://prefix.dev/conda-forge",
+]
+
+[package.host-dependencies]
+openmm = { path = "../openmm-cuda118" }
+plumed = { path = "../plumed" }
+
+[package.run-dependencies]
+openmm = { path = "../openmm-cuda118" }
+plumed = { path = "../plumed" }

@@ -1,0 +1,62 @@
+# Same commit, patch and build steps as container/scripts/build-plumed.sh.
+context:
+  commit: 95bfd46d6499625de03ea2151aec42edeae5f662
+
+package:
+  name: openmm-plumed
+  version: "2.1"
+
+source:
+  git: https://github.com/openmm/openmm-plumed.git
+  rev: ${{ commit }}
+  patches:
+    # setBox retains a pointer until performCalcNoUpdate; upstream 2.1's
+    # block-local array dies too early and optimized builds can lose periodicity.
+    - setbox-lifetime.patch
+
+build:
+  number: 0
+  string: cuda118_py312_${{ hash }}_0
+  script: |
+    cmake -S ${SRC_DIR} -B build ${CMAKE_ARGS} \
+      -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release \
+      -DOPENMM_DIR=${PREFIX} -DCMAKE_INSTALL_PREFIX=${PREFIX} \
+      -DPLUMED_INCLUDE_DIR=${PREFIX}/include/plumed -DPLUMED_LIBRARY_DIR=${PREFIX}/lib \
+      -DPYTHON_EXECUTABLE=${PYTHON} -DPIP_EXECUTABLE=${PREFIX}/bin/pip
+    cmake --build build --parallel ${CPU_COUNT}
+    cmake --install build
+    # Upstream PythonInstall builds in isolation without NumPy; generate the
+    # wrapper and build against this prefix, as the container does.
+    cd build/python
+    swig -python -c++ -o PlumedPluginWrapper.cpp -I${PREFIX}/include ${SRC_DIR}/python/plumedplugin.i
+    ${PYTHON} -m pip install --no-build-isolation --no-deps .
+
+requirements:
+  build:
+    - gcc_linux-64 11.*
+    - gxx_linux-64 11.*
+    - sysroot_linux-64 2.17.*
+    - cmake <4
+    - make
+    - swig
+  host:
+    - python 3.12.*
+    - pip
+    - setuptools
+    - numpy
+    - openmm
+    - plumed
+  run:
+    - python 3.12.*
+    - openmm
+    - plumed
+
+tests:
+  - python:
+      imports:
+        - openmmplumed
+
+about:
+  homepage: https://github.com/openmm/openmm-plumed
+  license: LGPL-3.0-or-later
+  summary: openmm-plumed 2.1 with the MDClaw setBox patch, for OpenMM built against CUDA 11.8.

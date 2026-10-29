@@ -13,6 +13,15 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-30 — pixi `cuda118` に openmm-torch（PythonTorchForce）と PLUMED をレシピで追加、SIF と同じ部品が揃った
+
+本人の方針「同じ pixi のファイルでパッケージング管理されるのが理想」「GPU 版 PyTorch が必要」を受け、SIF の Dockerfile で手作業ビルドしていた部品を `recipes/` に移した（PR #19 の上）。
+
+- `recipes/openmm-torch-cuda118`: コンテナと同じコミット `b6532900`（PythonTorchForce 追加）。host は自前ビルドの OpenMM（`../openmm-cuda118` をソース依存）と conda-forge の PyTorch 2.5.1 cuda118、build は NVIDIA `cuda-11.8.0` の nvcc と cuBLAS/cuRAND/cuSPARSE/cuSOLVER/NVML/NVTX の dev（実行時パッケージも 11.8 に固定しないと conda-forge の 13.x が選ばれて解けない）。`TORCH_CUDA_ARCH_LIST` は torch から取得。CUDA プラグインは `libtorch_cuda`・`libcudart.so.11.0`・`libOpenMMCUDA` にリンク、glibc 要求は 2.14。単独の `pixi build` は `CONDA_OVERRIDE_CUDA=11.8` が要るが、ワークスペースからの install では `linux-64-cuda118` プラットフォームの宣言で足りた。
+- `recipes/plumed`（2.9.4、`52da2bb`）と `recipes/openmm-plumed-cuda118`（v2.1、`95bfd46` + setBox パッチ）: `build-plumed.sh` と同じコミット・パッチ・configure。SIF の `plumed config` に合わせ外部 BLAS/LAPACK/FFTW/GSL/zlib なし。conda の `LDFLAGS` の `--as-needed` が libgomp を落とすので `-fopenmp` をリンクにも追加。conda-forge は PLUMED 2.9 系が 2.9.2 止まり（2.10 は glibc 2.28）、openmm-plumed 2.1 は openmm < 8.5 固定なので使えない。
+- 結果: floyd と n1/n2/n4/n5 の全 GPU で、PythonTorchForce（座標が GPU 上で渡ることも確認）と、OpenMM CUDA 上の PLUMED 距離拘束（E = 4.50000、Reference と一致）に合格。`cuda118` 内で `test_plumed.py` 23 passed（以前は 9 skip）、custom forces・torch preload・torch/distance steering 75 passed。初回 install の追加ビルドは openmm-torch 約 7 分、PLUMED 十数分。
+- 未着手: 既定環境（CUDA 12.9）向けの同じレシピ。既定環境は osx-arm64・linux-aarch64 を含み CI の 3 プラットフォームで `pixi install --locked` されるので、入れるとそのたびに PLUMED/openmm-torch をソースビルドする（CI 時間が大きく伸びる）。ビルド済みパッケージをチャンネルに置くかどうかと合わせて判断が要る。
+
 ## 2026-10-29 — pixi `cuda118` を GPU 版 PyTorch 2.5.1（CUDA 11.8）に、NAGL 0.5.4 で揃える
 
 本人の指示「cuda118 でも PyTorch は GPU 版に」「NAGL は自前ビルドで PyTorch の版依存を外せないか」。前項（`cuda118` は CPU 版 PyTorch）を更新する。
