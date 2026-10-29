@@ -83,8 +83,12 @@ build, 2.5.1, so OpenFF NAGL is held at 0.5.4 (0.5.5+ require PyTorch 2.6); its
 charges for the `openff-gnn-am1bcc-1.0.0` model match NAGL 0.6.1 exactly, as do
 HPacker structures and pymbar results with the older JAX. OpenCL uses the
 host's ICDs through `OCL_ICD_VENDORS=/etc/OpenCL/vendors`, because pixi does
-not run `ocl-icd-system`'s post-link script. openmm-torch/PLUMED remain
-SIF-only, as in the default environment. `bin/mdclaw` reads the driver
+not run `ocl-icd-system`'s post-link script. It also builds, from `recipes/`,
+openmm-torch with PythonTorchForce (container commit `b6532900`) against that
+OpenMM and PyTorch, and PLUMED 2.9.4 with openmm-plumed 2.1 plus the
+container's setBox patch, so PythonTorchForce and PLUMED run on the GPU there
+(first install builds them, about 15 minutes). The default environment does not
+carry openmm-torch or PLUMED yet. `bin/mdclaw` reads the driver
 version from `/proc/driver/nvidia/version` and runs `cuda118` below R575 when
 it is installed, otherwise `default` with a warning naming the command above;
 `MDCLAW_PIXI_ENV=default|cuda118` overrides. The standard CUDA 11.8 SIF

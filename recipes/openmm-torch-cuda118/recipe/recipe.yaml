@@ -1,0 +1,81 @@
+# Same commit and CMake setup as the container's openmm-torch build: the master
+# commit that introduced PythonTorchForce ("Create PythonTorchForce (#179)",
+# 2026-06-24); no tagged release ships it yet.
+context:
+  commit: b6532900ad825cb3d12193817a1e34a7f46ae6a3
+
+package:
+  name: openmm-torch
+  version: "1.5.1.20260624"
+
+source:
+  git: https://github.com/openmm/openmm-torch.git
+  rev: ${{ commit }}
+
+build:
+  number: 0
+  string: cuda118_py312_${{ hash }}_0
+  script: build.sh
+  dynamic_linking:
+    missing_dso_allowlist:
+      - "*/libcuda.*"
+      - "*/libOpenCL.*"
+
+requirements:
+  build:
+    - gcc_linux-64 11.*
+    - gxx_linux-64 11.*
+    - sysroot_linux-64 2.17.*
+    - cmake <4
+    - make
+    - swig
+    - libgl-devel
+    # Headers and stubs for libtorch's CUDA config; pinned to 11.8 so the
+    # solver cannot mix in conda-forge's CUDA 12/13 packages.
+    - cuda-version 11.8.*
+    - cuda-nvcc ==11.8.89
+    - cuda-cccl ==11.8.89
+    - cuda-cudart ==11.8.89
+    - cuda-cudart-dev ==11.8.89
+    - cuda-nvrtc ==11.8.89
+    - cuda-nvrtc-dev ==11.8.89
+    - cuda-driver-dev ==11.8.89
+    - cuda-nvtx ==11.8.86
+    - cuda-nvml-dev ==11.8.86
+    - libcufft ==10.9.0.58
+    - libcufft-dev ==10.9.0.58
+    - libcublas ==11.11.3.6
+    - libcublas-dev ==11.11.3.6
+    - libcurand ==10.3.0.86
+    - libcusparse ==11.7.5.86
+    - libcusolver ==11.4.1.48
+    - libcurand-dev ==10.3.0.86
+    - libcusparse-dev ==11.7.5.86
+    - libcusolver-dev ==11.4.1.48
+  host:
+    - python 3.12.*
+    - pip
+    - setuptools
+    - swig
+    - numpy
+    - openmm
+    - pytorch 2.5.1.* cuda118*
+    - cuda-version 11.8.*
+    - cudatoolkit 11.8.*
+    - ocl-icd
+  run:
+    - python 3.12.*
+    - openmm
+    - pytorch 2.5.1.* cuda118*
+    - cudatoolkit 11.8.*
+    - __cuda >=11.8
+
+tests:
+  - python:
+      imports:
+        - openmmtorch
+
+about:
+  homepage: https://github.com/openmm/openmm-torch
+  license: MIT
+  summary: openmm-torch with PythonTorchForce for OpenMM built against CUDA 11.8.

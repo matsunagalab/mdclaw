@@ -1,0 +1,7 @@
+--- a/openmmapi/src/PlumedForceImpl.cpp
++++ b/openmmapi/src/PlumedForceImpl.cpp
+@@ -132,2 +132,2 @@
+-    if (usesPeriodic) {
+-        Vec3 boxVectors[3];
++    Vec3 boxVectors[3];
++    if (usesPeriodic) {
