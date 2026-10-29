@@ -1,0 +1,77 @@
+# Same commit as the container and ../openmm-torch-cuda118: the master commit
+# that introduced PythonTorchForce ("Create PythonTorchForce (#179)").
+context:
+  commit: b6532900ad825cb3d12193817a1e34a7f46ae6a3
+
+package:
+  name: openmm-torch
+  version: "1.5.1.20260624"
+
+source:
+  git: https://github.com/openmm/openmm-torch.git
+  rev: ${{ commit }}
+
+build:
+  number: 0
+  script: build.sh
+  dynamic_linking:
+    missing_dso_allowlist:
+      - "*/libcuda.*"
+      - "*/libOpenCL.*"
+
+requirements:
+  build:
+    - cmake <4
+    - make
+    - swig
+    - if: linux
+      then:
+        # nvcc 12.9 accepts gcc <= 14.
+        - gcc_${{ target_platform }} 13.*
+        - gxx_${{ target_platform }} 13.*
+        - sysroot_${{ target_platform }} 2.28.*
+        - libgl-devel
+        - cuda-version 12.9.*
+        - cuda-nvcc
+        - cuda-cudart-dev
+        - cuda-nvrtc-dev
+        - cuda-driver-dev
+        - cuda-nvtx-dev
+        - cuda-nvml-dev
+        - cuda-profiler-api
+        - libcufft-dev
+        - libcublas-dev
+        - libcurand-dev
+        - libcusparse-dev
+        - libcusolver-dev
+      else:
+        - ${{ compiler('c') }}
+        - ${{ compiler('cxx') }}
+  host:
+    - python 3.12.*
+    - pip
+    - setuptools
+    - swig
+    - numpy
+    - openmm 8.6.1.*
+    - pytorch 2.7.1.*
+    - if: linux
+      then:
+        - cuda-version 12.9.*
+        - ocl-icd
+      else:
+        - khronos-opencl-icd-loader
+  run:
+    - python 3.12.*
+    - openmm 8.6.1.*
+    - pytorch 2.7.1.*
+
+tests:
+  - python:
+      imports:
+        - openmmtorch
+
+about:
+  homepage: https://github.com/openmm/openmm-torch
+  license: MIT
+  summary: openmm-torch with PythonTorchForce for conda-forge OpenMM 8.6 and PyTorch 2.7.

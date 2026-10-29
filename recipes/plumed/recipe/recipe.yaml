@@ -25,12 +25,23 @@ build:
 
 requirements:
   build:
-    - gcc_linux-64 11.*
-    - gxx_linux-64 11.*
-    - sysroot_linux-64 2.17.*
+    # gcc 11 + sysroot 2.17 on Linux keeps the package installable on Ubuntu
+    # 18.04 (cuda118); conda's clang on macOS.
+    - if: linux
+      then:
+        - gcc_${{ target_platform }} 11.*
+        - gxx_${{ target_platform }} 11.*
+        - sysroot_${{ target_platform }} 2.17.*
+      else:
+        - ${{ compiler('c') }}
+        - ${{ compiler('cxx') }}
     - make
   host:
-    - libgomp
+    - if: linux
+      then:
+        - libgomp
+      else:
+        - llvm-openmp
 
 tests:
   - script:

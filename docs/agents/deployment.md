@@ -87,8 +87,10 @@ not run `ocl-icd-system`'s post-link script. It also builds, from `recipes/`,
 openmm-torch with PythonTorchForce (container commit `b6532900`) against that
 OpenMM and PyTorch, and PLUMED 2.9.4 with openmm-plumed 2.1 plus the
 container's setBox patch, so PythonTorchForce and PLUMED run on the GPU there
-(first install builds them, about 15 minutes). The default environment does not
-carry openmm-torch or PLUMED yet. `bin/mdclaw` reads the driver
+(first install builds them, about 15 minutes). The default environment builds
+the same openmm-torch and PLUMED (`recipes/openmm-torch`, `recipes/openmm-plumed`)
+against conda-forge's OpenMM 8.6.1 and PyTorch 2.7.1: CUDA plugins on Linux
+x86-64/ARM64, OpenCL on macOS. `bin/mdclaw` reads the driver
 version from `/proc/driver/nvidia/version` and runs `cuda118` below R575 when
 it is installed, otherwise `default` with a warning naming the command above;
 `MDCLAW_PIXI_ENV=default|cuda118` overrides. The standard CUDA 11.8 SIF

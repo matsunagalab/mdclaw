@@ -13,6 +13,14 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-30 — 既定環境（CUDA 12.9）にも openmm-torch と PLUMED を 3 プラットフォームで
+
+本人「macOS ARM64 にも openmm-torch と PLUMED は必要。CI が延びるのは仕方ない」。
+
+- `recipes/openmm-torch`（既定環境用）: cuda118 版と同じコミット `b6532900` を conda-forge の OpenMM 8.6.1・PyTorch 2.7.1 に対してビルド。Linux（x86-64・ARM64）は conda-forge の CUDA 12.9 ツールチェーン（nvcc、gcc 13、sysroot 2.28、dev ライブラリはビルド環境、CUDA_INC_PATH は targets/<arch>/include）で CUDA プラグイン、macOS は CPU 版 PyTorch なので OpenCL プラグイン。`recipes/openmm-plumed`（既定環境用）は conda-forge OpenMM 8.6.1 に対して。`recipes/plumed` は rattler-build の `if: linux` で macOS（clang、llvm-openmp）にも対応し両環境で共用。
+- つまずき: CUDA 12.9 版 PyTorch の arch に `sm_100`/`sm_120` があり、`sm_86→8.6` の 2 桁前提の変換が `1.00` を作って Caffe2 の CMake が失敗。`a[3:-1].a[-1]` に修正（`5.0;…;9.0;10.0;12.0`）。
+- lock の差は既定環境の 3 プラットフォームに `plumed`・`openmm-plumed`・`openmm-torch` の追加のみ。floyd（R550 なので CUDA 12.9 の GPU 実行は不可、`CONDA_OVERRIDE_CUDA=12.9` で install）で、CPU プラットフォームの PythonTorchForce（E=1、F=−2）と PLUMED 拘束（E=4.5）に合格、PLUMED・custom forces・torch preload/steering・distance steering の pytest 72 passed。macOS・Linux ARM64 のビルドと試験は CI に任せる。R575 以上の GPU での CUDA 12.9 実行は未検証。
+
 ## 2026-10-30 — pixi `cuda118` に openmm-torch（PythonTorchForce）と PLUMED をレシピで追加、SIF と同じ部品が揃った
 
 本人の方針「同じ pixi のファイルでパッケージング管理されるのが理想」「GPU 版 PyTorch が必要」を受け、SIF の Dockerfile で手作業ビルドしていた部品を `recipes/` に移した（PR #19 の上）。
