@@ -1,7 +1,7 @@
 # openmm-torch with PythonTorchForce for the default environment, built against
 # conda-forge's OpenMM 8.6.1 and PyTorch 2.7.1: the CUDA 12.9 builds on Linux
-# (x86-64, ARM64) and the CPU/OpenCL builds on macOS. The cuda118 variant is
-# ../openmm-torch-cuda118.
+# (x86-64, ARM64) and the CPU/OpenCL builds on macOS. The other variants are
+# ../openmm-torch-cuda118 and ../openmm-torch-cuda13.
 [workspace]
 # Lets `pixi build --path recipes/openmm-torch` run standalone (Linux needs
 # CONDA_OVERRIDE_CUDA=12.9 for the CUDA PyTorch host).

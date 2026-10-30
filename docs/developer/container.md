@@ -39,9 +39,9 @@ The standard x86-64 image is `container/Dockerfile.pixi` (see
 openmm-torch and PLUMED are the same builds a workstation gets with
 `pixi install -e cuda118`. The earlier amd64 Dockerfile, which installed
 the CUDA 12.9 lock and then swapped its GPU stack for CUDA 11.8 wheels and
-in-Dockerfile source builds, was removed after v0.6.13. RIKYU continues using
-`environment.yml`, NVRTC 13.0, CUDA 13.1 math libraries, its sm_100 plugin,
-FUSE workaround and existing MODELLER install.
+in-Dockerfile source builds, was removed after v0.6.13. RIKYU's arm64 image
+installs the pixi `cuda13` environment from the same lock; see
+[Arm64 / CUDA 13 Image](#arm64--cuda-13-image).
 
 Actions writes the Docker image to a temporary file, releases the BuildKit
 cache, requires at least 40 GiB free, and only then loads the image for the CPU
@@ -140,18 +140,24 @@ docker push ghcr.io/matsunagalab/mdclaw:latest
 
 The GHCR package must be public for unauthenticated Singularity pulls.
 
-## Arm64 / CUDA 13 Development Image
+## Arm64 / CUDA 13 Image
 
-The arm64/CUDA 13 development image is kept separate from the generic
-`linux/amd64` / CUDA 11.8 image. `container/scripts/build-rikyu-arm64.sh` covers
-the whole flow — build, non-GPU verification, `--push` to GHCR, and `--sif PATH`
-to convert and install the SIF (verified first, previous file kept as
-`PATH.bak`). It takes docker or podman, whichever works. The underlying commands
-are:
+RIKYU's image is `container/Dockerfile.rikyu-arm64`. It installs the pixi
+`cuda13` environment from `pixi.lock`, so its dependencies live in the same
+`pixi.toml` as every other environment. Each tag publishes it as
+`ghcr.io/matsunagalab/mdclaw:X.Y.Z-rikyu` from a hosted arm runner
+(`.github/workflows/container.yml`, job `build-rikyu`); it never takes `:latest`.
+To build it from `main` without a tag, run the workflow by hand with
+`image=rikyu`.
+
+`container/scripts/build-rikyu-arm64.sh` builds the current checkout on an arm64
+host: build, non-GPU verification, `--push` to GHCR, and `--sif PATH` to convert
+and install the SIF (verified first, previous file kept as `PATH.bak`). It takes
+docker or podman, whichever works. The underlying commands are:
 
 ```bash
 revision=$(git rev-parse --short=12 HEAD)
-image="ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev-${revision}"
+image="ghcr.io/matsunagalab/mdclaw:rikyu-dev-${revision}"
 
 docker build --platform linux/arm64 \
   --build-arg GIT_REVISION="$(git rev-parse HEAD)" \
@@ -183,20 +189,26 @@ small — the image is ~15 GB and the SIF conversion unpacks it again, so point
 `TMPDIR`, `APPTAINER_TMPDIR` and `APPTAINER_CACHEDIR` at a filesystem with ~60 GB
 free. The script warns when the scratch filesystem looks too small.
 
-The Dockerfile uses the arm64 manifests of CUDA 13.0.2 on Ubuntu 24.04, builds
-OpenMM 8.5.1 against CUDA 13.0, and compiles `openmm-torch` for compute
-capability 10.0 (`sm_100`). PyTorch is the CUDA 13.0 arm64 conda-forge build.
-Keep the OpenMM compiler and NVRTC toolkit at or below the maximum CUDA version
-supported by the host driver: OpenMM compiles kernels at Context creation, and
-a driver can reject PTX emitted by a newer minor toolkit with
-`CUDA_ERROR_UNSUPPORTED_PTX_VERSION`.
+The environment takes conda-forge's CUDA 13 OpenMM 8.6.1 and PyTorch 2.10.0
+(`cuda130`) on linux-aarch64, so only `openmm-torch` has a dedicated recipe
+(`recipes/openmm-torch-cuda13`, nvcc 13.0, SASS for compute capability 10.0
+(`sm_100`) plus PTX). PLUMED and `openmm-plumed` use the shared recipes.
 
-The dynamically loaded conda CUDA math libraries are resolved from the CUDA
-13.1 family, with `libcufft>=12.1.0.78`. This split keeps NVRTC at 13.0 for PTX
-compatibility while retaining a consistent CUDA math-library stack. Build and
-smoke tests assert both version contracts. The packed runtime is copied into
-several OCI layers so no single application layer must carry the complete
-multi-gigabyte conda environment during an Apptainer pull.
+Keep NVRTC at or below the maximum CUDA version supported by the host driver:
+OpenMM compiles kernels at Context creation, and a driver can reject PTX emitted
+by a newer minor toolkit with `CUDA_ERROR_UNSUPPORTED_PTX_VERSION`. RIKYU also
+needs `libcufft>=12.1.0.78` for PME on `sm_100`. One conda solve cannot hold both:
+conda-forge's `cuda-nvrtc` 13.0 requires `cuda-version` 13.0 and its `libcufft` 12.1
+requires `cuda-version` 13.1. The lock therefore holds the CUDA 13.1 family, and
+the Dockerfile copies NVRTC 13.0 from the pinned NVIDIA devel image over it. For
+that reason use `cuda13` through the image: a plain `pixi install -e cuda13` on
+RIKYU would compile kernels with NVRTC 13.1. Build and smoke tests assert both
+version contracts. The environment is copied into several OCI layers so no single
+layer must carry all of it during an Apptainer pull.
+
+`container/Dockerfile.rikyu-arm64` must not use `RUN <<` heredocs: Podman 4.9
+(RIKYU's login node) parses their lines as Dockerfile instructions. Multi-line
+checks belong in `container/scripts/check-rikyu-image.py`.
 
 Some rootless Apptainer installations mount SIF files through FUSE. On affected
 driver/runtime combinations, OpenMM PME and `torch.fft` can fail when CUDA
@@ -224,9 +236,7 @@ and reports `SKIP` rather than `FAIL`:
 | `MDCLAW_PPM3_PATCHED` | both images | `immers` being the rebuilt binary, not the one the conda package ships |
 | `PYTHONUTF8` | both images | interpreter UTF-8 mode, and text I/O staying UTF-8 after a driver resets the locale |
 
-The amd64 / CUDA 11.8 image declares NVRTC 11.8 and uses cuFFT from the
-pinned cu11 wheel set.
-It does not declare the RIKYU cuFFT floor or FUSE shim, so those checks skip. Adding a contract
+The amd64 / CUDA 11.8 image declares NVRTC 11.8. It does not declare the RIKYU cuFFT floor or FUSE shim, so those checks skip. Adding a contract
 that belongs to one image means declaring a variable in that image's Dockerfile
 and gating the check on it — not forking the script. `MDCLAW_FUSEFIX_LIB` is
 also the single definition of the shim path: the runtime assertions in the
@@ -237,13 +247,16 @@ push, record the registry digest and test the artifact pulled by digest rather
 than only the local Docker image:
 
 ```bash
-apptainer pull mdclaw-rikyu-arm64-cuda13-dev.sif \
-  "docker://ghcr.io/matsunagalab/mdclaw-rikyu@sha256:<digest>"
-apptainer exec --nv mdclaw-rikyu-arm64-cuda13-dev.sif \
+apptainer pull mdclaw-rikyu.sif \
+  "docker://ghcr.io/matsunagalab/mdclaw@sha256:<digest>"
+apptainer exec --nv mdclaw-rikyu.sif \
   bash /path/to/container/scripts/test-container.sh
-apptainer exec --nv mdclaw-rikyu-arm64-cuda13-dev.sif \
+apptainer exec --nv mdclaw-rikyu.sif \
   bash /path/to/container/scripts/test-rikyu-gpu.sh
 ```
+
+Images up to 0.6.12 were pushed by hand to `ghcr.io/matsunagalab/mdclaw-rikyu`.
+That package has no repository link, so the workflow's token cannot write to it.
 
 The MDClaw package already contains the representative bundled membrane-patch
 cache. The development build skips revalidating or regenerating that cache by
@@ -440,7 +453,7 @@ declared in **five** places, a bump changes all five, and
 | `pixi.toml` | `sst2` git `rev` (the standard image installs it from the lock) |
 | `environment.yml` | pip section |
 | `container/Dockerfile.pixi` | `MDCLAW_SST2_REVISION` (the image installs it from the lock) |
-| `container/Dockerfile.rikyu-arm64` | the `pip install` line, and `MDCLAW_SST2_REVISION` |
+| `container/Dockerfile.rikyu-arm64` | `MDCLAW_SST2_REVISION` (the image installs it from the lock) |
 
 Since `3dc7013` the fork lists `openmm` only as the `SST2[openmm]` extra: a
 hard pip requirement made uv add a PyPI OpenMM wheel on top of the source-built

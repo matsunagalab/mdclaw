@@ -13,6 +13,19 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-31 — RIKYU の SIF も pixi `cuda13` 環境から作るようにした
+
+本人「rikyu 用 sif も pixi で同様に統一されて管理・作成できるように」。
+
+- `pixi.toml` に `linux-aarch64-cuda13` プラットフォームと `cuda13` 環境を追加。`container/Dockerfile.rikyu-arm64` は `environment.yml` の sed 加工 + mamba + conda-pack + OpenMM と openmm-torch と PLUMED の手作業ビルドをやめ、`pixi install -e cuda13 --locked` に置き換えた（380 行 → 約 160 行）。既存の 3 環境のロックは 1 パッケージも変わっていない。
+- conda-forge に linux-aarch64 の CUDA 13 版 OpenMM 8.6.1（`py312hdb138ca_0`）があるので OpenMM のソースビルドは不要になった。RIKYU の OpenMM は 8.5.1 → 8.6.1 に上がり、floyd 系と揃う。自前レシピは `recipes/openmm-torch-cuda13`（nvcc 13.0、`sm_100` + PTX）だけ。PLUMED と openmm-plumed は既存レシピを共用。
+- pixi に入らなかったもの: NVRTC 13.0。conda-forge の `cuda-nvrtc` 13.0 は `cuda-version` 13.0 を、`libcufft` 12.1（sm_100 の PME に必要）は `cuda-version` 13.1 を要求するので 1 つの解に同居できない。ロックは 13.1 系にして、今の SIF と同じく NVIDIA の devel イメージから NVRTC 13.0 を重ねる。よって `cuda13` はイメージ経由で使う（素の `pixi install -e cuda13` は NVRTC 13.1 になる）。FUSE shim、packmol の修正、MODELLER（`install-modeller-arm64.py` を共用）も pixi の外のまま。
+- `/proc/self/maps` はシンボリックリンクを解決した実パスを出すので、`MDCLAW_FUSEFIX_LIB` と `LD_PRELOAD` は `/opt/mdclaw` ではなく環境の実パスにした。
+- 配布: `container.yml` に arm ランナーのジョブ `build-rikyu` を追加。タグで `ghcr.io/matsunagalab/mdclaw:X.Y.Z-rikyu` を公開する（`:latest` には載せない）。`mdclaw-rikyu` パッケージはリポジトリに紐づいておらず、ワークフローのトークンで書けないため同じパッケージのタグにした。手元ビルドは `build-rikyu-arm64.sh` のまま。
+- `build-rikyu-arm64.sh` の不具合を修正: `KEY_MODELLER10v8` があると素の `import modeller` が `XXXX` で落ち、trap が SIF ごと消していた。MDClaw と同じく `modeller.config` を差し込む形にした。
+- 検証（GitHub の `ubuntu-24.04-arm`、run 41110665312、Docker、18 分）: `check-rikyu-image.py` が NVRTC 13.0、cuFFT 12.1.0.78（API 12100）、FUSE shim、OpenMM 8.6.1、PyTorch 2.10.0（CUDA 13.0）、膜パッチ 13 件を確認、`test-container.sh` は 27 passed / 0 failed（従来の RIKYU イメージと同じ件数）。floyd は x86-64 で qemu もなく arm64 を動かせない。Podman 4.9 でのビルドと RIKYU の GPU での受け入れ（`test-rikyu-gpu.sh`）は未実施。
+- 不要になった `container/scripts/entrypoint.sh` を削除。`build-plumed.sh` と `environment.yml` は conda の手順（`docs/developer/plumed.md`、`docs/agents/deployment.md`）が使うので残す。
+
 ## 2026-10-31 — v0.6.13 のイメージは 15 GB 太っていた: `.pixi/bld` を落とす修正と旧 Dockerfile の削除を v0.6.14 へ
 
 本人「v0.6.13 の GHCR 版に共有 SIF を差し替え、メモ、掃除、旧 Dockerfile 削除」→ 調査のうえ「推奨どおりに」。

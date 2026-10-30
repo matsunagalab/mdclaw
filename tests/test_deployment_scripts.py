@@ -182,7 +182,7 @@ def test_every_skill_is_mirrored_and_declares_frontmatter():
 
 
 def test_sst2_pin_is_the_same_in_every_declaration():
-    """The SST2 revision is declared five times; a drift once shipped a driver too old for run_sst2."""
+    """The SST2 revision is declared four times; a drift once shipped a driver too old for run_sst2."""
     sources = {
         "pixi.toml": (REPO_ROOT / "pixi.toml").read_text(),
         "environment.yml": (REPO_ROOT / "environment.yml").read_text(),
@@ -192,7 +192,6 @@ def test_sst2_pin_is_the_same_in_every_declaration():
     pins = {
         "pixi.toml rev": re.findall(r'sst2 = \{ git = "https://github.com/matsunagalab/SST2.git", rev = "([0-9a-f]+)" \}', sources["pixi.toml"]),
         "environment.yml pip": re.findall(r"SST2 @ git\+https://github.com/matsunagalab/SST2.git@([0-9a-f]+)", sources["environment.yml"]),
-        "Dockerfile.rikyu-arm64 pip": re.findall(r"SST2 @ git\+https://github.com/matsunagalab/SST2.git@([0-9a-f]+)", sources["container/Dockerfile.rikyu-arm64"]),
         "Dockerfile.rikyu-arm64 MDCLAW_SST2_REVISION": re.findall(r"MDCLAW_SST2_REVISION=\"?([0-9a-f]+)", sources["container/Dockerfile.rikyu-arm64"]),
         "Dockerfile.pixi MDCLAW_SST2_REVISION": re.findall(r"MDCLAW_SST2_REVISION=\"?([0-9a-f]+)", sources["container/Dockerfile.pixi"]),
     }
@@ -215,20 +214,45 @@ def test_environments_build_the_container_only_pieces_from_recipes():
     deps = manifest["feature"]["cuda118"]["dependencies"]
     assert deps["openmm-torch"] == {"path": "recipes/openmm-torch-cuda118"}
     assert deps["openmm-plumed"] == {"path": "recipes/openmm-plumed-cuda118"}
-    # RIKYU's arm64 image still builds openmm-torch and PLUMED itself.
-    dockerfile = (REPO_ROOT / "container" / "Dockerfile.rikyu-arm64").read_text()
+    # build-plumed.sh stays for conda prefixes (docs/developer/plumed.md).
     plumed_script = (REPO_ROOT / "container" / "scripts" / "build-plumed.sh").read_text()
-    torch_commit = re.search(r'OPENMM_TORCH_COMMIT="?([0-9a-f]{40})', dockerfile).group(1)
+    torch_commit = re.search(r"commit: ([0-9a-f]{40})", (REPO_ROOT / "recipes/openmm-torch/recipe/recipe.yaml").read_text()).group(1)
     plumed_commit = re.search(r"plumed_commit=([0-9a-f]{40})", plumed_script).group(1)
     plugin_commit = re.search(r"plugin_commit=([0-9a-f]{40})", plumed_script).group(1)
     recipes = REPO_ROOT / "recipes"
     assert plumed_commit in (recipes / "plumed/recipe/recipe.yaml").read_text()
-    for flavour in ("", "-cuda118"):
+    for flavour in ("-cuda118", "-cuda13"):
         assert torch_commit in (recipes / f"openmm-torch{flavour}/recipe/recipe.yaml").read_text()
+    for flavour in ("", "-cuda118"):
         assert plugin_commit in (recipes / f"openmm-plumed{flavour}/recipe/recipe.yaml").read_text()
     default = manifest["feature"]["cuda129"]["dependencies"]
     assert default["openmm-torch"] == {"path": "recipes/openmm-torch"}
     assert default["openmm-plumed"] == {"path": "recipes/openmm-plumed"}
+
+
+def test_rikyu_image_is_built_from_the_cuda13_environment():
+    """RIKYU's contracts survive in pixi.toml and the Dockerfile, without a second dependency list."""
+    manifest = tomllib.loads((REPO_ROOT / "pixi.toml").read_text())
+    assert manifest["environments"]["cuda13"]["features"] == ["dev", "modeller", "cuda13"]
+    deps = manifest["feature"]["cuda13"]["dependencies"]
+    assert deps["cuda-version"] == "13.1.*"
+    assert deps["libcufft"] == ">=12.1.0.78"
+    assert deps["pytorch"]["build"] == "cuda130*"
+    assert deps["openmm-torch"] == {"path": "recipes/openmm-torch-cuda13"}
+    assert deps["openmm-plumed"] == {"path": "recipes/openmm-plumed"}
+
+    dockerfile = (REPO_ROOT / "container" / "Dockerfile.rikyu-arm64").read_text()
+    assert "pixi install -e cuda13 --locked" in dockerfile
+    assert "environment.yml" not in dockerfile
+    # Podman 4.9 on RIKYU parses heredoc lines as Dockerfile instructions.
+    assert not re.search(r"^RUN[^\n]*<<", dockerfile, re.M)
+    # NVRTC 13.0 cannot share a solve with cuFFT 12.1.
+    assert "COPY --from=cuda-devel /usr/local/cuda/lib64/libnvrtc.so*" in dockerfile
+    # /proc/self/maps resolves the /opt/mdclaw symlink.
+    assert 'MDCLAW_FUSEFIX_LIB="/opt/mdclaw-src/.pixi/envs/cuda13/lib/' in dockerfile
+    assert "scripts/install-modeller-arm64.py" in dockerfile
+    ignored = (REPO_ROOT / ".dockerignore").read_text()
+    assert "!scripts/install-modeller-arm64.py" in ignored
 
 
 def test_pixi_image_bakes_in_the_environment_activation():

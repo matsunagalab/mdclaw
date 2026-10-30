@@ -96,7 +96,7 @@ it is installed, otherwise `default` with a warning naming the command above;
 `MDCLAW_PIXI_ENV=default|cuda118` overrides. The standard CUDA 11.8 SIF
 (conservative driver baseline 520.61.05) remains the packaged alternative;
 verify each node with the shared GPU test before replacing its existing SIF.
-The RIKYU CUDA 13 image remains separate. Linux ARM64 MODELLER is available from the
+RIKYU's CUDA 13 image installs the `cuda13` environment from the same lock, published as `ghcr.io/matsunagalab/mdclaw:X.Y.Z-rikyu`. Linux ARM64 MODELLER is available from the
 [official generic archive](https://salilab.org/modeller/download_installation.html),
 but not from the salilab Conda channel. Install it after `pixi install`:
 
@@ -106,7 +106,7 @@ pixi run python scripts/install-modeller-arm64.py
 
 The installer verifies the pinned archive checksum and refuses to overwrite
 existing installations. Supply `KEY_MODELLER` when running MDClaw; the installer
-stores no key. RIKYU retains its existing image and MODELLER installation.
+stores no key. The RIKYU image runs the same installer.
 On a GPU node, run
 `pixi run python container/scripts/test-gpu.py` for the shared calculation test.
 The optional PythonTorchForce test is skipped only when the plugin is absent;

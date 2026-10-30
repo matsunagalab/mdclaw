@@ -1,7 +1,7 @@
-# Keep the build context lean. Dockerfile.pixi COPYs only pixi.toml, pixi.lock,
-# pyproject.toml, README.md, recipes/, mdclaw/ and container/scripts/;
-# Dockerfile.rikyu-arm64 also uses environment.yml. Everything else is either
-# noise or huge (SabDab job artifacts can reach many GB).
+# Keep the build context lean. Both Dockerfiles COPY only pixi.toml, pixi.lock,
+# pyproject.toml, README.md, recipes/, mdclaw/ and container/; the RIKYU one also
+# takes the two scripts allowed below. Everything else is either noise or huge
+# (SabDab job artifacts can reach many GB).
 
 # pixi-build work trees of source packages (multi-GB OpenMM builds)
 recipes/*/.pixi/
@@ -67,10 +67,11 @@ sabdab*.tsv
 # Tests are baked into the image via mdclaw/ — don't re-send from tests/
 tests/
 
-# Scripts are developer tooling, not runtime -- except the membrane patch
-# warm-up helper, which the Dockerfile COPYs and runs at build time.
+# Scripts are developer tooling, not runtime -- except what the RIKYU Dockerfile
+# COPYs and runs at build time.
 scripts/
 !scripts/warmup_membrane_cache.py
+!scripts/install-modeller-arm64.py
 
 # Plan / memory files
 plans/
