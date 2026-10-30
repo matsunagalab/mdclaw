@@ -48,7 +48,7 @@ jobs:
         run: pixi run --frozen python scripts/install-modeller-arm64.py
 
       - name: Lint
-        run: pixi run --frozen ruff check mdclaw/ tests/ scripts/_internal/doctor.py scripts/install-modeller-arm64.py container/scripts/test-gpu.py container/scripts/remove-conda-gpu-stack.py
+        run: pixi run --frozen ruff check mdclaw/ tests/ scripts/_internal/doctor.py scripts/install-modeller-arm64.py container/scripts/test-gpu.py
 
       - uses: actions/setup-node@v4
         with:
@@ -68,4 +68,4 @@ jobs:
           tests/test_mddb_export.py
           tests/test_deployment_scripts.py tests/test_docs_paths.py
           tests/test_bin_wrapper.py tests/test_runtime_selection.py
-          tests/test_gpu_acceptance.py tests/test_modeller_arm_install.py tests/test_cuda118_container.py -q
+          tests/test_gpu_acceptance.py tests/test_modeller_arm_install.py -q

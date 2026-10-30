@@ -14,7 +14,7 @@ succeeds, and an injected key is what MODELLER actually validates.
 
 The two images install it by different routes because the `salilab` conda
 channel supplies no Linux ARM64 build. The amd64 image installs the conda package
-from `container/Dockerfile` — not from `environment.yml`, which
+from the pixi lock (`container/Dockerfile.pixi`) — not from `environment.yml`, which
 `Dockerfile.rikyu-arm64` shares and which would then fail to solve on arm64.
 The arm64 image takes MODELLER from the generic tarball instead, which ships an
 aarch64 build (`lib/armv8-gnu`, gfortran-linked) beside the x86_64 one; its
@@ -33,37 +33,15 @@ environment behind `mdclaw <tool>`.
 
 ## Build And Test
 
-The standard x86-64 image retains CUDA 11.8 for floyd/n1–n5. Stage 1 starts
-from `pixi.toml` + `pixi.lock` (`pixi install --locked`), then removes the
-Conda-owned OpenMM, PyTorch/libtorch, JAX GPU build, Triton and CUDA dependency
-files **and metadata** before installing `container/cuda118-requirements.txt`.
-The removal follows the locked dependency graph and aborts on unexpected
-scientific dependents; files also owned by retained packages are preserved.
-A pip overwrite alone is insufficient because it leaves Conda libraries behind.
-
-The pinned PyTorch 2.7.1+cu118 wheel supplies its exact `nvidia-*-cu11`
-dependencies. JAX uses a pinned CPU jaxlib for pymbar analysis. Stage 2 builds
-OpenMM 8.6.1 with CUDA 11.8, then PythonTorchForce and PLUMED against that
-OpenMM and Torch's C++ ABI. Runtime NVRTC and math libraries are linked to the
-wheel-owned copies; no CUDA 12 Conda stack or second NVRTC is copied in.
-The build checks NVRTC 11.8, CPU JAX calculation, absence of the old Conda GPU
-records, and PyTorch's Pascal/Turing architecture support without needing a GPU.
-
-Thus the final image has explicit CUDA 11.8 build overrides, while local Linux
-Pixi remains CUDA 12.9. MODELLER and other scientific/dev packages still come
-from the lock. RIKYU continues using `environment.yml`, NVRTC 13.0, CUDA 13.1
-math libraries, its sm_100 plugin, FUSE workaround and existing MODELLER install.
-
-The environment is relocated directly to `/opt/mdclaw` with conda-pack's
-`no-archive` format and `--dest-prefix`. This avoids conda-pack 0.9.2's invalid
-tar headers for rewritten hardlinked files, as well as intermediate archive
-copies. Installation, relocation, and cache cleanup share one Docker layer so
-deleted caches do not remain in earlier layers. Relocation uses the installed
-files, deduplicates overlapping package paths, and preserves the binary prefix
-metadata needed after cache removal. The build runs
-`container/scripts/test-env-relocation.py` against the actual Dockerfile block
-to check hardlinks, duplicate paths, symlinks, text/binary prefix replacement,
-executable permissions, and source-file integrity.
+The standard x86-64 image is `container/Dockerfile.pixi` (see
+[Pixi-Built Image](#pixi-built-image-dockerfilepixi)): it installs the pixi
+`cuda118` environment from `pixi.lock`, so its CUDA 11.8 OpenMM, PyTorch,
+openmm-torch and PLUMED are the same builds a workstation gets with
+`pixi install -e cuda118`. The earlier amd64 Dockerfile, which installed
+the CUDA 12.9 lock and then swapped its GPU stack for CUDA 11.8 wheels and
+in-Dockerfile source builds, was removed after v0.6.13. RIKYU continues using
+`environment.yml`, NVRTC 13.0, CUDA 13.1 math libraries, its sm_100 plugin,
+FUSE workaround and existing MODELLER install.
 
 Actions writes the Docker image to a temporary file, releases the BuildKit
 cache, requires at least 40 GiB free, and only then loads the image for the CPU
@@ -74,8 +52,8 @@ Actions records free disk space every 15 seconds and stops its builder if less
 than 10 GiB remains.
 
 The amd64 image ships the membrane-patch cache that lives in the package
-(`mdclaw/data/membrane_patches`, OPC and TIP3P) and asserts at build time that
-both water models are present; it no longer runs a build-time warm-up. The
+(`mdclaw/data/membrane_patches`, OPC and TIP3P) and `Dockerfile.pixi` asserts at
+build time that both water models are present; it runs no build-time warm-up. The
 image built 2026-08-29 had shipped an empty warm-up directory because that step
 hid its own failure behind `|| echo WARNING`, so every membrane run without a
 checkout overlay paid a 30-40 minute cold build. Regenerate the packaged
@@ -83,7 +61,7 @@ patches with `scripts/warmup_membrane_cache.py --out mdclaw/data/membrane_patche
 (defaults to TIP3P; pass `--water-model opc` for the OPC set) and commit them.
 
 ```bash
-docker build -f container/Dockerfile -t mdclaw:latest .
+docker build -f container/Dockerfile.pixi -t mdclaw:latest .
 docker run --rm -v "$(pwd)/container/scripts/test-container.sh:/work/test.sh:ro" \
   mdclaw:latest bash /work/test.sh
 docker run --rm --gpus all -v "$(pwd)/container/scripts/test-container.sh:/work/test.sh:ro" \
@@ -453,7 +431,7 @@ SIF as well as the container build; import-only tests are insufficient.
 
 `run_sst2` runs the SST2 package as a separate process. Every runtime installs
 the matsunagalab/SST2 fork (branch `mdclaw`), pinned to a commit. The pin is
-declared in **six** places, a bump changes all six, and
+declared in **five** places, a bump changes all five, and
 `test_sst2_pin_is_the_same_in_every_declaration` in
 `tests/test_deployment_scripts.py` fails when they disagree:
 
@@ -461,7 +439,6 @@ declared in **six** places, a bump changes all six, and
 | --- | --- |
 | `pixi.toml` | `sst2` git `rev` (the standard image installs it from the lock) |
 | `environment.yml` | pip section |
-| `container/Dockerfile` | `ENV MDCLAW_SST2_REVISION` |
 | `container/Dockerfile.pixi` | `MDCLAW_SST2_REVISION` (the image installs it from the lock) |
 | `container/Dockerfile.rikyu-arm64` | the `pip install` line, and `MDCLAW_SST2_REVISION` |
 

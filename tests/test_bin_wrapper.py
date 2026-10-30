@@ -21,6 +21,12 @@ WRAPPER = REPO_ROOT / "bin" / "mdclaw"
 WARNING_MARKER = "user namespace"
 
 
+def _host_free_env() -> dict[str, str]:
+    """The test process's environment without the host's MDClaw selection."""
+    return {key: val for key, val in os.environ.items()
+            if not key.startswith(("MDCLAW_", "CLAUDE_PLUGIN_"))}
+
+
 def _run_wrapper(
     tmp_path: Path,
     *,
@@ -46,7 +52,7 @@ def _run_wrapper(
         else "         0          0 4294967295\n"
     )
 
-    env = os.environ.copy()
+    env = _host_free_env()
     env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
     env["MDCLAW_RUNTIME"] = "singularity"
     env["MDCLAW_SIF"] = str(sif)
@@ -112,7 +118,7 @@ def _route(tmp_path: Path, args: list[str]) -> str:
             (stub_bin / name).symlink_to(echo)
     sif = tmp_path / "mdclaw.sif"
     sif.write_text("stub sif")
-    env = os.environ.copy()
+    env = _host_free_env()
     env.update(PATH=f"{stub_bin}{os.pathsep}{env['PATH']}", MDCLAW_RUNTIME="singularity",
                MDCLAW_SIF=str(sif))
     out = subprocess.run([bash, str(WRAPPER), *args], env=env, text=True,
@@ -149,10 +155,8 @@ def _pixi_fixture(tmp_path: Path) -> tuple[Path, dict]:
     stub_bin = tmp_path / "stubs"
     stub_bin.mkdir()
     (stub_bin / "pixi").symlink_to(echo)
-    env = os.environ.copy()
+    env = _host_free_env()
     env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
-    env.pop("MDCLAW_RUNTIME", None)
-    env.pop("MDCLAW_PIXI_ENV", None)
     # Hide the host's NVIDIA driver: the pixi environment choice depends on it.
     env["MDCLAW_NVIDIA_VERSION_FILE"] = str(tmp_path / "no-nvidia-driver")
     return wrapper_copy, env

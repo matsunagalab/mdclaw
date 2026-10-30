@@ -399,7 +399,7 @@ files identical. See the [architecture](docs/developer/architecture.md),
 | `environment.yml` | Legacy conda definition, kept for existing envs and the arm64 image. |
 | `.github/workflows/` | CI (pixi env tests on macOS/Linux) and the container build/publish workflow. |
 | `mdclaw/` | Python package and CLI tool implementations. |
-| `container/` | Image definitions: `Dockerfile.pixi` (published image, from the `cuda118` environment), the arm64 image, and the earlier `Dockerfile`. |
+| `container/` | Image definitions: `Dockerfile.pixi` (published image, from the `cuda118` environment), and the arm64 image. |
 | `docs/agents/` | Deployment notes for agent harnesses. |
 | `docs/developer/` | Architecture, CLI internals, testing, release, and tool references. |
 | `tests/` | Unit, smoke, and integration tests. |

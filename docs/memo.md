@@ -13,6 +13,19 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-31 — v0.6.13 のイメージは 15 GB 太っていた: `.pixi/bld` を落とす修正と旧 Dockerfile の削除を v0.6.14 へ
+
+本人「v0.6.13 の GHCR 版に共有 SIF を差し替え、メモ、掃除、旧 Dockerfile 削除」→ 調査のうえ「推奨どおりに」。
+
+- v0.6.13 は GHCR に公開済み（digest `sha256:0a5386292c3cf89f1eb25ad503dd5096a25b5ba5ab4c6ef9091c680c254ea6ce`、container ワークフロー run 41034356196、56 分）。ただし `singularity pull` が 3 回とも途中で切れた（HTTP/2 PROTOCOL_ERROR、`GODEBUG=http2client=0` でも `unexpected EOF`）。`docker pull` は層の再試行で完走し、`docker-daemon://` 経由で SIF `/data/mdclaw/mdclaw-amd64-c7b4332007ac.sif`（8.5 GB）は作れた。
+- 原因は巨大な 1 層: 環境 12 GB に、`.pixi/bld` のレシピのビルドツリーが足されて 20 GB の 1 層になっていた（`.pixi/bld` は単体 15 GB、うち約 7 GB は環境へのハードリンクで、実質の増分は約 8 GB）。`.pixi/envs` 以外を同じ RUN で消し、環境を `lib/python3.12`・`lib`・その他の 3 層に分けてコピーするよう `Dockerfile.pixi` を修正した。層の分割は RIKYU イメージで先に取っていた対策と同じ。現在の共有 SIF `510707f021b6` も同じ中身。動作には影響しないが、ファイルサイズと取得に効く。
+- 測り間違いの訂正: 途中で「環境は 4.7 GB、イメージは 6〜7 GB になる」と見積もったが誤り。`du -sh bld envs` は 2 つのパスにまたがるハードリンクを先のパスだけで数えるので、`envs` が小さく見えていた。実測はイメージ 21 GB → 12.6 GB。
+- 判断: 太った v0.6.13 の SIF には差し替えない。v0.6.14 を出し、`singularity pull` が通ることと全ノードの受け入れを確認してから差し替える。`/data/mdclaw.sif` は `510707f021b6` のまま。
+- 旧 `container/Dockerfile`、`cuda118-requirements.txt`、`remove-conda-gpu-stack.py`、`test-env-relocation.py`、`tests/test_cuda118_container.py` を削除。`container/scripts/entrypoint.sh` と `build-plumed.sh` は `Dockerfile.rikyu-arm64` が使うので残す。SST2 のピンは 5 か所に戻った。
+- 併せて、`recipes/openmm-torch-cuda118` の arch 変換を既定レシピと同じ `a[3:-1].a[-1]` に統一（cuda118 の PyTorch 2.5.1 は 2 桁の `sm_100` を持たないので今は実害なし）。membrane パッチの検証（12 マニフェスト以上、opc と tip3p）をイメージのビルド時検証に追加。
+- テストの密閉性: シェルが `MDCLAW_RUNTIME=singularity` / `MDCLAW_SIF=…` を export していると `test_container_setup_skips_when_pixi_env_exists` などが落ちていた。`test_runtime_selection` と同じく `MDCLAW_*` / `CLAUDE_PLUGIN_*` を子プロセスに渡さないようにした。
+- 掃除: ワークツリー `mdclaw-gputorch`・`mdclaw-unify` とローカルの `pixi-*` を削除、リモートの `pixi-*` は本人が削除。floyd の `/` は一時 99% まで埋まり、作業で作った Docker イメージとスクラッチを消した。以前からの Docker イメージとビルドキャッシュ（149 GB）は未確認なので触っていない。
+
 ## 2026-10-30 — 共有 SIF を pixi `cuda118` から作った `Dockerfile.pixi` 版に差し替え、CI とリリースも pixi に一本化
 
 本人「クラスタ全体で使えるように cuda118 の SIF を作って /data/mdclaw.sif を差し替えて」「README を pixi に統一されたので更新」。

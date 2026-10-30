@@ -16,24 +16,30 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends git ca-certificates gfortran make && \
     rm -rf /var/lib/apt/lists/*
 # The build machine has no GPU; declare the CUDA 11.8 driver the environment's
-# platform requires, as container/Dockerfile does for its CUDA 12.9 lock.
+# platform requires.
 ENV CONDA_OVERRIDE_CUDA=11.8
 # The environment is not relocatable: it keeps this path in the runtime stage.
 WORKDIR /opt/mdclaw-src
 COPY pixi.toml pixi.lock pyproject.toml README.md ./
 COPY recipes/ recipes/
 COPY mdclaw/ mdclaw/
+# Keep only .pixi/envs: the recipe build trees under .pixi/bld added 8 GB beyond
+# the 12 GB environment to the v0.6.13 image (15 GB by themselves, the rest hard
+# links into the environment).
 RUN pixi install -e cuda118 --locked && \
+    find .pixi -mindepth 1 -maxdepth 1 ! -name envs -exec rm -rf {} + && \
     rm -rf recipes/*/.pixi /root/.cache
 ENV MDCLAW_ENV=/opt/mdclaw-src/.pixi/envs/cuda118
 # Replace the editable checkout with a regular install, as the standard image does.
 RUN $MDCLAW_ENV/bin/python -m pip install --no-cache-dir --no-deps --force-reinstall . && \
     rm -rf mdclaw build
-# packmol-memgen's NumPy compatibility patch, as in container/Dockerfile.
+# packmol-memgen's NumPy compatibility patch.
 RUN SITE_PACKAGES=$($MDCLAW_ENV/bin/python -c "import site; print(site.getsitepackages()[0])") && \
     PATCH_FILE="$SITE_PACKAGES/packmol_memgen/lib/pdbremix/v3numpy.py" && \
     if [ -f "$PATCH_FILE" ]; then sed -i "s/np\.float)/float)/g; s/np\.int)/int)/g" "$PATCH_FILE"; fi
-# Rebuild PPM3 (immers) with its FORMAT descriptor fixed, as in container/Dockerfile.
+# Rebuild PPM3 (immers), the membrane orientation code bundled with packmol-memgen:
+# opm.f has a FORMAT descriptor missing a comma (`f7.0''+-''`) that current
+# gfortran rejects at runtime, so no oriented PDB is ever written.
 RUN PPM3_DIR=$($MDCLAW_ENV/bin/python -c "import packmol_memgen, pathlib; print(pathlib.Path(packmol_memgen.__file__).parent / 'lib' / 'ppm3')") && \
     sed -i "s/f7\.0''+-''/f7.0,''+-''/" "$PPM3_DIR/opm.f" && \
     grep -q "f7.0,''+-''" "$PPM3_DIR/opm.f" && \
@@ -41,7 +47,13 @@ RUN PPM3_DIR=$($MDCLAW_ENV/bin/python -c "import packmol_memgen, pathlib; print(
     make -C "$PPM3_DIR" && \
     install -m 0755 "$PPM3_DIR/immers" "$MDCLAW_ENV/bin/immers" && \
     { "$MDCLAW_ENV/bin/immers" < /dev/null 2>&1 | grep -q "Fortran runtime error: Missing comma" \
-      && { echo "PPM3 format bug still present after patch"; exit 1; } || true; }
+      && { echo "PPM3 format bug still present after patch"; exit 1; } || true; } && \
+    rm -f datapar1 datapar2 datasub1
+# Copy the environment in three layers: `singularity pull` lost the single
+# multi-gigabyte layer of v0.6.13 from GHCR mid-transfer, three times.
+RUN mkdir /opt/mdclaw-layers && \
+    mv $MDCLAW_ENV/lib/python3.12 /opt/mdclaw-layers/python3.12 && \
+    mv $MDCLAW_ENV/lib /opt/mdclaw-layers/lib
 
 # Stage 2: runtime (same base as the standard image)
 FROM --platform=linux/amd64 nvidia/cuda:11.8.0-base-ubuntu22.04@sha256:f895871972c1c91eb6a896eee68468f40289395a1e58c492e1be7929d0f8703b
@@ -53,6 +65,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends libgl1-mesa-glx libglib2.0-0 libxrender1 libsm6 ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/mdclaw-src /opt/mdclaw-src
+COPY --from=build /opt/mdclaw-layers/lib/ /opt/mdclaw-src/.pixi/envs/cuda118/lib/
+COPY --from=build /opt/mdclaw-layers/python3.12/ /opt/mdclaw-src/.pixi/envs/cuda118/lib/python3.12/
 RUN ln -s /opt/mdclaw-src/.pixi/envs/cuda118 /opt/mdclaw
 COPY container/scripts/test-gpu.py /opt/mdclaw/share/mdclaw/test-gpu.py
 ENV MDCLAW_CUDA_TOOLKIT_VERSION="11.8" \
@@ -81,6 +95,14 @@ assert torch.__version__.startswith("2.5.1") and torch.version.cuda == "11.8", (
 assert hasattr(openmmtorch, "PythonTorchForce")
 assert {"sm_60", "sm_61", "sm_75", "sm_86"} <= set(torch._C._cuda_getArchFlags().split())
 print("pixi cuda118 image: OpenMM", openmm.__version__, "PyTorch", torch.__version__, "mdclaw", mdclaw.__version__)
+# The packaged membrane-patch cache must carry both water models: an image once
+# shipped it empty and every membrane run paid a 30-40 minute cold build.
+import json, pathlib
+root = pathlib.Path(mdclaw.__file__).parent / "data" / "membrane_patches"
+manifests = sorted(root.glob("*/*/manifest.json"))
+water = {json.load(m.open())["parameters"]["water_model"] for m in manifests}
+assert len(manifests) >= 12 and {"opc", "tip3p"} <= water, (len(manifests), water)
+print("bundled membrane patches:", len(manifests), sorted(water))
 PY
 COPY container/scripts/entrypoint-pixi.sh /opt/mdclaw/bin/entrypoint.sh
 WORKDIR /work
