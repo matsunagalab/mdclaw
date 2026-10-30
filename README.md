@@ -85,19 +85,27 @@ scripts/mdclaw-doctor.sh
 ```
 
 Pixi installs the package versions recorded in `pixi.lock` into `.pixi/`.
-The committed environment targets Apple Silicon macOS and Linux x86-64/ARM64;
-the Linux packages target CUDA 12.9 (R575 or newer NVIDIA drivers for GPU
-execution). On x86-64 hosts with older drivers (R520–R574, e.g. floyd and
-n1–n5), also run `pixi install -e cuda118`: it builds OpenMM from source
-against CUDA 11.8 (about 3 minutes, once) and `bin/mdclaw` then selects it
-automatically from the driver version. For MODELLER on Linux ARM64, install its official ARM binaries
-after `pixi install` with `pixi run python scripts/install-modeller-arm64.py`.
-Other platforms install MODELLER through Conda; each user supplies their own
-`KEY_MODELLER` at run time. For older NVIDIA drivers (including floyd/n1–n5),
-use the CUDA 11.8 container/SIF described below instead of the Linux Pixi CUDA
-stack; the conservative driver baseline is 520.61.05. Each node requires the
-[GPU calculation test](docs/developer/container.md#build-and-test) before use.
-The `.pixi/` directory contains large,
+`pixi.toml` and `pixi.lock` are the single definition of the scientific
+runtime: workstations, compute servers and the published container image are
+all built from them. Two environments cover the NVIDIA drivers in use:
+
+| Environment | Command | Platforms and GPU stack |
+|---|---|---|
+| `default` | `pixi install` | Apple Silicon macOS (OpenCL), Linux x86-64/ARM64 with CUDA 12.9 (driver R575 or newer) |
+| `cuda118` | `pixi install -e cuda118` | Linux x86-64 with CUDA 11.8 (driver R520–R574, e.g. floyd and n1–n5; Ubuntu 18.04 works) |
+
+Both carry OpenMM 8.6.1, GPU PyTorch, openmm-torch with PythonTorchForce, and
+PLUMED 2.9.4 with openmm-plumed. Pieces that no conda package provides are
+built from `recipes/` during the first install (about 15–30 minutes, once);
+in `cuda118` that includes OpenMM itself against CUDA 11.8. `bin/mdclaw` reads
+the driver version and runs `cuda118` when the driver is older than R575 and
+that environment is installed; `MDCLAW_PIXI_ENV=default|cuda118` overrides it.
+For MODELLER on Linux ARM64, install its official ARM binaries after
+`pixi install` with `pixi run python scripts/install-modeller-arm64.py`. Other
+platforms install MODELLER through Conda; each user supplies their own
+`KEY_MODELLER` at run time. Run the
+[GPU calculation test](docs/developer/container.md#build-and-test) on each
+node before production use. The `.pixi/` directory contains large,
 machine-specific files and should stay outside cloud-sync folders.
 
 The `export PATH` command makes `mdclaw` available in the current terminal.
@@ -124,7 +132,9 @@ and other runtimes, follow
 ### On A Compute Server: SIF
 
 A SIF (Singularity Image Format) file packages MDClaw and its scientific
-dependencies. On an x86_64 (Intel/AMD) Linux server with Singularity installed,
+dependencies. The image is built from the same `pixi.lock` (the `cuda118`
+environment, `container/Dockerfile.pixi`), so it runs on NVIDIA drivers R520
+or newer. On an x86_64 (Intel/AMD) Linux server with Singularity installed,
 download it with:
 
 ```bash
@@ -384,11 +394,12 @@ files identical. See the [architecture](docs/developer/architecture.md),
 | `.codex-plugin/` | Codex plugin manifest (adds the Molstar MCP server). |
 | `hooks/` | Plugin lifecycle hooks, including packaged runtime setup. |
 | `bin/mdclaw` | Runtime wrapper used by plugin and local deployments. |
-| `pixi.toml`, `pixi.lock` | Locked definition of the scientific runtime (dev env and container Stage 1). |
+| `pixi.toml`, `pixi.lock` | Locked definition of the scientific runtime: the `default` and `cuda118` environments and the container image. |
+| `recipes/` | Source builds pixi runs on install: OpenMM for CUDA 11.8, openmm-torch, PLUMED, openmm-plumed. |
 | `environment.yml` | Legacy conda definition, kept for existing envs and the arm64 image. |
 | `.github/workflows/` | CI (pixi env tests on macOS/Linux) and the container build/publish workflow. |
 | `mdclaw/` | Python package and CLI tool implementations. |
-| `container/` | Docker image and Singularity/Apptainer SIF build assets for the packaged MD runtime. |
+| `container/` | Image definitions: `Dockerfile.pixi` (published image, from the `cuda118` environment), the arm64 image, and the earlier `Dockerfile`. |
 | `docs/agents/` | Deployment notes for agent harnesses. |
 | `docs/developer/` | Architecture, CLI internals, testing, release, and tool references. |
 | `tests/` | Unit, smoke, and integration tests. |
@@ -398,8 +409,9 @@ files identical. See the [architecture](docs/developer/architecture.md),
 For maintainers, follow the [release guide](docs/developer/release.md).
 `scripts/bump-version.sh X.Y.Z` writes
 every version location at once, and pushing the `vX.Y.Z` tag triggers the
-container workflow, which builds the image from `pixi.lock`, runs the CPU
-smoke test, and publishes the GHCR tags. The GPU smoke test stays a manual
+container workflow, which builds the image from `pixi.lock` with
+`container/Dockerfile.pixi`, runs the CPU smoke test, and publishes the GHCR
+tags. The GPU smoke test stays a manual
 gate before shared SIFs are replaced.
 
 ## License

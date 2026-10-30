@@ -133,7 +133,7 @@ singularity exec --no-home --bind "$PWD:/work" --pwd /work \
 
 Use this SIF-overlay loop for changes under `mdclaw/`, `skills/`, tests,
 and docs. Rebuild and push the SIF only when container
-contents change: dependencies, `environment.yml`, `container/Dockerfile`,
+contents change: `pixi.toml`/`pixi.lock`, `recipes/`, `container/Dockerfile.pixi`,
 runtime binaries, package metadata/version, or release artifacts.
 
 If touching tool execution paths, also run the relevant smoke or pipeline tests
