@@ -13,6 +13,16 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-30 — 共有 SIF を pixi `cuda118` から作った `Dockerfile.pixi` 版に差し替え、CI とリリースも pixi に一本化
+
+本人「クラスタ全体で使えるように cuda118 の SIF を作って /data/mdclaw.sif を差し替えて」「README を pixi に統一されたので更新」。
+
+- `container/Dockerfile.pixi`（PR #21）: pixi 0.83.0 の公式イメージで `pixi install -e cuda118 --locked`（`CONDA_OVERRIDE_CUDA=11.8`）、packmol-memgen の v3numpy 修正と PPM3 `immers` 再ビルドだけ pixi 外。実行段は標準イメージと同じ `nvidia/cuda:11.8.0-base-ubuntu22.04`、環境はビルド時のパス `/opt/mdclaw-src/.pixi/envs/cuda118` のまま `/opt/mdclaw` からリンク、`singularity exec` は activation を実行しないので `AMBERHOME`・`PERL5LIB`・`MKL_INTERFACE_LAYER`・`GSETTINGS_SCHEMA_DIR`・`XML_CATALOG_FILES`・`OCL_ICD_VENDORS`・`PYTHONNOUSERSITE` を ENV に固定（テストで pixi.toml の activation と照合）。
+- 最初のイメージは CPU スモークで「PLUMED actual CPU energy and force」だけ失敗: `build-plumed.sh` が書く `share/mdclaw/plumed-build.json` をレシピが書いていなかった（PLUMED 自体は正常）。両方の openmm-plumed レシピで同じ記録を書くよう修正（`510707f`、PR #22 側も）。再ビルドで `test-container.sh` 25 passed / 0 failed。
+- SIF: `/data/mdclaw/mdclaw-amd64-pixi-510707f021b6.sif`（8,500,989,952 bytes、sha256 `3ec0077a…`、Docker イメージ展開時 約 21 GB、ビルド約 45 分 + 変換約 65 CPU 分）。floyd（A6000 R550、Slurm 上 down のためログインホストの GPU 0）と n1/n2/n4/n5（R530、Ubuntu 18.04）で `test-container.sh --gpu` 各 26 passed / 0 failed、PythonTorchForce（GPU）・OpenMM CUDA 上の PLUMED（E=4.50000、Reference と一致）・`export_molstar_page` 合格。CLN025 10 ps は floyd 779、n1 482、n2 488、n4 503、n5 638 ns/day（v0.6.12 SIF と同水準）。`/data/mdclaw.sif` を atomic に張替え、v0.6.12（`c8ddca1a8875`）はロールバック用に保持。修正前の未使用 SIF `7727f395ed4f` は削除。ログは `/data/mdclaw/accept-pixi/`。中身の mdclaw は 0.6.12 表記のまま（v0.6.13 リリースで揃える）。
+- PR #22（既定環境の openmm-torch/PLUMED）の CI は当初 macOS で失敗: libc++ 20+ が PyTorch 2.7 の c10 ヘッダの `std::is_arithmetic` 特殊化を拒否。conda-forge と同じ clang 18 に固定して 3 プラットフォームとも合格（macOS 12 分 44 秒、ARM64 10 分 33 秒、x86-64 12 分 34 秒。レシピのソースビルドで以前の 5〜6 分から延びた）。
+- CI の `container.yml` を `Dockerfile.pixi` に切り替え、README・CLAUDE/AGENTS を pixi 一本化の記述に更新（この PR）。旧 `container/Dockerfile` は `test_cuda118_container.py` が中身を検査しているので当面残す。
+
 ## 2026-10-30 — 既定環境（CUDA 12.9）にも openmm-torch と PLUMED を 3 プラットフォームで
 
 本人「macOS ARM64 にも openmm-torch と PLUMED は必要。CI が延びるのは仕方ない」。

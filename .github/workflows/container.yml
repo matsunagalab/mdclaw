@@ -1,5 +1,6 @@
-# Packaged-runtime image: build the amd64 image from the committed pixi.lock,
-# run the CPU smoke test, and push to GHCR.
+# Packaged-runtime image: build the amd64 image from the committed pixi.lock
+# (`pixi install -e cuda118 --locked`, container/Dockerfile.pixi), run the CPU
+# smoke test, and push to GHCR.
 #
 # Triggers:
 #   - tag push vX.Y.Z: build, smoke-test, push :X.Y.Z and :latest. The tag
@@ -88,7 +89,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: container/Dockerfile
+          file: container/Dockerfile.pixi
           outputs: type=docker,dest=${{ runner.temp }}/mdclaw-image.tar
           tags: mdclaw:ci
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
