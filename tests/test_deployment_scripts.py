@@ -210,7 +210,7 @@ def test_pixi_activation_isolates_user_site_and_finds_host_opencl():
     assert cuda118["dependencies"]["pytorch"]["build"] == "cuda118*"
 
 
-def test_cuda118_builds_the_container_only_pieces_from_recipes():
+def test_environments_build_the_container_only_pieces_from_recipes():
     """PythonTorchForce and PLUMED come from recipes pinned to the container's commits."""
     manifest = tomllib.loads((REPO_ROOT / "pixi.toml").read_text())
     deps = manifest["feature"]["cuda118"]["dependencies"]
@@ -222,9 +222,13 @@ def test_cuda118_builds_the_container_only_pieces_from_recipes():
     plumed_commit = re.search(r"plumed_commit=([0-9a-f]{40})", plumed_script).group(1)
     plugin_commit = re.search(r"plugin_commit=([0-9a-f]{40})", plumed_script).group(1)
     recipes = REPO_ROOT / "recipes"
-    assert torch_commit in (recipes / "openmm-torch-cuda118/recipe/recipe.yaml").read_text()
     assert plumed_commit in (recipes / "plumed/recipe/recipe.yaml").read_text()
-    assert plugin_commit in (recipes / "openmm-plumed-cuda118/recipe/recipe.yaml").read_text()
+    for flavour in ("", "-cuda118"):
+        assert torch_commit in (recipes / f"openmm-torch{flavour}/recipe/recipe.yaml").read_text()
+        assert plugin_commit in (recipes / f"openmm-plumed{flavour}/recipe/recipe.yaml").read_text()
+    default = manifest["feature"]["cuda129"]["dependencies"]
+    assert default["openmm-torch"] == {"path": "recipes/openmm-torch"}
+    assert default["openmm-plumed"] == {"path": "recipes/openmm-plumed"}
 
 
 def test_pixi_image_bakes_in_the_environment_activation():
