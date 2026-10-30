@@ -121,6 +121,29 @@ both Docker and the final SIF because the latter may load libraries via FUSE
 or host `--nv` bindings. These commands are acceptance procedures, not a claim
 that GPU execution has been verified on the development Mac.
 
+## Pixi-Built Image (`Dockerfile.pixi`)
+
+`container/Dockerfile.pixi` builds the runtime from the pixi `cuda118`
+environment, so the workstation environment and the image come from the same
+`pixi.toml` / `pixi.lock`. OpenMM 8.6.1 (CUDA 11.8), openmm-torch with
+PythonTorchForce and PLUMED 2.9.4 + openmm-plumed come from `recipes/`;
+PyTorch 2.5.1 is conda-forge's CUDA 11.8 GPU build. Only the packmol-memgen
+fixes (v3numpy patch, PPM3 `immers` rebuild) remain outside pixi.
+
+```bash
+docker build -f container/Dockerfile.pixi -t mdclaw:pixi-cuda118 .
+singularity build mdclaw.sif docker-daemon://mdclaw:pixi-cuda118
+```
+
+The build stage runs `pixi install -e cuda118 --locked` with
+`CONDA_OVERRIDE_CUDA=11.8` (no GPU on the builder) and builds the recipes once,
+about 30 minutes. The environment stays at `/opt/mdclaw-src/.pixi/envs/cuda118`
+(it is not relocatable) and `/opt/mdclaw` links to it, so paths match the
+standard image. The runtime stage fixes the environment's activation as `ENV`
+(`AMBERHOME`, `MKL_INTERFACE_LAYER`, `OCL_ICD_VENDORS`, `PYTHONNOUSERSITE`,
+...), because `singularity exec` does not run an activation script. Driver
+floor R520, as for the standard image.
+
 ## Publish To GHCR
 
 Publishing is normally automated: a `vX.Y.Z` tag triggers
@@ -430,7 +453,7 @@ SIF as well as the container build; import-only tests are insufficient.
 
 `run_sst2` runs the SST2 package as a separate process. Every runtime installs
 the matsunagalab/SST2 fork (branch `mdclaw`), pinned to a commit. The pin is
-declared in **five** places, a bump changes all five, and
+declared in **six** places, a bump changes all six, and
 `test_sst2_pin_is_the_same_in_every_declaration` in
 `tests/test_deployment_scripts.py` fails when they disagree:
 
@@ -439,6 +462,7 @@ declared in **five** places, a bump changes all five, and
 | `pixi.toml` | `sst2` git `rev` (the standard image installs it from the lock) |
 | `environment.yml` | pip section |
 | `container/Dockerfile` | `ENV MDCLAW_SST2_REVISION` |
+| `container/Dockerfile.pixi` | `MDCLAW_SST2_REVISION` (the image installs it from the lock) |
 | `container/Dockerfile.rikyu-arm64` | the `pip install` line, and `MDCLAW_SST2_REVISION` |
 
 Since `3dc7013` the fork lists `openmm` only as the `SST2[openmm]` extra: a
