@@ -23,8 +23,9 @@ WORKDIR /opt/mdclaw-src
 COPY pixi.toml pixi.lock pyproject.toml README.md ./
 COPY recipes/ recipes/
 COPY mdclaw/ mdclaw/
-# Keep only .pixi/envs: the recipe build trees under .pixi/bld were 15 GB of the
-# v0.6.13 image's 20 GB environment directory (the environment itself is 5 GB).
+# Keep only .pixi/envs: the recipe build trees under .pixi/bld added 8 GB beyond
+# the 12 GB environment to the v0.6.13 image (15 GB by themselves, the rest hard
+# links into the environment).
 RUN pixi install -e cuda118 --locked && \
     find .pixi -mindepth 1 -maxdepth 1 ! -name envs -exec rm -rf {} + && \
     rm -rf recipes/*/.pixi /root/.cache
@@ -46,7 +47,13 @@ RUN PPM3_DIR=$($MDCLAW_ENV/bin/python -c "import packmol_memgen, pathlib; print(
     make -C "$PPM3_DIR" && \
     install -m 0755 "$PPM3_DIR/immers" "$MDCLAW_ENV/bin/immers" && \
     { "$MDCLAW_ENV/bin/immers" < /dev/null 2>&1 | grep -q "Fortran runtime error: Missing comma" \
-      && { echo "PPM3 format bug still present after patch"; exit 1; } || true; }
+      && { echo "PPM3 format bug still present after patch"; exit 1; } || true; } && \
+    rm -f datapar1 datapar2 datasub1
+# Copy the environment in three layers: `singularity pull` lost the single
+# multi-gigabyte layer of v0.6.13 from GHCR mid-transfer, three times.
+RUN mkdir /opt/mdclaw-layers && \
+    mv $MDCLAW_ENV/lib/python3.12 /opt/mdclaw-layers/python3.12 && \
+    mv $MDCLAW_ENV/lib /opt/mdclaw-layers/lib
 
 # Stage 2: runtime (same base as the standard image)
 FROM --platform=linux/amd64 nvidia/cuda:11.8.0-base-ubuntu22.04@sha256:f895871972c1c91eb6a896eee68468f40289395a1e58c492e1be7929d0f8703b
@@ -58,6 +65,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends libgl1-mesa-glx libglib2.0-0 libxrender1 libsm6 ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/mdclaw-src /opt/mdclaw-src
+COPY --from=build /opt/mdclaw-layers/lib/ /opt/mdclaw-src/.pixi/envs/cuda118/lib/
+COPY --from=build /opt/mdclaw-layers/python3.12/ /opt/mdclaw-src/.pixi/envs/cuda118/lib/python3.12/
 RUN ln -s /opt/mdclaw-src/.pixi/envs/cuda118 /opt/mdclaw
 COPY container/scripts/test-gpu.py /opt/mdclaw/share/mdclaw/test-gpu.py
 ENV MDCLAW_CUDA_TOOLKIT_VERSION="11.8" \

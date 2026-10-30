@@ -61,7 +61,7 @@ def test_container_build_is_gated_on_the_lockfile():
     assert "COPY recipes/ recipes/" in dockerfile
     assert "pixi install -e cuda118 --locked" in dockerfile
     assert "pip install --no-cache-dir --no-deps --force-reinstall ." in dockerfile
-    # Only the environment ships: v0.6.13 carried 15 GB of .pixi/bld build trees.
+    # Only the environment ships: .pixi/bld added 8 GB to the v0.6.13 image.
     assert "find .pixi -mindepth 1 -maxdepth 1 ! -name envs -exec rm -rf {} +" in dockerfile
     assert (REPO_ROOT / "pixi.lock").exists()
 
