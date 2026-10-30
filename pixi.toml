@@ -13,9 +13,10 @@
 # Source-built pieces no conda package provides live in recipes/ and are built
 # by pixi on install (pixi-build): openmm-torch with PythonTorchForce
 # (conda-forge's 1.5.1 lacks it and pins openmm <8.5) and PLUMED 2.9.4 +
-# openmm-plumed 2.1 with the setBox patch, in both environments, plus OpenMM
+# openmm-plumed 2.1 with the setBox patch, in every environment, plus OpenMM
 # against CUDA 11.8 for `cuda118`. Still outside pixi:
 #   - packmol-memgen fixes (v3numpy patch, PPM3 immers rebuild)
+#   - RIKYU's NVRTC 13.0 and cuFFT FUSE shim (see feature.cuda13)
 #   - hole2 on osx-arm64 (no conda-forge build; build from source or use
 #     host binaries)
 
@@ -26,16 +27,17 @@ channels = ["conda-forge"]
 # selects the CUDA 12.9 builds of OpenMM/PyTorch on linux (conda-forge has no
 # lower CUDA build for OpenMM >= 8.5, see the note in environment.yml; driver
 # floor R575 for OpenMM's runtime-generated PTX). osx-arm64 solves
-# CPU/OpenCL-only. The standard container uses this lock as its seed, then
-# replaces the GPU stack with pinned CUDA 11.8 wheels and source-built OpenMM
-# for older cluster drivers. RIKYU retains its separate CUDA 13 environment.
+# CPU/OpenCL-only.
 # The `cuda118` environment adds its own linux-64 platform with __cuda=11.8 and
 # OpenMM built from source against CUDA 11.8 (recipes/openmm-cuda118), for
 # drivers R520-R574 (floyd R550, n1-n5 R530): `pixi install -e cuda118`.
+# The `cuda13` environment adds a linux-aarch64 platform with __cuda=13.0 for
+# RIKYU's image (container/Dockerfile.rikyu-arm64).
 platforms = [
     { name = "linux-64-cuda", platform = "linux-64", cuda = "12.9" },
     { name = "linux-aarch64-cuda", platform = "linux-aarch64", cuda = "12.9" },
     { name = "linux-64-cuda118", platform = "linux-64", cuda = "11.8", glibc = "2.17" },
+    { name = "linux-aarch64-cuda13", platform = "linux-aarch64", cuda = "13.0" },
     "osx-arm64",
 ]
 preview = ["pixi-build"]
@@ -117,8 +119,8 @@ ruff = ">=0.1"
 
 # MODELLER for modeller_from_alignment / the modeller-predict skill. The
 # salilab channel covers linux-64 and osx-arm64, but not linux-aarch64, which takes
-# the generic-tarball route (scripts/install-modeller-arm64.py for Pixi;
-# Dockerfile.rikyu-arm64 for that image). No license key is baked
+# the generic-tarball route (scripts/install-modeller-arm64.py, which
+# Dockerfile.rikyu-arm64 also runs). No license key is baked
 # in: mdclaw/genesis/modeller.py injects a synthetic modeller.config from a
 # KEY_MODELLER* environment variable at call time.
 [feature.modeller]
@@ -176,7 +178,25 @@ openmm-plumed = { path = "recipes/openmm-plumed-cuda118" }
 [feature.cuda118.activation.env]
 OCL_ICD_VENDORS = "/etc/OpenCL/vendors"
 
+# RIKYU: arm64 with compute capability 10.0 GPUs and a driver limited to CUDA
+# 13.0. conda-forge has the CUDA 13 OpenMM on linux-aarch64, so only openmm-torch
+# needs its own recipe. cuFFT 12.1 is the floor for PME on sm_100 and requires
+# cuda-version 13.1, while NVRTC must stay 13.0 for this driver and requires
+# cuda-version 13.0, so one solve cannot hold both: this environment locks the
+# 13.1 family and the image overlays NVRTC 13.0 from NVIDIA's image. Use it
+# through that image; outside it OpenMM would compile kernels with NVRTC 13.1.
+[feature.cuda13]
+platforms = ["linux-aarch64-cuda13"]
+
+[feature.cuda13.dependencies]
+cuda-version = "13.1.*"
+libcufft = ">=12.1.0.78"
+pytorch = { version = "2.10.0.*", build = "cuda130*" }
+openmm = { version = "8.6.1.*", build = "py312hdb138ca*" }
+openmm-torch = { path = "recipes/openmm-torch-cuda13" }
+openmm-plumed = { path = "recipes/openmm-plumed" }
 
 [environments]
 default = { features = ["dev", "modeller", "cuda129"], solve-group = "main" }
 cuda118 = { features = ["dev", "modeller", "cuda118"], solve-group = "cuda118" }
+cuda13 = { features = ["dev", "modeller", "cuda13"], solve-group = "cuda13" }

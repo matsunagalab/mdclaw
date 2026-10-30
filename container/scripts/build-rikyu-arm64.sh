@@ -1,10 +1,12 @@
 #!/bin/bash
-# Build, publish, and install the MDClaw arm64 / CUDA 13 development image.
+# Build, publish, and install the MDClaw arm64 / CUDA 13 image from the pixi
+# `cuda13` environment. Releases are built by .github/workflows/container.yml;
+# this script is for a build of the current checkout.
 #
 # Run on any arm64 host with Docker or Podman — rikyu's login node is the usual
 # one, and Apple Silicon with Docker Desktop works too; nothing here is specific
 # to either. The build needs no GPU:
-# CONDA_OVERRIDE_CUDA covers the CUDA solve and OpenMM compiles its kernels at
+# the Dockerfile sets CONDA_OVERRIDE_CUDA and OpenMM compiles its kernels at
 # Context creation. A GPU is needed only by test-rikyu-gpu.sh, which must run
 # from the SIF because the FUSE cuFFT failure it covers does not reproduce from
 # a container filesystem.
@@ -70,12 +72,12 @@ echo "==> Compile parallelism: $BUILD_JOBS"
 avail_gb=$(df -k "${TMPDIR:-/tmp}" 2>/dev/null | awk 'NR==2 {print int($4 / 1048576)}')
 if [ "${avail_gb:-0}" -lt 60 ]; then
     echo "Warning: only ${avail_gb}G free on ${TMPDIR:-/tmp}." >&2
-    echo "The image is ~15 GB and the SIF conversion unpacks it again; point" >&2
+    echo "The image is ~13 GB and the SIF conversion unpacks it again; point" >&2
     echo "TMPDIR (and APPTAINER_TMPDIR/APPTAINER_CACHEDIR) somewhere larger." >&2
 fi
 
 revision="$(git rev-parse --short=12 HEAD)"
-image="ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev-${revision}"
+image="ghcr.io/matsunagalab/mdclaw:rikyu-dev-${revision}"
 
 # --- build -------------------------------------------------------------------
 echo "==> Building $image"
@@ -135,6 +137,14 @@ if [ -n "$SIF_DEST" ]; then
         echo "==> MODELLER with the supplied license, from the SIF"
         "$APP" exec --no-home --env "KEY_MODELLER10v8=${KEY_MODELLER10v8}" \
             "$new_sif" python -c "
+# The route mdclaw takes: the packaged config.py holds the XXXX placeholder.
+import importlib.util, os, runpy, sys, types
+from pathlib import Path
+config = Path(importlib.util.find_spec('modeller').submodule_search_locations[0]) / 'config.py'
+cfg = types.ModuleType('modeller.config')
+cfg.install_dir = runpy.run_path(str(config))['install_dir']
+cfg.license = os.environ['KEY_MODELLER10v8']
+sys.modules['modeller.config'] = cfg
 import modeller
 from modeller import Environ
 Environ()

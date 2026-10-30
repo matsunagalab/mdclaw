@@ -103,8 +103,9 @@ runner was considered and deferred.
 
 ## Migration state and follow-ups
 
-- `environment.yml` remains for two consumers: existing conda users and
-  `Dockerfile.rikyu-arm64`. It is no longer the authoritative definition;
+- `environment.yml` remains for existing conda users;
+  `Dockerfile.rikyu-arm64` moved to the pixi `cuda13` environment. It is no
+  longer the authoritative definition;
   pixi.toml is. Remove it after the arm64 image migrates to a pixi env
   (`linux-aarch64` is already in the lock; MODELLER on aarch64 still needs
   the tarball route) and after the lab conda users have moved.

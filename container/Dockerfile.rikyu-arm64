@@ -1,298 +1,95 @@
-# syntax=docker/dockerfile:1.7
+# MDClaw runtime for RIKYU (Linux arm64, CUDA 13) built from the pixi `cuda13`
+# environment.
 #
-# MDClaw runtime for Linux arm64 systems with CUDA 13.x GPUs.
+# One pixi.toml / pixi.lock for every image and workstation: OpenMM 8.6.1 and
+# PyTorch 2.10.0 are conda-forge's CUDA 13 builds, openmm-torch (sm_100 +
+# PythonTorchForce) and PLUMED 2.9.4 + openmm-plumed come from recipes/
+# (pixi-build). Outside pixi, as in container/Dockerfile.pixi: the packmol-memgen
+# fixes. RIKYU only: NVRTC 13.0 over the locked 13.1, the cuFFT FUSE shim, and
+# the MODELLER ARM tarball (no conda package).
 #
-# Build on an arm64 host (Apple Silicon Docker Desktop is supported):
-#   docker build --platform linux/arm64 \
-#     -f container/Dockerfile.rikyu-arm64 \
-#     -t ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev .
+# Keep this file free of `RUN <<` heredocs: Podman 4.9 (RIKYU's login node) parses
+# their lines as Dockerfile instructions.
 #
-# The published OCI image can be converted to SIF with Apptainer:
-#   apptainer pull mdclaw-rikyu-arm64-cuda13-dev.sif \
-#     docker://ghcr.io/matsunagalab/mdclaw-rikyu:arm64-cuda13-dev
+#   container/scripts/build-rikyu-arm64.sh [--push] [--sif PATH]
 
-ARG MINIFORGE_IMAGE="docker.io/condaforge/miniforge3:24.11.3-0@sha256:bcfc04b3562faa8dfd48f3767e2bd7b73a8529f9611b508d42e5bd227db1342d"
+ARG PIXI_IMAGE="ghcr.io/prefix-dev/pixi:0.83.0@sha256:3dce86c6e87371c58035aa41b09f2b56ca8f011722320551e0c2bfc1c59da5fb"
 ARG CUDA_DEVEL_IMAGE="docker.io/nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:5dc1bca23d05bd37b011be68ec470c03b403a5da07ec3a86e41af9470e9d0cc6"
 ARG CUDA_RUNTIME_IMAGE="docker.io/nvidia/cuda:13.0.2-runtime-ubuntu24.04@sha256:6a0e31b59e70890446f2c17356d6efc0d54260090a8c63d6ca7c2ad049db95d2"
 
-# =============================================================================
-# Stage 1: Build and pack the arm64 conda environment
-# =============================================================================
-FROM --platform=linux/arm64 ${MINIFORGE_IMAGE} AS conda-base
-
-WORKDIR /build
-
-RUN test "$(dpkg --print-architecture)" = "arm64" && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends build-essential git ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
-COPY environment.yml pyproject.toml README.md ./
-COPY mdclaw/ mdclaw/
-
-# The generic environment pins OpenMM below CUDA 13 and PyTorch below 2.8.
-# This image instead resolves the arm64/CUDA 13 GPU packages in the same
-# transaction as the OpenFF/JAX dependencies.
-# The pip subsection is also installed separately, after GPU PyTorch exists,
-# to prevent pip from selecting an unrelated CPU wheel as an indirect
-# dependency of HPacker/e3nn.
-ARG PYTORCH_VERSION="2.10.0"
-RUN sed -E \
-      -e '/^[[:space:]]+- (openmm|openmm-torch|pytorch|cuda-version)([<>= ].*)?$/d' \
-      -e '/^  - pip:/,$d' \
-      environment.yml > environment-arm64-cuda13.yml && \
-    printf '  - pytorch=%s=*cuda130*\n  - cuda-version>=13.1,<13.2\n  - libcufft>=12.1.0.78\n' \
-      "${PYTORCH_VERSION}" >> environment-arm64-cuda13.yml && \
-    CONDA_OVERRIDE_CUDA=13.1 mamba env create \
-      -f environment-arm64-cuda13.yml -n mdclaw && \
-    mamba clean -afy
-
-RUN mamba run -n mdclaw pip install --no-cache-dir \
-      ".[dev]" \
-      "openff-pablo @ git+https://github.com/openforcefield/openff-pablo.git@v0.2.2" \
-      "SST2 @ git+https://github.com/matsunagalab/SST2.git@3dc7013"
-
-# Apply packmol-memgen's NumPy compatibility patch, matching the generic image.
-RUN SITE_PACKAGES=$(mamba run -n mdclaw python -c "import site; print(site.getsitepackages()[0])") && \
-    PATCH_FILE="$SITE_PACKAGES/packmol_memgen/lib/pdbremix/v3numpy.py" && \
-    if [ -f "$PATCH_FILE" ]; then \
-        sed -i.bak "s/np\\.float)/float)/g; s/np\\.int)/int)/g" "$PATCH_FILE" && \
-        rm -f "${PATCH_FILE}.bak"; \
-    fi
-
-RUN mamba run -n mdclaw python -c \
-      "import platform, torch; assert platform.machine() == 'aarch64'; assert torch.version.cuda == '13.0'; print(torch.__version__, torch.version.cuda)" && \
-    mamba run -n mdclaw python -c \
-      "import re, sys; from pathlib import Path; files=list((Path(sys.prefix)/'lib').glob('libcufft.so.12.*')); versions=[tuple(map(int, re.search(r'libcufft\\.so\\.(\\d+(?:\\.\\d+)+)$', str(path)).group(1).split('.'))) for path in files if re.search(r'libcufft\\.so\\.(\\d+(?:\\.\\d+)+)$', str(path))]; assert versions and max(versions) >= (12, 1, 0, 78), (files, versions); print('cuFFT', '.'.join(map(str, max(versions))))" && \
-    mamba run -n mdclaw python -c \
-      "import MDAnalysis as mda, mdtraj; print('MDAnalysis', mda.__version__, 'MDTraj', mdtraj.__version__)" && \
-    mamba install -n base -y conda-pack && \
-    conda-pack -n mdclaw -o /build/mdclaw_env.tar.gz \
-      --ignore-editable-packages --ignore-missing-files && \
-    mamba clean -afy
-
-# =============================================================================
-# Stage 2: Build OpenMM and openmm-torch against CUDA 13.0
-# =============================================================================
-FROM --platform=linux/arm64 ${CUDA_DEVEL_IMAGE} AS openmm-builder
-
+# Stage 1: install the locked environment (builds the recipes once)
+FROM --platform=linux/arm64 ${PIXI_IMAGE} AS build
 ARG BUILD_JOBS="4"
-ARG OPENMM_VERSION="8.5.1"
-ARG OPENMM_TORCH_COMMIT="b6532900ad825cb3d12193817a1e34a7f46ae6a3"
-
+# git fetches the recipe sources; gfortran/make rebuild PPM3; gcc builds the shim.
 RUN test "$(dpkg --print-architecture)" = "arm64" && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-      build-essential \
-      ca-certificates \
-      cmake \
-      curl \
-      doxygen \
-      gfortran \
-      git \
-      ninja-build \
-      patch \
-      swig && \
+      ca-certificates gcc gfortran git libc6-dev make && \
     rm -rf /var/lib/apt/lists/*
-
-RUN mkdir -p /opt/mdclaw
-COPY --from=conda-base /build/mdclaw_env.tar.gz /tmp/mdclaw_env.tar.gz
-RUN tar -xzf /tmp/mdclaw_env.tar.gz -C /opt/mdclaw && \
-    rm /tmp/mdclaw_env.tar.gz && \
-    /opt/mdclaw/bin/python /opt/mdclaw/bin/conda-unpack
-
-# The packed environment goes LAST on PATH here. environment.yml carries a build
-# toolchain (cmake, swig, patch, make, cxx-compiler, git) so a local conda prefix
-# can run build-plumed.sh, but conda-pack cannot relocate tools that compile their
-# data directory in: in this image `git --exec-path` and `swig -swiglib` still say
-# /opt/conda/envs/mdclaw, so every https fetch dies with "remote-https is not a
-# git command" and every wrapper generation with "Unable to find 'std_vector.i'".
-# This stage installs its own apt toolchain for exactly this work and every conda
-# use below is an absolute /opt/mdclaw/bin/... path, so put the env behind it —
-# which is also the toolchain every image before PLUMED was built with.
-ENV PATH="$PATH:/opt/mdclaw/bin" \
-    CUDA_HOME="/usr/local/cuda"
-
-# Fail here, not 20 minutes into the OpenMM build, if the env ever shadows the
-# toolchain again. swig is checked by resolving a library include, which is the
-# exact operation a stale swiglib breaks.
-RUN for tool in git swig cmake make patch gcc g++; do \
-        resolved=$(command -v "$tool") || { echo "$tool not found" >&2; exit 1; }; \
-        case "$resolved" in \
-            /usr/*) ;; \
-            *) echo "$tool resolves to $resolved, not this stage's toolchain" >&2; exit 1 ;; \
-        esac; \
-    done && \
-    printf '%%module t\n%%include "std_vector.i"\n' > /tmp/swigcheck.i && \
-    swig -python -o /tmp/swigcheck.cpp /tmp/swigcheck.i && \
-    rm -f /tmp/swigcheck.i /tmp/swigcheck.cpp && \
-    git ls-remote https://github.com/openmm/openmm.git HEAD > /dev/null
-
-# The packed conda environment includes CUDA 13.1 user-space tools. Always use
-# the base image compiler explicitly so OpenMM/NVRTC stay on the 13.0 contract.
-RUN /usr/local/cuda/bin/nvcc --version | grep -q "release 13.0"
-
-# Rebuild PPM3 (immers), the membrane orientation code bundled with
-# packmol-memgen, as the amd64 image does. The binary shipped in the conda
-# package computes the orientation correctly and then dies printing it: opm.f
-# has a FORMAT descriptor missing a comma (`f7.0''+-''`), which older gfortran
-# tolerated and current gfortran rejects at runtime, so no oriented PDB is ever
-# written. One comma fixes it. Built in this stage because it already has a
-# compiler and /opt/mdclaw is carried forward from it; the runtime stage has no
-# gfortran, only the conda libgfortran the binary links against.
-RUN set -eu; \
-    PPM3_DIR=$(/opt/mdclaw/bin/python -c "import packmol_memgen, pathlib; print(pathlib.Path(packmol_memgen.__file__).parent / 'lib' / 'ppm3')"); \
-    sed -i "s/f7\.0''+-''/f7.0,''+-''/" "$PPM3_DIR/opm.f"; \
-    grep -q "f7.0,''+-''" "$PPM3_DIR/opm.f"; \
-    make -C "$PPM3_DIR" clean >/dev/null 2>&1 || true; \
-    make -C "$PPM3_DIR"; \
-    install -m 0755 "$PPM3_DIR/immers" /opt/mdclaw/bin/immers
-
-# Fail the build if the installed binary is not the patched one. Running immers
-# with empty stdin dies at the first read, long before the bad FORMAT is
-# reached, so the stock binary cannot be told apart by its exit status; the
-# compiled FORMAT string can. The run is still worth doing: it proves the
-# freshly linked binary resolves its libraries and reaches Fortran runtime.
-RUN grep -a -q "f7.0,'+-'" /opt/mdclaw/bin/immers && \
-    ! grep -a -q "f7.0'+-'" /opt/mdclaw/bin/immers && \
-    /opt/mdclaw/bin/immers < /dev/null 2>&1 \
-      | grep -q "Fortran runtime error: End of file" && \
-    echo "PPM3 immers rebuilt from patched opm.f"
-
-RUN /opt/mdclaw/bin/pip install --no-cache-dir cython
-
-RUN git clone --depth 1 --branch "${OPENMM_VERSION}" \
-      https://github.com/openmm/openmm.git /build/openmm
-
-RUN cmake -S /build/openmm -B /build/openmm/build -G Ninja \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_INSTALL_PREFIX=/opt/mdclaw \
-      -DCUDAToolkit_ROOT=/usr/local/cuda \
-      -DPYTHON_EXECUTABLE=/opt/mdclaw/bin/python \
-      -DOPENMM_BUILD_CUDA_LIB=ON \
-      -DOPENMM_BUILD_OPENCL_LIB=OFF \
-      -DOPENMM_BUILD_C_AND_FORTRAN_WRAPPERS=OFF && \
-    cmake --build /build/openmm/build --parallel "${BUILD_JOBS}" && \
-    cmake --install /build/openmm/build && \
-    cmake --build /build/openmm/build --target PythonInstall --parallel "${BUILD_JOBS}"
-
-RUN /opt/mdclaw/bin/python -c \
-      "import openmm; assert openmm.__version__.startswith('8.5.1'); print('OpenMM', openmm.__version__)"
-
-RUN mkdir -p /build/openmm-torch && \
-    cd /build/openmm-torch && \
-    git init -q && \
-    git remote add origin https://github.com/openmm/openmm-torch.git && \
-    git fetch --depth 1 origin "${OPENMM_TORCH_COMMIT}" && \
-    git checkout -q FETCH_HEAD
-
-# openmm-torch contains compiled CUDA code, unlike OpenMM's NVRTC kernels.
-# Explicitly build SASS for compute capability 10.0 and retain PTX for forward
-# compatibility. Keep the compiler on CUDA 13.0 as well: OpenMM uses NVRTC at
-# runtime, and PTX emitted by a newer minor toolkit may be rejected by a driver
-# whose maximum supported CUDA toolkit is 13.0.
-ENV TORCH_CUDA_ARCH_LIST="10.0+PTX"
-RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c \
-      "import pathlib, torch; print(pathlib.Path(torch.__file__).resolve().parent / 'share' / 'cmake' / 'Torch')") && \
-    cmake -S /build/openmm-torch -B /build/openmm-torch/build -G Ninja \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_INSTALL_PREFIX=/opt/mdclaw \
-      -DCUDAToolkit_ROOT=/usr/local/cuda \
-      -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
-      -DOPENMM_DIR=/opt/mdclaw \
-      -DPYTHON_EXECUTABLE=/opt/mdclaw/bin/python \
-      -DTorch_DIR="${TORCH_CMAKE_DIR}" \
-      -DCMAKE_CUDA_ARCHITECTURES=100 \
-      -DCMAKE_CXX_FLAGS="-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE" \
-      -DNN_BUILD_CUDA_LIB=ON \
-      -DNN_BUILD_OPENCL_LIB=OFF && \
-    cmake --build /build/openmm-torch/build --parallel "${BUILD_JOBS}" && \
-    cmake --install /build/openmm-torch/build && \
-    cmake --build /build/openmm-torch/build --target PythonInstall --parallel "${BUILD_JOBS}"
-
-RUN /opt/mdclaw/bin/python -c \
-      "import openmmtorch; assert hasattr(openmmtorch, 'PythonTorchForce'); print('openmm-torch PythonTorchForce OK')"
-
-COPY container/scripts/build-plumed.sh /build/build-plumed.sh
-RUN bash /build/build-plumed.sh /opt/mdclaw /build/plumed-stack "${BUILD_JOBS}"
-
-# Rootless container runtimes can mount SIF/OCI files through FUSE.  Pre-fault
-# cuFFT's file-backed mappings so CUDA does not need to service FUSE page faults
-# while creating FFT plans.  Build this tiny LD_PRELOAD shim in the devel stage
-# so the final runtime does not need a compiler.
+# The build machine has no GPU; declare the driver the environment's platform requires.
+ENV CONDA_OVERRIDE_CUDA=13.0
+# The environment is not relocatable: it keeps this path in the runtime stage.
+WORKDIR /opt/mdclaw-src
+COPY pixi.toml pixi.lock pyproject.toml README.md ./
+COPY recipes/ recipes/
+COPY mdclaw/ mdclaw/
+# Keep only .pixi/envs: the recipe build trees are not part of the runtime.
+RUN CPU_COUNT="${BUILD_JOBS}" pixi install -e cuda13 --locked && \
+    find .pixi -mindepth 1 -maxdepth 1 ! -name envs -exec rm -rf {} + && \
+    rm -rf recipes/*/.pixi /root/.cache
+ENV MDCLAW_ENV=/opt/mdclaw-src/.pixi/envs/cuda13
+# Replace the editable checkout with a regular install.
+RUN $MDCLAW_ENV/bin/python -m pip install --no-cache-dir --no-deps --force-reinstall . && \
+    rm -rf mdclaw build
+# packmol-memgen's NumPy compatibility patch.
+RUN SITE_PACKAGES=$($MDCLAW_ENV/bin/python -c "import site; print(site.getsitepackages()[0])") && \
+    PATCH_FILE="$SITE_PACKAGES/packmol_memgen/lib/pdbremix/v3numpy.py" && \
+    if [ -f "$PATCH_FILE" ]; then sed -i "s/np\.float)/float)/g; s/np\.int)/int)/g" "$PATCH_FILE"; fi
+# Rebuild PPM3 (immers), the membrane orientation code bundled with packmol-memgen:
+# opm.f has a FORMAT descriptor missing a comma (`f7.0''+-''`) that current
+# gfortran rejects at runtime, so no oriented PDB is ever written. Running immers
+# with empty stdin dies at the first read, before the bad FORMAT, so the stock
+# binary is told apart by its compiled FORMAT string instead.
+RUN PPM3_DIR=$($MDCLAW_ENV/bin/python -c "import packmol_memgen, pathlib; print(pathlib.Path(packmol_memgen.__file__).parent / 'lib' / 'ppm3')") && \
+    sed -i "s/f7\.0''+-''/f7.0,''+-''/" "$PPM3_DIR/opm.f" && \
+    grep -q "f7.0,''+-''" "$PPM3_DIR/opm.f" && \
+    (make -C "$PPM3_DIR" clean >/dev/null 2>&1 || true) && \
+    make -C "$PPM3_DIR" && \
+    install -m 0755 "$PPM3_DIR/immers" "$MDCLAW_ENV/bin/immers" && \
+    grep -a -q "f7.0,'+-'" "$MDCLAW_ENV/bin/immers" && \
+    ! grep -a -q "f7.0'+-'" "$MDCLAW_ENV/bin/immers" && \
+    "$MDCLAW_ENV/bin/immers" < /dev/null 2>&1 | grep -q "Fortran runtime error: End of file" && \
+    rm -f datapar1 datapar2 datasub1
+# MODELLER from the official tarball, as Linux ARM64 workstations install it. No
+# license key is baked in. The script's import check needs the search path that
+# pixi's activation supplies elsewhere.
+COPY scripts/install-modeller-arm64.py /tmp/install-modeller-arm64.py
+RUN LD_LIBRARY_PATH="$MDCLAW_ENV/lib/modeller-10.8/lib/armv8-gnu:$MDCLAW_ENV/lib" \
+      $MDCLAW_ENV/bin/python /tmp/install-modeller-arm64.py && \
+    rm /tmp/install-modeller-arm64.py
+# Rootless runtimes can mount a SIF through FUSE. Pre-fault cuFFT's file-backed
+# mappings so CUDA does not service FUSE page faults while creating FFT plans.
 COPY container/mdclaw_fusefix.c /tmp/mdclaw_fusefix.c
-RUN gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
-      -Wl,-z,relro,-z,now \
-      -o /opt/mdclaw/lib/libmdclaw_fusefix.so \
-      /tmp/mdclaw_fusefix.c -ldl && \
-    rm /tmp/mdclaw_fusefix.c && \
-    LD_PRELOAD=/opt/mdclaw/lib/libmdclaw_fusefix.so \
-      /opt/mdclaw/bin/python -c \
-      "from pathlib import Path; assert '/opt/mdclaw/lib/libmdclaw_fusefix.so' in Path('/proc/self/maps').read_text(); print('cuFFT FUSE preload shim OK')"
+RUN gcc -shared -fPIC -O2 -Wall -Wextra -Werror -Wl,-z,relro,-z,now \
+      -o $MDCLAW_ENV/lib/libmdclaw_fusefix.so /tmp/mdclaw_fusefix.c -ldl && \
+    rm /tmp/mdclaw_fusefix.c
+# Copy the environment in several layers: a single multi-gigabyte blob is fragile
+# through HPC registry proxies and Apptainer.
+RUN mkdir /opt/mdclaw-layers && \
+    mkdir -p $MDCLAW_ENV/targets && \
+    mv $MDCLAW_ENV/lib/python3.12 /opt/mdclaw-layers/python3.12 && \
+    mv $MDCLAW_ENV/lib /opt/mdclaw-layers/lib && \
+    mv $MDCLAW_ENV/targets /opt/mdclaw-layers/targets
 
-# MODELLER, for `modeller_from_alignment` and the modeller-predict skill. The
-# salilab conda channel used by the amd64 image is linux-64 only, but the
-# generic tarball ships an aarch64 build (`lib/armv8-gnu`, gfortran-linked)
-# beside the x86_64 one, and its `python3.3` extension is a stable-ABI (abi3)
-# build that Python 3.12 loads. Laid out here by hand rather than through the
-# interactive `Install` script so the build stays reproducible; the layout
-# matches what the conda package produces, so nothing downstream can tell the
-# two images apart. No license key is baked in — config.py keeps the upstream
-# `XXXX` placeholder and mdclaw injects a KEY_MODELLER* value at call time.
-ARG MODELLER_VERSION="10.8"
-RUN curl -fsSL \
-      "https://salilab.org/modeller/${MODELLER_VERSION}/modeller-${MODELLER_VERSION}.tar.gz" \
-      -o /tmp/modeller.tar.gz && \
-    mkdir -p /tmp/modeller && \
-    tar -xzf /tmp/modeller.tar.gz -C /tmp/modeller && \
-    src="/tmp/modeller/modeller-${MODELLER_VERSION}" && \
-    dst="/opt/mdclaw/lib/modeller-${MODELLER_VERSION}" && \
-    test -d "${src}/lib/armv8-gnu" && \
-    mkdir -p "${dst}/lib" "${dst}/bin" && \
-    cp -pR "${src}/modlib" "${src}/src" "${dst}/" && \
-    cp -pR "${src}"/bin/*.top "${src}/bin/lib" "${dst}/bin/" && \
-    cp -pR "${src}/lib/armv8-gnu" "${dst}/lib/" && \
-    printf "install_dir = r'%s/'\nlicense = r'XXXX'\n" "${dst}" \
-      > "${dst}/modlib/modeller/config.py" && \
-    ln -s "${dst}/modlib/modeller" \
-      /opt/mdclaw/lib/python3.12/site-packages/modeller && \
-    ln -s "${dst}/lib/armv8-gnu/python3.3/_modeller.so" \
-      /opt/mdclaw/lib/python3.12/site-packages/_modeller.so && \
-    rm -rf /tmp/modeller /tmp/modeller.tar.gz
+# Stage 2: NVIDIA's toolkit, for NVRTC 13.0 only
+FROM --platform=linux/arm64 ${CUDA_DEVEL_IMAGE} AS cuda-devel
 
-# Fail the build if the hand-assembled layout leaves the extension unresolvable.
-# `armv8-gnu` bundles gfortran and hdf5 but not glib, which MODELLER also needs;
-# it comes from the conda environment already unpacked at /opt/mdclaw/lib, so a
-# dependency change there would otherwise only surface at first use. Resolve
-# against the search path the runtime stage declares: neither /opt/mdclaw/lib
-# (glib) nor the MODELLER lib directory (its own libmodeller.so.14) is on the
-# default loader path in this stage, and without them ldd reports "not found"
-# for libraries the image does ship.
-RUN LD_LIBRARY_PATH="/opt/mdclaw/lib:/opt/mdclaw/lib/modeller-${MODELLER_VERSION}/lib/armv8-gnu:${LD_LIBRARY_PATH:-}" \
-      ldd /opt/mdclaw/lib/modeller-${MODELLER_VERSION}/lib/armv8-gnu/python3.3/_modeller.so \
-      | tee /tmp/modeller-ldd.txt && \
-    ! grep -q "not found" /tmp/modeller-ldd.txt && \
-    rm -f /tmp/modeller-ldd.txt
-
-# Partition the packed environment before the final-stage COPY. Keeping the
-# Python tree, shared libraries, and CUDA targets in separate OCI layers avoids
-# a single multi-gigabyte blob that is fragile to transfer through HPC registry
-# proxies and Apptainer.
-RUN mkdir -p /opt/mdclaw-layer-parts && \
-    mv /opt/mdclaw/lib/python3.12 /opt/mdclaw-layer-parts/python3.12 && \
-    mv /opt/mdclaw/lib /opt/mdclaw-layer-parts/lib && \
-    mv /opt/mdclaw/targets /opt/mdclaw-layer-parts/targets
-
-# =============================================================================
-# Stage 3: Slim CUDA 13.0 arm64 runtime
-# =============================================================================
+# Stage 3: slim CUDA 13.0 runtime
 FROM --platform=linux/arm64 ${CUDA_RUNTIME_IMAGE}
-
 ARG GIT_REVISION="unknown"
 ARG WARM_MEMBRANE_CACHE="0"
-
 LABEL org.opencontainers.image.title="MDClaw arm64 CUDA 13 runtime" \
-      org.opencontainers.image.description="MDClaw Linux arm64 runtime with CUDA 13.0 NVRTC, CUDA 13.1 math libraries, OpenMM, AmberTools, and PyTorch." \
+      org.opencontainers.image.description="MDClaw Linux arm64 runtime built from the pixi cuda13 environment, with CUDA 13.0 NVRTC and CUDA 13.1 math libraries." \
       org.opencontainers.image.source="https://github.com/matsunagalab/mdclaw" \
       org.opencontainers.image.documentation="https://github.com/matsunagalab/mdclaw/blob/main/docs/developer/container.md" \
       org.opencontainers.image.licenses="MIT" \
@@ -302,79 +99,62 @@ LABEL org.opencontainers.image.title="MDClaw arm64 CUDA 13 runtime" \
       io.mdclaw.cuda.math-libs.version="13.1" \
       io.mdclaw.cuda.cufft.minimum-version="12.1.0.78" \
       io.mdclaw.runtime.fuse-prefault="libcufft.so"
-
 RUN test "$(dpkg --print-architecture)" = "arm64" && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-      ca-certificates \
-      libgl1 \
-      libglib2.0-0 \
-      libsm6 \
-      libxrender1 && \
+      ca-certificates libgl1 libglib2.0-0 libsm6 libxrender1 && \
     rm -rf /var/lib/apt/lists/*
-
-COPY --from=openmm-builder /opt/mdclaw /opt/mdclaw
-COPY container/scripts/test-gpu.py /opt/mdclaw/share/mdclaw/test-gpu.py
-COPY --from=openmm-builder /opt/mdclaw-layer-parts/lib/ /opt/mdclaw/lib/
-COPY --from=openmm-builder /opt/mdclaw-layer-parts/python3.12/ /opt/mdclaw/lib/python3.12/
-COPY --from=openmm-builder /opt/mdclaw-layer-parts/targets/ /opt/mdclaw/targets/
-
-# OpenMM compiles kernels at runtime. The runtime CUDA image does not include
-# NVRTC, so copy NVRTC and its builtins from the devel stage.
-COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc.so* /opt/mdclaw/lib/
-COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc-builtins.so* /opt/mdclaw/lib/
-
-# Text I/O in UTF-8 regardless of the locale. A GPU platform driver can reset
-# the process locale to C while it initialises (mdclaw._common.preserve_locale
-# undoes that where MDClaw creates the Context, but nothing can undo it for code
-# paths inside third-party libraries), and with LANG=C.UTF-8 set - an ordinary
-# HPC setting - that turns every unencoded read and write into ASCII. UTF-8 mode
-# takes the locale out of the decision entirely.
-ENV PATH="/opt/mdclaw/bin:$PATH" \
-    AMBERHOME="/opt/mdclaw" \
-    MDCLAW_CUDA_TOOLKIT_VERSION="13.0" \
+COPY --from=build /opt/mdclaw-src /opt/mdclaw-src
+COPY --from=build /opt/mdclaw-layers/lib/ /opt/mdclaw-src/.pixi/envs/cuda13/lib/
+COPY --from=build /opt/mdclaw-layers/python3.12/ /opt/mdclaw-src/.pixi/envs/cuda13/lib/python3.12/
+COPY --from=build /opt/mdclaw-layers/targets/ /opt/mdclaw-src/.pixi/envs/cuda13/targets/
+# OpenMM compiles kernels at Context creation, and a driver can reject PTX from a
+# newer minor toolkit (CUDA_ERROR_UNSUPPORTED_PTX_VERSION). The lock holds NVRTC
+# 13.1 (see feature.cuda13 in pixi.toml); this overlay keeps 13.0 ahead of it.
+COPY --from=cuda-devel /usr/local/cuda/lib64/libnvrtc.so* /opt/mdclaw-src/.pixi/envs/cuda13/lib/
+COPY --from=cuda-devel /usr/local/cuda/lib64/libnvrtc-builtins.so* /opt/mdclaw-src/.pixi/envs/cuda13/lib/
+COPY container/scripts/test-gpu.py /opt/mdclaw-src/.pixi/envs/cuda13/share/mdclaw/test-gpu.py
+RUN ln -s /opt/mdclaw-src/.pixi/envs/cuda13 /opt/mdclaw
+ENV MDCLAW_CUDA_TOOLKIT_VERSION="13.0" \
     MDCLAW_CUDA_MATH_LIBS_VERSION="13.1" \
     MDCLAW_CUFFT_MIN_VERSION="12.1.0.78" \
-    MDCLAW_FUSEFIX_LIB="/opt/mdclaw/lib/libmdclaw_fusefix.so" \
     MDCLAW_MODELLER_VERSION="10.8" \
     MDCLAW_PPM3_PATCHED="1" \
     MDCLAW_PLUMED_VERSION="2.9.4" \
     MDCLAW_SST2_REVISION="3dc7013" \
-    PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages" \
-    PYTHONUTF8="1" \
-    OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins" \
-    LD_PRELOAD="/opt/mdclaw/lib/libmdclaw_fusefix.so" \
+    MDCLAW_PIXI_ENV="cuda13"
+# The real path: /proc/self/maps, which the shim checks read, resolves the
+# /opt/mdclaw symlink.
+ENV MDCLAW_FUSEFIX_LIB="/opt/mdclaw-src/.pixi/envs/cuda13/lib/libmdclaw_fusefix.so" \
+    LD_PRELOAD="/opt/mdclaw-src/.pixi/envs/cuda13/lib/libmdclaw_fusefix.so"
+# The environment's activation, fixed (`singularity exec` runs no activation
+# script). Text I/O in UTF-8 regardless of the locale: a GPU platform driver can
+# reset the process locale to C while it initialises.
+ENV CONDA_PREFIX="/opt/mdclaw" \
+    PATH="/opt/mdclaw/bin:$PATH" \
     LD_LIBRARY_PATH="/opt/mdclaw/lib:/opt/mdclaw/lib/modeller-10.8/lib/armv8-gnu:/opt/mdclaw/lib/python3.12/site-packages/torch/lib:${LD_LIBRARY_PATH}" \
+    AMBERHOME="/opt/mdclaw" \
+    PERL5LIB="/opt/mdclaw/lib/perl/mm_pbsa" \
+    GSETTINGS_SCHEMA_DIR="/opt/mdclaw/share/glib-2.0/schemas" \
+    XML_CATALOG_FILES="file:///opt/mdclaw/etc/xml/catalog file:///etc/xml/catalog" \
+    OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins" \
+    PYTHONNOUSERSITE="1" \
+    PYTHONUTF8="1" \
     NVIDIA_VISIBLE_DEVICES="all" \
     NVIDIA_DRIVER_CAPABILITIES="compute,utility" \
     MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR="/opt/mdclaw/lib/python3.12/site-packages/mdclaw/data/membrane_patches"
-
-# Build-time contracts: the cuFFT FUSE preload shim is active, NVRTC is 13.0
-# (OpenMM compiles kernels with it at Context creation), and cuFFT is at least
-# MDCLAW_CUFFT_MIN_VERSION. GPU acceptance runs from the resulting SIF because
-# a container filesystem does not exercise the FUSE path. A script, not a RUN
-# heredoc: Podman 4.9 (RIKYU) parses heredoc lines as Dockerfile instructions.
-COPY container/scripts/check-rikyu-image.py /opt/mdclaw/share/mdclaw/check-rikyu-image.py
+# Build-time contracts. GPU acceptance runs from the resulting SIF because a
+# container filesystem does not exercise the FUSE path.
+COPY container/scripts/check-rikyu-image.py /opt/mdclaw-src/.pixi/envs/cuda13/share/mdclaw/check-rikyu-image.py
 RUN /opt/mdclaw/bin/python /opt/mdclaw/share/mdclaw/check-rikyu-image.py
-
-# The bundled patches ship in the package (mdclaw/data/membrane_patches) and
-# the variable names that directory. Until 2026-09-26 it named an empty
-# /opt/mdclaw/share/membrane_patches whenever the warm-up was skipped; agents
-# that inspected the image concluded there was no cache and chose the slow
-# full-box packing (MDDataBench glm-5.3-flash 001_membrane_5yc8 cli_sif r1).
-COPY scripts/warmup_membrane_cache.py /opt/mdclaw/share/warmup_membrane_cache.py
+# The bundled patches ship in the package; regenerating them is a build-time gate
+# for a release candidate only.
+COPY scripts/warmup_membrane_cache.py /opt/mdclaw-src/.pixi/envs/cuda13/share/warmup_membrane_cache.py
 RUN if [ "${WARM_MEMBRANE_CACHE}" = "1" ]; then \
       /opt/mdclaw/bin/python /opt/mdclaw/share/warmup_membrane_cache.py \
         --out "${MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR}"; \
-    else \
-      test -n "$(ls -A "${MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR}")" && \
-      echo "Using the packaged membrane patch cache without rebuilding it."; \
     fi
-
-COPY container/scripts/entrypoint.sh /opt/mdclaw/bin/entrypoint.sh
-RUN chmod +x /opt/mdclaw/bin/entrypoint.sh
-
+COPY container/scripts/entrypoint-pixi.sh /opt/mdclaw-src/.pixi/envs/cuda13/bin/entrypoint.sh
 WORKDIR /work
-
 ENTRYPOINT ["/opt/mdclaw/bin/entrypoint.sh"]
 CMD ["mdclaw", "--version"]

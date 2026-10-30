@@ -23,7 +23,7 @@ SHA256 = "dde99dcad8e2945d48f9d87ea21addfad90f61ade14bbd7a7ad38b72530c5927"
 
 
 def install_archive(archive, prefix, site_packages):
-    """Verify and lay out the same ARM distribution used by the RIKYU image."""
+    """Verify and lay out the official ARM distribution (also run by the RIKYU image)."""
     if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256:
         raise ValueError("MODELLER archive checksum mismatch")
     destination = prefix / "lib" / f"modeller-{VERSION}"

@@ -1,7 +1,7 @@
 # openmm-plumed v2.1 with the container's setBox lifetime patch, built against
 # conda-forge's OpenMM and PLUMED 2.9.4 (../plumed) for the default
-# environment on linux-64, linux-aarch64 and osx-arm64. The cuda118 variant is
-# ../openmm-plumed-cuda118.
+# environment on linux-64, linux-aarch64 and osx-arm64 and for `cuda13`. The
+# cuda118 variant is ../openmm-plumed-cuda118.
 [workspace]
 # Lets `pixi build --path recipes/openmm-plumed` run standalone.
 channels = ["conda-forge"]

@@ -396,10 +396,10 @@ files identical. See the [architecture](docs/developer/architecture.md),
 | `bin/mdclaw` | Runtime wrapper used by plugin and local deployments. |
 | `pixi.toml`, `pixi.lock` | Locked definition of the scientific runtime: the `default` and `cuda118` environments and the container image. |
 | `recipes/` | Source builds pixi runs on install: OpenMM for CUDA 11.8, openmm-torch, PLUMED, openmm-plumed. |
-| `environment.yml` | Legacy conda definition, kept for existing envs and the arm64 image. |
+| `environment.yml` | Legacy conda definition, kept for existing envs. |
 | `.github/workflows/` | CI (pixi env tests on macOS/Linux) and the container build/publish workflow. |
 | `mdclaw/` | Python package and CLI tool implementations. |
-| `container/` | Image definitions: `Dockerfile.pixi` (published image, from the `cuda118` environment), and the arm64 image. |
+| `container/` | Image definitions: `Dockerfile.pixi` (from the `cuda118` environment) and `Dockerfile.rikyu-arm64` (from the `cuda13` environment). |
 | `docs/agents/` | Deployment notes for agent harnesses. |
 | `docs/developer/` | Architecture, CLI internals, testing, release, and tool references. |
 | `tests/` | Unit, smoke, and integration tests. |

@@ -1,0 +1,21 @@
+# openmm-torch with PythonTorchForce for the `cuda13` environment (RIKYU's arm64
+# image), built against conda-forge's CUDA 13 OpenMM 8.6.1 and PyTorch 2.10.0.
+# The other variants are ../openmm-torch and ../openmm-torch-cuda118.
+[workspace]
+# Lets `pixi build --path recipes/openmm-torch-cuda13` run standalone on arm64
+# (needs CONDA_OVERRIDE_CUDA=13.0 for the CUDA PyTorch host).
+channels = ["conda-forge"]
+platforms = ["linux-aarch64"]
+preview = ["pixi-build"]
+
+[package]
+name = "openmm-torch"
+version = "1.5.1.20260624"
+
+[package.build.backend]
+name = "pixi-build-rattler-build"
+version = "*"
+channels = [
+  "https://prefix.dev/pixi-build-backends",
+  "https://prefix.dev/conda-forge",
+]
