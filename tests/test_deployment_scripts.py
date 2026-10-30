@@ -13,14 +13,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_amd64_toolchain_smoke_parses_cpp_library_as_cpp():
-    dockerfile = (REPO_ROOT / "container" / "Dockerfile").read_text()
-    command = next(line.strip() for line in dockerfile.splitlines()
-                   if "swig " in line and "/tmp/swigcheck.i" in line)
-    # std_vector.i is a C++ library; C mode fails even with the correct swiglib.
-    assert "-c++" in command.split()
-
-
 def test_release_versions_stay_in_sync():
     versions = {
         "pyproject.toml": tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())["project"]["version"],
@@ -45,11 +37,12 @@ def test_release_versions_stay_in_sync():
 
 def test_container_definition_includes_dev_tools_for_sif_workflows():
     """The image env comes from the lock; the dev feature must carry the tools."""
-    dockerfile = (REPO_ROOT / "container" / "Dockerfile").read_text()
+    dockerfile = (REPO_ROOT / "container" / "Dockerfile.pixi").read_text()
     pixi_manifest = (REPO_ROOT / "pixi.toml").read_text()
     test_script = (REPO_ROOT / "container" / "scripts" / "test-container.sh").read_text()
 
-    assert "pixi install --locked" in dockerfile
+    assert "pixi install -e cuda118 --locked" in dockerfile
+    assert "dev" in tomllib.loads(pixi_manifest)["environments"]["cuda118"]["features"]
     dev_feature = pixi_manifest.split("[feature.dev.dependencies]", 1)[1]
     for tool in ("pytest", "pytest-asyncio", "ruff"):
         assert tool in dev_feature.split("[", 1)[0]
@@ -60,15 +53,23 @@ def test_container_definition_includes_dev_tools_for_sif_workflows():
 
 
 def test_container_build_is_gated_on_the_lockfile():
-    """Stage 1 must install from pixi.lock, never re-solve, and must not
-    reintroduce the editable install into the packed env."""
-    dockerfile = (REPO_ROOT / "container" / "Dockerfile").read_text()
+    """The image installs exactly pixi.lock (never re-solves), with the recipes
+    its source packages need, and replaces the editable checkout install."""
+    dockerfile = (REPO_ROOT / "container" / "Dockerfile.pixi").read_text()
 
     assert "COPY pixi.toml pixi.lock" in dockerfile
-    assert "pixi install --locked" in dockerfile
-    assert "pip install --no-deps --force-reinstall ." in dockerfile
-    assert "ignore_editable_packages=True" in dockerfile
+    assert "COPY recipes/ recipes/" in dockerfile
+    assert "pixi install -e cuda118 --locked" in dockerfile
+    assert "pip install --no-cache-dir --no-deps --force-reinstall ." in dockerfile
+    # Only the environment ships: v0.6.13 carried 15 GB of .pixi/bld build trees.
+    assert "find .pixi -mindepth 1 -maxdepth 1 ! -name envs -exec rm -rf {} +" in dockerfile
     assert (REPO_ROOT / "pixi.lock").exists()
+
+
+def _host_free_env() -> dict[str, str]:
+    """The test process's environment without the host's MDClaw selection."""
+    return {key: val for key, val in os.environ.items()
+            if not key.startswith(("MDCLAW_", "CLAUDE_PLUGIN_"))}
 
 
 def test_container_setup_skips_when_pixi_env_exists(tmp_path):
@@ -86,7 +87,7 @@ def test_container_setup_skips_when_pixi_env_exists(tmp_path):
 
     result = subprocess.run(
         ["bash", str(tmp_path / "scripts" / "setup-container.sh")],
-        env={**os.environ, "PATH": f"{stub_bin}:/usr/bin:/bin"},
+        env={**_host_free_env(), "PATH": f"{stub_bin}:/usr/bin:/bin"},
         capture_output=True,
         text=True,
     )
@@ -106,7 +107,7 @@ def test_container_setup_preserves_explicit_existing_sif(tmp_path):
     runtime.chmod(0o755)
     result = subprocess.run(
         ["bash", str(REPO_ROOT / "scripts/setup-container.sh"), "different-version"],
-        env={**os.environ, "PATH": f"{tmp_path}:/usr/bin:/bin",
+        env={**_host_free_env(), "PATH": f"{tmp_path}:/usr/bin:/bin",
              "MDCLAW_SIF": str(image), "MDCLAW_FORCE_CONTAINER_SETUP": "1"},
         capture_output=True,
         text=True,
@@ -181,18 +182,16 @@ def test_every_skill_is_mirrored_and_declares_frontmatter():
 
 
 def test_sst2_pin_is_the_same_in_every_declaration():
-    """The SST2 revision is declared six times; a drift once shipped a driver too old for run_sst2."""
+    """The SST2 revision is declared five times; a drift once shipped a driver too old for run_sst2."""
     sources = {
         "pixi.toml": (REPO_ROOT / "pixi.toml").read_text(),
         "environment.yml": (REPO_ROOT / "environment.yml").read_text(),
-        "container/Dockerfile": (REPO_ROOT / "container" / "Dockerfile").read_text(),
         "container/Dockerfile.rikyu-arm64": (REPO_ROOT / "container" / "Dockerfile.rikyu-arm64").read_text(),
         "container/Dockerfile.pixi": (REPO_ROOT / "container" / "Dockerfile.pixi").read_text(),
     }
     pins = {
         "pixi.toml rev": re.findall(r'sst2 = \{ git = "https://github.com/matsunagalab/SST2.git", rev = "([0-9a-f]+)" \}', sources["pixi.toml"]),
         "environment.yml pip": re.findall(r"SST2 @ git\+https://github.com/matsunagalab/SST2.git@([0-9a-f]+)", sources["environment.yml"]),
-        "Dockerfile MDCLAW_SST2_REVISION": re.findall(r"MDCLAW_SST2_REVISION=\"?([0-9a-f]+)", sources["container/Dockerfile"]),
         "Dockerfile.rikyu-arm64 pip": re.findall(r"SST2 @ git\+https://github.com/matsunagalab/SST2.git@([0-9a-f]+)", sources["container/Dockerfile.rikyu-arm64"]),
         "Dockerfile.rikyu-arm64 MDCLAW_SST2_REVISION": re.findall(r"MDCLAW_SST2_REVISION=\"?([0-9a-f]+)", sources["container/Dockerfile.rikyu-arm64"]),
         "Dockerfile.pixi MDCLAW_SST2_REVISION": re.findall(r"MDCLAW_SST2_REVISION=\"?([0-9a-f]+)", sources["container/Dockerfile.pixi"]),
@@ -216,9 +215,10 @@ def test_environments_build_the_container_only_pieces_from_recipes():
     deps = manifest["feature"]["cuda118"]["dependencies"]
     assert deps["openmm-torch"] == {"path": "recipes/openmm-torch-cuda118"}
     assert deps["openmm-plumed"] == {"path": "recipes/openmm-plumed-cuda118"}
-    dockerfile = (REPO_ROOT / "container" / "Dockerfile").read_text()
+    # RIKYU's arm64 image still builds openmm-torch and PLUMED itself.
+    dockerfile = (REPO_ROOT / "container" / "Dockerfile.rikyu-arm64").read_text()
     plumed_script = (REPO_ROOT / "container" / "scripts" / "build-plumed.sh").read_text()
-    torch_commit = re.search(r"OPENMM_TORCH_COMMIT=([0-9a-f]{40})", dockerfile).group(1)
+    torch_commit = re.search(r'OPENMM_TORCH_COMMIT="?([0-9a-f]{40})', dockerfile).group(1)
     plumed_commit = re.search(r"plumed_commit=([0-9a-f]{40})", plumed_script).group(1)
     plugin_commit = re.search(r"plugin_commit=([0-9a-f]{40})", plumed_script).group(1)
     recipes = REPO_ROOT / "recipes"

@@ -4,7 +4,8 @@ set -ex
 # toolkit in the build prefix and libtorch from the host prefix's PyTorch.
 TORCH_DIR=$(${PYTHON} -c "import pathlib, torch; print(pathlib.Path(torch.__file__).resolve().parent / 'share' / 'cmake' / 'Torch')")
 TORCH_ABI=$(${PYTHON} -c 'import torch; print(int(torch._C._GLIBCXX_USE_CXX11_ABI))')
-ARCH_LIST=$(${PYTHON} -c "import torch; print(';'.join(f'{a[3]}.{a[4:]}' for a in torch._C._cuda_getArchFlags().split() if a.startswith('sm_')))")
+# sm_86 -> 8.6, sm_100 -> 10.0, sm_120 -> 12.0
+ARCH_LIST=$(${PYTHON} -c "import torch; print(';'.join(f'{a[3:-1]}.{a[-1]}' for a in torch._C._cuda_getArchFlags().split() if a.startswith('sm_')))")
 CMAKE_FLAGS="${CMAKE_ARGS} -DCMAKE_INSTALL_PREFIX=${PREFIX} -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF"
 CMAKE_FLAGS+=" -DOPENMM_DIR=${PREFIX} -DPYTHON_EXECUTABLE=${PYTHON} -DTorch_DIR=${TORCH_DIR}"
 CMAKE_FLAGS+=" -DCUDAToolkit_ROOT=${BUILD_PREFIX} -DCUDA_TOOLKIT_ROOT_DIR=${BUILD_PREFIX}"

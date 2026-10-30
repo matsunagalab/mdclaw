@@ -1,7 +1,7 @@
-# Keep the build context lean. Dockerfile COPYs only environment.yml,
-# pyproject.toml, README.md, mdclaw/, container/scripts/, and the single
-# build-time helper scripts/warmup_membrane_cache.py. Everything else is
-# either noise or huge (SabDab job artifacts can reach many GB).
+# Keep the build context lean. Dockerfile.pixi COPYs only pixi.toml, pixi.lock,
+# pyproject.toml, README.md, recipes/, mdclaw/ and container/scripts/;
+# Dockerfile.rikyu-arm64 also uses environment.yml. Everything else is either
+# noise or huge (SabDab job artifacts can reach many GB).
 
 # pixi-build work trees of source packages (multi-GB OpenMM builds)
 recipes/*/.pixi/
