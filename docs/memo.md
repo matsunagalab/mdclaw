@@ -13,6 +13,74 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-31 — 保留テスト test-v6-cli の失敗 46 件のうちエージェント側の原因を調べ、MDClaw のツール側の欠陥 5 つを直した（branch `test-v6-fixes`、未マージ）
+
+ユーザー依頼「失敗の原因を調べて、MDClaw で直すべきところを直して」。対象は `/data1/rkp00079/rku00161/runs/test-v6-cli`（720 attempt、失敗 46）。イメージは `/data1/rkp00079/mdclaw.sif`（main `ac0e328`）、pi の skill は 8f45de7。採点側（scorer・タスク）は別の担当が見ているので、MDDataBench には触っていない。作業ファイルはセッションの scratchpad（`condense.py`、`codes.py`、`grepcalls.py` など）。
+
+**1. 提出なし（`agent_no_submission` 19 件）**
+- **106_metal_6rnt の 7 件（kimi CLI + skills r1–r3、qwen CLI + skills r1–r3、qwen CLI only r2）: MDClaw の不具合**
+  - `build_amber_system` が 2'-AMP（`2AM`）を `unsupported_modified_nucleic_residue` で拒否していた。prep は 2AM をリガンドとして扱い、SMILES と電荷 −2 を `ligand_chemistry.json` に記録している。それでも、文字列ベースの判定（糖リン酸の原子が 4 つ以上あり、AMP/ADP/ATP の許可リストにない）が修飾ヌクレオチドとみなした。
+  - 30 attempt のうち 29 件が topo_001 でこの拒否に当たった。成功した attempt は、どれも回避策を使っている: 残基名を AMP に変える（kimi CLI only r1/r3、「to pass nucleic guardrail」）、原子名を古い `*` 表記に変える（glm CLI + skills r1）、ffxml を手作りして `build_openmm_system` で組む（glm CLI + skills r3）。
+  - kimi が CLI only では解けて CLI + skills で解けないのは、skill が「検証を回避するために source を書き換えない」と言うからである。kimi r1 は残基名を変えず、307 s の拒否から 1,800 s まで、`content_detection.py` を読み、Pablo の照合を試し、tleap で組もうとして時間切れになった。拒否の next_action「modXNA を使え」も誤っていた。
+- **110_complex_3k1r の 6 件と、qwen CLI only r3 の `production_incomplete`: 計測環境の事象で、MDClaw ではない**
+  - そのとき動いていた 8 エージェントのうち 7 つが、05:13:22–23 UTC に同時に終了した（exit_reason `error`、rc 1、stderr は `unshare: sigprocmask unblock failed`）。開始からの経過は 64–826 s とばらばら。kimi CLI + skills r2 だけが残った。
+  - qwen CLI only r3 は min と eq を投入したところで止まり、prod が未投入のまま残った。採点側の担当に渡す。
+- **105_ligand_6mj7 の qwen 4 件: ツールの案内不足が主因**
+  - 遊離の L-Arg（label chain E、author A:204）を、split が 1 残基のタンパク質成分として読む。そのため `--include-ligand-resnames ARG` は「not found」になった。chain E をタンパク質として選ぶと prep は通るが、`build_amber_system` が OpenMM の「No template found for residue (ARG) ... matches CARG」で落ちた（30 件中 26 件）。
+  - 残る手段は `--ligand-components` で、残基名（ARG は拒否、ARGL や ARGX は 4 文字で拒否）と SMILES を当てずっぽうで試す羽目になった。
+  - qwen CLI only r2 は、加えて `$TMPDIR` の下に練習用の study を作り、本物の study を使わなかった（モデルの誤り）。
+- **101 qwen CLI only r2 と 119 qwen CLI only r1: モデルの誤り**
+  - 101 は topo が完了したあと、X–H 結合が HarmonicBondForce に無い（拘束なので当然）ことを不具合と思い込み、15 分以上調べた。
+  - 119 はログインノードの GPU で自前の OpenMM ベンチマークとエネルギー検算を約 1,000 s 続けた。
+
+**2. 組成の不合格（8 件: 109 の glm CLI only r1、qwen CLI only r3、qwen CLI + skills r2、115 の qwen ×2、116 の qwen ×2、117 の qwen r2）: すべて頼まれていない末端キャップ**
+- どの attempt も残基が 1 つか 2 つ多い（ACE か NME）。S–S 結合の不合格は、番号が 1 つずれた結果にすぎない（M1:20 と M1:21）。
+- 8 件のうち 7 件は `--cap-termini` で始め、`terminal_cap_on_native_terminus` で拒否された。その next_action「Drop --cap-termini and cap only the cut termini with --n-terminal-cap ACE」に従って、片側だけにキャップを付けた。つまりツールがキャップを勧めていた。
+- 117 は両端とも切断端で、`--cap-termini` がそのまま通った。
+
+**3. 単発の失敗**
+- **112 qwen CLI only r2（測定温度 318 K、設定は 298 K）: 4 GPU で走らせた一本のランが熱くなった**
+  - prod を `--gpus 4 --device-index 0,1,2,3` で走らせ、最初のフレームから平均 318 K になった。1 GPU で走った eq は 298 K を保っていた（運動エネルギーは 94.5k → 100.1k kJ/mol）。
+  - `run_production` の docstring が `"0,1"` を例に挙げていた。
+- **105 qwen CLI + skills r2: 電荷は +1 だが、頼まれた化学種ではない**
+  - 電荷の拒否のあと、`N[C@@H](CCCNC(=[NH2+])N)C(O)=O`（アミンもカルボン酸も中性で、グアニジウムだけ +1）で通した。合計は +1 だが双性イオンではないので、採点の SMILES 照合で外れた。
+- **106 glm CLI + skills r3（`parameters.water_model` が無い）: MDClaw の不具合**
+  - `build_openmm_system` は water_model を一度も設定しておらず、`amber_metadata.json` にも node metadata にも水モデルが無かった（解の水は solv の TIP3P）。
+- **109 glm CLI + skills r3（揺らぎの大きさだけ 1.78 Å、上限 1.70 Å）: サンプリングのばらつきとみなした**（モデルの誤りではない）。
+- **担当外**: 105 CLI only の 4 件（S–S 結合の判定だけが「not comparable」）。そのうち 3 件は、遊離 Arg を 1 残基のタンパク質のまま残し、手作りの SDF を `--ligand-chemistry` で渡していた（下の prep の拒否で上流で止まる）。114 の 10 件（揺らぎ）も採点側に渡す。
+
+**直したこと**（branch `test-v6-fixes`、main `ac0e328` から）
+- **遊離ヌクレオチド**: `detect_nucleic_content` に `ligand_residue_names` を足した。ligand_chemistry が扱う残基で、O3'–P の結合（1.9 Å 以内）で鎖につながっていないものは、修飾ヌクレオチドとみなさない（`ligand_parameterized_nucleotides`）。
+  - 鎖につながった修飾残基は、名前が同じでも従来どおり拒否する。
+  - 遊離ヌクレオチドに ligand_chemistry が無いときの next_action は、「新しい prep で `--include-ligand-resnames 2AM` を付けて選び直す。残基名は変えない」にした。
+  - kimi CLI + skills r1 の DAG を複製して直した checkout で topo を作り直すと、2AM のまま完了した（ff99SBildn + tip3p、GAFF のリガンド 1 個、40,065 原子、検証 passed、34 s）。
+- **`build_openmm_system` の水モデル**: solv ノードの水モデルを `parameters.water_model` と node metadata に入れる。DAG の外では、水の XML が 1 つならその名前を入れる。
+  - bundle の水の XML が solv の水と違えば、node を pending のまま `solvation_topology_water_model_mismatch` で拒否する。
+- **遊離アミノ酸**（新しい `structure/free_amino_acid.py`。20 種の L 双性イオン（pH 7）の SMILES を RDKit の CIP と電荷で確認した）
+  - リガンド指定が 1 残基のタンパク質成分を指していれば `ligand_is_amino_acid_component` を返す。
+  - 1 残基のタンパク質成分を選べば、prep の前に `single_residue_protein_component` で拒否する。対象は OXT まで揃った遊離アミノ酸（6MJ7 の ARG 204）に限った。OXT の無い 1 残基のスタブは、既存のテスト 11 件が prep のロジックを試すのに使っているので、従来どおり通す。
+  - どちらの next_action にも、そのまま使える `--ligand-components '[{"selection":"E:204-204","residue_name":"ARL","smiles":"[NH3+][C@@H](CCCNC(N)=[NH2+])C(=O)[O-]"}]' --ligand-net-charges '{"ARL": 1}'` を入れた。`ligand_component_invalid`（残基名の衝突、SMILES の不一致）でも同じ宣言を示す。
+  - 実際の 6MJ7 で、next_action のとおりに打つと ARL（+1）で prep が完了した。
+- **末端キャップ**: `terminal_cap_on_native_terminus` の next_action を、「頼まれていなければキャップのフラグをすべて外す。頼まれたときだけ切断端に付ける」の順にした。
+  - prep の要約の 1 行に「terminal caps added, each an extra ACE/NME residue」を出す。`--cap-termini` などの help にも「頼まれたときだけ」と書いた。
+- **複数 GPU**: `--device-index` に複数の GPU を並べると `multi_gpu_device_index` で拒否する。`run_guard.md_preflight` では begin_node の前に止める（自分のジョブの中なら封印して、分岐のコマンドを示す）。`submit_job` などの preflight では sbatch の前に、`--device-index` を除いた `--script` と `--gpus 1` を示す。
+  - 外すときは `MDCLAW_ALLOW_MULTI_GPU=1`。`run_production` の docstring から `"0,1"` を消した。
+- **skill**: `peptide-ligands.md` に遊離アミノ酸の 1 段落、`prep-chemistry.md` のキャップの 1 文だけを足した。
+- **登録とゴールデン**: guardrail の登録表とゴールデンに新しいコード 3 つを足した（525 個）。CLI 契約のゴールデンは変わらない。
+
+**テスト**（SIF `/data1/rkp00079/mdclaw.sif` に checkout を重ねた）
+- ruff は clean。
+- fast suite（`-m "not slow and not integration"`、`test_molstar_mcp.py` を除外）は 3,109 passed / 0 failed / 5 skipped（567 s）。
+- `test_pipeline_nucleic_dag.py` は 2 passed。modXNA の DAG は `MDCLAW_MODXNA_DIR` が無いので skip。
+- 新しいテストは `test_free_nucleotide_ligand.py`、`test_free_amino_acid_ligand.py`、`test_md_run_guard.py` と `test_slurm_condition_preflight.py` の複数 GPU、`test_openmm_system_server.py` の水モデル、キャップの next_action と要約。
+- 実データでは、106（kimi の DAG の複製で topo を作り直した）と 6MJ7（4 つの経路）で確かめた。
+- GPU ジョブは投入していない。複数 GPU が熱くなる現象は、campaign の 1 例（eq と prod のエネルギーの記録）だけが根拠で、再現はしていない。
+
+**直さなかったもの**
+- 110 の同時終了は計測環境の事象。
+- 101 と 119 の脱線、117 のキャップの最初の選択、109 glm r3 の揺らぎはモデルの誤りかばらつき。
+- 105 CLI only の S–S 結合の判定と 114 の揺らぎは採点側。
+
 ## 2026-10-31 — RIKYU の SIF も pixi `cuda13` 環境から作るようにした
 
 本人「rikyu 用 sif も pixi で同様に統一されて管理・作成できるように」。
