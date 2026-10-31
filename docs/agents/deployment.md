@@ -192,8 +192,10 @@ Desktop Code tab, Remote Control) does not render MCP Apps widgets: on
 successfully, yet never requested the viewer's `ui://` resource, and no panel
 appeared in Claude Desktop's Code screen. The display skill therefore writes a
 self-contained page with `mdclaw export_molstar_page` on the host and publishes
-it with Claude Code's Artifact tool. It uses the installed CLI only, so the
-plugin, Pixi checkout or shared SIF that runs MDClaw is enough. See
+it as an Artifact. It uses the installed CLI only, so the plugin, Pixi checkout
+or shared SIF that runs MDClaw is enough, and it needs no connection from the
+desktop to the host: a Claude Desktop outside a supercomputer's firewall can open
+the page, including for a production still running. See
 [the display skill](../../skills/common/visual-qa.md#check-the-interactive-route).
 An existing `mdclaw_molstar` registration in Claude Code is harmless; remove it
 with `claude mcp remove mdclaw_molstar -s user` if it is not wanted.

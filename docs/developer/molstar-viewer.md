@@ -29,12 +29,15 @@ Apps widgets, so `open_molstar_probe` succeeds there without a viewer. The
 display skill instead runs, on the host that stores the files:
 
 ```bash
-mdclaw export_molstar_page --structure-file /abs/system.topology.pdb \
-  --trajectory-file /abs/trajectory.dcd --stage prod \
+mdclaw --job-dir /abs/job --node-id prod_001 export_molstar_page \
   --title "CLN025 prod_001" --output-file /abs/scratch/cln025_prod_001.html
 ```
 
-and publishes `output_file` with the Artifact tool. The page reuses the
+(or `--structure-file`, `--trajectory-file`, `--stage` for a file outside a DAG)
+and publishes `output_file` as an Artifact. The page needs no connection from the
+display client to the host, so a desktop outside the site firewall can open it.
+A running production shows the frames written so far; republishing with the
+previous `slug` and `base_version` keeps the link. The page reuses the
 viewers' `DisplayData` (stage, wrap, water removal, sampling, optional fit),
 `index.html`/`viewer.css` markup and `mdclawPresentation`; `page.js` plays the
 embedded frames with a 10/20/30/60 fps target (default 30). Data sit in
@@ -230,8 +233,9 @@ names remain compatible; no validation venv is required.
 Each opening result contains a dataset token. The UI binds to that result
 through `ui/notifications/tool-result` and includes the token in every data
 request. Opening a second molecule does not change existing viewers. The
-UI-only data tool accepts tokens, not file paths. Input changes are rejected;
-call `open_molstar_probe` again with the finished files to obtain a new token.
+UI-only data tool accepts tokens, not file paths. A trajectory that grows keeps
+its token and its opening frame count; other input changes are rejected. Call
+`open_molstar_probe` again to obtain a new token and see the added frames.
 
 The MCP UI targets up to 60 source frames/s. It measures round-trip time to
 adapt concurrent frame requests (at most 32) and the rolling lookahead (at most
@@ -376,10 +380,11 @@ only an origin for localhost. See [preview configuration](https://code.claude.co
 - Only the chosen PDB, individual DCD frames, and viewer assets are served,
   on `127.0.0.1` under
   a random URL. Cross-origin reads and directory browsing are disabled.
-- Use a finished DCD and its single-model MD topology PDB without alternate
-  locations. Atom counts are checked before startup; **atom order must also
-  match** and cannot be verified by counts alone. Changed files return 409;
-  restart after a simulation finishes or use a completed copy.
+- Use a DCD and its single-model MD topology PDB without alternate locations.
+  Atom counts are checked before startup; **atom order must also match** and
+  cannot be verified by counts alone. A DCD may grow while it is viewed: the
+  frames counted at opening stay valid, and a partial last frame is ignored.
+  A replaced or truncated DCD, or a changed PDB, returns 409; restart the viewer.
 - DCD reads are serialized and bounded to one frame. Memory use scales with
   the atom count, not the number of DCD frames. Large atom counts still require
   client graphics memory and 12 bytes per atom per displayed frame of bandwidth.

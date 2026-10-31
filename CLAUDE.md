@@ -51,7 +51,9 @@ create a still image, follow `skills/common/visual-qa.md`. It selects Molstar
 or PyMOL using the request and current-session capabilities, including remote
 connections. Display-only requests use existing results without starting MD.
 In Claude Code, Molstar playback is an Artifact page from `export_molstar_page`
-(Claude Code does not render MCP viewer widgets). For missing Molstar tools or
+(Claude Code does not render MCP viewer widgets); it needs no port, so it reaches
+a desktop outside the site firewall and shows a running production's frames so
+far. For missing Molstar tools or
 remote display failures in other clients, read that page's MCP troubleshooting
 steps first. Distinguish the execution host from the display
 client, and verify registration, session tool loading, and rendering separately.

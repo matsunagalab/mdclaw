@@ -141,7 +141,7 @@ def _make_server(info: dict, files: dict, port: int,
                     reader.check_unchanged()
                     data = None if head else reader.read(index)
                 except (OSError, ValueError, RuntimeError):
-                    self.send_error(409, "Frame unavailable or input changed; restart with finished files")
+                    self.send_error(409, "Frame unavailable or input changed; restart the viewer")
                     return
                 self._headers("application/octet-stream", info["frame_bytes"])
                 if data is not None:

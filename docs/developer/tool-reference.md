@@ -1046,9 +1046,12 @@ optional DCD after connection. See [deployment](../agents/deployment.md#molstar-
   an existing authenticated HTTPS proxy's exact origin, without deploying or
   configuring it. No input or DAG changes. See
   [startup, host setup, and limits](molstar-viewer.md).
-- `export_molstar_page(structure_file, trajectory_file=None, output_file=None, stage="auto", wrap=True, max_frames=1000, fit=False, title=None, max_bytes=8000000)`:
+- `export_molstar_page(structure_file=None, trajectory_file=None, output_file=None, stage="auto", wrap=True, max_frames=1000, fit=False, title=None, max_bytes=8000000, job_dir=None, node_id=None)`:
   writes a self-contained Mol* playback page for Claude Code, which publishes
-  it with its Artifact tool (Claude Code does not render the MCP viewer).
+  it as an Artifact (Claude Code does not render the MCP viewer). With
+  `--job-dir` and `--node-id` it picks that node's files and stage; a running
+  production shows the frames written so far (`in_progress`), and a running
+  stage without coordinates returns `molstar_node_not_ready`.
   Same `DisplayData` selection and presentation as `serve_molstar`; embeds the
   retained display frames, sampling production frames further to fit
   `max_bytes`, and loads Mol* 5.13.0 from jsDelivr with an SRI hash of the

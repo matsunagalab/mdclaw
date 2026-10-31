@@ -1,7 +1,7 @@
 ---
 title: Molecular display and visual QA
 category: skill-reference
-updated: 2026-10-26
+updated: 2026-10-31
 ---
 
 # Molecular Display and Visual QA
@@ -19,6 +19,7 @@ display transformation may need derived artifacts as described below.
 |---|---|
 | Play a trajectory, rotate/zoom interactively, or use Molstar (「再生して」「回して見たい」「Molstarで」) | Check the interactive routes below, then use Molstar. |
 | Prepared full-system view (「準備後の全系を見せて」「水や膜の入り方を見たい」), without an explicit still-image request | Use Molstar when available; preserve the assembled system and apply the preparation row below. |
+| Progress of a running job, or results by stage (「途中経過を見せて」「今どこまで進んだ？」「成果物を見たい」) | Follow [Show work in progress](#show-work-in-progress). |
 | A still image, PNG, or PyMOL image (「静止画」「PNGにして」) | Use the PyMOL preview below, even if Molstar is available. |
 | Simply show a structure, with no interactive request | Use a PyMOL preview. |
 | Both interactive viewing and a still image | Deliver both through their respective routes. |
@@ -62,6 +63,28 @@ alignment, follow [trajectory-display.md](trajectory-display.md) before opening
 the viewer. Keep lipids and ligands: the analysis tool's default `protein`
 selection is unsuitable for a membrane/complex display.
 
+## Show work in progress
+
+Viewing never touches the job: it reads the files and creates no node.
+
+1. Find the node with `inspect_job --job-dir <job_dir>`. For 「今どこまで」 take the
+   frontier node; for 「成果物」 take the node the user names, or the latest
+   completed one.
+2. Open it with route 1 (Codex) or route 2 (Claude Code).
+   - A **running production** shows the frames written so far (`in_progress:
+     true`, title `running, N frames so far`). It is a snapshot; say how many
+     frames it holds.
+   - A **completed** node shows its result, whatever the stage.
+   - `molstar_node_not_ready`: minimization and equilibration write coordinates
+     only when they finish. Follow its `next_action` (the parent node), and say
+     the stage is still running.
+3. To update, keep one page per job. Run the export again and republish with
+   `publish_files`, adding the previous result's `slug` and `version` (as
+   `base_version`) and omitting `title`. The link stays the same. With route 1,
+   open a new viewer: a viewer's frame count is fixed when it opens.
+
+Update when the user asks. Do not poll on your own.
+
 ## Check the interactive route
 
 ### How the MCP viewer works
@@ -86,11 +109,17 @@ variable, or a previous conversation. Codex/Claude Code desktop, CLI, and remote
 sessions can expose different tools. Discover available tools before asking the
 user which app they use. Recheck after a connection changes or a display fails.
 
-**Claude Code session (it has the `Artifact` tool):** go straight to the
-**Artifact page** route (2). Claude Code does not render MCP Apps widgets on
-any surface — terminal, Desktop Code tab, or Remote Control — so an
-`open_molstar_probe` call there succeeds without showing a viewer. Use route 1
-in Claude Code only when the user explicitly asks to test the MCP widget.
+**Claude Code session (it has the `Artifact` tool, or `publish_files` from the
+`claude-artifacts` server):** go straight to the **Artifact page** route (2).
+Claude Code does not render MCP Apps widgets on any surface — terminal, Desktop
+Code tab, or Remote Control — so an `open_molstar_probe` call there succeeds
+without showing a viewer. Use route 1 in Claude Code only when the user
+explicitly asks to test the MCP widget.
+
+The display client does not need to reach the compute host. A Claude Desktop
+outside the site firewall, driving an agent on a login node, is the normal case
+for a supercomputer: route 2 carries the coordinates inside the page, through
+claude.ai. Route 3 needs a browser that reaches the host, so it does not apply.
 
 For an interactive request, choose the first usable route:
 
@@ -107,27 +136,27 @@ For an interactive request, choose the first usable route:
    visible rendering separately; if the client reports an error, inspect its
    exact message and source/receipt before choosing another route.
 2. **Artifact page (Claude Code):** write the page on the host, then publish it
-   with the Artifact tool in the same turn:
+   in the same turn. For a DAG node, name the node; the tool picks its files and
+   stage:
 
    ```bash
-   mdclaw export_molstar_page \
-     --structure-file /absolute/job/nodes/topo_001/artifacts/system.topology.pdb \
-     --trajectory-file /absolute/job/nodes/prod_001/artifacts/trajectory.dcd \
-     --stage prod --title "CLN025 prod_001" \
-     --output-file /absolute/scratchpad/cln025_prod_001.html
+   mdclaw --job-dir /absolute/job --node-id prod_001 export_molstar_page \
+     --title "CLN025 prod_001" --output-file /absolute/scratchpad/cln025_prod_001.html
    ```
 
-   Publish `output_file` with `Artifact` (`file_path` = that path, `icon`
-   `molecule`) and give the user the link. The page applies the same stage
-   presentation, wrap, water removal, sampling and fit as route 1; it embeds
-   the retained display frames, so it needs no port, tunnel or MCP connection
-   and works behind firewalls. Name the title after the system and node.
-   For the prepared full system, pass its assembled PDB with `--stage topo` and
-   no trajectory. Production frames are sampled to fit an 8 MB budget: report
-   the result's `frame_count` and `display.stride`. `molstar_page_too_large`
-   means even sampling cannot fit; lower `--max-frames` for production or use
-   route 3/4. The page puts display coordinates in a private claude.ai page,
-   so skip this route when the user requires the data to stay on the host.
+   For a file outside a DAG, pass `--structure-file`, `--trajectory-file` and
+   `--stage` instead. Publish `output_file` with `publish_files`
+   (`files: [{"as": "index.html", "path": "<output_file>"}]`, plus `title` and
+   `icon: molecule`) or with `Artifact` (`file_path`, `icon: molecule`), and give
+   the user the link. The page applies the same stage presentation, wrap, water
+   removal, sampling and fit as route 1; it embeds the retained display frames,
+   so it needs no port, tunnel or MCP connection and works behind firewalls.
+   Name the title after the system and node.
+   Production frames are sampled to fit an 8 MB budget: report the result's
+   `frame_count` and `display.stride`. `molstar_page_too_large` means even
+   sampling cannot fit; lower `--max-frames` for production or use route 3/4. The
+   page puts display coordinates in a private claude.ai page, so skip this route
+   when the user requires the data to stay on the host.
    Ask the user to confirm the molecule appears and Play advances; if the page
    shows an error, read its exact text before changing anything.
 3. **Reachable browser:** use `serve_molstar` when a browser/preview surface is
