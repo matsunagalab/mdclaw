@@ -231,10 +231,40 @@ def _scan_pdb_ion_residue_names(path: Path) -> list[str]:
     return sorted(ions)
 
 
-def detect_nucleic_content(pdb_path: Path) -> dict:
-    """Detect standard and unsupported nucleic residues in a PDB input."""
+def _residue_is_phosphodiester_linked(residue: dict, residues: dict) -> bool:
+    """Whether ``residue``'s P or O3' sits at bond length from another residue's
+    O3' or P, i.e. the residue is a unit of a nucleic polymer."""
+    def _near(a, b) -> bool:
+        return sum((x - y) ** 2 for x, y in zip(a, b)) <= 1.9 ** 2
+
+    own_p = residue["coords"].get("P")
+    own_o3 = residue["coords"].get("O3'")
+    for other in residues.values():
+        if other is residue:
+            continue
+        if own_p is not None and other["coords"].get("O3'") is not None and _near(own_p, other["coords"]["O3'"]):
+            return True
+        if own_o3 is not None and other["coords"].get("P") is not None and _near(own_o3, other["coords"]["P"]):
+            return True
+    return False
+
+
+def detect_nucleic_content(pdb_path: Path, ligand_residue_names=None) -> dict:
+    """Detect standard and unsupported nucleic residues in a PDB input.
+
+    ``ligand_residue_names`` are residue names the topology parameterizes as
+    small molecules (the ``residue_name`` of each ``ligand_chemistry`` record
+    from ``prepare_complex``). A free nucleotide such as 2'-AMP (``2AM``) has
+    the sugar-phosphate atoms of a nucleic residue, but when prep recorded its
+    chemistry and it is not phosphodiester-linked to a neighbour, GAFF
+    parameterizes it like any other ligand -- it is not a modified unit of a
+    DNA/RNA chain and must not be refused as one.
+    """
     dna_resnames = set(nucleic_residue_name_map(DNA_XML["OL15"]))
     rna_resnames = set(nucleic_residue_name_map(RNA_XML["OL3"]))
+    small_molecule_names = {
+        str(name).strip().upper() for name in (ligand_residue_names or ()) if str(name or "").strip()
+    }
     residues: dict[tuple[str, str, str], dict[str, Any]] = {}
     for line in pdb_path.read_text().splitlines():
         if not line.startswith(("ATOM", "HETATM")):
@@ -246,13 +276,21 @@ def detect_nucleic_content(pdb_path: Path) -> dict:
         key = (chain, resnum, icode)
         entry = residues.setdefault(
             key,
-            {"chain": chain, "resnum": resnum, "resname": resname, "atoms": set()},
+            {"chain": chain, "resnum": resnum, "resname": resname, "atoms": set(), "coords": {}},
         )
-        entry["atoms"].add(line[12:16].strip())
+        atom_name = line[12:16].strip()
+        entry["atoms"].add(atom_name)
+        if atom_name in ("P", "O3'"):
+            try:
+                entry["coords"][atom_name] = (
+                    float(line[30:38]), float(line[38:46]), float(line[46:54]))
+            except ValueError:
+                pass
 
     standard_names = set()
     subtypes = set()
     unsupported = []
+    ligand_parameterized = []
     has_protein = False
     sugar_phosphate_markers = {"P", "O3'", "C3'", "C4'", "C5'", "O5'", "C1'"}
 
@@ -273,11 +311,16 @@ def detect_nucleic_content(pdb_path: Path) -> dict:
         if len(atoms & sugar_phosphate_markers) >= 4 and resname not in (
             STANDARD_PROTEIN_RESIDUES | WATER_RESIDUES | POLYPHOSPHATE_LIGANDS
         ):
-            unsupported.append({
+            site = {
                 "chain": residue["chain"],
                 "resnum": residue["resnum"],
                 "resname": resname,
-            })
+            }
+            linked = _residue_is_phosphodiester_linked(residue, residues)
+            if resname in small_molecule_names and not linked:
+                ligand_parameterized.append(site)
+                continue
+            unsupported.append({**site, "phosphodiester_linked": linked})
 
     subtype = None
     if subtypes == {"dna"}:
@@ -293,6 +336,7 @@ def detect_nucleic_content(pdb_path: Path) -> dict:
         "subtypes": sorted(subtypes),
         "standard_residue_names": sorted(standard_names),
         "unsupported_modified_residues": unsupported,
+        "ligand_parameterized_nucleotides": ligand_parameterized,
         "has_protein": has_protein,
     }
 

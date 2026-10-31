@@ -251,3 +251,21 @@ def test_array_and_mps_refuse_the_same_edge(tmp_path):
         assert "parent_type_invalid" in result["blocking_codes"]
         assert result["message"].startswith("tasks[0]: ")
     run.assert_not_called()
+
+
+def test_a_multi_gpu_device_index_is_refused_before_sbatch(job):
+    """test-v6-cli 112_nucleic_1hlv: --gpus 4 --device-index 0,1,2,3 ran 20 K hot."""
+    with patch("mdclaw.slurm._base.run_command") as run:
+        result = submit_job(command(job, "--simulation-time-ns 1 --platform CUDA --device-index 0,1,2,3"),
+                            job_dir=str(job), node_id="prod_001", gpus=4)
+    assert not result["success"]
+    assert result["code"] == "multi_gpu_device_index"
+    run.assert_not_called()
+    assert "--gpus 1" in result["next_action"]
+    fixed = shlex.split(result["next_action"].split("--script ", 1)[1])[0]
+    assert "--device-index" not in fixed and "run_production" in fixed
+    assert not list(job.glob("*.sbatch"))
+    # one device is the normal case
+    with patch("mdclaw.slurm._base.check_external_tool", return_value=False):
+        ok = submit_job(command(job, "--platform CUDA --device-index 0"), job_dir=str(job), node_id="prod_001")
+    assert ok.get("code") != "multi_gpu_device_index"

@@ -309,8 +309,17 @@ def native_terminus_cap_next_action(problems: list[dict], *, n_cap, c_cap) -> st
         keep.append(f"--c-terminal-cap {c_cap}")
     spelled = ", ".join(f"{item['terminus']}-terminus {item['residue']}" for item in problems)
     if keep:
-        return (f"{spelled} is the polymer's own end. Drop --cap-termini and cap only the cut "
-                f"termini with {' '.join(keep)}, then run the same (still pending) node again.")
+        # Lead with the default. Agents followed the old wording ("cap only the
+        # cut termini with --n-terminal-cap ACE") on requests that never asked
+        # for caps; the ACE/NME residue then failed the residue-count and
+        # composition checks against charged-termini references (test-v6-cli:
+        # 109_complex_5sxp x3, 115_nanobody_8ijz x2, 116_nanobody_6ni2 x2).
+        return (f"{spelled} is the polymer's own end and cannot be capped. Unless the request "
+                "explicitly asks for capped termini, drop every cap flag (--cap-termini / "
+                "--n-terminal-cap / --c-terminal-cap) so the termini stay charged -- a cap is an "
+                "extra ACE/NME residue the target system does not have. Only when caps are asked "
+                f"for, cap just the cut termini with {' '.join(keep)}. Then run the same (still "
+                "pending) node again.")
     return (f"{spelled} is the polymer's own end. Drop --cap-termini / --n-terminal-cap / "
             "--c-terminal-cap so the native termini stay charged, then run the same (still "
             "pending) node again.")

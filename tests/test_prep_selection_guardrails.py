@@ -437,6 +437,21 @@ def test_caps_on_the_entity_ends_are_refused_and_cut_ends_allowed(tmp_path):
     assert native_terminus_caps(cif, cut, n_cap="ACE", c_cap=None) == []
 
 
+def test_the_native_cap_refusal_leads_with_dropping_the_caps(tmp_path):
+    """test-v6-cli: 7 attempts followed "cap only the cut termini with
+    --n-terminal-cap ACE" on requests that never asked for caps, and failed the
+    residue-count and composition checks (109_complex_5sxp, 115/116 nanobodies)."""
+    from mdclaw.structure.terminal_caps import native_terminus_cap_next_action, native_terminus_caps
+
+    cif = _peptide_cif(tmp_path)
+    cut = split_molecules(str(cif), output_dir=str(tmp_path / "c"), select_chains=["A"],
+                          residue_ranges=["A:269-270"])
+    text = native_terminus_cap_next_action(
+        native_terminus_caps(cif, cut, n_cap="ACE", c_cap="NME"), n_cap="ACE", c_cap="NME")
+    assert text.index("drop every cap flag") < text.index("--n-terminal-cap ACE")
+    assert "Unless the request explicitly asks for capped termini" in text
+
+
 def test_prepare_complex_refuses_native_caps_before_running(tmp_path):
     result = pc.prepare_complex(structure_file=str(_peptide_cif(tmp_path)),
                                 output_dir=str(tmp_path / "out"), select_chains=["A"],

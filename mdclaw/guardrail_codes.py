@@ -279,7 +279,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "protonation_method_unavailable": "Install/enable pdb2pqr, or explicitly disable hydrogen rebuilding; MDClaw will not replace a requested protonation method with a pH-ignoring fallback.",
     "protonation_method_failed": "Inspect the pdb2pqr error and fix the structure or method inputs before creating a new prep node; the requested protonation baseline was not applied.",
     "invalid_terminal_cap": "Use a supported terminal cap type.",
-    "terminal_cap_on_native_terminus": "A requested cap would sit on the polymer's own end (nothing of the entity sequence lies beyond it); drop --cap-termini, or cap only the cut termini with --n-terminal-cap / --c-terminal-cap as next_action says, then run the same (still pending) node again.",
+    "terminal_cap_on_native_terminus": "A requested cap would sit on the polymer's own end (nothing of the entity sequence lies beyond it). Unless the request explicitly asks for capped termini, drop every cap flag (caps are extra ACE/NME residues); only when caps are asked for, cap just the cut termini as next_action says. Then run the same (still pending) node again.",
     "terminal_cap_missing": "Add the required terminal cap before proceeding.",
     "container_command_in_script": "Pass only the payload command; configure_container supplies the container and flags, or use --allow-container-command only for a deliberate custom invocation.",
     "container_source_mode_invalid": "Use --source-mode image or overlay.",
@@ -309,6 +309,8 @@ GUARDRAIL_CODES: dict[str, str] = {
     "empty_ligand_resname_selection": "Provide at least one ligand resname or drop ligand from --include-types.",
     "requested_ligand_ids_not_found": "Requested ligand IDs are absent; use IDs from ligand_selection.",
     "requested_ligand_resnames_not_found": "Requested ligand resnames are absent in the structure.",
+    "ligand_is_amino_acid_component": "The requested ligand is a standard amino acid deposited on its own, which the split reads as a one-residue protein component; pass the --ligand-components declaration (residue name and L-zwitterion SMILES) and --ligand-net-charges that next_action spells, with its chain in --select-chains, and run the same (still pending) node again.",
+    "single_residue_protein_component": "A selected protein component is one free amino acid, which no Amber protein template parameterizes; declare it as a ligand with the --ligand-components / --ligand-net-charges that next_action spells (or leave its chain out), then run the same (still pending) node again.",
     "requested_ligand_resnames_not_in_selected_scope": "Requested ligand resnames are outside the selected chains/scope.",
     "invalid_ligand_chemistry": "Ligand chemistry is invalid; check SMILES/formal charge.",
     "ligand_chemistry_load_failed": "Failed to load ligand chemistry; verify the ligand file/SMILES.",
@@ -353,7 +355,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "modxna_pdb_rename_changed_structure": "PDB rename changed the structure; review before continuing.",
     "modxna_execution_failed": "modxna execution failed; inspect the structured error.",
     "modxna_tool_unavailable": "modxna tooling is unavailable in this runtime.",
-    "unsupported_modified_nucleic_residue": "Modified nucleic residue is unsupported.",
+    "unsupported_modified_nucleic_residue": "A modified nucleotide linked into a DNA/RNA chain is unsupported by the standard nucleic libraries (supply modXNA parameters); a free nucleotide not linked into a chain is a ligand -- prepare it as one on a new prep node as next_action says, do not rename it.",
 
     # --- metals ---
 
@@ -482,6 +484,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "openmm_platform_inspection_failed": "Platform inspection failed; report the runtime/GPU state.",
     "md_outside_allocation": "MD stages integrate only inside a Slurm job on this cluster; nothing ran and the node is still pending. Run the submit_job command in next_action (or wait_node when the node is already queued or running); do not rerun the stage on the login node.",
     "platform_unavailable": "The requested OpenMM platform cannot create a Context in this process; nothing ran and the node is still pending. Rerun with a platform the result lists as usable, or submit the node to a GPU job whose container has --nv.",
+    "multi_gpu_device_index": "One MD run is split across several GPUs (--device-index with a comma list), which ran 20 K above the thermostat in campaign test-v6-cli; nothing ran. Use one GPU: submit with --gpus 1 and drop --device-index (the command is in next_action); run independent replicas as separate nodes to use more GPUs.",
     "gpu_allocated_platform_unavailable": "Slurm gave the job GPUs but OpenMM cannot use them (a container started without --nv); nothing ran. Give the container the GPU (configure_container --extra-flags=--nv) and submit again, on a new node when this one was sealed.",
     "unknown_gpu_type": "GPU type is unknown; report the platform for scheduling.",
 

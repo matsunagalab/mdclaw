@@ -90,6 +90,39 @@ def _chain_matches_ligand_resnames(chain: dict, requested_resnames: set[str]) ->
     return bool(set(_chain_residue_names(chain)) & requested_resnames)
 
 
+def _route_free_amino_acid_request(result: dict, chains: list, *, resnames=None, ids=None) -> None:
+    """A ligand request that names a free amino acid gets the declaration.
+
+    The split reads a standard amino acid deposited on its own (free ARG in
+    6MJ7) as a one-residue protein component, so a ligand selector naming it
+    finds nothing. "requested ligand residue name(s) were not found" sent
+    test-v6-cli agents guessing; the refusal now names the
+    ``--ligand-components`` declaration that makes it a ligand.
+    """
+    from mdclaw.structure.free_amino_acid import free_amino_acid_chains, free_amino_acid_next_action
+
+    free = free_amino_acid_chains(chains)
+    wanted = []
+    names = {str(n).strip().upper() for n in (resnames or ())}
+    for site in free:
+        if site["resname"] in names:
+            wanted.append(site)
+            continue
+        for item in ids or ():
+            parts = str(item).strip().split(":")
+            if (len(parts) == 3 and parts[1].strip().upper() == site["resname"]
+                    and parts[0].strip() in {site["author_chain"], site["chain_id"]}
+                    and parts[2].strip() == str(site["resnum"])):
+                wanted.append(site)
+                break
+    if not wanted:
+        return
+    result["code"] = "ligand_is_amino_acid_component"
+    result["free_amino_acid_components"] = wanted
+    result["next_action"] = free_amino_acid_next_action(
+        wanted, reason="was asked for as a ligand but is a one-residue protein component")
+
+
 def _candidate_matches_ligand_resnames(
     candidate: dict,
     requested_resnames: set[str],
@@ -1661,6 +1694,7 @@ def split_molecules(
                     code="requested_ligand_ids_not_found",
                 )
             )
+            _route_free_amino_acid_request(result, analysis["chains"], ids=missing_ligand_ids)
             return result
 
         if requested_ligand_resname_set:
@@ -1764,6 +1798,8 @@ def split_molecules(
                     code="requested_ligand_resnames_not_found",
                 )
             )
+            _route_free_amino_acid_request(
+                result, analysis["chains"], resnames=requested_ligand_resname_set)
             return result
     
     # Check for gemmi dependency (should be available if analysis succeeded)
