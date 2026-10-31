@@ -10,8 +10,8 @@ several walkers as independent `prod` nodes with different `--random-seed`
 
 - Explicit solvent, PME (`build_amber_system` / `build_openmm_system` output).
 - A completed `eq` node (or a completed `run_sst2` node to continue).
-- The MDClaw runtime image bundles the SST2 fork. `sst2_not_installed` means
-  the run is outside the image (a development checkout needs
+- The MDClaw images and Pixi environments bundle the SST2 fork.
+  `sst2_not_installed` means the run is outside them (another environment needs
   `MDCLAW_SST2_HOME`); report it, do not retry.
 
 ## Choose the solute

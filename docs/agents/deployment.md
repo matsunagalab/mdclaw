@@ -1,7 +1,7 @@
 # Agent Deployment
 
-Start with one of the two paths in the [README](../../README.md#install--deploy):
-Pixi on your workstation, or a downloaded SIF on a compute server.
+Start with the table in the [README](../../README.md#install): it picks the
+runtime for your machine.
 Skills provide instructions to your agent; the runtime provides the scientific
 software that executes them. Install skills after preparing the runtime.
 
@@ -9,8 +9,8 @@ software that executes them. Install skills after preparing the runtime.
 
 ### SIF: No User Checkout Required
 
-On an x86_64 (Intel/AMD) Linux server with Singularity installed, download the
-MDClaw image and select it:
+On a Linux server with Singularity installed, download the MDClaw image and
+select it:
 
 ```bash
 singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest
@@ -18,9 +18,12 @@ export MDCLAW_SIF="$PWD/mdclaw.sif"
 export MDCLAW_RUNTIME=singularity
 ```
 
-The public image is x86_64 only. Pulling converts it to a SIF locally; allow
-about 60 GB for temporary files and the result. If `/tmp` or your home directory
-is small, [choose a larger temporary/cache location](../developer/container.md#singularity)
+The tag holds x86-64 (CUDA 11.8) and ARM64 (CUDA 12.9) images, and the pull takes
+your machine's. RIKYU has its own tag, `latest-rikyu`; see the
+[README](../../README.md#rikyu). Pulling converts the image to a SIF locally; allow
+about 25 GB for temporary files and the 5.5 GB result (29 minutes on one 2026-10-31
+pull). If `/tmp` or your home directory is small,
+[choose a larger temporary/cache location](../developer/container.md#singularity)
 before pulling.
 
 If your lab already has a shared SIF, set `MDCLAW_SIF` to its path instead
@@ -68,14 +71,26 @@ scripts/mdclaw-doctor.sh                      # checks the selected runtime
 ```
 
 Linux x86-64 and ARM64 use the CUDA 12.9 lock (R575 or newer NVIDIA drivers
-for OpenMM GPU execution). For older-driver x86-64 nodes such as floyd/n1–n5
-(R520–R574), add the `cuda118` environment:
+for OpenMM GPU execution). A plain `pixi install` still succeeds on an older
+driver, but that environment cannot use the GPU. On x86-64 with a driver from
+R520 to R574, install the `cuda118` environment instead:
 
 ```bash
-pixi install -e cuda118     # builds OpenMM 8.6.1 against CUDA 11.8 once (~3 min)
+pixi install -e cuda118     # builds OpenMM, openmm-torch and PLUMED once
 ```
 
-It is the same lock with conda-forge's CUDA 12.9 OpenMM replaced by a source
+On Linux without an NVIDIA GPU, `pixi install` stops because the lock requires a
+CUDA virtual package. Declare it to get a CPU environment:
+
+```bash
+CONDA_OVERRIDE_CUDA=12.9 pixi install
+```
+
+A first install compiles the recipes and needs about 60 GB of free disk at its
+peak. `rm -rf .pixi/bld` afterwards removes the build trees; the environments
+under `.pixi/envs` do not need them.
+
+`cuda118` is the same lock with conda-forge's CUDA 12.9 OpenMM replaced by a source
 build from `recipes/openmm-cuda118` (build toolkit from NVIDIA's `cuda-11.8.0`
 channel label, runtime from conda-forge's `cudatoolkit 11.8`, glibc 2.17 so
 Ubuntu 18.04 nodes install it). PyTorch is conda-forge's last CUDA 11.8 GPU
@@ -115,9 +130,10 @@ container acceptance requires it.
 `pixi run <cmd>` (or `pixi shell`) activates the env for direct use, e.g.
 `pixi run pytest tests/test_cli.py`. Dependency updates go through
 `pixi update` and a committed `pixi.lock` diff, so environment changes have
-history. The source-built extras (openmm-torch with PythonTorchForce, PLUMED)
-are not conda-installable and still follow
-`docs/developer/conda-env-parity-plan.md`.
+history. Only the images rebuild PPM3 (`immers`): in a Pixi environment
+`--orientation-method ppm`, and `auto` with no usable OPM homolog, stop at
+`ppm3_format_bug`. Use an OPM homolog, `--orientation-method memembed` or
+`--preoriented`.
 
 ## Molstar MCP Display
 
@@ -267,7 +283,8 @@ available.
 share one selection rule:
 
 1. Explicit `MDCLAW_RUNTIME=pixi|conda|singularity|apptainer|docker`.
-2. An installed checkout Pixi environment (`.pixi/envs/default`).
+2. An installed checkout Pixi environment: `default`, or `cuda118` when the NVIDIA
+   driver predates R575 or `cuda118` is the only one installed.
 3. An existing Conda environment (`MDCLAW_CONDA_ENV`, default `mdclaw`).
 4. Singularity, then Apptainer, then Docker when their commands are installed.
 5. An existing standalone `mdclaw` executable on PATH.
@@ -329,9 +346,9 @@ Repository checks are separate: version consistency, executable bits and skill
 mirrors. These warnings do not change the core runtime result. Restore missing
 tracked files/modes carefully; preserve local edits before using `git checkout`.
 
-Pixi and packaged images have different optional capabilities. The image adds
-source-built Torch-force/PLUMED plugins and membrane fixes; Pixi alone does not
-promise these. Diagnose the environment you will actually use.
+Pixi environments and images carry the same Torch-force and PLUMED plugins; the
+[README](../../README.md#what-differs-between-runtimes) lists what differs. Diagnose
+the environment you will actually use.
 
 ## Claude Code Plugin
 
@@ -361,8 +378,9 @@ scripts/setup-container.sh
 ```
 
 The hook uses the same runtime selection as the launcher and doctor. It keeps
-an existing Pixi/Conda environment, preserves an explicitly configured shared
-SIF, or downloads the selected container. `MDCLAW_RUNTIME` takes priority;
+an existing Pixi/Conda environment (including the Pixi checkout that provides
+`mdclaw` on `PATH`), preserves an explicitly configured shared SIF, or downloads
+the selected container. `MDCLAW_RUNTIME` takes priority;
 for example, `MDCLAW_RUNTIME=docker` pulls Docker even if Pixi or Singularity
 is installed. A missing selected runtime produces an error with a next step.
 

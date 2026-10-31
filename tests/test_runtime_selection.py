@@ -363,6 +363,16 @@ def test_pixi_environment_follows_the_nvidia_driver(deployment, tmp_path, driver
     assert ("pixi install -e cuda118" in proc.stderr) is warned
 
 
+def test_only_cuda118_installed_works_on_a_host_without_the_driver(deployment, tmp_path):
+    """A login node has no NVIDIA module; `pixi install -e cuda118` alone must still run."""
+    root, _, run = deployment
+    (root / ".pixi/envs/default").rmdir()
+    (root / ".pixi/envs/cuda118").mkdir(parents=True)
+    proc, calls = run("bin/mdclaw", "--version", MDCLAW_NVIDIA_VERSION_FILE=str(tmp_path / "absent"))
+    assert proc.returncode == 0, proc.stderr
+    assert _pixi_env(calls) == "cuda118"
+
+
 def test_explicit_pixi_environment_wins_and_missing_one_is_refused(deployment, tmp_path):
     root, _, run = deployment
     newer = _driver_file(tmp_path, "580.65.06")

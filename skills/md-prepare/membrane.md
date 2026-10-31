@@ -63,9 +63,9 @@ Outside a Slurm job a miss is refused before any work
 closest cached patch. Use them, or, when the request fixes the uncached
 values, rerun with `--allow-patch-build` (or through `submit_job`).
 
-The image bundles equilibrated patches for POPC, POPE, DPPC, DOPC,
+The package bundles equilibrated patches for POPC, POPE, DPPC,
 POPC:CHL1 4:1, POPC:POPE:CHL1 2:1:1 and DPPC:DOPC:CHL1 1:1:1, each with TIP3P
-and with OPC, all at the defaults `--dist-wat 17.5 --leaflet 23.0
+and with OPC, and for DOPC with OPC only, all at the defaults `--dist-wat 17.5 --leaflet 23.0
 --saltcon 0.15`. For these, keep the defaults: a smaller box does not make
 embedding or MD meaningfully faster, a cache hit does. Change `--dist-wat` or
 `--leaflet` only when the request asks for a thicker water slab or membrane,
