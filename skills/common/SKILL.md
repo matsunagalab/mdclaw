@@ -1,6 +1,6 @@
 ---
 name: common
-description: "Display existing molecular structures or MD trajectories: route prepared full-system views, playback and interactive rotation to Molstar (MCP viewer in Codex, an Artifact page in Claude Code, or a local browser), still images to PyMOL, and troubleshoot remote Molstar display. Also supplies shared MDClaw job-loop, output, solvent, chemistry, and handoff conventions for md-* skills."
+description: "Display existing molecular structures, MD trajectories, or the progress of a running job: route prepared full-system views, playback and interactive rotation to Molstar (MCP viewer in Codex, an Artifact page in Claude Code, or a local browser), still images to PyMOL, and troubleshoot remote Molstar display. Also supplies shared MDClaw job-loop, output, solvent, chemistry, and handoff conventions for md-* skills."
 ---
 
 # MDClaw Common Conventions
@@ -12,6 +12,8 @@ and fallback. Viewing existing files does not start an MD workflow.
 Stage-specific contents and any display-copy processing are selected there too.
 In Claude Code, Molstar playback is delivered as an Artifact page
 (`export_molstar_page`), because Claude Code does not render MCP viewer widgets.
+The page also reaches a desktop outside the site firewall, and it can show a
+running production.
 For remote display failures or a missing Molstar tool in other clients, read its
 **How the MCP viewer works** and **When the MCP viewer is missing or does not
 render** sections before choosing a workaround. The execution host and the

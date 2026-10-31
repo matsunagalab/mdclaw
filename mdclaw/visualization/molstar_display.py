@@ -28,6 +28,8 @@ class DisplayData:
         self.dcd = Path(dcd).expanduser().resolve(strict=True) if dcd else None
         self.signatures = tuple(_signature(p) for p in (self.pdb, self.dcd) if p)
         self.info, _ = _inspect_inputs(str(self.pdb), str(self.dcd) if self.dcd else None)
+        # Taken after counting, so every counted frame lies below this size.
+        self.dcd_extent = self._dcd_extent()
         self.options = (stage, wrap, max_frames, fit)
         if stage == 'auto':
             # Only recognize the explicit DAG nodes/<type>_<id>/artifacts layout.
@@ -149,10 +151,20 @@ class DisplayData:
         display['component_atoms'] = {name: len(indices) for name, indices in groups.items()}
         return {**self.info, 'display': display}
 
+    def _dcd_extent(self):
+        if not self.dcd:
+            return None
+        stat = self.dcd.stat()
+        return stat.st_dev, stat.st_ino, stat.st_size
+
     def check_unchanged(self):
         from mdclaw.visualization.molstar_viewer import _signature
-        if tuple(_signature(p) for p in (self.pdb, self.dcd) if p) != self.signatures:
-            raise ValueError('Input changed; open the viewer again with finished files')
+        extent = self._dcd_extent()
+        # A running production appends and rewrites the frame count in its header:
+        # the frames counted at opening stay valid. Replacing or truncating does not.
+        if (_signature(self.pdb) != self.signatures[0] or
+                (extent and (extent[:2] != self.dcd_extent[:2] or extent[2] < self.dcd_extent[2]))):
+            raise ValueError('Input changed; open the viewer again')
 
     def _raw(self, index):
         self.check_unchanged()

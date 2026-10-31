@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const zlib = require('node:zlib');
 
 async function harness({ frames = 100, atomCount = 3, renderCost = 10, withMolstar = true, declaredFrames = frames } = {}) {
     let now = 0, timerId = 0;
@@ -26,7 +27,7 @@ async function harness({ frames = 100, atomCount = 3, renderCost = 10, withMolst
             components: { polymer: [0, 1, 2], water: [], lipid: [], ion: [], other: [] } } };
     element('mdclaw-display').textContent = JSON.stringify(info);
     element('mdclaw-frames').textContent = Buffer.from(coordinates.buffer).toString('base64');
-    element('mdclaw-pdb').textContent = Buffer.from('test topology').toString('base64');
+    element('mdclaw-pdb').textContent = zlib.gzipSync('test topology').toString('base64');
     element('speed').value = '30';
     const model = { obj: { data: { atomicHierarchy: { atoms: { _rowCount: atomCount } } } } };
     const plugin = {
@@ -52,6 +53,10 @@ async function harness({ frames = 100, atomCount = 3, renderCost = 10, withMolst
     };
     let options;
     const context = vm.createContext({ console, Uint8Array, Float32Array, JSON, TextDecoder,
+        // Real streams settle on the real event loop, which the fake clock never reaches.
+        Blob: class { constructor([bytes]) { this.bytes = bytes; } stream() { return { pipeThrough: () => this.bytes }; } },
+        DecompressionStream: class {},
+        Response: class { constructor(bytes) { this.bytes = bytes; } async text() { return zlib.gunzipSync(this.bytes).toString(); } },
         performance: { now: () => now },
         atob: value => Buffer.from(value, 'base64').toString('binary'),
         setTimeout: timeout, clearTimeout: id => timers.delete(id),
@@ -80,6 +85,13 @@ async function harness({ frames = 100, atomCount = 3, renderCost = 10, withMolst
     await advance(100); await started;
     return { element, rendered, advance, listeners, options: () => options };
 }
+
+test('the embedded PDB inflates through the real stream classes', async () => {
+    const source = fs.readFileSync(path.join(__dirname, '../../mdclaw/visualization/molstar/page.js'), 'utf8');
+    const expression = source.match(/await (new Response\(new Blob[\s\S]*?\.text\(\));/)[1];
+    const decode = () => new Uint8Array(zlib.gzipSync('ATOM record'));
+    assert.equal(await new Function('decode', `return ${expression};`)(decode), 'ATOM record');
+});
 
 test('plays embedded frames in order at the selected target rate', async () => {
     const h = await harness();
