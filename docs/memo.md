@@ -13,6 +13,15 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-10-31 — v0.6.14 を公開、`singularity pull` が通り、共有 SIF を差し替えた
+
+- v0.6.14（タグ `18aac3a`、container run 41112990367、43 分、GHCR digest `sha256:8e676be4665025bee9b9867c69b124acade605f6d46f9bf7dc3329d18a013400`、CI の smoke 25 passed）。
+- **`singularity pull` は回避策なしの 1 回で成功**（29 分）。v0.6.13 の 3 回の失敗は解消した。SIF は 8.5 GB → 5.5 GB（5,472,088,064 bytes、sha256 `231ccbc3…`、`/data/mdclaw/mdclaw-amd64-18aac3af32fe.sif`）。
+- 受け入れ（`/data/mdclaw/accept-0.6.14/`）: floyd と n1/n2/n4/n5 で `test-container.sh --gpu` 各 26 passed / 0 failed、PythonTorchForce・OpenMM CUDA 上の PLUMED・`export_molstar_page` 合格。CLN025 10 ps は floyd 740〜797、n1 483、n2 490、n4 489、n5 631 ns/day（前回の SIF と同水準）。
+- 最初の floyd の測定が 162 ns/day と出た原因は、別の人の ComfyUI が同じ GPU 0 で動いていたため（使用率 99%、19.5 GB）。空いている GPU 1 と、その処理の空きを狙った GPU 0 の再測定で確認した。floyd は Slurm 上 down なので、直接実行するときは先に `nvidia-smi --query-compute-apps` で空きを見ること。
+- `/data/mdclaw.sif` を 13:43 JST に atomic に張替え。戻し先は `mdclaw-amd64-pixi-510707f021b6.sif`。実行中の `hom` の FEP ジョブは `/home/hom/mdclaw/mdclaw.sif` を使い（権限がなく実体は未確認）、`PYTHONPATH` で自分のチェックアウトを読む。新旧 SIF のパッケージ一覧（conda と pip で 582 件）の差は mdclaw の表記だけなので、仮に共有パスを見ていても依存は変わらない。
+- 掃除: 受け入れしなかった v0.6.13 の SIF `c7b4332007ac` と、作業用の Docker イメージ `mdclaw:ghcr-0.6.13`・`mdclaw:pixi-0.6.14-local` を削除。
+
 ## 2026-10-31 — RIKYU の SIF も pixi `cuda13` 環境から作るようにした
 
 本人「rikyu 用 sif も pixi で同様に統一されて管理・作成できるように」。
