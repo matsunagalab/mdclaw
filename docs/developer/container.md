@@ -145,10 +145,9 @@ The GHCR package must be public for unauthenticated Singularity pulls.
 RIKYU's image is `container/Dockerfile.rikyu-arm64`. It installs the pixi
 `cuda13` environment from `pixi.lock`, so its dependencies live in the same
 `pixi.toml` as every other environment. Each tag publishes it as
-`ghcr.io/matsunagalab/mdclaw:X.Y.Z-rikyu` from a hosted arm runner
-(`.github/workflows/container.yml`, job `build-rikyu`); it never takes `:latest`.
-To build it from `main` without a tag, run the workflow by hand with
-`image=rikyu`.
+`ghcr.io/matsunagalab/mdclaw:X.Y.Z-rikyu` and `:latest-rikyu` from a hosted arm
+runner (`.github/workflows/container.yml`); it never takes `:latest`. To rebuild
+from `main` without a tag, run the workflow by hand.
 
 `container/scripts/build-rikyu-arm64.sh` builds the current checkout on an arm64
 host: build, non-GPU verification, `--push` to GHCR, and `--sif PATH` to convert

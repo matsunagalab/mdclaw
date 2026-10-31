@@ -258,8 +258,9 @@ Current support covers SEP, TPO, and PTR:
 - PDBFixer strips them as nonstandard replacements.
 - `phosphorylate_residues` reapplies them on a branched prep node, either from
   detected metadata or explicit sites.
-- `build_amber_system` auto-loads `phosaa19SB` for ff19SB or `phosaa14SB` for
-  ff14SB.
+- `build_amber_system` auto-loads `phosaa19SB` for ff19SB. ff14SB is refused
+  (`phospho_forcefield_atom_type_mismatch`): `phosaa14SB` uses unprefixed atom
+  types that `openmmforcefields` cannot pair with its ff14SB XML.
 
 Deferred PTM work:
 

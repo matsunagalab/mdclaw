@@ -1,14 +1,17 @@
-# Packaged-runtime images: build the amd64 image (`pixi install -e cuda118
-# --locked`, container/Dockerfile.pixi) and RIKYU's arm64 image (`pixi install -e
-# cuda13 --locked`, container/Dockerfile.rikyu-arm64) from the committed
-# pixi.lock, run the CPU smoke test, and push to GHCR. The arm64 image goes to
-# the same package under the tag X.Y.Z-rikyu and never to :latest.
+# Packaged-runtime images, all from the committed pixi.lock. A vX.Y.Z tag builds
+# each image on a native runner, runs the CPU smoke test, and publishes:
+#
+#   mdclaw:X.Y.Z, :latest      multi-arch: linux/amd64 (cuda118 environment, CUDA
+#                              11.8) and linux/arm64 (default environment, CUDA
+#                              12.9, also what Docker runs on Apple Silicon)
+#   mdclaw:X.Y.Z-rikyu,        RIKYU, linux/arm64 (cuda13 environment, CUDA 13)
+#     :latest-rikyu
 #
 # Triggers:
-#   - tag push vX.Y.Z: build, smoke-test, push :X.Y.Z and :latest. The tag
-#     must match the plugin.json version (checked below).
+#   - tag push vX.Y.Z: build, smoke-test, publish. The tag must match the
+#     plugin.json version (checked below).
 #   - workflow_dispatch: validation build by default; set push_image to also
-#     push the versioned tag (no :latest) — useful to rebuild an image for
+#     publish the versioned tags (no :latest) — useful to rebuild an image for
 #     the current version without cutting a release.
 #
 # The GPU smoke test cannot run on hosted runners and stays a manual release
@@ -21,14 +24,9 @@ on:
   workflow_dispatch:
     inputs:
       push_image:
-        description: "Push the built image to GHCR under the plugin.json version tag"
+        description: "Publish the built images to GHCR under the plugin.json version"
         type: boolean
         default: false
-      image:
-        description: "Which image to build"
-        type: choice
-        options: [both, amd64, rikyu]
-        default: both
 
 permissions:
   contents: read
@@ -36,9 +34,32 @@ permissions:
 
 jobs:
   build:
-    if: inputs.image != 'rikyu'
-    runs-on: ubuntu-latest
+    name: build (${{ matrix.image }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+            dockerfile: container/Dockerfile.pixi
+            build_args: ""
+          - image: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            dockerfile: container/Dockerfile.pixi
+            build_args: |
+              PIXI_ENV=default
+              CUDA_TOOLKIT=12.9
+              RUNTIME_IMAGE=nvidia/cuda:12.9.1-base-ubuntu24.04@sha256:29e5e3425e2e0f5a4e97c9fb4695ba4887cd78210a43cf94c3bcafc6ab01c5e6
+          - image: rikyu
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            dockerfile: container/Dockerfile.rikyu-arm64
+            build_args: |
+              BUILD_JOBS=4
     steps:
       - uses: actions/checkout@v4
 
@@ -97,11 +118,15 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: container/Dockerfile.pixi
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            GIT_REVISION=${{ github.sha }}
+            ${{ matrix.build_args }}
           outputs: type=docker,dest=${{ runner.temp }}/mdclaw-image.tar
           tags: mdclaw:ci
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache,mode=min
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.image }}
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.image }},mode=min
 
       - name: Release build cache and load image
         run: |
@@ -126,11 +151,12 @@ jobs:
         if: github.ref_type == 'tag' || inputs.push_image
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          docker tag mdclaw:ci "ghcr.io/${{ github.repository }}:${VERSION}"
-          docker push "ghcr.io/${{ github.repository }}:${VERSION}"
+          REPO="ghcr.io/${{ github.repository }}"
+          docker tag mdclaw:ci "$REPO:${VERSION}-${{ matrix.image }}"
+          docker push "$REPO:${VERSION}-${{ matrix.image }}"
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            docker tag mdclaw:ci "ghcr.io/${{ github.repository }}:latest"
-            docker push "ghcr.io/${{ github.repository }}:latest"
+            docker tag mdclaw:ci "$REPO:latest-${{ matrix.image }}"
+            docker push "$REPO:latest-${{ matrix.image }}"
           fi
 
       - name: Final disk usage
@@ -143,33 +169,14 @@ jobs:
           df -h /
           docker system df
 
-  # Hosted arm runners are native, so the recipes compile at full speed. The GPU
-  # acceptance (test-rikyu-gpu.sh) must run from the SIF on RIKYU.
-  build-rikyu:
-    if: inputs.image != 'amd64'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 350
+  # One tag for both architectures: `docker pull` and `singularity pull` take the
+  # host's. RIKYU keeps its own tag, published by its build above.
+  publish:
+    needs: build
+    if: github.ref_type == 'tag' || inputs.push_image
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL
-          sudo docker image prune -af
-          df -h /
-
-      - name: Resolve version and check tag sync
-        id: version
-        run: |
-          VERSION=$(python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['version'])")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match plugin version v$VERSION" >&2
-            exit 1
-          fi
-
-      - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
         with:
@@ -177,36 +184,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: container/Dockerfile.rikyu-arm64
-          platforms: linux/arm64
-          build-args: |
-            GIT_REVISION=${{ github.sha }}
-            BUILD_JOBS=4
-          outputs: type=docker,dest=${{ runner.temp }}/mdclaw-image.tar
-          tags: mdclaw:ci-rikyu
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-rikyu
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-rikyu,mode=min
-
-      - name: Release build cache and load image
+      - name: Publish the multi-arch tags
         run: |
-          docker buildx prune --all --force
-          docker load --input "$RUNNER_TEMP/mdclaw-image.tar"
-          rm -f "$RUNNER_TEMP/mdclaw-image.tar"
-          df -h /
-
-      - name: Smoke test (CPU only; GPU acceptance runs from the SIF on RIKYU)
-        run: |
-          docker run --rm \
-            -v "$PWD/container/scripts/test-container.sh:/work/test.sh:ro" \
-            mdclaw:ci-rikyu bash /work/test.sh
-
-      - name: Push to GHCR
-        if: github.ref_type == 'tag' || inputs.push_image
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          docker tag mdclaw:ci-rikyu "ghcr.io/${{ github.repository }}:${VERSION}-rikyu"
-          docker push "ghcr.io/${{ github.repository }}:${VERSION}-rikyu"
+          VERSION=$(python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['version'])")
+          REPO="ghcr.io/${{ github.repository }}"
+          TAGS=(-t "$REPO:$VERSION")
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAGS+=(-t "$REPO:latest")
+          fi
+          docker buildx imagetools create "${TAGS[@]}" "$REPO:${VERSION}-amd64" "$REPO:${VERSION}-arm64"
+          docker buildx imagetools inspect "$REPO:$VERSION"

@@ -9,6 +9,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -41,7 +43,7 @@ def test_container_definition_includes_dev_tools_for_sif_workflows():
     pixi_manifest = (REPO_ROOT / "pixi.toml").read_text()
     test_script = (REPO_ROOT / "container" / "scripts" / "test-container.sh").read_text()
 
-    assert "pixi install -e cuda118 --locked" in dockerfile
+    assert "pixi install -e ${PIXI_ENV} --locked" in dockerfile and "ARG PIXI_ENV=cuda118" in dockerfile
     assert "dev" in tomllib.loads(pixi_manifest)["environments"]["cuda118"]["features"]
     dev_feature = pixi_manifest.split("[feature.dev.dependencies]", 1)[1]
     for tool in ("pytest", "pytest-asyncio", "ruff"):
@@ -59,7 +61,7 @@ def test_container_build_is_gated_on_the_lockfile():
 
     assert "COPY pixi.toml pixi.lock" in dockerfile
     assert "COPY recipes/ recipes/" in dockerfile
-    assert "pixi install -e cuda118 --locked" in dockerfile
+    assert "pixi install -e ${PIXI_ENV} --locked" in dockerfile
     assert "pip install --no-cache-dir --no-deps --force-reinstall ." in dockerfile
     # Only the environment ships: .pixi/bld added 8 GB to the v0.6.13 image.
     assert "find .pixi -mindepth 1 -maxdepth 1 ! -name envs -exec rm -rf {} +" in dockerfile
@@ -94,6 +96,34 @@ def test_container_setup_skips_when_pixi_env_exists(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "Using pixi" in result.stderr
+    assert "unexpected runtime call" not in result.stderr
+
+
+def test_plugin_setup_uses_the_pixi_checkout_on_path(tmp_path):
+    """A plugin cache has no .pixi; a checkout on PATH must not trigger an image download."""
+    plugin = tmp_path / "plugin"
+    (plugin / "scripts").mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "scripts" / "setup-container.sh", plugin / "scripts")
+    shutil.copytree(REPO_ROOT / "scripts/_internal", plugin / "scripts/_internal")
+    checkout = tmp_path / "checkout"
+    (checkout / "bin").mkdir(parents=True)
+    (checkout / ".pixi" / "envs" / "cuda118").mkdir(parents=True)
+    wrapper = checkout / "bin" / "mdclaw"
+    wrapper.write_text("#!/bin/sh\n")
+    wrapper.chmod(0o755)
+    stub_bin = tmp_path / "stubs"
+    stub_bin.mkdir()
+    runtime = stub_bin / "singularity"
+    runtime.write_text('#!/bin/sh\necho "unexpected runtime call" >&2\nexit 99\n')
+    runtime.chmod(0o755)
+    result = subprocess.run(
+        ["bash", str(plugin / "scripts" / "setup-container.sh")],
+        env={**_host_free_env(), "PATH": f"{checkout / 'bin'}:{stub_bin}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Using the Pixi checkout on PATH" in result.stderr
     assert "unexpected runtime call" not in result.stderr
 
 
@@ -230,6 +260,28 @@ def test_environments_build_the_container_only_pieces_from_recipes():
     assert default["openmm-plumed"] == {"path": "recipes/openmm-plumed"}
 
 
+def test_a_tag_publishes_every_image():
+    """amd64 and arm64 share one multi-arch tag; RIKYU's CUDA 13 image has its own."""
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/container.yml").read_text())
+    images = {item["image"]: item for item in workflow["jobs"]["build"]["strategy"]["matrix"]["include"]}
+    assert set(images) == {"amd64", "arm64", "rikyu"}
+    assert images["amd64"]["platform"] == "linux/amd64" and images["amd64"]["runner"] == "ubuntu-latest"
+    for name in ("arm64", "rikyu"):
+        assert images[name]["platform"] == "linux/arm64" and images[name]["runner"] == "ubuntu-24.04-arm"
+    assert "PIXI_ENV=default" in images["arm64"]["build_args"]
+    assert images["rikyu"]["dockerfile"] == "container/Dockerfile.rikyu-arm64"
+    publish = "\n".join(step.get("run", "") for step in workflow["jobs"]["publish"]["steps"])
+    assert "imagetools create" in publish and "-amd64" in publish and "-arm64" in publish
+
+
+def test_arm64_image_declares_a_digest_for_both_architectures():
+    """The runtime base stays one pinned multi-arch digest across rebuilds."""
+    dockerfile = (REPO_ROOT / "container" / "Dockerfile.pixi").read_text()
+    workflow = (REPO_ROOT / ".github/workflows/container.yml").read_text()
+    pinned = re.search(r"nvidia/cuda:12\.9\.1-base-ubuntu24\.04@sha256:[0-9a-f]{64}", workflow).group(0)
+    assert pinned in dockerfile
+
+
 def test_rikyu_image_is_built_from_the_cuda13_environment():
     """RIKYU's contracts survive in pixi.toml and the Dockerfile, without a second dependency list."""
     manifest = tomllib.loads((REPO_ROOT / "pixi.toml").read_text())
@@ -259,7 +311,7 @@ def test_pixi_image_bakes_in_the_environment_activation():
     """`singularity exec` runs no activation script, so Dockerfile.pixi fixes it as ENV."""
     dockerfile = (REPO_ROOT / "container" / "Dockerfile.pixi").read_text()
     manifest = tomllib.loads((REPO_ROOT / "pixi.toml").read_text())
-    assert "pixi install -e cuda118 --locked" in dockerfile
+    assert "pixi install -e ${PIXI_ENV} --locked" in dockerfile
     expected = dict(manifest["activation"]["env"])
     expected.update(manifest["feature"]["cuda118"]["activation"]["env"])
     for name, value in expected.items():

@@ -32,7 +32,8 @@ channels = ["conda-forge"]
 # OpenMM built from source against CUDA 11.8 (recipes/openmm-cuda118), for
 # drivers R520-R574 (floyd R550, n1-n5 R530): `pixi install -e cuda118`.
 # The `cuda13` environment adds a linux-aarch64 platform with __cuda=13.0 for
-# RIKYU's image (container/Dockerfile.rikyu-arm64).
+# RIKYU's image (container/Dockerfile.rikyu-arm64). The published multi-arch image
+# is `cuda118` on linux/amd64 and `default` on linux/arm64 (container/Dockerfile.pixi).
 platforms = [
     { name = "linux-64-cuda", platform = "linux-64", cuda = "12.9" },
     { name = "linux-aarch64-cuda", platform = "linux-aarch64", cuda = "12.9" },

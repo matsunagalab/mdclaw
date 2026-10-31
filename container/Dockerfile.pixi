@@ -1,23 +1,35 @@
-# MDClaw runtime built from the pixi `cuda118` environment.
+# MDClaw runtime built from a pixi environment, for Linux x86-64 and ARM64.
 #
-# One pixi.toml / pixi.lock for workstations and this image: OpenMM 8.6.1,
-# openmm-torch (PythonTorchForce) and PLUMED 2.9.4 + openmm-plumed come from
-# recipes/ (pixi-build), PyTorch 2.5.1 is conda-forge's CUDA 11.8 GPU build.
-# Targets NVIDIA drivers >= R520 (floyd, n1-n5). Only the packmol-memgen fixes
-# below remain outside pixi.
+# One pixi.toml / pixi.lock for workstations and images: OpenMM 8.6.1, GPU PyTorch,
+# openmm-torch (PythonTorchForce) and PLUMED 2.9.4 + openmm-plumed. Only the
+# packmol-memgen fixes below remain outside pixi, plus the MODELLER tarball on
+# ARM64. The published tag ghcr.io/matsunagalab/mdclaw:X.Y.Z is multi-arch, built
+# from this file twice:
 #
-#   docker build -f container/Dockerfile.pixi -t mdclaw:pixi-cuda118 .
-#   singularity build mdclaw.sif docker-daemon://mdclaw:pixi-cuda118
+#   linux/amd64  PIXI_ENV=cuda118  CUDA 11.8, NVIDIA driver >= R520
+#   linux/arm64  PIXI_ENV=default  CUDA 12.9, NVIDIA driver >= R575
+#
+#   docker build -f container/Dockerfile.pixi -t mdclaw:amd64 .
+#   docker build --platform linux/arm64 -f container/Dockerfile.pixi \
+#     --build-arg PIXI_ENV=default --build-arg CUDA_TOOLKIT=12.9 \
+#     --build-arg RUNTIME_IMAGE=nvidia/cuda:12.9.1-base-ubuntu24.04@sha256:29e5e3425e2e0f5a4e97c9fb4695ba4887cd78210a43cf94c3bcafc6ab01c5e6 \
+#     -t mdclaw:arm64 .
+#   singularity build mdclaw.sif docker-daemon://mdclaw:amd64
+
+ARG PIXI_ENV=cuda118
+ARG CUDA_TOOLKIT=11.8
+ARG RUNTIME_IMAGE=nvidia/cuda:11.8.0-base-ubuntu22.04@sha256:f895871972c1c91eb6a896eee68468f40289395a1e58c492e1be7929d0f8703b
 
 # Stage 1: install the locked environment (builds the recipes once)
-FROM --platform=linux/amd64 ghcr.io/prefix-dev/pixi:0.83.0@sha256:3dce86c6e87371c58035aa41b09f2b56ca8f011722320551e0c2bfc1c59da5fb AS build
+FROM ghcr.io/prefix-dev/pixi:0.83.0@sha256:3dce86c6e87371c58035aa41b09f2b56ca8f011722320551e0c2bfc1c59da5fb AS build
+ARG PIXI_ENV
+ARG CUDA_TOOLKIT
 # git fetches the recipe sources; gfortran/make rebuild PPM3 below.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends git ca-certificates gfortran make && \
     rm -rf /var/lib/apt/lists/*
-# The build machine has no GPU; declare the CUDA 11.8 driver the environment's
-# platform requires.
-ENV CONDA_OVERRIDE_CUDA=11.8
+# The build machine has no GPU; declare the driver the environment's platform requires.
+ENV CONDA_OVERRIDE_CUDA=${CUDA_TOOLKIT}
 # The environment is not relocatable: it keeps this path in the runtime stage.
 WORKDIR /opt/mdclaw-src
 COPY pixi.toml pixi.lock pyproject.toml README.md ./
@@ -26,11 +38,11 @@ COPY mdclaw/ mdclaw/
 # Keep only .pixi/envs: the recipe build trees under .pixi/bld added 8 GB beyond
 # the 12 GB environment to the v0.6.13 image (15 GB by themselves, the rest hard
 # links into the environment).
-RUN pixi install -e cuda118 --locked && \
+RUN pixi install -e ${PIXI_ENV} --locked && \
     find .pixi -mindepth 1 -maxdepth 1 ! -name envs -exec rm -rf {} + && \
     rm -rf recipes/*/.pixi /root/.cache
-ENV MDCLAW_ENV=/opt/mdclaw-src/.pixi/envs/cuda118
-# Replace the editable checkout with a regular install, as the standard image does.
+ENV MDCLAW_ENV=/opt/mdclaw-src/.pixi/envs/${PIXI_ENV}
+# Replace the editable checkout with a regular install.
 RUN $MDCLAW_ENV/bin/python -m pip install --no-cache-dir --no-deps --force-reinstall . && \
     rm -rf mdclaw build
 # packmol-memgen's NumPy compatibility patch.
@@ -49,36 +61,46 @@ RUN PPM3_DIR=$($MDCLAW_ENV/bin/python -c "import packmol_memgen, pathlib; print(
     { "$MDCLAW_ENV/bin/immers" < /dev/null 2>&1 | grep -q "Fortran runtime error: Missing comma" \
       && { echo "PPM3 format bug still present after patch"; exit 1; } || true; } && \
     rm -f datapar1 datapar2 datasub1
+# MODELLER on ARM64 comes from the official tarball (no conda package there). The
+# script's import check needs the search path that pixi's activation supplies.
+COPY scripts/install-modeller-arm64.py /tmp/install-modeller-arm64.py
+RUN if [ "$(uname -m)" = aarch64 ]; then \
+      LD_LIBRARY_PATH="$MDCLAW_ENV/lib/modeller-10.8/lib/armv8-gnu:$MDCLAW_ENV/lib" \
+        $MDCLAW_ENV/bin/python /tmp/install-modeller-arm64.py; \
+    fi && \
+    rm /tmp/install-modeller-arm64.py
 # Copy the environment in three layers: `singularity pull` lost the single
 # multi-gigabyte layer of v0.6.13 from GHCR mid-transfer, three times.
 RUN mkdir /opt/mdclaw-layers && \
     mv $MDCLAW_ENV/lib/python3.12 /opt/mdclaw-layers/python3.12 && \
     mv $MDCLAW_ENV/lib /opt/mdclaw-layers/lib
 
-# Stage 2: runtime (same base as the standard image)
-FROM --platform=linux/amd64 nvidia/cuda:11.8.0-base-ubuntu22.04@sha256:f895871972c1c91eb6a896eee68468f40289395a1e58c492e1be7929d0f8703b
+# Stage 2: runtime
+FROM ${RUNTIME_IMAGE}
+ARG PIXI_ENV
+ARG CUDA_TOOLKIT
 LABEL org.opencontainers.image.title="MDClaw" \
-      org.opencontainers.image.description="Packaged Amber/OpenMM runtime for MDClaw skills and CLIs, built from the pixi cuda118 environment." \
+      org.opencontainers.image.description="Packaged Amber/OpenMM runtime for MDClaw skills and CLIs, built from a pixi environment." \
       org.opencontainers.image.source="https://github.com/matsunagalab/mdclaw" \
       org.opencontainers.image.licenses="MIT"
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libgl1-mesa-glx libglib2.0-0 libxrender1 libsm6 ca-certificates && \
+    apt-get install -y --no-install-recommends libgl1 libglib2.0-0 libxrender1 libsm6 ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/mdclaw-src /opt/mdclaw-src
-COPY --from=build /opt/mdclaw-layers/lib/ /opt/mdclaw-src/.pixi/envs/cuda118/lib/
-COPY --from=build /opt/mdclaw-layers/python3.12/ /opt/mdclaw-src/.pixi/envs/cuda118/lib/python3.12/
-RUN ln -s /opt/mdclaw-src/.pixi/envs/cuda118 /opt/mdclaw
+COPY --from=build /opt/mdclaw-layers/lib/ /opt/mdclaw-src/.pixi/envs/${PIXI_ENV}/lib/
+COPY --from=build /opt/mdclaw-layers/python3.12/ /opt/mdclaw-src/.pixi/envs/${PIXI_ENV}/lib/python3.12/
+RUN ln -s /opt/mdclaw-src/.pixi/envs/${PIXI_ENV} /opt/mdclaw
 COPY container/scripts/test-gpu.py /opt/mdclaw/share/mdclaw/test-gpu.py
-ENV MDCLAW_CUDA_TOOLKIT_VERSION="11.8" \
+ENV MDCLAW_CUDA_TOOLKIT_VERSION="${CUDA_TOOLKIT}" \
     MDCLAW_PLUMED_VERSION=2.9.4 \
     MDCLAW_SST2_REVISION=3dc7013 \
     MDCLAW_MODELLER_VERSION="10.8" \
     MDCLAW_PPM3_PATCHED="1" \
-    MDCLAW_PIXI_ENV=cuda118
+    MDCLAW_PIXI_ENV=${PIXI_ENV}
 # The environment's activation (pixi shell-hook + etc/conda/activate.d), fixed.
 ENV CONDA_PREFIX="/opt/mdclaw" \
     PATH="/opt/mdclaw/bin:$PATH" \
-    LD_LIBRARY_PATH="/opt/mdclaw/lib" \
+    LD_LIBRARY_PATH="/opt/mdclaw/lib:/opt/mdclaw/lib/modeller-10.8/lib/armv8-gnu" \
     AMBERHOME="/opt/mdclaw" \
     PERL5LIB="/opt/mdclaw/lib/perl/mm_pbsa" \
     MKL_INTERFACE_LAYER="LP64,GNU" \
@@ -89,12 +111,17 @@ ENV CONDA_PREFIX="/opt/mdclaw" \
     PYTHONNOUSERSITE="1" \
     PYTHONUTF8="1"
 RUN /opt/mdclaw/bin/python - <<'PY'
+import importlib.util, os
 import openmm, torch, openmmtorch, openmmplumed, mdclaw
+torch_version, arches = {"cuda118": ("2.5.1", {"sm_60", "sm_61", "sm_75", "sm_86"}),
+                         "default": ("2.7.1", {"sm_86", "sm_90"})}[os.environ["MDCLAW_PIXI_ENV"]]
 assert openmm.__version__ == "8.6.1", openmm.__version__
-assert torch.__version__.startswith("2.5.1") and torch.version.cuda == "11.8", (torch.__version__, torch.version.cuda)
+assert torch.__version__.startswith(torch_version), torch.__version__
+assert torch.version.cuda == os.environ["MDCLAW_CUDA_TOOLKIT_VERSION"], torch.version.cuda
 assert hasattr(openmmtorch, "PythonTorchForce")
-assert {"sm_60", "sm_61", "sm_75", "sm_86"} <= set(torch._C._cuda_getArchFlags().split())
-print("pixi cuda118 image: OpenMM", openmm.__version__, "PyTorch", torch.__version__, "mdclaw", mdclaw.__version__)
+assert arches <= set(torch._C._cuda_getArchFlags().split()), torch._C._cuda_getArchFlags()
+assert importlib.util.find_spec("modeller") is not None
+print("pixi image: OpenMM", openmm.__version__, "PyTorch", torch.__version__, "mdclaw", mdclaw.__version__)
 # The packaged membrane-patch cache must carry both water models: an image once
 # shipped it empty and every membrane run paid a 30-40 minute cold build.
 import json, pathlib

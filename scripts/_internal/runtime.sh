@@ -21,7 +21,15 @@ _mdclaw_pixi_env() {
     local driver
     driver="$(awk '/NVRM version/ { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+/) { print $i; exit } }' \
         "${MDCLAW_NVIDIA_VERSION_FILE:-/proc/driver/nvidia/version}" 2>/dev/null || true)"
-    case "${driver%%.*}" in ''|*[!0-9]*) return ;; esac
+    case "${driver%%.*}" in
+        ''|*[!0-9]*)
+            # No driver on this host, as on a cluster's login node: `pixi install
+            # -e cuda118` alone must still select an environment.
+            if [ ! -d "$PKG_ROOT/.pixi/envs/default" ] && [ -d "$PKG_ROOT/.pixi/envs/cuda118" ]; then
+                PIXI_ENV=cuda118
+            fi
+            return ;;
+    esac
     [ "${driver%%.*}" -lt 575 ] || return 0
     if [ -d "$PKG_ROOT/.pixi/envs/cuda118" ]; then
         PIXI_ENV=cuda118

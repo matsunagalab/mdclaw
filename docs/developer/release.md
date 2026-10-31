@@ -23,10 +23,12 @@ scripts/bump-version.sh X.Y.Z
 scripts/mdclaw-doctor.sh
 
 # 2. Commit, tag, and push. The v-tag triggers .github/workflows/container.yml:
-#    it builds the amd64 image from the committed pixi.lock, runs the CPU
-#    smoke test (container/scripts/test-container.sh), and pushes
-#    ghcr.io/matsunagalab/mdclaw:X.Y.Z and :latest. The workflow fails if the
-#    tag does not match the plugin.json version or if pixi.lock is stale.
+#    it builds three images from the committed pixi.lock on native runners
+#    (amd64, arm64, rikyu), runs the CPU smoke test on each
+#    (container/scripts/test-container.sh), and publishes
+#    ghcr.io/matsunagalab/mdclaw:X.Y.Z and :latest (multi-arch: amd64 and arm64)
+#    and :X.Y.Z-rikyu and :latest-rikyu. The workflow fails if the tag does not
+#    match the plugin.json version or if pixi.lock is stale.
 git add -A
 git commit -m "release: vX.Y.Z"
 git tag vX.Y.Z
