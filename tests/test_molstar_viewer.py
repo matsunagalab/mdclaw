@@ -149,8 +149,15 @@ def test_no_directory_or_arbitrary_file_access(running, suffix):
 def test_host_origin_and_changed_file_rejected(running, pair):
     assert request(running, headers={"Host": "untrusted.example"})[0] == 403
     assert request(running, headers={"Origin": "https://untrusted.example"})[0] == 403
-    pair[1].write_bytes(pair[1].read_bytes() + b"more")
+    pair[1].write_bytes(pair[1].read_bytes()[:-1])
     assert request(running, "frames/0.bin")[0] == 409
+
+
+def test_a_trajectory_growing_under_the_viewer_stays_readable(running, pair):
+    """A running production only appends, so the frames counted at opening stay valid."""
+    with pair[1].open("ab") as trajectory:
+        trajectory.write(b"more")
+    assert request(running, "frames/0.bin")[0] == 200
 
 
 def test_seek_streams_only_one_frame_in_angstroms(running):

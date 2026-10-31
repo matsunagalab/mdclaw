@@ -339,9 +339,7 @@
   "export_molstar_page": {
     "job_dir_is_data": false,
     "node_type": null,
-    "required_params": [
-      "structure_file"
-    ],
+    "required_params": [],
     "requires_node": false,
     "server": "visualization"
   },

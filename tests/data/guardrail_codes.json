@@ -281,6 +281,8 @@
   "modxna_terminal_residue_unsupported",
   "modxna_tool_unavailable",
   "molstar_input_invalid",
+  "molstar_node_not_found",
+  "molstar_node_not_ready",
   "molstar_page_too_large",
   "molstar_server_failed",
   "mps_task_requires_cuda_platform",

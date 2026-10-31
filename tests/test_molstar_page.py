@@ -35,7 +35,7 @@ def test_page_embeds_the_viewer_stream(system_pair, tmp_path):  # noqa: F811
     assert info['atom_count'] == 8 and info['frame_count'] == 7
     assert info['display']['wrap'] == 'applied' and info['display']['water_removed'] == 3
     assert base64.b64decode(data['mdclaw-frames']) == b''.join(display.read(i) for i in range(7))
-    assert base64.b64decode(data['mdclaw-pdb']).decode() == display.topology_text
+    assert gzip.decompress(base64.b64decode(data['mdclaw-pdb'])).decode() == display.topology_text
     assert result['page_bytes'] == (tmp_path / 'out.html').stat().st_size
     assert before == [hashlib.sha256(p.read_bytes()).digest() for p in (pdb, dcd)]
 
@@ -44,8 +44,11 @@ def test_page_is_artifact_ready_and_pins_bundled_molstar(system_pair, tmp_path):
     pdb, dcd, _, _ = system_pair
     export_molstar_page(str(pdb), str(dcd), output_file=str(tmp_path / 'p.html'), title='A <b> & B')
     page = (tmp_path / 'p.html').read_text()
-    assert page.startswith('<title>A &lt;b> &amp; B</title>')
-    assert '<!doctype' not in page.lower() and '<body>' not in page
+    # claude-artifacts refuses a page that does not begin as a document.
+    assert page.startswith('<!DOCTYPE html>\n<html lang="en">\n<head>')
+    assert '<title>A &lt;b> &amp; B</title>' in page
+    assert page.index('</head>') < page.index('<body>') < page.index('id="mdclaw-frames"')
+    assert page.endswith('</body>\n</html>\n')
     source = gzip.decompress((_ASSETS / 'vendor/molstar.js.gz').read_bytes())
     sri = 'sha384-' + base64.b64encode(hashlib.sha384(source).digest()).decode()
     assert f'src="https://cdn.jsdelivr.net/npm/molstar@5.13.0/build/viewer/molstar.js" integrity="{sri}"' in page
@@ -96,6 +99,86 @@ def test_refuses_to_overwrite_inputs(system_pair):  # noqa: F811
     pdb, dcd, _, _ = system_pair
     result = export_molstar_page(str(pdb), str(dcd), output_file=str(dcd))
     assert result['success'] is False and result['code'] == 'invalid_parameter_value'
+
+
+def _job(tmp_path, pdb, dcd, status='running'):
+    """topo_001 -> prod_001, with prod_001 as a running node leaves it on disk."""
+    job = tmp_path / 'job'
+    topology = job / 'nodes/topo_001/artifacts/system.topology.pdb'
+    topology.parent.mkdir(parents=True)
+    shutil.copy2(pdb, topology)
+    trajectory = job / 'nodes/prod_001/artifacts/trajectory.dcd'
+    trajectory.parent.mkdir(parents=True)
+    shutil.copy2(dcd, trajectory)
+    (job / 'nodes/topo_001/node.json').write_text(json.dumps(
+        {'node_id': 'topo_001', 'node_type': 'topo', 'status': 'completed', 'parent_node_ids': [],
+         'artifacts': {'topology_pdb': 'artifacts/system.topology.pdb'}}))
+    (job / 'nodes/prod_001/node.json').write_text(json.dumps(
+        {'node_id': 'prod_001', 'node_type': 'prod', 'status': status, 'parent_node_ids': ['topo_001'],
+         'artifacts': {}}))
+    (job / 'progress.json').write_text(json.dumps({'schema_version': 3, 'nodes': {
+        'topo_001': {'type': 'topo', 'status': 'completed', 'parents': []},
+        'prod_001': {'type': 'prod', 'status': status, 'parents': ['topo_001']}}}))
+    return job
+
+
+def test_running_production_shows_its_frames_so_far(system_pair, tmp_path, monkeypatch):  # noqa: F811
+    pdb, dcd, _, _ = system_pair
+    job = _job(tmp_path, pdb, dcd)
+    monkeypatch.chdir(tmp_path)
+    result = export_molstar_page(job_dir=str(job), node_id='prod_001')
+    assert result['success'] is True, result
+    assert result['in_progress'] is True and result['node_status'] == 'running'
+    assert result['display']['stage'] == 'prod'
+    assert result['output_file'] == str(tmp_path / 'job_prod_001_molstar.html')
+    assert 'running' in result['title'] and 'republish' in result['next_action']
+
+
+def test_finished_node_is_not_reported_in_progress(system_pair, tmp_path):  # noqa: F811
+    pdb, dcd, _, _ = system_pair
+    job = _job(tmp_path, pdb, dcd, status='completed')
+    result = export_molstar_page(job_dir=str(job), node_id='prod_001', output_file=str(tmp_path / 'p.html'))
+    assert result['success'] is True and result['in_progress'] is False
+    assert 'running' not in result['title'] and 'republish' not in result['next_action']
+
+
+def test_a_completed_node_without_a_trajectory_shows_its_structure(system_pair, tmp_path):  # noqa: F811
+    pdb, dcd, _, _ = system_pair
+    job = _job(tmp_path, pdb, dcd)
+    result = export_molstar_page(job_dir=str(job), node_id='topo_001', output_file=str(tmp_path / 'p.html'))
+    assert result['success'] is True and result['display']['stage'] == 'topo'
+    assert result['trajectory_name'] is None
+
+
+def test_a_source_node_refuses_its_mmcif_with_a_route(system_pair, tmp_path):  # noqa: F811
+    pdb, dcd, _, _ = system_pair
+    job = _job(tmp_path, pdb, dcd)
+    node = json.loads((job / 'nodes/topo_001/node.json').read_text())
+    (job / 'nodes/topo_001/artifacts/5AWL.cif').write_text('data_5AWL\n')
+    node.update(node_type='source', artifacts={'structure_file': 'artifacts/5AWL.cif'})
+    (job / 'nodes/topo_001/node.json').write_text(json.dumps(node))
+    result = export_molstar_page(job_dir=str(job), node_id='topo_001', output_file=str(tmp_path / 'p.html'))
+    assert result['success'] is False and result['code'] == 'molstar_node_not_ready'
+    assert 'prep' in ' '.join(result['hints'])
+
+
+def test_a_running_stage_without_coordinates_points_at_its_parent(system_pair, tmp_path):  # noqa: F811
+    pdb, dcd, _, _ = system_pair
+    job = _job(tmp_path, pdb, dcd)
+    (job / 'nodes/prod_001/artifacts/trajectory.dcd').unlink()
+    result = export_molstar_page(job_dir=str(job), node_id='prod_001', output_file=str(tmp_path / 'p.html'))
+    assert result['success'] is False and result['code'] == 'molstar_node_not_ready'
+    assert result['next_action'].endswith('--node-id topo_001 export_molstar_page')
+
+
+@pytest.mark.parametrize('kwargs,code', [
+    ({}, 'invalid_parameter_value'),
+    ({'job_dir': 'somewhere'}, 'invalid_parameter_value'),
+    ({'job_dir': 'somewhere', 'node_id': 'prod_001'}, 'molstar_node_not_found'),
+])
+def test_input_selection_errors(kwargs, code):
+    result = export_molstar_page(**kwargs)
+    assert result['success'] is False and result['code'] == code
 
 
 def test_cli_writes_page(system_pair, tmp_path):  # noqa: F811

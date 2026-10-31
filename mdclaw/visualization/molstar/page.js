@@ -44,7 +44,8 @@ async function startMolstarPage() {
         if (!viewer.plugin.canvas3d) throw new Error('WebGL is unavailable in this viewer.');
         const plugin = viewer.plugin;
         plugin.canvas3d.setProps({ camera: { mode: 'orthographic' } });
-        const pdb = new TextDecoder().decode(decode('mdclaw-pdb'));
+        const pdb = await new Response(new Blob([decode('mdclaw-pdb')]).stream()
+            .pipeThrough(new DecompressionStream('gzip'))).text();
         const data = await plugin.builders.data.rawData({ data: pdb, label: info.structure_name });
         const trajectory = await plugin.builders.structure.parseTrajectory(data, 'pdb');
         const preset = await mdclawPresentation(plugin, trajectory, info);
