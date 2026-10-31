@@ -469,3 +469,68 @@ def test_a_mismatch_no_flag_can_fix_keeps_the_old_contract(tmp_path, triple, cle
     assert "rerun_command" not in r and r.get("node_status") is None
     node = read_node(jd, eq)
     assert node["status"] == "pending" and "last_refusal" not in node["metadata"]
+
+
+# ---------------------------------------------------------------------------
+# multi_gpu_device_index: one run split across GPUs
+# ---------------------------------------------------------------------------
+# test-v6-cli 112_nucleic_1hlv (qwen, cli_sif r2): prod with --gpus 4
+# --device-index 0,1,2,3 ran at a mean 318 K under a 298 K thermostat from its
+# first frame; the one-GPU eq before it held 298 K.
+
+def test_device_index_lists_are_split_on_commas_and_spaces():
+    assert run_guard.device_indices(None) == []
+    assert run_guard.device_indices("0") == ["0"]
+    assert run_guard.device_indices("0,1,2,3") == ["0", "1", "2", "3"]
+    assert run_guard.device_indices(" 0, 1 ") == ["0", "1"]
+
+
+def test_a_multi_gpu_device_index_is_refused_and_the_node_stays_pending(tmp_path, triple, clean_env, capsys):
+    from mdclaw.simulation.minimize import run_minimization
+
+    _fake_platforms(clean_env, usable=("Reference", "CPU", "CUDA"))
+    clean_env.setenv("SLURM_JOB_ID", "252607")
+    clean_env.setenv("SLURM_JOB_GPUS", "0,1,2,3")
+    jd, topo = _job_with_topo(tmp_path, triple)
+    mn = create_node(jd, "min", parent_node_ids=[topo])["node_id"]
+    r = run_minimization(job_dir=jd, node_id=mn, platform="CUDA", device_index="0,1,2,3", hmr=False)
+    assert r["code"] == "multi_gpu_device_index"
+    assert "4 GPUs" in r["message"] and "318 K" in r["message"]
+    assert read_node(jd, mn)["status"] == "pending"
+    script = shlex.split(r["next_action"].split(": ", 1)[1])
+    assert script[5] == "run_minimization" and "--device-index" not in script
+    assert script[script.index("--platform") + 1] == "CUDA"
+
+    code, out = _cli(["--job-dir", jd, "--node-id", mn, "run_minimization", "--platform", "CUDA",
+                      "--device-index", "0,1"], capsys)
+    assert code == 1 and out["code"] == "multi_gpu_device_index"
+    assert read_node(jd, mn)["status"] == "pending"
+
+
+def test_one_device_index_or_the_escape_is_not_refused(tmp_path, triple, clean_env):
+    from mdclaw.simulation.minimize import run_minimization
+
+    _fake_platforms(clean_env)                    # no CUDA: the platform probe answers next
+    clean_env.setenv("SLURM_JOB_ID", "252607")
+    jd, topo = _job_with_topo(tmp_path, triple)
+    mn = create_node(jd, "min", parent_node_ids=[topo])["node_id"]
+    r = run_minimization(job_dir=jd, node_id=mn, platform="CUDA", device_index="1", hmr=False)
+    assert r["code"] == "platform_unavailable"
+    clean_env.setenv(run_guard.ALLOW_MULTI_GPU_ENV, "1")
+    r = run_minimization(job_dir=jd, node_id=mn, platform="CUDA", device_index="0,1", hmr=False)
+    assert r["code"] == "platform_unavailable"
+
+
+def test_inside_its_own_job_a_multi_gpu_refusal_seals_with_the_branch_command(tmp_path, triple, clean_env, capsys):
+    from mdclaw.node.lifecycle import _apply_status
+
+    _fake_platforms(clean_env, usable=("Reference", "CPU", "CUDA"))
+    clean_env.setenv("SLURM_JOB_ID", "252607")
+    jd, topo = _job_with_topo(tmp_path, triple)
+    eq = _eq_node(jd, topo)
+    _apply_status(jd, eq, "queued", payload={"metadata": {"slurm_job_id": "252607"}})
+    code, out = _cli(["--job-dir", jd, "--node-id", eq, "run_equilibration", "--pressure-bar", "0",
+                      "--platform", "CUDA", "--device-index", "0,1,2,3"], capsys)
+    assert code == 1 and out["code"] == "multi_gpu_device_index"
+    assert "mdclaw create_node" in out["next_action"] and "--gpus 1" in out["next_action"]
+    assert read_node(jd, eq)["status"] == "failed"

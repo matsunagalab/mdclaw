@@ -853,7 +853,16 @@ def build_amber_system(
             )
         return blocked
 
-    nucleic_content = detect_nucleic_content(pdb_path)
+    # Residues prep recorded ligand chemistry for are GAFF small molecules, not
+    # modified units of a nucleic chain (a free 2'-AMP carries every
+    # sugar-phosphate marker atom of a nucleotide).
+    ligand_chemistry_resnames = sorted({
+        str(entry.get("residue_name") or entry.get("ligand_id") or "").strip().upper()
+        for entry in (ligand_chemistry or [])
+        if isinstance(entry, dict) and (entry.get("residue_name") or entry.get("ligand_id"))
+    })
+    nucleic_content = detect_nucleic_content(
+        pdb_path, ligand_residue_names=ligand_chemistry_resnames)
     result["nucleic_content"] = nucleic_content
     result["parameters"]["nucleic_subtypes"] = nucleic_content["subtypes"]
     result["parameters"]["nucleic_residue_names"] = nucleic_content["standard_residue_names"]
@@ -903,6 +912,16 @@ def build_amber_system(
             warnings=result["warnings"],
         )
         err["code"] = "unsupported_modified_nucleic_residue"
+        free = sorted({r["resname"] for r in unsupported_modified if not r.get("phosphodiester_linked")})
+        if free and len(free) == len({r["resname"] for r in unsupported_modified}):
+            # A nucleotide that is not linked into a chain is a small molecule;
+            # only a prep that recorded its chemistry lets GAFF parameterize it.
+            err["next_action"] = (
+                f"{', '.join(free)} is not phosphodiester-linked into a DNA/RNA chain, so it is a "
+                "ligand, but no ligand_chemistry record covers it. Branch a new prep node from the "
+                f"source and select it as a ligand (prepare_complex --include-ligand-resnames "
+                f"{' '.join(free)}, with --ligand-net-charges if the request states its charge), "
+                "then solvate and build the topology again; do not rename the residue.")
         if job_dir and node_id:
             from mdclaw._node import fail_node
             fail_node(job_dir, node_id, errors=err.get("errors", []))

@@ -364,6 +364,55 @@ def stage_condition_preflight(script, job_dir, node_id, time_limit=None) -> dict
     return report
 
 
+def multi_gpu_preflight(script):
+    """``multi_gpu_device_index`` for a stage-tool command of the script that
+    splits one run across GPUs (``--device-index 0,1,2,3``), refused at
+    submission rather than inside the job (the run-time guard is
+    ``run_guard.md_preflight``)."""
+    import shlex
+
+    from mdclaw.simulation.run_guard import (
+        ALLOW_MULTI_GPU_ENV,
+        MULTI_GPU_REASON,
+        device_indices,
+        multi_gpu_allowed,
+    )
+
+    if multi_gpu_allowed():
+        return None
+    for check in script.commands:
+        if not (check.tool and check.info and check.info.get("requires_node")) or check.informational:
+            continue
+        value = (check.values or {}).get("device_index")
+        devices = device_indices(value)
+        if len(devices) < 2:
+            continue
+        argv = list(check.argv)
+        fixed = []
+        skip = False
+        for token in argv:
+            if skip:
+                skip = False
+                continue
+            if token == "--device-index":
+                skip = True
+                continue
+            if token.startswith("--device-index="):
+                continue
+            fixed.append(token)
+        fixed_command = shlex.join([*check.prefix, *fixed])
+        message = (f"{check.tool} --device-index {value} splits one run across {len(devices)} GPUs; "
+                   f"{MULTI_GPU_REASON}.")
+        return {"status": "failed", "success": False, "code": "multi_gpu_device_index",
+                "message": message, "errors": [message], "warnings": [],
+                "hints": ["Ask for one GPU per run (--gpus 1); run independent replicas as separate "
+                          "nodes to use more GPUs.", f"{ALLOW_MULTI_GPU_ENV}=1 overrides this check."],
+                "next_action": (f"Resubmit with --gpus 1 and the stage command without --device-index: "
+                                f"--script {shlex.quote(fixed_command)}"),
+                "device_index": value}
+    return None
+
+
 def submission_preflight(command, job_dir=None, node_id=None, *, time_limit=None, dependency=None,
                          state_cache=None, script_file=None, field_name="script") -> dict:
     """Every pre-sbatch check of one submitted task.
@@ -388,6 +437,10 @@ def submission_preflight(command, job_dir=None, node_id=None, *, time_limit=None
                           field_name=field_name, script_file=script_file)
     if script.error:
         out["error"] = script.error
+        return out
+    multi_gpu = multi_gpu_preflight(script)
+    if multi_gpu:
+        out["error"] = multi_gpu
         return out
     if not linked:
         return out

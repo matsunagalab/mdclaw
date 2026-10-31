@@ -5,6 +5,11 @@ ligand residue. `inspect_molecules` describes its input chemistry as `protein`;
 that does not override the requested representation. Do not automatically
 convert short proteins or infer a ligand merely from chain length.
 
+A free amino acid the request calls a ligand (free ARG in 6MJ7) is the one case
+the tool routes for you: it answers `ligand_is_amino_acid_component` or
+`single_residue_protein_component`, and its `next_action` spells the complete
+declaration (residue name and L-zwitterion SMILES). Run that.
+
 Keep the original source node. On a new prep node, pass `--ligand-components`
 as a JSON list, with one `selection`, `residue_name` and isomeric `smiles` per
 component. Select both the receptor and the peptide chains. Example shape

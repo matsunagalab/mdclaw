@@ -368,6 +368,14 @@ def _summary_prep(facts: dict, result: dict) -> str:
         residues = sum(c.get("residues") or 0 for c in chains)
         ids = "/".join(str(c.get("chain")) for c in chains if c.get("chain"))
         parts.append(f"{len(chains)} protein chain(s) {ids} ({_n(residues)} residues)".replace("  ", " "))
+        # Caps this run added are residues the target system may not have; say
+        # so where the agent reads, not only in facts (test-v6-cli: unrequested
+        # ACE/NME failed the residue-count checks of 8 attempts).
+        added = [f"{c.get('chain')} {c['termini']}" for c in chains
+                 if c.get("termini") and not str(c["termini"]).startswith("charged")
+                 and "kept from the input" not in str(c["termini"])]
+        if added:
+            parts.append("terminal caps added, each an extra ACE/NME residue: " + ", ".join(added))
     for piece in facts.get("pieces") or []:
         if piece.get("ranges") and len(piece["ranges"]) > 1:
             parts.append(f"chain {piece.get('chain')} as {len(piece['ranges'])} pieces "

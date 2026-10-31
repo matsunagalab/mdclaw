@@ -772,3 +772,97 @@ class TestBuildOpenmmSystemImplicitSolvent:
         # the guard.
         topo_meta = read_node(str(job_dir), topo_id)["metadata"]
         assert topo_meta["implicit_solvent"] == "GBn2"
+
+
+# ----------------------------------------------------------------------------
+# Water-model record (test-v6-cli 106_metal_6rnt glm cli_skill_sif r3)
+# ----------------------------------------------------------------------------
+# A topology built with build_openmm_system left parameters.water_model out of
+# amber_metadata.json (and metadata.water_model None), so the scorer could not
+# establish the water model of an otherwise valid TIP3P system.
+
+
+def test_water_models_named_by_the_xml_bundle():
+    from mdclaw.openmm_system.build import _water_models_named_by_xml
+
+    assert _water_models_named_by_xml(["amber/ff99SBildn.xml", "amber/tip3p_standard.xml",
+                                       "/x/ligand_2AM.ffxml"]) == ["tip3p"]
+    assert _water_models_named_by_xml(["amber14-all.xml", "amber14/spce.xml"]) == ["spce"]
+    assert _water_models_named_by_xml(["tip3p.xml", "amber/tip3p_HFE_multivalent.xml"]) == ["tip3p"]
+    assert _water_models_named_by_xml(["amber/opc_standard.xml", "tip3p.xml"]) == ["opc", "tip3p"]
+    assert _water_models_named_by_xml(["amber/protein.ff14SB.xml", "implicit/obc2.xml"]) == []
+
+
+class TestBuildOpenmmSystemWaterModel:
+    @staticmethod
+    def _solvated_dag(tmp_path, water_model="tip3p"):
+        from openmm import unit
+        from openmm.app import ForceField, Modeller, PDBFile
+
+        from mdclaw._node import complete_node, create_node
+
+        pdb = PDBFile(str(_hydrogenated_dipeptide(tmp_path)))
+        modeller = Modeller(pdb.topology, pdb.positions)
+        modeller.addSolvent(ForceField("amber14-all.xml", "amber14/tip3p.xml"), model="tip3p",
+                            padding=1.0 * unit.nanometer)
+        job_dir = tmp_path / "job"
+        create_node(str(job_dir), "source")
+        complete_node(str(job_dir), "source_001", artifacts={"structure_file": str(tmp_path / "diala_h.pdb")})
+        create_node(str(job_dir), "prep", parent_node_ids=["source_001"])
+        prep_artifacts = job_dir / "nodes" / "prep_001" / "artifacts"
+        prep_artifacts.mkdir(parents=True, exist_ok=True)
+        (prep_artifacts / "merged.pdb").write_bytes((tmp_path / "diala_h.pdb").read_bytes())
+        complete_node(str(job_dir), "prep_001", artifacts={"merged_pdb": "artifacts/merged.pdb"})
+        create_node(str(job_dir), "solv", parent_node_ids=["prep_001"])
+        solv_artifacts = job_dir / "nodes" / "solv_001" / "artifacts"
+        solv_artifacts.mkdir(parents=True, exist_ok=True)
+        with (solv_artifacts / "solvated.pdb").open("w") as fh:
+            PDBFile.writeFile(modeller.topology, modeller.positions, fh)
+        complete_node(str(job_dir), "solv_001", artifacts={"solvated_pdb": "artifacts/solvated.pdb"},
+                      metadata={"water_model": water_model, "solvent_type": "explicit"})
+        create_node(str(job_dir), "topo", parent_node_ids=["solv_001"])
+        return job_dir, "topo_001"
+
+    def test_the_solv_water_model_is_recorded_in_the_topology_metadata(self, tmp_path):
+        from mdclaw._node import read_node
+
+        job_dir, topo_id = self._solvated_dag(tmp_path)
+        result = build_openmm_system(
+            job_dir=str(job_dir), node_id=topo_id,
+            forcefield_xml=["amber/protein.ff14SB.xml", "amber/tip3p_standard.xml"],
+            nonbonded_method="PME", nonbonded_cutoff_nm=0.9, minimize_max_iterations=5,
+        )
+        assert result["success"] is True, result.get("errors")
+        assert result["parameters"]["water_model"] == "tip3p"
+        assert result["parameters"]["water_model_source"] == "inherited from solv node solv_001"
+        metadata = json.loads(Path(result["amber_metadata"]).read_text())
+        assert metadata["parameters"]["water_model"] == "tip3p"
+        assert read_node(str(job_dir), topo_id)["metadata"]["water_model"] == "tip3p"
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert progress["params"]["water_model"] == "tip3p"
+
+    def test_a_water_xml_other_than_the_solv_water_is_refused_before_the_build(self, tmp_path):
+        from mdclaw._node import read_node
+
+        job_dir, topo_id = self._solvated_dag(tmp_path)
+        result = build_openmm_system(
+            job_dir=str(job_dir), node_id=topo_id,
+            forcefield_xml=["amber/protein.ff14SB.xml", "amber/opc_standard.xml"],
+            nonbonded_method="PME",
+        )
+        assert result["success"] is False
+        assert result["code"] == "solvation_topology_water_model_mismatch"
+        assert "tip3p" in result["next_action"] and "opc" in result["next_action"]
+        assert read_node(str(job_dir), topo_id)["status"] == "pending"
+
+    def test_outside_a_dag_the_one_water_xml_names_the_model(self, tmp_path):
+        job_dir, _ = self._solvated_dag(tmp_path)
+        solvated = job_dir / "nodes" / "solv_001" / "artifacts" / "solvated.pdb"
+        result = build_openmm_system(
+            pdb_file=str(solvated), output_dir=str(tmp_path / "out"),
+            forcefield_xml=["amber/protein.ff14SB.xml", "amber/tip3p_standard.xml"],
+            nonbonded_method="PME", nonbonded_cutoff_nm=0.9, minimize_max_iterations=5,
+        )
+        assert result["success"] is True, result.get("errors")
+        assert result["parameters"]["water_model"] == "tip3p"
+        assert result["parameters"]["water_model_source"] == "named by forcefield_xml"

@@ -146,7 +146,8 @@ extra residues and fails the residue-count and composition checks
 (095_soluble_1ard, campaign v2). A cap on the polymer's own end (nothing of the
 entity sequence beyond it) is refused with `terminal_cap_on_native_terminus`,
 node still pending; a terminus a residue range cuts inside the sequence may be
-capped, and `next_action` names the one-sided flag that does it.
+capped, but only when caps are asked for -- cutting a range is no request for
+caps (test-v6-cli lost 8 attempts to an ACE nobody asked for).
 
 A deposit can arrive already capped. ACE and NME count as protein, so a cap
 that came in with the structure is kept and counted as a residue, which changes

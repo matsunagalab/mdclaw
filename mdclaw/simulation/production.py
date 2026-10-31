@@ -205,8 +205,11 @@ def run_production(
                      Note: NPT not supported with implicit solvent - uses NVT.
         platform: OpenMM platform - "CUDA", "OpenCL", "CPU", "Reference", or
                      "auto" (default). "auto" lets OpenMM choose the fastest.
-        device_index: GPU device index (e.g. "0", "0,1"). Only used with
-                     CUDA or OpenCL platforms.
+        device_index: One GPU device index (e.g. "0"). Only used with
+                     CUDA or OpenCL platforms. A comma list that splits one
+                     run across GPUs ("0,1,2,3") is refused
+                     (``multi_gpu_device_index``): it ran 20 K above the
+                     thermostat in campaign test-v6-cli.
         restart_from: Path to a state file to restart from. Prefer ``.xml``
                      (saveState, cross-node portable); ``.chk``
                      (saveCheckpoint, GPU-architecture-specific) is kept

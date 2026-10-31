@@ -98,6 +98,15 @@ class TestStageFacts:
                                                                   {"chain": "A", "resnum": "5"}]
         receipt = build_receipt(tool_name="prepare_complex", node_type="prep", result=result, node_mode=True)
         assert receipt["facts"]["chains"][0]["termini"] == "charged termini (no caps)"
+        assert "terminal caps added" not in receipt["summary"]
+
+    def test_prep_summary_names_caps_this_run_added(self):
+        """test-v6-cli: an ACE this run added counted as an extra residue against
+        charged-termini references (8 attempts); the summary line says so."""
+        result = json.loads(json.dumps(PREP))
+        result["proteins"][0]["terminal_caps"] = {"n_terminal": "ACE", "c_terminal": None}
+        receipt = build_receipt(tool_name="prepare_complex", node_type="prep", result=result, node_mode=True)
+        assert "terminal caps added, each an extra ACE/NME residue: A N ACE / C -" in receipt["summary"]
 
     def test_solvate_receipt(self):
         result = {"parameters": {"water_model": "tip3p", "dist": 15.0, "salt": True, "salt_c": "Na+",

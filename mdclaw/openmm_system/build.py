@@ -119,6 +119,25 @@ def _detect_implicit_solvent_xml(
     return None, matched
 
 
+def _water_models_named_by_xml(forcefield_xml: List[str]) -> List[str]:
+    """Canonical water models whose XML (``tip3p.xml``, ``amber/spce_standard.xml``,
+    ``amber14/opc.xml`` ...) appears in ``forcefield_xml``, in bundle order."""
+    from mdclaw import forcefield_catalog as _fc
+
+    found: List[str] = []
+    for entry in forcefield_xml:
+        name = Path(str(entry)).name.lower()
+        if not name.endswith(".xml"):
+            continue
+        stem = name[: -len(".xml")]
+        if stem.endswith("_standard"):
+            stem = stem[: -len("_standard")]
+        canonical = _fc.normalize_water(stem)
+        if canonical and canonical in _fc.WATER_MODELS and canonical not in found:
+            found.append(canonical)
+    return found
+
+
 def _check_gb99_openmm_version_compatible(forcefield_xml: List[str]) -> Optional[str]:
     """Return an error message if any GB99* XML is paired with OpenMM < 8.0.
 
@@ -272,6 +291,9 @@ def build_openmm_system(
     def _stage(stage: str) -> None:
         _record_topology_build_stage(job_dir, node_id, stage)
 
+    solvation_water_model: Optional[str] = None
+    solvation_node_id: Optional[str] = None
+
     # In node mode the topo node owns the artifact location; auto-resolve the
     # input PDB from the prep ancestor when the user didn't supply one
     # explicitly. ``begin_node`` flips the node into ``running`` so subsequent
@@ -324,6 +346,24 @@ def build_openmm_system(
                 "code": "input_resolution_blocked",
             })
         pdb_file = _inputs.get("pdb_file")
+        solvation_water_model = _inputs.get("solvation_water_model")
+        solvation_node_id = _inputs.get("solvation_node_id")
+
+        # The solv node placed the water; a water XML of another model in the
+        # bundle would parameterize the box as something it is not.
+        xml_waters = _water_models_named_by_xml(list(forcefield_xml or []))
+        if solvation_water_model and xml_waters and solvation_water_model not in xml_waters:
+            return _emit_failure({
+                **result,
+                "code": "solvation_topology_water_model_mismatch",
+                "errors": result["errors"] + [
+                    f"forcefield_xml names water {', '.join(xml_waters)}, but solv node "
+                    f"{solvation_node_id or '(parent)'} solvated with {solvation_water_model}"],
+                "next_action": (
+                    f"Put the {solvation_water_model} water XML in --forcefield-xml in place of "
+                    f"{', '.join(xml_waters)} and run the same (still pending) node again; to "
+                    "simulate another water model, solvate a new solv node with it first."),
+            })
 
         out_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -822,6 +862,30 @@ def build_openmm_system(
         solvent_type = "explicit"
     else:
         solvent_type = "vacuum"
+
+    # ``parameters.water_model`` is the topology's water-model record
+    # (MDDataBench reads it from amber_metadata.json, the run side from node
+    # metadata). The solv node that placed the water is authoritative; outside
+    # a DAG the one water XML in the bundle names it.
+    if solvent_type == "explicit":
+        xml_waters = _water_models_named_by_xml(list(forcefield_xml))
+        if solvation_water_model:
+            result["parameters"]["water_model"] = solvation_water_model
+            result["parameters"]["water_model_source"] = (
+                f"inherited from solv node {solvation_node_id}" if solvation_node_id
+                else "inherited from the solv node")
+        elif len(xml_waters) == 1:
+            result["parameters"]["water_model"] = xml_waters[0]
+            result["parameters"]["water_model_source"] = "named by forcefield_xml"
+        else:
+            result["parameters"]["water_model"] = None
+            result["warnings"].append(
+                "The water model could not be identified: no solv parent records one and "
+                + ("forcefield_xml names several (" + ", ".join(xml_waters) + ")"
+                   if xml_waters else "no forcefield_xml entry is a known water XML")
+                + "; the topology metadata leaves parameters.water_model empty.")
+    else:
+        result["parameters"]["water_model"] = None
 
     provenance: Dict[str, Any] = {
         "kind": "openmm_xml",

@@ -1747,10 +1747,15 @@ def prepare_complex(
         ph: pH for propka (default: 7.4); ignored by no-prediction.
         cap_termini: Backward-compatible shortcut to add ACE at the
                      N terminus and NME at the C terminus (default: False).
+                     Only when the request asks for capped termini: each cap
+                     is an extra residue, and a reference with charged
+                     termini counts it against the residue count.
         n_terminal_cap: Optional one-sided N-terminal cap. Currently supports
-                        ``"ACE"`` or an explicit none-like value.
+                        ``"ACE"`` or an explicit none-like value. Only when
+                        the request asks for it (an extra ACE residue).
         c_terminal_cap: Optional one-sided C-terminal cap. Currently supports
-                        ``"NME"`` or an explicit none-like value.
+                        ``"NME"`` or an explicit none-like value. Only when
+                        the request asks for it (an extra NME residue).
         terminal_cap_forcefield: Protein force field used only for prep-stage
                                  cap hydrogen completion. Use the planned
                                  topology force field when specified; default
@@ -2459,6 +2464,18 @@ def prepare_complex(
             except ValueError as exc:
                 result["errors"].append(str(exc))
                 result["code"] = "ligand_component_invalid"
+                from mdclaw.structure.free_amino_acid import (
+                    free_amino_acid_next_action,
+                    free_amino_acid_sites_for_declarations,
+                )
+
+                free = free_amino_acid_sites_for_declarations(
+                    ligand_components,
+                    list(split_result.get("chain_file_info") or [])
+                    + list((inspection or {}).get("chains") or []))
+                if free:
+                    result["next_action"] = free_amino_acid_next_action(
+                        free, reason=f"has a declaration the tool refused ({exc})")
                 return _refused(result)
         if split_result["success"]:
             result["output_dir"] = split_result["output_dir"]
@@ -2558,6 +2575,39 @@ def prepare_complex(
                 "residues at a component end (up to 10 per end).",
             ]
             return _refused(result)
+
+        # A free amino acid deposited on its own (free L-arginine in 6MJ7, with
+        # its OXT) as a one-residue protein component would need NH3+ and COO-
+        # on one residue, which no Amber protein template has:
+        # build_amber_system failed on it with OpenMM's "No template found"
+        # after solvation (105_ligand_6mj7, test-v6-cli: 26 of 30 attempts).
+        # Capped on both sides it is an ordinary dipeptide-like unit.
+        if not (resolved_n_terminal_cap and resolved_c_terminal_cap):
+            from mdclaw.structure.free_amino_acid import (
+                deposited_as_free_molecule,
+                free_amino_acid_chains,
+                free_amino_acid_next_action,
+            )
+
+            protein_file_set = set(split_result.get("protein_files") or [])
+            protein_infos = [info for info in split_result.get("chain_file_info", []) or []
+                             if info.get("file") in protein_file_set]
+            free_chains = {info.get("chain_id") for info in protein_infos
+                           if info.get("residue_count") == 1
+                           and deposited_as_free_molecule(info.get("file"))}
+            lone = [site for site in free_amino_acid_chains(protein_infos)
+                    if site["chain_id"] in free_chains]
+            if lone:
+                result["errors"].append(
+                    "One-residue protein component(s) selected: " + ", ".join(
+                        f"{site['resname']} {site['author_chain'] or site['chain_id']}:{site['resnum']}"
+                        for site in lone)
+                    + "; a lone amino acid has no Amber protein template")
+                result["code"] = "single_residue_protein_component"
+                result["free_amino_acid_components"] = lone
+                result["next_action"] = free_amino_acid_next_action(
+                    lone, reason="is selected as a one-residue protein chain")
+                return _refused(result)
 
         # A protonation state for a residue no selected protein component
         # holds is refused by the per-component routing after the split; the
@@ -3375,6 +3425,18 @@ def prepare_complex(
                     result["errors"].extend(ligand_result["errors"])
                     result["code"] = "ligand_component_invalid"
                     result["overall_status"] = "failed"
+                    from mdclaw.structure.free_amino_acid import (
+                        free_amino_acid_next_action,
+                        free_amino_acid_sites_for_declarations,
+                    )
+
+                    free = free_amino_acid_sites_for_declarations(
+                        [component], inspection.get("chains") or [])
+                    if free:
+                        first_error = (ligand_result["errors"] or ["no reason recorded"])[0]
+                        result["next_action"] = free_amino_acid_next_action(
+                            free, pending=False,
+                            reason=f"failed as a declared ligand component ({first_error})")
                     return result
         
         # Determine overall success

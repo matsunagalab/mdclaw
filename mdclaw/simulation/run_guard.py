@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Union, get_args, get_origin
 
 ALLOW_LOCAL_ENV = "MDCLAW_ALLOW_LOCAL_MD"
+ALLOW_MULTI_GPU_ENV = "MDCLAW_ALLOW_MULTI_GPU"
 # slurm.conf locations of common installations. A configless cluster has
 # none of them and exports SLURM_CONF_SERVER instead (RIKYU's login nodes).
 SLURM_CONF_PATHS = (
@@ -84,6 +85,30 @@ def local_md_allowed(environ: Optional[dict] = None) -> bool:
     Slurm cluster outside an allocation (a deliberate test, a workstation that
     only looks like a cluster)."""
     return str(_env(environ).get(ALLOW_LOCAL_ENV) or "").strip().lower() in _TRUE
+
+
+def device_indices(device_index: Any) -> list[str]:
+    """The GPU ids a ``--device-index`` value names (``"0,1,2,3"`` -> four)."""
+    if device_index is None:
+        return []
+    return [part for part in re.split(r"[\s,]+", str(device_index).strip()) if part]
+
+
+def multi_gpu_allowed(environ: Optional[dict] = None) -> bool:
+    """``MDCLAW_ALLOW_MULTI_GPU=1``: let one run span several GPUs anyway."""
+    return str(_env(environ).get(ALLOW_MULTI_GPU_ENV) or "").strip().lower() in _TRUE
+
+
+# One run split across GPUs (OpenMM's comma-separated DeviceIndex). In
+# test-v6-cli 112_nucleic_1hlv (qwen, cli_sif r2) a 30k-atom production on
+# --device-index 0,1,2,3 ran at a mean 318 K under a 298 K Langevin
+# thermostat from its first frame, while the one-GPU equilibration before it
+# held 298 K; the scorer failed the temperature. MDClaw-sized systems gain no
+# speed from it either, so one run uses one GPU.
+MULTI_GPU_REASON = (
+    "OpenMM's multi-GPU CUDA path ran a 30k-atom production 20 K above its thermostat "
+    "(mean 318 K at 298 K, campaign test-v6-cli) while the same system held 298 K on one GPU, "
+    "and systems of this size gain no speed from it")
 
 
 def _cgroup_slurm_job() -> Optional[str]:
@@ -456,6 +481,26 @@ def md_preflight(fn: Callable, call_args: dict, job_dir: Optional[str], node_id:
         refusal = _refusal(code="md_outside_allocation", message=message, next_action=next_action, hints=hints,
                            context={"tool": tool, "cluster_evidence": evidence, "node_id": node_id,
                                     "node_status": status})
+        return _record(job_dir, node_id, refusal, status)
+
+    devices = device_indices(call_args.get("device_index"))
+    if len(devices) > 1 and not multi_gpu_allowed(env):
+        sealed = status in ("queued", "running") and not _owned_by_another_live_run(job_dir, node_id)
+        one_gpu = {k: v for k, v in call_args.items() if k != "device_index"}
+        if sealed:
+            next_action = (f"Branch this node and submit the new one on one GPU (submit_job --gpus 1, "
+                           f"no --device-index): {_branch_command(job_dir, node)}")
+        else:
+            next_action = f"Run on one GPU: {run_command(fn, one_gpu, job_dir, node_id)}"
+        message = (f"--device-index {call_args.get('device_index')} splits one {tool} run across "
+                   f"{len(devices)} GPUs; {MULTI_GPU_REASON}. Nothing ran.")
+        refusal = _refusal(
+            code="multi_gpu_device_index", message=message, next_action=next_action,
+            hints=["Use one GPU per run: submit_job --gpus 1 and no --device-index (Slurm assigns "
+                   "the GPU). Run independent replicas as separate nodes to use more GPUs.",
+                   f"{ALLOW_MULTI_GPU_ENV}=1 overrides this check."],
+            context={"tool": tool, "device_index": call_args.get("device_index"),
+                     "device_count": len(devices), "node_id": node_id, "node_status": status})
         return _record(job_dir, node_id, refusal, status)
 
     problem = platform_problem(call_args.get("platform"), call_args.get("device_index"), env)
