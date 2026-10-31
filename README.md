@@ -1,431 +1,459 @@
 <p align="center">
-  <img src="docs/assets/mdclaw-logo.png" alt="MDClaw logo" width="720">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/mdclaw-logo-dark.png">
+    <img src="docs/assets/mdclaw-logo-light.png" alt="MDClaw" width="480">
+  </picture>
 </p>
 
-# MDClaw
+<p align="center">
+  <strong>Molecular dynamics with AmberTools and OpenMM, driven by your AI coding agent.</strong><br>
+  Describe the system or the question. Every stage is checked, recorded and resumable.
+</p>
 
-MDClaw helps AI coding agents prepare, run, and analyze molecular dynamics
-(MD) simulations with AmberTools and OpenMM. Describe a system or a research
-question in plain language; the agent uses MDClaw to plan the work, execute
-calculations, and report the results.
+<p align="center">
+  <a href="https://github.com/matsunagalab/mdclaw/actions/workflows/ci.yml"><img src="https://github.com/matsunagalab/mdclaw/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/matsunagalab/mdclaw/tags"><img src="https://img.shields.io/github/v/tag/matsunagalab/mdclaw?label=version&color=0E9FB7" alt="Version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-283747" alt="MIT license"></a>
+</p>
 
-MDClaw provides **skills** (instructions for the agent) and **command-line
-tools** (the programs that perform the calculations). It records each step's
-inputs, outputs, and status so work can be inspected and resumed later.
-Use it with an agent such as Claude Code or Codex, or call the tools directly.
+<p align="center">
+  <a href="#install">Install</a> &nbsp;·&nbsp;
+  <a href="#what-you-can-ask-for">Examples</a> &nbsp;·&nbsp;
+  <a href="#capabilities">Capabilities</a> &nbsp;·&nbsp;
+  <a href="#what-mdclaw-does-not-do">Limits</a> &nbsp;·&nbsp;
+  <a href="docs/agents/deployment.md">Deployment guide</a>
+</p>
 
-For interactive structure viewing and MD playback, the display skill selects
-Molstar when a suitable MCP viewer, a reachable browser, or (in Claude Code) an
-Artifact page is available; explicit
-still-image requests use PyMOL. Preparation views retain translucent water,
-while production views show only the solute (and lipids), wrap molecules, and
-subsample long trajectories. Fitting is opt-in.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/cln025-dark.gif">
+    <img src="docs/assets/cln025-light.gif" alt="Animated chignolin hairpin from an MDClaw production run" width="420">
+  </picture>
+</p>
 
-An attached Molstar MCP viewer can stream requested coordinates through Codex
-Remote Control, without a separate SSH tunnel or downloading the DCD file.
-For a local or already reachable browser, run
-`pixi run mdclaw serve_molstar --structure-file /absolute/path/topology.pdb`
-and add `--trajectory-file /absolute/path/trajectory.dcd` for playback. Open
-the printed `viewer_url` and keep the command running while viewing. Mol* is
-bundled. See the [viewer guide](docs/developer/molstar-viewer.md) for MCP setup,
-remote connection alternatives, and host-specific verification limits.
+<p align="center"><sub>Chignolin (CLN025, PDB 5AWL) at 300 K in ff19SB/OPC, from a 10 ns production run prepared and run with MDClaw.<br>A 2 ns excerpt: coordinates averaged over 90 ps for display, water and ions hidden, played forward and back to loop.</sub></p>
 
-### Molstar in Claude Code
+MDClaw gives agents such as Claude Code and Codex two things: **skills**, which
+tell the agent what to do and why, and **command-line tools**, which do the work.
+The tools are also the layer that can refuse. Molecule selection, force-field
+templates, charges, stage dependencies and required files are checked in code,
+and a failed check stops with a stable error code and the next action, rather
+than relying on the agent to be careful.
 
-Claude Code (terminal, Desktop Code tab, or Remote Control) does not render
-MCP viewer widgets, so the display skill delivers Molstar as a private
-claude.ai Artifact instead. On the host that stores the MD files:
+Each stage records its inputs, outputs and status as a node in a directed acyclic
+graph. A study can be inspected, resumed, branched or written up later, without
+the original chat. You can also call the tools directly, with no agent at all.
 
-```bash
-mdclaw export_molstar_page \
-  --structure-file /absolute/path/topology.pdb \
-  --trajectory-file /absolute/path/trajectory.dcd \
-  --stage prod --title "CLN025 prod_001" --output-file /tmp/cln025_prod.html
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/workflow-dark.png">
+    <img src="docs/assets/workflow-light.png" alt="Workflow: Structure, Prepare, Solvate, Force field, Minimize, Equilibrate, Production, Analyze" width="880">
+  </picture>
+</p>
+
+> [!IMPORTANT]
+> A run that finishes is not a validated result. MDClaw's checks cover topology,
+> charges, energies and files. They do not establish convergence, adequate
+> sampling or a biological conclusion. Those need appropriate controls,
+> replicates and expert review.
+
+## What you can ask for
+
+Start your agent in the directory where the simulation files should live, then
+say what to do and where to stop.
+
+**Prepare and equilibrate one system**
+
+```text
+Prepare PDB 1AKE chain A as a protein-only explicit-water system using the default
+force field and water model. Continue through default equilibration and stop
+before production.
 ```
 
-The agent then publishes the page with its Artifact tool, and you open the
-link in the Desktop app or a browser to rotate and play the trajectory. The
-page uses the same presentation, molecule wrap, water removal and sampling as
-the MCP viewer, so it needs no MCP registration, port or SSH tunnel and works
-behind firewalls. It embeds the retained display frames (production frames
-are sampled to fit 8 MB), so do not use it when the data must stay on the host.
-Just ask: **“Show prod_001 in Molstar.”** The display skill
-(`skills/common/visual-qa.md`) picks this route in Claude Code.
+**Compare systems and analyze the results**
 
-**Compatibility:** Codex desktop Remote Control plays through the MCP viewer
-(no coordinates leave the host). In Claude Code the MCP viewer was registered,
-loaded and called successfully on 2026-10-26, but the client never requested
-its UI, and Anthropic documents MCP Apps for claude.ai, Claude Desktop chat,
-Cowork and mobile only; the Artifact page played the same trajectory in Claude
-Desktop's Code screen. See the [display steps](skills/common/visual-qa.md#check-the-interactive-route).
-
-## Install / Deploy
-
-First prepare the scientific software on the machine that will run the
-calculations: choose **Pixi** for a local environment or **SIF** for a Linux
-server with Singularity/Apptainer. Then install the skills for your agent.
-
-### On Your Workstation: Pixi
-
-Install Pixi on Linux or macOS with the [official installer](https://pixi.prefix.dev/latest/installation/):
-
-```bash
-curl -fsSL https://pixi.sh/install.sh | sh
+```text
+Set up and run an apo-vs-holo MD study for the T4 lysozyme L99A benzene-binding
+cavity (benzene-bound PDB 4W53). Plan the minimal job set, run 50 ns of production
+per job, compare RMSD, RMSF and cavity-lining distances, and state what the data
+do and do not support.
 ```
 
-Restart your terminal so `pixi` is on PATH. In a directory outside cloud-sync
-folders, run:
+**Estimate a free-energy change**
+
+```text
+Estimate the folding free-energy change of the T4 lysozyme L99A mutation by FEP,
+and report the convergence diagnostics with the result.
+```
+
+**Watch a running job**
+
+```text
+Show the progress of prod_001 in Molstar.
+```
+
+To see a plan first, ask the agent to propose the study and stop before running
+anything. For long simulations use a GPU, and say so if jobs should go through
+Slurm.
+
+## Install
+
+MDClaw has two parts, installed separately: the **runtime** (the scientific
+software that performs the calculations) and the **skills** (the instructions for
+your agent). Set up the runtime first, on the machine that will run the
+calculations.
+
+### 1. Get the runtime
+
+Find your machine below. On Linux with an NVIDIA GPU, `nvidia-smi` prints the
+driver version.
+
+| Your machine | GPU support | Runtime |
+|---|---|---|
+| Cluster, Linux x86-64, Singularity or Apptainer | CUDA 11.8, driver R520 or newer | [Container](#container-singularity-or-apptainer), `mdclaw:latest` |
+| Cluster, Linux ARM64, Singularity or Apptainer | CUDA 12.9, driver R575 or newer | [Container](#container-singularity-or-apptainer), `mdclaw:latest` |
+| RIKYU | CUDA 13 | [Container for RIKYU](#rikyu), `mdclaw:latest-rikyu` |
+| Linux workstation, driver R575 or newer | CUDA 12.9 | [Pixi](#pixi), `pixi install` |
+| Linux workstation, driver R520 to R574 | CUDA 11.8 | [Pixi](#pixi), `pixi install -e cuda118` |
+| Linux, no NVIDIA GPU | CPU | [Pixi](#pixi), `CONDA_OVERRIDE_CUDA=12.9 pixi install` |
+| Mac, Apple Silicon | OpenCL | [Pixi](#pixi), `pixi install` |
+| Any machine with Docker | Same as the container; CPU only on a Mac | [Docker](#docker) |
+
+Intel Macs are not supported. CUDA 11.8 cannot drive Blackwell GPUs, so use
+`pixi install` for those on x86-64.
+
+#### Pixi
+
+Pixi installs the exact package versions recorded in `pixi.lock`.
 
 ```bash
+curl -fsSL https://pixi.sh/install.sh | sh    # then open a new terminal
 git clone https://github.com/matsunagalab/mdclaw.git
 cd mdclaw
-pixi install
-export PATH="$PWD/bin:$PATH"
+pixi install                                  # or the command from the table
+export PATH="$PWD/bin:$PATH"                  # add the absolute path to your shell startup file
 scripts/mdclaw-doctor.sh
 ```
 
-Pixi installs the package versions recorded in `pixi.lock` into `.pixi/`.
-`pixi.toml` and `pixi.lock` are the single definition of the scientific
-runtime: workstations, compute servers and the published container image are
-all built from them. Two environments cover the NVIDIA drivers in use:
+- The first install compiles openmm-torch and PLUMED, and OpenMM in `cuda118`.
+  Allow up to 30 minutes and about 60 GB of free disk. Afterwards
+  `rm -rf .pixi/bld` recovers most of that space.
+- Keep the checkout outside cloud-sync folders.
+- `bin/mdclaw` reads the NVIDIA driver and selects the environment.
+  `MDCLAW_PIXI_ENV` overrides it.
+- MODELLER on Linux ARM64 needs one more step:
+  `pixi run python scripts/install-modeller-arm64.py`.
 
-| Environment | Command | Platforms and GPU stack |
-|---|---|---|
-| `default` | `pixi install` | Apple Silicon macOS (OpenCL), Linux x86-64/ARM64 with CUDA 12.9 (driver R575 or newer) |
-| `cuda118` | `pixi install -e cuda118` | Linux x86-64 with CUDA 11.8 (driver R520–R574, e.g. floyd and n1–n5; Ubuntu 18.04 works) |
+#### Container (Singularity or Apptainer)
 
-Both carry OpenMM 8.6.1, GPU PyTorch, openmm-torch with PythonTorchForce, and
-PLUMED 2.9.4 with openmm-plumed. Pieces that no conda package provides are
-built from `recipes/` during the first install (about 15–30 minutes, once);
-in `cuda118` that includes OpenMM itself against CUDA 11.8. `bin/mdclaw` reads
-the driver version and runs `cuda118` when the driver is older than R575 and
-that environment is installed; `MDCLAW_PIXI_ENV=default|cuda118` overrides it.
-For MODELLER on Linux ARM64, install its official ARM binaries after
-`pixi install` with `pixi run python scripts/install-modeller-arm64.py`. Other
-platforms install MODELLER through Conda; each user supplies their own
-`KEY_MODELLER` at run time. Run the
-[GPU calculation test](docs/developer/container.md#build-and-test) on each
-node before production use. The `.pixi/` directory contains large,
-machine-specific files and should stay outside cloud-sync folders.
-
-The `export PATH` command makes `mdclaw` available in the current terminal.
-For future terminals, add this checkout's **absolute `bin/` path** to your
-shell startup file.
-
-The doctor command checks OpenMM, AmberTools and Molstar MCP and reports usable GPU
-platforms and optional features. Resolve any `[fail]` messages before running
-calculations. Missing optional features only affect workflows that need them;
-CPU-only machines can prepare systems and run short checks.
-
-For the interactive MCP viewer, the SDK is included in this Pixi environment.
-From the checkout, register it once on the host running Codex:
-
-```bash
-codex mcp add mdclaw_molstar --env MDCLAW_RUNTIME=pixi -- "$PWD/bin/mdclaw" molstar-mcp
-```
-
-Select the molecule after connecting; no example trajectory is needed at server
-startup. The Codex plugin bundles this server (Claude Code needs none). For SIF
-and other runtimes, follow
-[Molstar MCP deployment](docs/agents/deployment.md#molstar-mcp-display).
-
-### On A Compute Server: SIF
-
-A SIF (Singularity Image Format) file packages MDClaw and its scientific
-dependencies. The image is built from the same `pixi.lock` (the `cuda118`
-environment, `container/Dockerfile.pixi`), so it runs on NVIDIA drivers R520
-or newer. On an x86_64 (Intel/AMD) Linux server with Singularity installed,
-download it with:
+The same tag serves x86-64 and ARM64; the download matches your machine. No
+checkout or Pixi is needed. Use `apptainer` in place of `singularity` if that is
+what you have.
 
 ```bash
 singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest
+export MDCLAW_SIF="$PWD/mdclaw.sif"
+export MDCLAW_RUNTIME=singularity
 ```
 
-The command downloads the container and converts it to a SIF locally. Allow
-about 60 GB of free space for temporary files and the result; see
-[temporary storage](docs/developer/container.md#singularity) if `/tmp` or
-your home directory is small. The published image does not support ARM servers.
+The download takes about 25 GB of temporary space for a 5.5 GB SIF. If `/tmp` or
+your home directory is small, see
+[temporary storage](docs/developer/container.md#singularity). If your group
+already has a shared SIF, point `MDCLAW_SIF` at it instead.
 
-You do not need to clone this repository or install Pixi for this path.
-Check the downloaded image:
+Then check it on a GPU node. `--nv` exposes the NVIDIA GPU to the container.
 
 ```bash
-export MDCLAW_SIF="$PWD/mdclaw.sif"
 singularity exec --nv "$MDCLAW_SIF" mdclaw --version
-singularity exec --nv "$MDCLAW_SIF" mdclaw inspect_openmm_platforms
+singularity exec --nv "$MDCLAW_SIF" python /opt/mdclaw/share/mdclaw/test-gpu.py
 ```
 
-Use `apptainer` instead of `singularity` in all commands if that is installed.
-Run the GPU check on a GPU node; `--nv` makes its NVIDIA GPU available inside
-the container. For CPU-only checks, omit `--nv`. Subsequent tools use the same
-`singularity exec ... mdclaw <tool>` form. See [server setup and Slurm](docs/agents/deployment.md#sif-no-user-checkout-required)
-for working-directory mounts and job submission.
+The last line of the GPU test reads `CUDA_GPU_SMOKE=PASS`. For job submission and
+bind mounts, see [server setup and Slurm](docs/agents/deployment.md#sif-no-user-checkout-required).
 
-### Connect Your Agent
+#### RIKYU
 
-If you work inside the MDClaw checkout, Claude Code and agents that read
-`.agents/skills/` can discover the included skills directly. For other working
-directories, choose **one** installation method below. Claude Code and Codex
-can install the plugin without Node.js or `npx`; the skills CLI is an
-alternative for either agent and for other supported agents.
+RIKYU has its own image: its GPUs need a newer cuFFT, NVRTC must stay at 13.0 for
+the driver, and SIFs there are mounted through FUSE. Do not use plain
+`mdclaw:latest` on RIKYU.
 
-Keep the Pixi or SIF runtime prepared above available to the agent. Installing
-skills alone does not install the scientific software. Direct CLI use needs
-no skills.
+```bash
+export APPTAINER_TMPDIR=/path/with/25GB/free
+export APPTAINER_CACHEDIR=/path/with/25GB/free
+apptainer pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest-rikyu
+export MDCLAW_SIF="$PWD/mdclaw.sif"
+export MDCLAW_RUNTIME=apptainer
+```
 
-#### Claude Code Plugin (No Node.js Required)
+Run the GPU check from the SIF, inside a GPU job. A container filesystem does not
+reproduce the FUSE failure this test guards against.
 
-In your terminal, with Claude Code already installed, run:
+```bash
+apptainer exec --nv "$MDCLAW_SIF" python /opt/mdclaw/share/mdclaw/test-gpu.py --require-torch-force
+```
+
+To build an unreleased commit on an ARM64 host, see the
+[ARM64 image guide](docs/developer/container.md#arm64--cuda-13-image).
+
+#### Docker
+
+```bash
+docker pull ghcr.io/matsunagalab/mdclaw:latest
+export MDCLAW_RUNTIME=docker
+export MDCLAW_DOCKER_IMAGE=ghcr.io/matsunagalab/mdclaw:latest
+```
+
+On a Mac this runs the ARM64 Linux image on the CPU, because Docker exposes no GPU
+to Linux containers there. SIF files do not run on macOS. For the GPU on a Mac, use
+[Pixi](#pixi).
+
+### 2. Connect your agent
+
+Installing skills does not install the runtime, so keep the one from step 1
+available to the agent. If you work inside the MDClaw checkout, skills are found
+automatically and you can skip this step.
+
+**Claude Code**
 
 ```bash
 claude plugin marketplace add matsunagalab/mdclaw
 claude plugin install mdclaw@mdclaw --scope user
 ```
 
-`--scope user` makes the plugin available across your projects. To enable it
-only for yourself in the current project, use `--scope local` instead.
-Start a new Claude Code session, then use skills such as `/mdclaw:md-prepare`.
-You can also add the marketplace and install from Claude Code's `/plugin`
-screen. See [Claude Code's plugin guide](https://code.claude.com/docs/en/discover-plugins).
-
-#### Codex Plugin (No Node.js Required)
-
-With a recent Codex CLI that supports `codex plugin`, run in your terminal:
+**Codex**
 
 ```bash
 codex plugin marketplace add matsunagalab/mdclaw
 codex plugin add mdclaw@mdclaw
 ```
 
-This installs the plugin for your user account. Start a new Codex session and
-ask it to use MDClaw. In the desktop app, reopen the app and check the Plugins
-screen for MDClaw under the `mdclaw` marketplace. If `codex plugin` is not
-recognized, update Codex first. See [OpenAI's plugin guide](https://developers.openai.com/plugins/build/plugins).
+Start a new session afterwards. With a container runtime, export `MDCLAW_SIF` and
+`MDCLAW_RUNTIME` before starting the agent. With Pixi, put the checkout's `bin/`
+on `PATH`. If you do neither, the plugin's startup hook downloads a container when
+Singularity, Apptainer or Docker is installed.
 
-Both plugin methods include the shared `common` skill. The bundled startup
-hook can prepare a container runtime; to reuse your downloaded SIF, set
-`MDCLAW_SIF` to its absolute path and `MDCLAW_RUNTIME=singularity` (or
-`apptainer`) before starting the agent. See [runtime selection](docs/agents/deployment.md#runtime-selection).
+<details>
+<summary><strong>Other agents, the skills CLI, and Pi</strong></summary>
 
-#### Skills CLI: Install Node.js First
+<br>
 
-`npx` runs tools distributed through npm, downloading them when needed. It
-comes with npm in a standard Node.js installation; do not assume it is
-already installed on your machine. It is needed only for this method.
-
-1. Open the [official Node.js download page](https://nodejs.org/en/download).
-   Choose an **LTS** release (22.20 or newer) and your operating system.
-2. On macOS or Windows, download and run the installer. On Linux, select
-   **nvm** and **npm** on that page and run the displayed installation commands
-   in your terminal; nvm installs under your home directory without `sudo`.
-3. Open a new terminal and check:
-
-   ```bash
-   node --version
-   npm --version
-   npx --version
-   ```
-
-Then install the skills with one of these commands:
-
-**For the current project:** run this in that project's directory:
+The skills CLI works with Claude Code, Codex, Cursor, OpenCode and other agents. It
+needs [Node.js](https://nodejs.org/en/download) 22.20 or newer.
 
 ```bash
-npx skills add matsunagalab/mdclaw
+npx skills add matsunagalab/mdclaw            # for the current project
+npx skills add matsunagalab/mdclaw --global   # for your user account
 ```
 
-**For your user account, across projects:** run this from any directory:
+Select your agent, and install `common` together with the workflow skills. Pi
+installs from the repository:
 
 ```bash
-npx skills add matsunagalab/mdclaw --global
+pi install git:github.com/matsunagalab/mdclaw@main
 ```
 
-`--global` (or `-g`) installs to the selected agents' user skill directories
-under your home directory. It does not require administrator privileges.
-Select your agent and install `common` together with the workflow skills.
-To select an agent explicitly, add `--agent claude-code` or `--agent codex`.
-
-[Deployment details](docs/agents/deployment.md) cover plugins, Pi,
-Docker, existing Conda environments, runtime selection, and troubleshooting.
-BioEmu and Boltz-2 are optional, separate installs; see
+See the [deployment guide](docs/agents/deployment.md) for Conda, runtime selection
+and troubleshooting. BioEmu and Boltz-2 are optional, separate installs: see
 [model backend setup](docs/developer/configuration.md#model-backend-runtime).
 
-## Ask In Plain Language
+</details>
 
-Start your agent in the directory where you want to keep the simulation
-files. If using a SIF, give the agent its absolute path. Describe the target,
-the work to do, and where to stop. For long simulations, use a GPU; if you
-want jobs submitted through Slurm, say so explicitly.
+### 3. Check it
 
-**Prepare and equilibrate one system:**
+`scripts/mdclaw-doctor.sh` runs a real OpenMM Context on each platform, starts
+AmberTools, and reports the selected runtime, usable GPUs and optional features.
+Resolve any `[fail]` line before running calculations. A missing optional feature
+only affects the workflows that need it.
 
-```text
-Prepare PDB 1AKE chain A as a protein-only explicit-water system using the
-default force field and water model. Continue through default equilibration
-and stop before production.
-```
+### What differs between runtimes
 
-**Run a comparison and analyze the results:**
+| | Pixi on Linux | Pixi on macOS | Containers |
+|---|---|---|---|
+| OpenMM 8.6.1, PLUMED 2.9.4, PythonTorchForce, SST2 | Yes | Yes | Yes |
+| Compute platform | CUDA | OpenCL | CUDA |
+| MODELLER (bring your own `KEY_MODELLER`) | Yes; ARM64 needs the extra step | Yes | Yes |
+| HOLE binaries, for custom pore analysis | Yes | No | Yes |
+| Membrane orientation with PPM3 | No (`ppm3_format_bug`) | Not verified | Yes |
 
-```text
-Set up and run an apo-vs-holo MD study for the T4 lysozyme L99A
-benzene-binding cavity (benzene-bound PDB 4W53). Test whether benzene
-occupancy stabilizes the engineered hydrophobic cavity. Plan the minimal
-job set, prepare and equilibrate it, run 50 ns of production per job,
-analyze cavity hydration and ligand-pose observables, and return an
-evidence-backed conclusion.
-```
+The PPM3 binary in the conda package crashes while printing its result, and only
+the container images rebuild it. In a Pixi environment, orient a membrane protein
+from an OPM homolog, with MEMEMBED, or pass `--preoriented`.
 
-For a plan without execution, ask the agent to propose the study and stop
-before running calculations. The skills instruct the agent to stay within
-the requested scope and report any work that is still queued or running.
+## Viewing results
 
-## Results And Resuming Work
+Ask to see a structure or a trajectory. The display skill picks the route that
+your client supports, and `inspect_job` shows where each job stands.
 
-Each study has a plan and one or more **jobs**: one job for a single starting
-system, or several jobs for a comparison. A typical job follows these stages:
-
-```text
-Structure -> Preparation -> Solvation -> Force-field setup
-          -> Minimization -> Equilibration -> Production -> Analysis
-```
-
-Free-energy calculations branch from the equilibrated system. Within a job,
-variants and retries create new branches while preserving earlier results.
-
-MDClaw records the stages and their dependencies as a directed acyclic graph
-(DAG). Each stage keeps its inputs, outputs, and execution status. Depending
-on how far the run proceeds, outputs include prepared structures, simulation
-systems, trajectories, and analysis reports.
-
-To continue later, give the agent the existing study directory and say what
-to do next. The agent uses `inspect_job` to read progress, `explain_node` to
-check the next step, and `trace_failure` to investigate a failed step. It can
-reuse completed results without relying on the previous chat history.
-
-## Supported Capabilities
-
-The following workflows are available through the skills and CLI. Some need
-optional software: check the doctor output and the relevant skill before use.
-
-| Area | What you can do |
+| Client | How Molstar is shown |
 |---|---|
-| Studies | Run a single system or compare several systems; resume work from completed stages and create branches for variants or retries. |
-| Starting structures | Fetch PDB structures, AlphaFold predictions via UniProt, or use local PDB/mmCIF files. Select biological assemblies or models; optionally generate structures with Boltz-2, BioEmu, or MODELLER. |
-| Molecular selection | Inspect and select proteins, DNA/RNA, ligands, waters, ions, glycans, and supported post-translational modifications (PTMs) before preparation. |
-| Protein and nucleic acid force fields | Use Amber ff19SB by default, ff14SB as an alternative, DNA OL15, and RNA OL3. |
-| Ligands, glycans, and PTMs | Prepare noncovalent small molecules with GAFF2 and OpenFF NAGL charges; select AM1-BCC with `--ligand-charge-method` or use it as fallback. Prepare covalently linked glycans with GLYCAM and phosphorylated serine, threonine, and tyrosine (SEP/TPO/PTR). |
-| Solvent and membranes | Use explicit water (ff19SB + OPC, a 15 Å buffer, and 0.15 M salt by default), implicit solvent, vacuum, or Lipid21 membranes. Supported membrane mixtures include POPC/POPG. |
-| Simulation | Minimize, equilibrate at constant volume or pressure (NVT/NPT), run production MD, restart or extend runs, and create replicates. Production defaults to a 4 fs step with hydrogen mass repartitioning (HMR). Optional PythonTorchForce scripts add custom bias forces and collective variables. |
-| Free energy and enhanced sampling | Estimate folding free-energy changes for single point mutations using free-energy perturbation (FEP), or absolute binding free energies for neutral noncovalent ligands. Run weighted-ensemble kinetics, metadynamics, and SST2 solute tempering. |
-| Analysis and reporting | Join and align trajectories; analyze structural deviations and fluctuations (RMSD/RMSF), distances, contacts, native-contact fractions, and equilibration. Record custom analyses and generate Methods-style reports with inputs, parameters, and result provenance. |
-| Execution | Run locally with Pixi or Conda, use Docker or Singularity/Apptainer, or submit and monitor Slurm jobs and arrays. |
+| Claude Code (terminal, Desktop, Remote Control) | A private claude.ai Artifact page. It needs no port or tunnel, so a desktop outside a site firewall can open it, and it can show a production that is still running. |
+| Codex desktop | An attached MCP viewer. Coordinates stay on the host. The Codex plugin includes it. |
+| A browser that reaches the host | `mdclaw serve_molstar`, with the bundled Mol*. |
 
-When a required check fails, the tool stops and reports the reason and next
-action. Checks cover molecule selection, force-field templates, charges,
-stage dependencies, and the files required to run a simulation. Recorded
-failures remain available for inspection.
+An Artifact page carries the displayed coordinates through claude.ai, so do not use
+it when data must stay on the host. Still images use PyMOL. Preparation views keep
+water, ions and the periodic cell; production views show the solute and any lipids.
+See the [viewer guide](docs/developer/molstar-viewer.md).
 
-## Boundaries And Non-Goals
+## Capabilities
 
-- **Modified DNA/RNA needs custom preparation.** The standard workflow stops
-  rather than replacing a modified nucleotide with an ordinary one. The legacy
-  modXNA helper is experimental; advanced users can supply their own OpenMM
-  system or force-field definitions.
-- **Only selected PTMs are supported.** Phospho-histidine, O-GlcNAc,
-  acetylation, methylation, ubiquitination, lipidation, and selectable phosphate
-  protonation states are not included in the standard workflows.
-- **Specialized chemistry still needs an explicit model.** MDClaw does not
-  automatically create covalent-ligand parameters, bonded metal-center models,
-  or general organometallic chemistry. Supported bare structural ions are
-  checked against the selected water/ion force-field templates.
-- **The standard workflows use Amber force fields and OpenMM.** Other force
-  fields, CHARMM-native preparation, coarse-grained or polarizable models, and
-  combined quantum/classical calculations (QM/MM) need separate workflows.
-- **Free-energy workflows have defined limits.** The [mutation FEP skill](skills/md-fep/SKILL.md)
-  handles one point mutation, and the [absolute binding free-energy skill](skills/md-abfe/SKILL.md)
-  handles one neutral noncovalent ligand. Automated campaigns for relative
-  binding FEP between ligands, replica exchange, or umbrella sampling are not
-  provided.
-- **Successful execution does not establish scientific validity.** Passing
-  topology, charge, energy, and output-file checks does not establish
-  convergence, adequate sampling, or a biological conclusion. Those require
-  appropriate controls, replicates,
-  analysis, and expert review.
+Every workflow below is available through the skills and the CLI. Some need
+optional software, which the doctor reports.
 
-## Updating Skills
+### Free energy and enhanced sampling
 
-Update using the same method you used to install:
+| Method | What MDClaw does | Limits |
+|---|---|---|
+| **Mutation FEP** ([skill](skills/md-fep/SKILL.md)) | Hybrid-topology relative free energy, analyzed with MBAR. Gives ΔΔG of folding from folded and capped-tripeptide legs. Charge-changing mutations use a co-alchemical ion. | One substitution per calculation. No glycoproteins. Implicit solvent is not supported. A binding cycle exists in `estimate_ddg --cycle binding`; the skill guides the folding cycle. |
+| **Absolute binding free energy** ([skill](skills/md-abfe/SKILL.md)) | Double decoupling with a Boresch restraint, 1 M standard state, analyzed with MBAR. | One neutral, noncovalent ligand. |
+| **Metadynamics** ([page](skills/md-production/metadynamics.md)) | Well-tempered metadynamics through OpenMM, with multiple walkers sharing a bias. | One collective variable: a center-of-mass distance. |
+| **SST2** ([page](skills/md-production/sst2.md)) | Simulated solute tempering: a single trajectory with REST2-style scaling and tempering moves, analyzed with `analyze_tempering`. | Explicit solvent with PME. |
+| **Weighted ensemble** ([skill](skills/md-we/SKILL.md)) | Split, merge and recycle walkers over distance, RMSD, dihedral or Q coordinates, locally or packed on GPUs with Slurm MPS. Gives rates and mean first-passage times from unbiased dynamics. | The rate holds only once the flux has converged. |
+| **Biased and steered MD** | Distance restraints and steering, PythonTorchForce custom forces, and PLUMED input. | PLUMED is limited to history-free actions: `DISTANCE`, `ANGLE`, `TORSION`, `GROUP`, `COM`, `CENTER`, `WHOLEMOLECULES`, `RESTRAINT`, `MOVINGRESTRAINT`, `PRINT`, `UNITS`. |
 
-- **Claude Code plugin:** run `claude plugin marketplace update mdclaw`, then
-  `claude plugin update mdclaw@mdclaw` in your terminal.
-- **Codex plugin:** run `codex plugin marketplace upgrade mdclaw`, then
-  `codex plugin add mdclaw@mdclaw` to refresh the installed copy.
-- **Skills CLI:** run `npx skills update`.
+### Preparation
 
-Start a new agent session after updating a plugin. Update the scientific
-environment or downloaded SIF separately; a skill update does not rebuild it.
+| Area | What is supported |
+|---|---|
+| Structures | PDB, AlphaFold via UniProt, local PDB/mmCIF, biological assemblies. Optional generators: Boltz-2, BioEmu (monomers), MODELLER. |
+| Proteins and nucleic acids | Amber ff19SB (default) and ff14SB, with other Amber force fields in the catalog; DNA OL15 and RNA OL3. Protonation by PROPKA at pH 7.4. Mutations with side-chain reconstruction by HPacker. |
+| Water and ions | OPC (default), OPC3, TIP3P, SPC/E, TIP4P-Ew, TIP3P-FB, TIP4P-FB. 15 Å buffer and 0.15 M NaCl by default. ff19SB with TIP3P is refused, following Amber's guidance. |
+| Implicit solvent | Generalized Born: HCT, OBC1, OBC2, GBn, GBn2. |
+| Ligands | Noncovalent small molecules with GAFF2, charges from OpenFF NAGL with automatic fallback to AM1-BCC. |
+| Glycans and PTMs | Covalently linked glycans with GLYCAM. Phosphorylated Ser, Thr and Tyr (SEP, TPO, PTR) with ff19SB. |
+| Membranes | Lipid21. Equilibrated patches ship for POPC, POPE, DPPC, POPC:CHL1 4:1, POPC:POPE:CHL1 2:1:1 and DPPC:DOPC:CHL1 1:1:1 with OPC or TIP3P, and DOPC with OPC. Other compositions are built inside a Slurm allocation; anionic mixtures such as DOPE:DOPG have a known crash during patch equilibration. |
+
+### Simulation, analysis and reporting
+
+| Area | What is supported |
+|---|---|
+| Simulation | Minimization, multi-stage NVT/NPT equilibration, production, restart and extension, replicates. Production defaults: 4 fs with hydrogen mass repartitioning, Langevin middle integrator, PME with a 1.0 nm cutoff. |
+| Analysis | RMSD, RMSF, distances, contact frequency, native-contact fraction, equilibration detection, trajectory joining and fitting, and the estimators for FEP, ABFE, SST2, metadynamics and weighted ensemble. |
+| Custom analysis | Anything else is written for the task and recorded with `register_analysis_result`. |
+| Reporting | Methods-style reports with BibTeX and provenance, and offline MDDB deposit bundles. |
+| Execution | Local runs, Slurm jobs and arrays, GPU packing with MPS, and throughput estimates. |
+
+## What MDClaw does not do
+
+**Methods that are not provided**
+
+- Replica exchange, and accelerated or Gaussian-accelerated MD.
+- Umbrella-sampling campaigns or a PMF estimator. Restraints can be applied by
+  hand, but WHAM is not included.
+- Relative binding free energies between ligands.
+- MM/PBSA, thermodynamic integration, and BAR as a separate estimator.
+- Coarse-grained or polarizable models, and QM/MM.
+- CHARMM-native preparation. `build_openmm_system` accepts OpenMM force-field XML
+  for other force fields, outside the standard workflow.
+- Production in vacuum. A vacuum system can be built and minimized, but equilibration
+  and production are refused.
+
+**Chemistry that needs your own model**
+
+- Covalent ligands, bonded metal centers and general organometallics. Bare
+  structural ions are checked against the selected water and ion templates.
+- PTMs beyond SEP, TPO and PTR: phospho-histidine, acetylation, methylation,
+  ubiquitination, lipidation, and a choice of phosphate protonation state.
+- Modified DNA or RNA. The workflow stops rather than substituting an ordinary
+  nucleotide; a legacy modXNA helper is experimental.
+- Charged ligands in absolute binding free-energy calculations.
+
+**Analyses that are not built in**
+
+PCA, clustering, Markov state models, secondary structure, hydrogen bonds, SASA,
+radius of gyration, radial distribution functions, pores and cavities, hydration,
+and lipid order or thickness. An agent can write these as custom analyses, and you
+should review that code as you would any other.
+
+## Test status
+
+| Configuration | Automated | On real GPUs |
+|---|---|---|
+| Linux x86-64, CUDA 11.8 (image and `cuda118`) | CPU tests in CI | Acceptance runs on RTX A6000, TITAN X Pascal, GTX 1080 Ti and RTX 2080 Ti before a shared SIF is replaced |
+| RIKYU image | CPU tests in CI | Run the GPU check above before adopting a new image |
+| Linux, CUDA 12.9 (`default` and the ARM64 image) | CPU tests in CI | Not yet exercised on a GPU by the maintainers |
+| macOS Apple Silicon | CPU tests in CI | OpenCL not yet covered by CI |
+
+MDClaw is research software under active development. Check the doctor output and
+[known issues](docs/developer/roadmap-and-known-issues.md) before relying on it.
+
+## Results and resuming work
+
+Each study has a plan and one or more jobs. Variants and retries create new branches
+and leave earlier results intact. To continue, give the agent the study directory
+and say what to do next: it reads progress with `inspect_job`, checks the next step
+with `explain_node`, and investigates failures with `trace_failure`.
+
+## Updating
+
+Update the skills the way you installed them, then start a new session. Update the
+runtime separately, because a skill update does not change it.
+
+| Installed with | Update |
+|---|---|
+| Claude Code plugin | `claude plugin marketplace update mdclaw`, then `claude plugin update mdclaw@mdclaw` |
+| Codex plugin | `codex plugin marketplace upgrade mdclaw`, then `codex plugin add mdclaw@mdclaw` |
+| Skills CLI | `npx skills update` |
+| Pixi runtime | `git pull`, then `pixi install` with the same options |
+| SIF runtime | `singularity pull` again; keep the previous SIF until the new one passes the GPU check |
 
 ## Development
 
-From the MDClaw checkout, install the environment and run the standard checks:
-
 ```bash
-pixi install   # locked env from pixi.toml + pixi.lock (installs mdclaw editable)
+pixi install
 pixi run ruff check mdclaw/
 pixi run pytest tests/test_registry.py tests/test_cli.py tests/test_guardrails.py tests/test_guardrail_code_registry.py tests/test_slurm_server.py -v
 ```
 
-Short agent guidance is mirrored in `CLAUDE.md` and `AGENTS.md`; keep those
-files identical. See the [architecture](docs/developer/architecture.md),
+Agent guidance is mirrored in `CLAUDE.md` and `AGENTS.md`; keep them identical. See
+the [architecture](docs/developer/architecture.md),
 [tool reference](docs/developer/tool-reference.md),
 [CLI internals](docs/developer/cli-internals.md),
-[testing guide](docs/developer/testing.md), and
-[configuration reference](docs/developer/configuration.md) for details.
+[testing guide](docs/developer/testing.md),
+[configuration reference](docs/developer/configuration.md) and
+[release guide](docs/developer/release.md).
 
-### Repository Map
+A `vX.Y.Z` tag builds every image from `pixi.lock` on native GitHub runners, runs
+the CPU smoke test, and publishes `mdclaw:X.Y.Z` (x86-64 and ARM64) and
+`mdclaw:X.Y.Z-rikyu`. The GPU check stays a manual gate before a shared SIF is
+replaced.
+
+<details>
+<summary><strong>Repository map</strong></summary>
+
+<br>
 
 | Path | Role |
 |---|---|
-| `skills/` | Portable MDClaw skills. This is the source of truth for skill behavior. |
-| `.agents/skills/` | Generic Agent Skills discovery entries, symlinked to `skills/`. |
-| `.claude/skills/` | Repo-local Claude Code skill discovery entries, symlinked to `skills/`. |
-| `.claude-plugin/` | Claude plugin marketplace metadata. |
-| `.codex-plugin/` | Codex plugin manifest (adds the Molstar MCP server). |
-| `hooks/` | Plugin lifecycle hooks, including packaged runtime setup. |
+| `skills/` | Portable MDClaw skills; the source of truth for skill behavior. |
+| `.agents/skills/`, `.claude/skills/` | Discovery entries, symlinked to `skills/`. |
+| `.claude-plugin/`, `.codex-plugin/`, `hooks/` | Plugin metadata and lifecycle hooks. The Codex manifest adds the Molstar MCP server. |
 | `bin/mdclaw` | Runtime wrapper used by plugin and local deployments. |
-| `pixi.toml`, `pixi.lock` | Locked definition of the scientific runtime: the `default` and `cuda118` environments and the container image. |
-| `recipes/` | Source builds pixi runs on install: OpenMM for CUDA 11.8, openmm-torch, PLUMED, openmm-plumed. |
-| `environment.yml` | Legacy conda definition, kept for existing envs. |
-| `.github/workflows/` | CI (pixi env tests on macOS/Linux) and the container build/publish workflow. |
-| `mdclaw/` | Python package and CLI tool implementations. |
-| `container/` | Image definitions: `Dockerfile.pixi` (from the `cuda118` environment) and `Dockerfile.rikyu-arm64` (from the `cuda13` environment). |
-| `docs/agents/` | Deployment notes for agent harnesses. |
-| `docs/developer/` | Architecture, CLI internals, testing, release, and tool references. |
-| `tests/` | Unit, smoke, and integration tests. |
+| `pixi.toml`, `pixi.lock` | Locked definition of the runtime: the `default`, `cuda118` and `cuda13` environments. |
+| `recipes/` | Source builds run by pixi on install: OpenMM for CUDA 11.8, openmm-torch, PLUMED, openmm-plumed. |
+| `container/` | Image definitions: `Dockerfile.pixi` (x86-64 and ARM64) and `Dockerfile.rikyu-arm64`. |
+| `environment.yml` | Legacy conda definition, kept for existing environments. |
+| `mdclaw/` | Python package and CLI tools. |
+| `docs/agents/`, `docs/developer/` | Deployment notes and developer references. |
+| `tests/` | Unit, smoke and integration tests. |
 
-### Building And Publishing Releases
-
-For maintainers, follow the [release guide](docs/developer/release.md).
-`scripts/bump-version.sh X.Y.Z` writes
-every version location at once, and pushing the `vX.Y.Z` tag triggers the
-container workflow, which builds the image from `pixi.lock` with
-`container/Dockerfile.pixi`, runs the CPU smoke test, and publishes the GHCR
-tags. The GPU smoke test stays a manual
-gate before shared SIFs are replaced.
+</details>
 
 ## License
 
-MDClaw is MIT-licensed ([LICENSE](LICENSE)). This repository contains only
-MDClaw's own code, skills, and documentation; no third-party source is
-vendored, so the MIT text is the only license in the source tree.
+MDClaw is MIT-licensed ([LICENSE](LICENSE)). The repository's only vendored
+third-party code is the Mol* viewer build in
+`mdclaw/visualization/molstar/vendor/`, which keeps its own MIT license there.
 
-### Third-Party Software
+<details>
+<summary><strong>Third-party software</strong></summary>
 
-MDClaw orchestrates scientific software that is installed separately — from
-conda-forge/PyPI via pixi or conda, or prebuilt inside the published
-container image — and that remains under its own license. The main runtime
-components (license identifiers as declared by the installed packages):
+<br>
+
+MDClaw orchestrates scientific software that is installed separately, from
+conda-forge and PyPI through Pixi or Conda, or prebuilt inside the published
+container images, and that remains under its own license. The main components, with
+license identifiers as declared by the installed packages:
 
 | Component | License |
 |---|---|
@@ -434,24 +462,25 @@ components (license identifiers as declared by the installed packages):
 | MDAnalysis | LGPL-3.0-or-later |
 | MDTraj | LGPL-2.1-or-later |
 | ParmEd | LGPL-2.1-or-later |
-| PLUMED (container image only) | LGPL-3.0 |
+| PLUMED | LGPL-3.0 |
 | propka | LGPL-2.1 |
 | SST2 | GPL-2.0 (invoked as a separate subprocess) |
 | RDKit, PyTorch | BSD-3-Clause |
 | pdb2pqr | BSD-style |
 | PDBFixer, openmmforcefields, OpenFF toolkit / NAGL / Pablo, pymbar, e3nn, HPacker | MIT |
-| BioEmu, Boltz-2 (optional model backends) | MIT |
+| Mol*, BioEmu, Boltz-2 | MIT |
 | dimorphite-dl, HOLE2 | Apache-2.0 |
 | gemmi | MPL-2.0 |
 | PyMOL (open-source build) | PyMOL Open-Source License |
 | MODELLER | Proprietary; free for academic use with a registered license key |
 
-The container/SIF images redistribute these components in binary form; the
-license texts travel inside the image with each conda package
-(`/opt/mdclaw/conda-meta/` and the packages' `share/` directories). Two
-components need explicit care: MODELLER ships in the image **without** a
-license key — each user supplies their own `KEY_MODELLER` at run time and
-accepts the salilab academic-use terms — and SST2 (GPL-2.0) is executed as a
-standalone subprocess rather than imported. MDClaw's MIT license covers only
-MDClaw's own files; using or redistributing the images means honoring the
-component licenses above.
+The container images redistribute these components in binary form; the license texts
+travel inside the image with each conda package (`/opt/mdclaw/conda-meta/` and the
+packages' `share/` directories). Two components need explicit care. MODELLER ships in
+the image **without** a license key: each user supplies their own `KEY_MODELLER` at
+run time and accepts the Sali lab's academic-use terms. SST2 (GPL-2.0) is executed as
+a standalone subprocess rather than imported. MDClaw's MIT license covers only
+MDClaw's own files; using or redistributing the images means honoring the component
+licenses above.
+
+</details>

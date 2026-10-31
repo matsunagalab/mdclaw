@@ -81,6 +81,23 @@ add the correction and say what it overturns.
 - 101 と 119 の脱線、117 のキャップの最初の選択、109 glm r3 の揺らぎはモデルの誤りかばらつき。
 - 105 CLI only の S–S 結合の判定と 114 の揺らぎは採点側。
 
+## 2026-10-31 — 1 つのタグで全イメージを公開し、README を書き直した（v0.6.15）
+
+本人「デプロイで損をするのは非常にもったいない」「対応していることもしていないことも分かりやすく」「魅力的で美しく、ただし専門家の信頼を落とさない」「タグを打てば ARM・RIKYU・Mac 向けも作ってくれると便利」。
+
+- **イメージ**: `vX.Y.Z` タグで GitHub の native ランナーが 3 種類をビルドする。`mdclaw:X.Y.Z` / `:latest` は multi-arch（amd64 = `cuda118`、CUDA 11.8、R520 以上 / arm64 = `default`、CUDA 12.9、R575 以上）、`mdclaw:X.Y.Z-rikyu` / `:latest-rikyu` は `cuda13`。`Dockerfile.pixi` を `PIXI_ENV`・`CUDA_TOOLKIT`・`RUNTIME_IMAGE` の build arg で共通化。
+- **Mac**: 「Mac 用イメージ」は作れない。SIF は macOS で動かず、Docker は Linux VM なので GPU が見えない。arm64 イメージは Docker で CPU 実行でき、GPU（OpenCL）は pixi の経路。README にそう書いた。
+- **README どおりに実機で試して見つけた落とし穴**:
+  - GPU のない Linux では `pixi install` が `__cuda` 不足で止まる。`CONDA_OVERRIDE_CUDA=12.9` が要る（実行時は不要、確認済み）。
+  - R575 未満のドライバでは `pixi install` は最後まで進むが GPU を使えない環境ができる。README を機種別の表にして、先に選べるようにした。
+  - 初回 install は `.pixi/bld` が大きい（`cuda118` で env 12 GB + bld 21 GB、14 分）。floyd の `/` を 2 環境の試験で満杯にした（`default` env 16 GB + bld 36 GB 超）。README に約 60 GB と記載。`rm -rf .pixi/bld` 後も doctor 全合格、CUDA・OpenCL・`test-gpu.py` 合格を確認。
+  - `cuda118` だけ入れてドライバのないホスト（ログインノード）で runtime が見つからなかった。`_mdclaw_pixi_env` を修正し、実物で確認。
+  - プラグインは別の checkout なので、PATH の pixi checkout を見られず、Singularity があるホストでは起動フックが SIF を取得していた。`setup-container.sh` で PATH の checkout を runtime として扱う。
+- **記述の訂正**（コードと突き合わせ）: PLUMED は container 限定ではない。Mol* は vendoring している（「第三者コードなし」は誤り）。SIF の必要容量は 60 GB ではなく約 25 GB。POPC/POPG の記述は根拠なしで削除し、同梱パッチ 13 件を列挙（DOPC は OPC のみ、`membrane.md` も修正）。真空系は minimization までで eq/prod は拒否される。ff14SB の phospho は拒否される（roadmap を修正）。SST2 は pixi にも入っている。解析は README の例にあった cavity hydration のツールがないので例を変更。
+- **Pixi と container の実質的な差**: PPM3（`immers`）の再ビルドは container だけ。pixi では `--orientation-method ppm` と、OPM homolog が使えない `auto` が `ppm3_format_bug` で止まる。OPM homolog、MEMEMBED、`--preoriented` は使える。v3numpy パッチは lock の AmberTools 24.8 では no-op。README の差分表に記載。
+- **見た目**: ロゴを余白削除・透過し、ダークテーマ版を作成。分子アニメーションは本物の 10 ns production（`prod_002`）から作り、抜粋・90 ps 平均・往復再生であることをキャプションに明記。ワークフロー図は Codex の imagegen で作成（本人の指摘で Force field と Equilibrate を修正し、Minimize を追加、Analyze のチェックマークは「検証済み」と読めるので削除）。写実的な `mdclaw-dag.png` は本人の評価で削除。
+- **信頼のため**: 「完了は検証ではない」を冒頭近くに置き、Test status の表で CUDA 12.9 と macOS OpenCL が未検証であることを明記した。
+
 ## 2026-10-31 — 外の Claude Desktop からスパコンの途中経過と成果物を Molstar で見る
 
 本人「Claude Desktop でも Molstar で途中経過や成果物を見たい」「ファイアウォールを超えて外から接続している Claude Desktop から内部のスパコンの結果を見たい」。

@@ -14,6 +14,16 @@ MODE=auto
 if [ -n "${1:-}" ] || [ "${MDCLAW_FORCE_CONTAINER_SETUP:-}" = 1 ]; then
     MODE=container
 fi
+# A plugin is its own checkout, so it cannot see the Pixi environment of the
+# checkout on PATH. That environment is already a runtime: do not download an image.
+if [ "$MODE" = auto ] && [ -z "${MDCLAW_RUNTIME:-}" ] && [ -z "${MDCLAW_SIF:-}" ]; then
+    ON_PATH="$(command -v mdclaw 2>/dev/null || true)"
+    if [ -n "$ON_PATH" ] && [ ! "$ON_PATH" -ef "$PKG_ROOT/bin/mdclaw" ] \
+        && [ -d "$(dirname "$ON_PATH")/../.pixi/envs" ]; then
+        echo "Using the Pixi checkout on PATH: $ON_PATH" >&2
+        exit 0
+    fi
+fi
 mdclaw_select_runtime "$MODE"
 if [ -n "${1:-}" ] && [ -z "${MDCLAW_DOCKER_IMAGE:-}" ]; then
     DOCKER_IMAGE="ghcr.io/matsunagalab/mdclaw:$1"

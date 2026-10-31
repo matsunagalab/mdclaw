@@ -12,7 +12,7 @@ pages link here; Python signatures and guardrails remain authoritative.
 |---|---|---|---|
 | `explicit` (default) | `prepare_complex --solvent-type explicit` | `solvate_structure` | `build_amber_system` with `box_dimensions` |
 | `implicit` | `prepare_complex --solvent-type implicit` | skip solv | `build_amber_system --implicit-solvent <MODEL>` |
-| `vacuum` | `prepare_complex --solvent-type vacuum` | skip solv | `build_amber_system` without box or GB |
+| `vacuum` | `prepare_complex --solvent-type vacuum` | skip solv | `build_amber_system` without box or GB; `run_equilibration` and `run_production` refuse it, so a vacuum system stops at minimization |
 | `membrane` | `prepare_complex --solvent-type explicit` | `embed_in_membrane` | `build_amber_system` with membrane box |
 
 Default to `explicit` unless the user asks for implicit solvent, vacuum, or a
