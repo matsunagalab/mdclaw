@@ -13,6 +13,24 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-11-01 — 保留テスト test-v6 の最終結果（修正前の MDClaw `ac0e328` を測った値）と、その後の 0.6.15 共有 SIF
+
+- 未見の 30 系（MDDataBench の課題 101〜130）を 4 モデル × 3 条件 × 3 回で評価した。測ったのは、固定した ac0e328 のイメージファイル（9104afbf）と pi skills 8f45de7。
+- pass^3（CLI + skills / CLI only / SIF only）:
+
+  | モデル | CLI + skills | CLI only | SIF only |
+  |---|---|---|---|
+  | deepseek-v4.1-flash | 30/30 | 30/30 | 1/30 |
+  | glm-5.3-flash | 29/30 | 29/30 | 0 |
+  | kimi-k3 | 29/30 | 30/30 | 0 |
+  | qwen3.8-27b | 27/30 | 21/30 | 0 |
+
+  - 補正は 4 件で、どれもベンチ側と基盤側のもの: 105/106 の宣言、採点器の誤判定 2 件、110 の OOM による停止の流し直し、114 の K+ プロンプト修正。MDClaw は変えていない。
+  - 補正前の値は MDDataBench memo 2026-11-01 (3) と `runs/RESULTS-test-v6.md`。
+- skill の効果が大きいのは qwen3.8-27b だけ（27 対 21）。他の 3 モデルは CLI only で 29〜30/30 に達した。
+- この失敗から直したツール側 5 件は main 6524d3e（2026-10-31 の項）にあり、共有 SIF 0.6.15 に入っている。修正後の値は、新しい保留テスト test-v7（課題 131〜160、本日開始）で測る。test-v6 はこれ以降は開発用データ。
+- v5 で外から止められた 11 attempt を v5 のイメージファイルで流し直した。kimi-k3 CLI only は 0.908 → 0.918、qwen3.6-35b CLI only は 0.429 → 0.439。
+
 ## 2026-10-31 — 保留テスト test-v6-cli の失敗 46 件のうちエージェント側の原因を調べ、MDClaw のツール側の欠陥 5 つを直した（branch `test-v6-fixes`、未マージ）
 
 ユーザー依頼「失敗の原因を調べて、MDClaw で直すべきところを直して」。対象は `/data1/rkp00079/rku00161/runs/test-v6-cli`（720 attempt、失敗 46）。イメージは `/data1/rkp00079/mdclaw.sif`（main `ac0e328`）、pi の skill は 8f45de7。採点側（scorer・タスク）は別の担当が見ているので、MDDataBench には触っていない。作業ファイルはセッションの scratchpad（`condense.py`、`codes.py`、`grepcalls.py` など）。
