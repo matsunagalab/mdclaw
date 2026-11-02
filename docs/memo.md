@@ -13,6 +13,25 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-11-02 — 保留テスト test-v7 の結果: 修正後の MDClaw 6524d3e（0.6.15）
+
+- 未見の 30 系（課題 131〜160）× 4 モデル × 3 条件 × 3 回、1,080 attempt。固定したイメージファイル 5612e4a6、pi skills 6524d3e。
+- pass^3（CLI + skills / CLI only / SIF only）:
+
+  | モデル | CLI + skills | CLI only | SIF only |
+  |---|---|---|---|
+  | deepseek-v4.1-flash | 30/30 | 28/30 | 0/30 |
+  | glm-5.3-flash | 29/30 | 28/30 | 0/30 |
+  | kimi-k3 | 29/30 | 27/30 | 0/30 |
+  | qwen3.8-27b | 27/30 | 25/30 | 0/30 |
+
+- test-v6（ac0e328、課題が違うので対応のある比較ではない）と比べると、CLI + skills は各モデルとも同じ値で計 115/120。CLI only は 110/120 → 108/120 で、qwen3.8-27b だけ 21 → 25 に上がった。
+- 全モデルが落ちた課題はなく、ベンチ側の補正は不要だった。詳細は `runs/RESULTS-test-v7.md`。
+- 未調査の残件。transcript はまだ読んでいない。
+  - 140 4F6N: kimi と qwen3.8-27b の提出なし 11 件。
+  - 138 と 147: CLI only で author と label の鎖 ID が入れ替わる寄託の別の鎖を選んだ 7 attempt。v5 の 019/022 と同じ種類で、ツール側のガードレール候補。
+- test-v7 はこれ以降は開発用データ。次の保留評価には新しい test-v8 が要る。
+
 ## 2026-11-01 — 保留テスト test-v6 の最終結果（修正前の MDClaw `ac0e328` を測った値）と、その後の 0.6.15 共有 SIF
 
 - 未見の 30 系（MDDataBench の課題 101〜130）を 4 モデル × 3 条件 × 3 回で評価した。測ったのは、固定した ac0e328 のイメージファイル（9104afbf）と pi skills 8f45de7。
