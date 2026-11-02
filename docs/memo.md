@@ -13,6 +13,12 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-11-03 — test-v7 の膜の補足: 7DTD（Nav1.1 α）を固定した 6524d3e で測定
+
+- test-v7 に膜の課題が無いので、事前に書いたルールで 1 課題を足した。ルールのままでは 9 候補すべてが RMSD 4.0 Å で落ちたため、候補の値を見たあとで原子数の上限を 12 万から 13 万に上げた（本人の判断、MDClaw の結果は使っていない）。論文には事後の緩和として書く。
+- 課題 161_membrane_7dtd（参照 126,711 原子、DPPC）× 4 モデル × 3 条件 × 3 回。attempt の合格: CLI + skills 10/12、CLI only 9/12、SIF only 0/12。pass^3 を取ったのは glm の両条件と kimi の CLI + skills。
+- 1 課題なので膜の合格率ではなく、大きなイオンチャネルでも動くことの確認として読む。詳細は `runs/RESULTS-test-v7.md`。
+
 ## 2026-11-02 — 保留テスト test-v7 の結果: 修正後の MDClaw 6524d3e（0.6.15）
 
 - 未見の 30 系（課題 131〜160）× 4 モデル × 3 条件 × 3 回、1,080 attempt。固定したイメージファイル 5612e4a6、pi skills 6524d3e。
