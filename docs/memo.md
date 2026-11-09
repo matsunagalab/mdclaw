@@ -13,6 +13,67 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-11-10 — test-v7 の GPU 故障（c196 の GPU 3 番）で落ちた 68 試行を流し直し、数字を訂正した
+
+- **原因**: 計算ノード c196 の GPU 3 番が壊れていた（11-04 11:21 に healthcheck が「GPU uncorrected ECC errors=1」で drain）。OpenMM が `No compatible CUDA device` / `The requested CUDA device could not be loaded` で数秒で止まるか、黙って CPU で走って 20 分で打ち切られた。MDClaw の `gpu_allocated_platform_unavailable` は計算前に止めて正しく働いたが、案内文が「`--nv` を付けて」で、今回の原因とは違った（改善候補: 失敗した GPU を示し、別の GPU で投げ直すよう案内する）。
+- **対象 68 試行**（c196 で動き、GPU が使えず落ちたもの。判定は sacct の GPU メモリ 0 とログ）: test-v7-base 47、test-v7-sifonly 15、test-v7m 6。test-v7-cli、MDCrow、DAG なしの実験には該当なし。
+- **やり直し**: 各実験の MDDataBench の版（acfbbb7、3d601c3、4b8c8b9）の作業用コピーから `reset_attempts --reason gpu_fault_c196 --force true`、`SBATCH_EXCLUDE=c139,c196`。元の記録は各試行の `retired/` に残した。test-v7-base は pi のスキルを 8aa6be6 に戻して実行し、終了後 main に戻した（`runs/test-v7-base/chain-rerun-c196.sh`、log）。
+- **結果（pass^3、124 組）**: 現在の版（optimized）はツールだけ 109→**111**、ツール＋スキル 117→**119**。pre-optimization 版（8aa6be6）はツールだけ 67→**84**、ツール＋スキル 100→**112**。開発前後の改善は 37、悪化は 3。ツールとツール＋スキルの差は 33 から 28（pre）、8（optimized）。コンテナのみは pass@1 20→21/372。膜の課題 7DTD は、ツール＋スキル 12/12、ツールだけ 11/12。
+- **論文**: 図3、Abstract、Results の数字を更新（`tex/figures/refresh_after_rerun.sh`）。図3g は失敗した判定の内訳に差し替えた。
+- 訂正: 先行する 11-04 の版比較（67/100 vs 109/117）は、pre-optimization 版が GPU の故障で過小評価されていた。これを 84/112 vs 111/119 に改める。
+
+## 2026-11-09 — DAG ありの対照にも過程の監査をかけた（0/343）。成功率以外の指標
+
+- 対照 runs/test-v7-cli の cli_sif（360 試行、合格 343）で、採点された production（最後に完了した prod）から親をたどって系譜を調べた。DAG なしの監査と同じ問いを、`node.json` の記録で確かめる: 段の順序（prep → solv → topo → min → eq → prod）、系譜上のノードがすべて完了しているか、prep・topo・min・eq が系譜にあるか、min・eq・prod が記録した system.xml の sha が系譜上の topo の現在のファイルと一致するか（使用後の上書き）、eq の開始元が系譜上にあるか。スクリプトは今回の作業用（scratchpad の audit_dag.py）で、リポジトリには入れていない。
+- 結果: **合格 343 試行のうち、過程に欠陥があったのは 0 件**。DAG なしは合格 334 試行のうち 11 件（3.3 %）。不合格を含む 360 試行でも、問題は production が無い 8 件と、ジョブフォルダが無い 1 件だけ。
+- 限界: DAG ありの記録は、production の開始状態の sha までは持っていない（親ノードの成果物を resolver が渡すので、エージェントは差し替えられない）。この項目だけは「記録の検証」ではなく「コードによる保証」。
+- 2026-11-07 の項の「DAG ありでは構造的に起きない」は、これで実測値（0/343）になった。分母は DAG なしが 334（11-07 の表のとおり）。会話中に「343 のうち 11」と言ったのは誤り。
+- **11-07 の内訳の訂正**: 11 件を一件ずつ見直すと、内訳は 9・1・1 ではなく 6・2・3 だった。eq が min の出力でなく topo の状態から始まった 6 件（min は走ったが出力を使っていない）、prod も topo の状態から始まった 2 件（148 1hoe glm r2、150 1kpt deepseek r1。min・eq・prod の 3 つが同じ topo の状態を読んでいた）、構造が記録された段の外で編集・差し替えされた 3 件（146 5o14 glm r3: prep の出力を書いた後・溶媒和の前に変更、149 5n76 qwen r2: 溶媒和が prep の中間ファイルを読んだ、153 1d4t qwen r3: エージェントが書いた構造からトポロジーを作った）。topo の状態は build_amber_system の短い初期緩和（10 反復）だけで、最小化段の代わりにはならない。論文の Fig. 4a はこの 6・2・3 を使う（paper_mdclaw tex/figures/data/nodag_ablation_audit.json）。
+- 成功率以外の指標（対照 → DAG なし、各 360 試行）: ツール失敗のエピソード 41 → 147、Slurm ジョブ失敗 1 → 23、放棄されたエピソード 30 → 97、回復したエピソード 49 → 65。エージェントの作業時間の中央値 438 → 457 s、LLM 呼び出しの中央値 37 → 36、GPU 時間の合計 31.8 → 29.8 h、MD ジョブ 1141 → 1162。DAG ありのノード失敗（分岐でのやり直し）は DAG なしに対応する種類が無いので、失敗の数には入れていない。
+- 論文（~/paper_mdclaw、319504a〜3016d92）: Abstract と Introduction を「参照の無い研究では、結果を信じるかどうかは過程で決まり、その記録はツールが書く」を軸に書き直した。MDDataBench（結果の検証）と DAG（過程の検証）は補い合う検証として書き、アブレーションは「成功した試行のうち 11 件に過程の誤りがあった」と報告する。Results・Methods への節の追加はまだ。アブレーションは膜系を除く 30 系で、本文の 31 系と母数が違う。
+
+## 2026-11-07 — DAG なし MDClaw のアブレーション結果（test-v7、CLI only、360 試行）
+
+- 対照は runs/test-v7-cli の cli_sif（6524d3e）、本番は runs/test-v7-nodag（ablate-no-dag 2a447a3、MDDataBench nodag-ablation）。採点器の修正と再採点は runs/test-v7-nodag/CORRECTIONS.md。
+
+  | | 対照（DAG あり） | DAG なし |
+  |---|---|---|
+  | pass^3（120 セル） | 108 | 103 |
+  | 合格した試行（360） | 343 | 334 |
+  | 合格したが過程に欠陥（監査） | — | 11 |
+
+- セル単位では DAG なしが良い 5、悪い 10（符号検定 p ≈ 0.30、有意でない）。このタスク群では、合格率への DAG の寄与は小さい。
+- DAG なしに特有の失敗（9 件）: ジスルフィドをトポロジーに渡し忘れ（143、144 glm）、prod が既定の NVT・300 K で走った（136 kimi r3）、連鎖ジョブのファイル受け渡しの失敗（145 で 3 件）。どれも計算は正常に終わる、あるいは DAG なら起きない種類。
+- 採点は通ったが過程に欠陥がある試行が 11 件: eq か prod が直前の段の出力から始まっていない 9 件（うち 2 件は平衡化なしで production）、消費後に入力が上書きされた 1 件、準備段の出力でない構造を使った 1 件（`record_not_in_ledger` だけの 2 件は監査側の都合で除いた）。DAG ありでは入力解決と段の順序検査により構造的に起きない。採点器は最終成果物しか見ないので、この差は pass には出ない。
+- コマンドの複雑さ（引数の中央値、DAG あり → なし）: build_amber_system 1 → 5、solvate_structure 2 → 5、prepare_complex 3 → 5。呼び出し回数は solvate 286 → 695、build 289 → 517。LLM 呼び出しと出力トークンはほぼ同じ（37 → 36 回、+6 %）。
+- 試運転 1 では、文書化前のファイル配置の推測で 16 試行中 9 試行を失った（出力の置き場所を固定・文書化して解消）。
+- 結論: DAG の本質的な寄与は、合格率よりも「正常終了に見える誤り」の防止と、過程の追跡可能性にある。DAG なしでは追跡のために隠しの台帳、sha の照合、採点器の 3 回の修正が必要だった。
+
+## 2026-11-06 — DAG なし MDClaw のアブレーションを実装し、test-v7 で本番を開始した
+
+- 目的: DAG の層（工程の分割と記録・入力の自動解決・条件の引き継ぎ・依存性と分岐の強制）を丸ごと外し、化学のコードは同じにした MDClaw と比べる。対照は test-v7-cli の cli_sif（6524d3e、pass^3 108/120、1 回ごと 343/360）。skills なし。
+- MDClaw: 枝 `ablate-no-dag`（worktree ~/mdclaw-nodag、6524d3e から）。`MDCLAW_NO_DAG=1` で DAG 用コマンドと `--job-dir/--node-id` を隠し、各コマンドは明示のパスと `--output-dir` で動く。出力は `--output-dir` に決まった名前で直接書き、場所は `--workflow` / `--list-json` に明記。条件の引き継ぎは一切なし（PDB の隣の JSON を読む standalone の挙動も止めた）。各呼び出しは `mdclaw_result.json`（入出力の sha256）と台帳を残す。設計: `docs/research/no-dag-ablation.md`。最終 image `/data1/rkp00079/sif/mdclaw-0.6.15-nodag-2a447a3-arm64-cuda13.sif`（sha256 4c9bd396…、2a447a3）。通常モードの速いテストは 3140 合格、1 件の不合格は 6524d3e でも落ちる Molstar wrapper の既存問題。
+- MDDataBench: 枝 `nodag-ablation`（5b44e11）。条件 `cli_nodag_sif`。エージェントは `submission.json` に最終 production のフォルダを書き、`mddatabench/nodag.py` が記録から系譜を復元して同じ採点器にかける。来歴の問題は `provenance_ok` として合否と別に出す。
+- 試運転（train のみ）: 1 回目 5/16（10 件は文書にない出力サブディレクトリの推測ミス → 出力を平らにして修正）、2 回目 18/20、3 回目 6/8。独立レビュー 3 本で、PDB の隣の JSON からの暗黙の引き継ぎ、別々の production の連結、失敗した呼び出しの採点、ジョブ内の台帳漏れ、helper の出力の誤認を見つけ、すべて直した。
+- DAG なしで出た本物の失敗: (1) production を同じ出力先で 2 区間に分け、1 区間目を上書き（0.5 ns しか残らず）、(2) 溶媒和に配位子の電荷（`--ligand-chemistry`）を渡し忘れ、系が −2 に帯電（glm と kimi、039）。どちらも DAG ありなら自動の引き継ぎで起きない。
+- 本番: runs/test-v7-nodag、360 試行（30 課題 × 4 モデル × 3）、2026-11-06 17:58 開始、8 エージェント。課題文は対照と 30/30 バイト一致。
+
+## 2026-11-06 — test-v7 の 3 版のログから、失敗と回復の中身を数えた（アブレーションの下調べ）
+
+- 材料: 各試行の `result.json` の `recovery.episodes`（MDDataBench が数える失敗エピソードと回復手段）、`failure_code`、`scoring_failures`。3 版とも 720 試行（CLI + skills と CLI only、各 360）。
+
+  | | 08-27 | 09-10 | 11-01 |
+  |---|---|---|---|
+  | 失敗エピソードを含む試行 | 480 | 512 | 120 |
+  | 新しいノードへの分岐で回復した試行（うち合格） | 314（274） | 357（302） | 74（69） |
+  | `node_terminal` / `node_context_required` / `node_failed` のエピソード | 183 / 98 / 111 | 199 / 103 / 261 | ほぼ 0 |
+  | Slurm ジョブの CANCELLED + FAILED エピソード | 45 | 265 | ほぼ 0 |
+  | `forcefield_water_blocked` のエピソード | 119 | 119 | 0 |
+
+- 読み方: 版を重ねて伸びたのは、主に「失敗してから分岐で直す」が「最初から失敗しない」に変わったことによる。DAG まわりの実行エラー（終了したノードの再実行、ノード指定の欠落、親が終わる前に走った Slurm ジョブ）はほぼ消えた。分岐による再試行は、旧版で試行の約 4〜5 割が使った、最もよく使われた DAG の機能。11-01 で残るノード失敗はほとんどが `blocking_ligand_failure`（77 件、うち回復 68）。どの版でも直っていないのは `agent_no_submission`（各条件 8〜10）。
+- 限界: 版ごとに環境ごと違うので、どの機能が効いたかの因果はこれでは言えない。因果にはアブレーションが要る。11-01 では拒否そのものが少ない（拒否コードが返った試行は CLI + skills 33、CLI only 58。ほぼすべて合格）ので、現行版のアブレーションでは pass^3 の差が小さく出る可能性がある。
+- 集計スクリプト: 拒否コードの集計は session の scratchpad の `guard_stats.py`（transcript から `code` を拾う）。エピソードの集計は `result.json` だけで再現できる。
+
 ## 2026-11-05 — 未見の test-v7 で 3 つの版を比べた（hackathon の 94eb819、最初のキャンペーンの 8aa6be6、現在の 6524d3e）
 
 - pass^3（4 モデル合計、120 中）。
