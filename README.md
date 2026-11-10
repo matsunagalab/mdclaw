@@ -477,46 +477,75 @@ replaced.
 
 ## License
 
-MDClaw is MIT-licensed ([LICENSE](LICENSE)). The repository's only vendored
-third-party code is the Mol* viewer build in
-`mdclaw/visualization/molstar/vendor/`, which keeps its own MIT license there.
+MDClaw's own code and agent skills are licensed under the **MIT License**
+([LICENSE](LICENSE)). Third-party software, bundled files, model weights and
+reference data retain their respective licenses.
+
+### Bundled third-party files
+
+| Material | License and notices |
+|---|---|
+| Mol* viewer build | MIT. [License](mdclaw/visualization/molstar/vendor/LICENSE), [version and provenance](mdclaw/visualization/molstar/vendor/README.md). Notices embedded in the bundle are retained. |
+| MDDB workflow schema and constants | Apache-2.0. [License](mdclaw/evidence/mddb_schema_data/LICENSE), [upstream source and provenance](mdclaw/evidence/mddb_schema_data/README.md). |
+
+### Scientific packages
+
+The following summarizes the main scientific dependencies and optional tools.
+Versions and platform-specific installations are recorded in
+[pixi.lock](pixi.lock), [pixi.toml](pixi.toml), [pyproject.toml](pyproject.toml)
+and the source-build [recipes](recipes/). License labels below follow package
+metadata and upstream notices. Each package's license files govern its use.
+
+| Package | License |
+|---|---|
+| [OpenMM](https://docs.openmm.org/latest/userguide/library/01_introduction.html#license) | MIT for the APIs, application layer, CPU and reference platforms. LGPL-3.0-or-later for GPU platforms. Additional notices are included upstream. |
+| openmm-torch / PythonTorchForce | MIT ([recipe](recipes/openmm-torch/recipe/recipe.yaml)). |
+| PLUMED / openmm-plumed | LGPL-3.0-only / LGPL-3.0-or-later ([PLUMED recipe](recipes/plumed/recipe/recipe.yaml), [plugin recipe](recipes/openmm-plumed/recipe/recipe.yaml)). |
+| AmberTools | GPL-3.0-or-later, LGPL-3.0-or-later, BSD-3-Clause and MIT, depending on the component. These are not alternative licenses for the whole package. |
+| [SST2](https://github.com/matsunagalab/SST2/blob/3dc7013/LICENSE) | GPL-2.0. |
+| [MDAnalysis](https://github.com/MDAnalysis/mdanalysis/blob/develop/LICENSE) | LGPL-3.0-or-later, with component-specific notices. |
+| [MDTraj](https://pypi.org/project/mdtraj/1.11.1.post1/), ParmEd | LGPL-2.1-or-later. |
+| [mdahole2](https://github.com/MDAnalysis/mdahole2), HOLE2 | LGPL-2.1-or-later for mdahole2, Apache-2.0 for HOLE2. |
+| [PROPKA](https://pypi.org/project/propka/3.5.1/) | LGPL-2.1. |
+| [PDB2PQR](https://github.com/Electrostatics/pdb2pqr/blob/main/LICENSE.md) | BSD-style, with additional bundled-code notices. |
+| PDBFixer, openmmforcefields | MIT. |
+| OpenFF Toolkit, NAGL, [Pablo](https://github.com/openforcefield/openff-pablo/blob/main/LICENSE) | MIT. |
+| RDKit, PyTorch | BSD-3-Clause. |
+| pymbar, e3nn, [HPacker](https://github.com/gvisani/hpacker/blob/main/LICENSE) | MIT. |
+| dimorphite-dl | Apache-2.0. |
+| gemmi | MPL-2.0. |
+| Biopython | Biopython License (the pinned 1.81 package). |
+| NumPy, OpenBLAS | BSD-3-Clause. |
+| Matplotlib | PSF-based license, with third-party notices. |
+| [BioEmu](https://github.com/microsoft/bioemu/blob/main/LICENSE), [Boltz-2](https://github.com/jwohlwend/boltz/blob/main/LICENSE) | MIT for the software. Check the accompanying terms for downloaded model weights and data. |
+| [PyMOL, open-source build](https://github.com/schrodinger/pymol-open-source/blob/master/LICENSE) | PyMOL Open-Source License. |
+| [MODELLER](https://salilab.org/modeller/registration.html) | Proprietary. Requires a registered license key. Free use is limited to eligible academic nonprofit institutions. [Other users](https://salilab.org/modeller/nonacademic.html) need the applicable license. |
 
 <details>
-<summary><strong>Third-party software</strong></summary>
+<summary><strong>Supporting Python packages</strong></summary>
 
-<br>
-
-MDClaw orchestrates scientific software that is installed separately, from
-conda-forge and PyPI through Pixi or Conda, or prebuilt inside the published
-container images, and that remains under its own license. The main components, with
-license identifiers as declared by the installed packages:
-
-| Component | License |
+| Package | License |
 |---|---|
-| OpenMM | LGPL-3.0-or-later |
-| AmberTools | GPL-3.0-or-later AND LGPL-3.0-or-later AND BSD-3-Clause AND MIT |
-| MDAnalysis | LGPL-3.0-or-later |
-| MDTraj | LGPL-2.1-or-later |
-| ParmEd | LGPL-2.1-or-later |
-| PLUMED | LGPL-3.0 |
-| propka | LGPL-2.1 |
-| SST2 | GPL-2.0 (invoked as a separate subprocess) |
-| RDKit, PyTorch | BSD-3-Clause |
-| pdb2pqr | BSD-style |
-| PDBFixer, openmmforcefields, OpenFF toolkit / NAGL / Pablo, pymbar, e3nn, HPacker | MIT |
-| Mol*, BioEmu, Boltz-2 | MIT |
-| dimorphite-dl, HOLE2 | Apache-2.0 |
-| gemmi | MPL-2.0 |
-| PyMOL (open-source build) | PyMOL Open-Source License |
-| MODELLER | Proprietary; free for academic use with a registered license key |
+| PubChemPy, Pydantic, PyYAML, MCP Python SDK | MIT |
+| HTTPX, python-dotenv | BSD-3-Clause |
+| Requests, rustworkx | Apache-2.0 |
+| pyxdg | LGPL-2.0-only (locked package metadata) |
 
-The container images redistribute these components in binary form; the license texts
-travel inside the image with each conda package (`/opt/mdclaw/conda-meta/` and the
-packages' `share/` directories). Two components need explicit care. MODELLER ships in
-the image **without** a license key: each user supplies their own `KEY_MODELLER` at
-run time and accepts the Sali lab's academic-use terms. SST2 (GPL-2.0) is executed as
-a standalone subprocess rather than imported. MDClaw's MIT license covers only
-MDClaw's own files; using or redistributing the images means honoring the component
-licenses above.
+This is a summary of direct dependencies, not a complete inventory of every
+transitive dependency or operating-system library.
 
 </details>
+
+### Containers and redistribution
+
+Container images combine MDClaw with separately licensed packages. MDClaw's
+MIT license does not relicense those packages. Consult their copyright notices,
+license files and source-distribution requirements when redistributing an image.
+Conda package metadata is under `/opt/mdclaw/conda-meta/` in the images, and
+Python package metadata and bundled notices are in the installed package files.
+
+MODELLER is installed without a license key. Users supply their own
+`KEY_MODELLER` at runtime under the applicable MODELLER terms. A runtime key
+does not grant permission to redistribute MODELLER. Its
+[license agreement](https://salilab.org/modeller/registration.html) requires
+prior written permission for redistribution.

@@ -13,6 +13,19 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-11-10 — README third-party license summary
+
+- Separated MDClaw's MIT license, bundled third-party files, scientific
+  dependencies, supporting Python packages and container distribution notes.
+- Added the Apache-2.0 MDDB schema snapshot that the previous "only vendored
+  code is Mol*" statement missed. Linked both bundled licenses and provenance.
+- Checked Pixi lock metadata, build recipes, pinned PyPI metadata and upstream
+  license pages. Clarified OpenMM's MIT/LGPL split and added openmm-torch,
+  openmm-plumed, mdahole2 and supporting libraries.
+- Clarified MODELLER's academic eligibility and separate redistribution terms.
+  This documentation change does not verify redistribution permission or alter
+  the existing images. No complete transitive-dependency audit was performed.
+
 ## 2026-11-10 — README umbrella sampling and restraint correction
 
 - Removed the outdated claim that umbrella sampling and PMF analysis are
