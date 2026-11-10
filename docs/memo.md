@@ -13,6 +13,18 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-11-10 — CBI demo and software submission documentation
+
+- Replaced the README's molecular-animation preview with the user-requested
+  real Codex screen recording from CBI 2026 (20 s; original MP4 retained).
+- Added the CLN025/5AWL chain A demo prompt, input source, expected artifacts,
+  and 10-30 minute full-workflow estimate supplied by the maintainer.
+- Protocol matches the CBI recording brief: ff19SB/OPC, 15 A padding,
+  0.15 M NaCl, minimization, 10 ps NVT + 10 ps NPT, 100 ps NPT at
+  300 K/1 bar, HMR 4 fs, frames every 1 ps, backbone RMSD and C-alpha RMSF.
+- Documentation/media change only. The runtime estimate is not a fresh
+  benchmark, and the demo was not rerun in this documentation update.
+
 ## 2026-11-05 — 未見の test-v7 で 3 つの版を比べた（hackathon の 94eb819、最初のキャンペーンの 8aa6be6、現在の 6524d3e）
 
 - pass^3（4 モデル合計、120 中）。
