@@ -343,10 +343,11 @@ optional software, which the doctor reports.
 |---|---|---|
 | **Mutation FEP** ([skill](skills/md-fep/SKILL.md)) | Hybrid-topology relative free energy, analyzed with MBAR. Gives ΔΔG of folding from folded and capped-tripeptide legs. Charge-changing mutations use a co-alchemical ion. | One substitution per calculation. No glycoproteins. Implicit solvent is not supported. A binding cycle exists in `estimate_ddg --cycle binding`; the skill guides the folding cycle. |
 | **Absolute binding free energy** ([skill](skills/md-abfe/SKILL.md)) | Double decoupling with a Boresch restraint, 1 M standard state, analyzed with MBAR. | One neutral, noncovalent ligand. |
+| **Umbrella sampling** ([page](skills/md-production/distance-restraints.md)) | Fixed-bias windows with distance restraints, custom forces or PLUMED, followed by potential of mean force (PMF) analysis using task-specific scripts (e.g. with PyMBAR). | Check window overlap and convergence. |
 | **Metadynamics** ([page](skills/md-production/metadynamics.md)) | Well-tempered metadynamics through OpenMM, with multiple walkers sharing a bias. | One collective variable: a center-of-mass distance. |
 | **SST2** ([page](skills/md-production/sst2.md)) | Simulated solute tempering: a single trajectory with REST2-style scaling and tempering moves, analyzed with `analyze_tempering`. | Explicit solvent with PME. |
 | **Weighted ensemble** ([skill](skills/md-we/SKILL.md)) | Split, merge and recycle walkers over distance, RMSD, dihedral or Q coordinates, locally or packed on GPUs with Slurm MPS. Gives rates and mean first-passage times from unbiased dynamics. | The rate holds only once the flux has converged. |
-| **Biased and steered MD** | Distance restraints and steering, PythonTorchForce custom forces, and PLUMED input. | PLUMED is limited to history-free actions: `DISTANCE`, `ANGLE`, `TORSION`, `GROUP`, `COM`, `CENTER`, `WHOLEMOLECULES`, `RESTRAINT`, `MOVINGRESTRAINT`, `PRINT`, `UNITS`. |
+| **Biased and steered MD** ([distance restraints](skills/md-production/distance-restraints.md), [PLUMED](skills/md-production/plumed.md)) | Harmonic atom or center-of-mass distance restraints, steering to target distances (including umbrella-window preparation), PythonTorchForce custom forces, and PLUMED restraints. | PLUMED is limited to history-free actions: `DISTANCE`, `ANGLE`, `TORSION`, `GROUP`, `COM`, `CENTER`, `WHOLEMOLECULES`, `RESTRAINT`, `MOVINGRESTRAINT`, `PRINT`, `UNITS`. |
 
 ### Preparation
 
@@ -375,8 +376,6 @@ optional software, which the doctor reports.
 **Methods that are not provided**
 
 - Replica exchange, and accelerated or Gaussian-accelerated MD.
-- Umbrella-sampling campaigns or a PMF estimator. Restraints can be applied by
-  hand, but WHAM is not included.
 - Relative binding free energies between ligands.
 - MM/PBSA, thermodynamic integration, and BAR as a separate estimator.
 - Coarse-grained or polarizable models, and QM/MM.

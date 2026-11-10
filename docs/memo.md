@@ -13,6 +13,16 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-11-10 — README umbrella sampling and restraint correction
+
+- Removed the outdated claim that umbrella sampling and PMF analysis are
+  unavailable. The production guides already cover fixed-bias windows,
+  distance steering and PLUMED restraints. Existing investigation records
+  include PMF analysis with PyMBAR scripts.
+- Briefly described umbrella sampling and task-specific PMF analysis, and
+  linked distance restraints and PLUMED, including steering for window setup.
+- Documentation only. No new built-in PMF estimator or simulation results.
+
 ## 2026-11-10 — CBI demo and software submission documentation
 
 - Replaced the README's molecular-animation preview with the user-requested
