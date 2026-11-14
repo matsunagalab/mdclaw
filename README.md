@@ -105,7 +105,7 @@ driver version.
 |---|---|---|
 | Cluster, Linux x86-64, Singularity or Apptainer | CUDA 11.8, driver R520 or newer | [Container](#container-singularity-or-apptainer), `mdclaw:latest` |
 | Cluster, Linux ARM64, Singularity or Apptainer | CUDA 12.9, driver R575 or newer | [Container](#container-singularity-or-apptainer), `mdclaw:latest` |
-| RIKYU | CUDA 13 | [Container for RIKYU](#rikyu), `mdclaw:latest-rikyu` |
+| RIKYU (supercomputer operated by RIKEN R-CCS) | CUDA 13 | [Container for RIKYU](#rikyu), `mdclaw:latest-rikyu` |
 | Linux workstation, driver R575 or newer | CUDA 12.9 | [Pixi](#pixi), `pixi install` |
 | Linux workstation, driver R520 to R574 | CUDA 11.8 | [Pixi](#pixi), `pixi install -e cuda118` |
 | Linux, no NVIDIA GPU | CPU | [Pixi](#pixi), `CONDA_OVERRIDE_CUDA=12.9 pixi install` |
