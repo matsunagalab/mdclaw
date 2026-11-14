@@ -25,12 +25,12 @@
 </p>
 
 <p align="center">
-  <a href="docs/assets/mdclaw-cbi-demo.mp4">
-    <img src="docs/assets/mdclaw-cbi-demo.gif" alt="CBI 2026 demo: Codex prepares and simulates chignolin, displays the trajectory and plots the analysis" width="880">
+  <a href="docs/assets/mdclaw-demo.mp4">
+    <img src="docs/assets/mdclaw-demo.gif" alt="Demo: Codex prepares and simulates chignolin, displays the trajectory and plots the analysis" width="880">
   </a>
 </p>
 
-<p align="center"><sub>CBI 2026: a real Codex session, from a request to simulation, molecular playback and analysis.<br>The 20-second video is edited and accelerated. <a href="docs/assets/mdclaw-cbi-demo.mp4">Watch the full-resolution MP4</a> · <a href="#try-the-chignolin-demo">Try the demo</a></sub></p>
+<p align="center"><sub>A real Codex session, from a request to simulation, molecular playback and analysis.<br>The 20-second video is edited and accelerated. <a href="docs/assets/mdclaw-demo.mp4">Watch the full-resolution MP4</a> · <a href="#try-the-chignolin-demo">Try the demo</a></sub></p>
 
 MDClaw gives agents such as Claude Code and Codex two things: **skills**, which
 tell the agent what to do and why, and **command-line tools**, which do the work.
@@ -49,12 +49,6 @@ the original chat. You can also call the tools directly, with no agent at all.
     <img src="docs/assets/workflow-light.png" alt="Workflow: Structure, Prepare, Solvate, Force field, Minimize, Equilibrate, Production, Analyze" width="880">
   </picture>
 </p>
-
-> [!IMPORTANT]
-> A run that finishes is not a validated result. MDClaw's checks cover topology,
-> charges, energies and files. They do not establish convergence, adequate
-> sampling or a biological conclusion. Those need appropriate controls,
-> replicates and expert review.
 
 ## What you can ask for
 
@@ -280,36 +274,31 @@ from an OPM homolog, with MEMEMBED, or pass `--preoriented`.
 
 ## Try the chignolin demo
 
-The CBI video above uses **CLN025**, a ten-residue chignolin variant
-([PDB 5AWL](https://www.rcsb.org/structure/5AWL), chain A, `YYDPETGTWY`).
-The structure is public and MDClaw downloads it from the PDB. After installing
-the runtime and skills above, start Codex or Claude Code in an empty working
-directory and give it this prompt:
+After installing the runtime and skills above, start Codex or Claude Code in an
+empty working directory and give it the prompt from the video:
 
 ```text
-Use MDClaw to run a short chignolin demo in a new study directory.
-Fetch CLN025 (PDB 5AWL, chain A), keep the peptide only, and prepare it
-with ff19SB and OPC water, 15 angstrom padding and 0.15 M NaCl.
-Minimize, equilibrate for 10 ps NVT followed by 10 ps NPT, then run
-100 ps of NPT production at 300 K and 1 bar with HMR and a 4 fs time step.
-Save a trajectory frame every 1 ps. Use the local GPU if available.
-Show the prepared system, then play the production trajectory with
-cartoon and ball-and-stick representations. Calculate backbone RMSD
-to the first saved frame and C-alpha RMSF after backbone alignment,
-and show the plots. Keep the study, DAG records and all output files.
+Run a short MD simulation of chignolin in water. Show the prepared system, play the trajectory in Molstar, and plot backbone RMSD and Cα RMSF.
 ```
+
+The agent fills in the details. In the recording it chose **CLN025**, a
+ten-residue chignolin variant
+([PDB 5AWL](https://www.rcsb.org/structure/5AWL), chain A, `YYDPETGTWY`),
+which MDClaw downloads from the PDB; ff19SB with OPC water and 0.15 M NaCl;
+and 100 ps of production at 300 K and 1 bar with 100 saved frames. Your agent
+may choose differently. Name the structure, force field and run length in the
+prompt when you want them fixed.
 
 **Expected output:** a study directory containing the job's stage records,
 prepared solvated structure, OpenMM system and state files, a production DCD
-trajectory with 100 saved frames, energy/time logs, and RMSD/RMSF analysis
-files and plots. The agent can display the trajectory using the viewer
+trajectory, energy/time logs, and RMSD/RMSF analysis files and plots. The agent can display the trajectory using the viewer
 available in your client; see [Viewing results](#viewing-results).
 Numerical trajectories differ with random velocities and hardware.
 
 **Expected time:** allow about **10-30 minutes** on a desktop with a supported
 GPU, after installation. This is the maintainer's estimate for the complete
 agent workflow, including preparation, simulation and analysis; CPU-only runs,
-first-use downloads and agent response times can take longer. The CBI recording
+first-use downloads and agent response times can take longer. The recording
 used MDClaw 0.6.12 on an Apple M4 with OpenCL. This short run demonstrates the
 workflow; it does not establish folding or sampling convergence.
 

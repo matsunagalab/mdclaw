@@ -13,6 +13,20 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-11-14 — README demo prompt now matches the video
+
+- Corrects the 2026-11-10 "CBI demo" entry: the detailed protocol prompt in the
+  README was not what the recording shows. The video's prompt is the one-line
+  "Run a short MD simulation of chignolin in water. Show the prepared system,
+  play the trajectory in Molstar, and plot backbone RMSD and Cα RMSF."; the
+  agent chose CLN025/5AWL, ff19SB/OPC, 0.15 M NaCl and 100 ps / 100 frames at
+  300 K, 1 bar (read from the video frames).
+- README now gives that prompt verbatim and lists the agent's choices as what
+  the recording did, not as fixed parameters.
+- Removed event names (CBI 2026) from the README and renamed the assets to
+  `docs/assets/mdclaw-demo.{mp4,gif}`. Dropped the top-level "a finished run is
+  not a validated result" callout at the maintainer's request.
+
 ## 2026-11-10 — README third-party license summary
 
 - Separated MDClaw's MIT license, bundled third-party files, scientific
