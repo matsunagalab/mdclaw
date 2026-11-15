@@ -13,6 +13,55 @@ add the correction and say what it overturns.
 
 ---
 
+## 2026-11-14 — README demo prompt now matches the video
+
+- Corrects the 2026-11-10 "CBI demo" entry: the detailed protocol prompt in the
+  README was not what the recording shows. The video's prompt is the one-line
+  "Run a short MD simulation of chignolin in water. Show the prepared system,
+  play the trajectory in Molstar, and plot backbone RMSD and Cα RMSF."; the
+  agent chose CLN025/5AWL, ff19SB/OPC, 0.15 M NaCl and 100 ps / 100 frames at
+  300 K, 1 bar (read from the video frames).
+- README now gives that prompt verbatim and lists the agent's choices as what
+  the recording did, not as fixed parameters.
+- Removed event names (CBI 2026) from the README and renamed the assets to
+  `docs/assets/mdclaw-demo.{mp4,gif}`. Dropped the top-level "a finished run is
+  not a validated result" callout at the maintainer's request.
+
+## 2026-11-10 — README third-party license summary
+
+- Separated MDClaw's MIT license, bundled third-party files, scientific
+  dependencies, supporting Python packages and container distribution notes.
+- Added the Apache-2.0 MDDB schema snapshot that the previous "only vendored
+  code is Mol*" statement missed. Linked both bundled licenses and provenance.
+- Checked Pixi lock metadata, build recipes, pinned PyPI metadata and upstream
+  license pages. Clarified OpenMM's MIT/LGPL split and added openmm-torch,
+  openmm-plumed, mdahole2 and supporting libraries.
+- Clarified MODELLER's academic eligibility and separate redistribution terms.
+  This documentation change does not verify redistribution permission or alter
+  the existing images. No complete transitive-dependency audit was performed.
+
+## 2026-11-10 — README umbrella sampling and restraint correction
+
+- Removed the outdated claim that umbrella sampling and PMF analysis are
+  unavailable. The production guides already cover fixed-bias windows,
+  distance steering and PLUMED restraints. Existing investigation records
+  include PMF analysis with PyMBAR scripts.
+- Briefly described umbrella sampling and task-specific PMF analysis, and
+  linked distance restraints and PLUMED, including steering for window setup.
+- Documentation only. No new built-in PMF estimator or simulation results.
+
+## 2026-11-10 — CBI demo and software submission documentation
+
+- Replaced the README's molecular-animation preview with the user-requested
+  real Codex screen recording from CBI 2026 (20 s; original MP4 retained).
+- Added the CLN025/5AWL chain A demo prompt, input source, expected artifacts,
+  and 10-30 minute full-workflow estimate supplied by the maintainer.
+- Protocol matches the CBI recording brief: ff19SB/OPC, 15 A padding,
+  0.15 M NaCl, minimization, 10 ps NVT + 10 ps NPT, 100 ps NPT at
+  300 K/1 bar, HMR 4 fs, frames every 1 ps, backbone RMSD and C-alpha RMSF.
+- Documentation/media change only. The runtime estimate is not a fresh
+  benchmark, and the demo was not rerun in this documentation update.
+
 ## 2026-11-10 — test-v7 の GPU 故障（c196 の GPU 3 番）で落ちた 68 試行を流し直し、数字を訂正した
 
 - **原因**: 計算ノード c196 の GPU 3 番が壊れていた（11-04 11:21 に healthcheck が「GPU uncorrected ECC errors=1」で drain）。OpenMM が `No compatible CUDA device` / `The requested CUDA device could not be loaded` で数秒で止まるか、黙って CPU で走って 20 分で打ち切られた。MDClaw の `gpu_allocated_platform_unavailable` は計算前に止めて正しく働いたが、案内文が「`--nv` を付けて」で、今回の原因とは違った（改善候補: 失敗した GPU を示し、別の GPU で投げ直すよう案内する）。
@@ -73,6 +122,7 @@ add the correction and say what it overturns.
 - 読み方: 版を重ねて伸びたのは、主に「失敗してから分岐で直す」が「最初から失敗しない」に変わったことによる。DAG まわりの実行エラー（終了したノードの再実行、ノード指定の欠落、親が終わる前に走った Slurm ジョブ）はほぼ消えた。分岐による再試行は、旧版で試行の約 4〜5 割が使った、最もよく使われた DAG の機能。11-01 で残るノード失敗はほとんどが `blocking_ligand_failure`（77 件、うち回復 68）。どの版でも直っていないのは `agent_no_submission`（各条件 8〜10）。
 - 限界: 版ごとに環境ごと違うので、どの機能が効いたかの因果はこれでは言えない。因果にはアブレーションが要る。11-01 では拒否そのものが少ない（拒否コードが返った試行は CLI + skills 33、CLI only 58。ほぼすべて合格）ので、現行版のアブレーションでは pass^3 の差が小さく出る可能性がある。
 - 集計スクリプト: 拒否コードの集計は session の scratchpad の `guard_stats.py`（transcript から `code` を拾う）。エピソードの集計は `result.json` だけで再現できる。
+
 
 ## 2026-11-05 — 未見の test-v7 で 3 つの版を比べた（hackathon の 94eb819、最初のキャンペーンの 8aa6be6、現在の 6524d3e）
 

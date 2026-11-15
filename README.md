@@ -25,13 +25,12 @@
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/cln025-dark.gif">
-    <img src="docs/assets/cln025-light.gif" alt="Animated chignolin hairpin from an MDClaw production run" width="420">
-  </picture>
+  <a href="docs/assets/mdclaw-demo.mp4">
+    <img src="docs/assets/mdclaw-demo.gif" alt="Demo: Codex prepares and simulates chignolin, displays the trajectory and plots the analysis" width="880">
+  </a>
 </p>
 
-<p align="center"><sub>Chignolin (CLN025, PDB 5AWL) at 300 K in ff19SB/OPC, from a 10 ns production run prepared and run with MDClaw.<br>A 2 ns excerpt: coordinates averaged over 90 ps for display, water and ions hidden, played forward and back to loop.</sub></p>
+<p align="center"><sub>A real Codex session, from a request to simulation, molecular playback and analysis.<br>The 20-second video is edited and accelerated. <a href="docs/assets/mdclaw-demo.mp4">Watch the full-resolution MP4</a> · <a href="#try-the-chignolin-demo">Try the demo</a></sub></p>
 
 MDClaw gives agents such as Claude Code and Codex two things: **skills**, which
 tell the agent what to do and why, and **command-line tools**, which do the work.
@@ -50,12 +49,6 @@ the original chat. You can also call the tools directly, with no agent at all.
     <img src="docs/assets/workflow-light.png" alt="Workflow: Structure, Prepare, Solvate, Force field, Minimize, Equilibrate, Production, Analyze" width="880">
   </picture>
 </p>
-
-> [!IMPORTANT]
-> A run that finishes is not a validated result. MDClaw's checks cover topology,
-> charges, energies and files. They do not establish convergence, adequate
-> sampling or a biological conclusion. Those need appropriate controls,
-> replicates and expert review.
 
 ## What you can ask for
 
@@ -112,7 +105,7 @@ driver version.
 |---|---|---|
 | Cluster, Linux x86-64, Singularity or Apptainer | CUDA 11.8, driver R520 or newer | [Container](#container-singularity-or-apptainer), `mdclaw:latest` |
 | Cluster, Linux ARM64, Singularity or Apptainer | CUDA 12.9, driver R575 or newer | [Container](#container-singularity-or-apptainer), `mdclaw:latest` |
-| RIKYU | CUDA 13 | [Container for RIKYU](#rikyu), `mdclaw:latest-rikyu` |
+| RIKYU (supercomputer operated by RIKEN R-CCS) | CUDA 13 | [Container for RIKYU](#rikyu), `mdclaw:latest-rikyu` |
 | Linux workstation, driver R575 or newer | CUDA 12.9 | [Pixi](#pixi), `pixi install` |
 | Linux workstation, driver R520 to R574 | CUDA 11.8 | [Pixi](#pixi), `pixi install -e cuda118` |
 | Linux, no NVIDIA GPU | CPU | [Pixi](#pixi), `CONDA_OVERRIDE_CUDA=12.9 pixi install` |
@@ -279,6 +272,39 @@ The PPM3 binary in the conda package crashes while printing its result, and only
 the container images rebuild it. In a Pixi environment, orient a membrane protein
 from an OPM homolog, with MEMEMBED, or pass `--preoriented`.
 
+## Try the chignolin demo
+
+After installing the runtime and skills above, start Codex or Claude Code in an
+empty working directory and give it the prompt from the video:
+
+```text
+Run a short MD simulation of chignolin in water. Show the prepared system, play the trajectory in Molstar, and plot backbone RMSD and Cα RMSF.
+```
+
+The agent fills in the details. In the recording it chose **CLN025**, a
+ten-residue chignolin variant
+([PDB 5AWL](https://www.rcsb.org/structure/5AWL), chain A, `YYDPETGTWY`),
+which MDClaw downloads from the PDB; ff19SB with OPC water and 0.15 M NaCl;
+and 100 ps of production at 300 K and 1 bar with 100 saved frames. Your agent
+may choose differently. Name the structure, force field and run length in the
+prompt when you want them fixed.
+
+**Expected output:** a study directory containing the job's stage records,
+prepared solvated structure, OpenMM system and state files, a production DCD
+trajectory, energy/time logs, and RMSD/RMSF analysis files and plots. The agent can display the trajectory using the viewer
+available in your client; see [Viewing results](#viewing-results).
+Numerical trajectories differ with random velocities and hardware.
+
+**Expected time:** allow about **10-30 minutes** on a desktop with a supported
+GPU, after installation. This is the maintainer's estimate for the complete
+agent workflow, including preparation, simulation and analysis; CPU-only runs,
+first-use downloads and agent response times can take longer. The recording
+used MDClaw 0.6.12 on an Apple M4 with OpenCL. This short run demonstrates the
+workflow; it does not establish folding or sampling convergence.
+
+To use your own data, replace the PDB identifier in the prompt with the path
+to your PDB/mmCIF file and specify the chains, molecules and simulation goal.
+
 ## Viewing results
 
 Ask to see a structure or a trajectory. The display skill picks the route that
@@ -306,10 +332,11 @@ optional software, which the doctor reports.
 |---|---|---|
 | **Mutation FEP** ([skill](skills/md-fep/SKILL.md)) | Hybrid-topology relative free energy, analyzed with MBAR. Gives ΔΔG of folding from folded and capped-tripeptide legs. Charge-changing mutations use a co-alchemical ion. | One substitution per calculation. No glycoproteins. Implicit solvent is not supported. A binding cycle exists in `estimate_ddg --cycle binding`; the skill guides the folding cycle. |
 | **Absolute binding free energy** ([skill](skills/md-abfe/SKILL.md)) | Double decoupling with a Boresch restraint, 1 M standard state, analyzed with MBAR. | One neutral, noncovalent ligand. |
+| **Umbrella sampling** ([page](skills/md-production/distance-restraints.md)) | Fixed-bias windows with distance restraints, custom forces or PLUMED, followed by potential of mean force (PMF) analysis using task-specific scripts (e.g. with PyMBAR). | Check window overlap and convergence. |
 | **Metadynamics** ([page](skills/md-production/metadynamics.md)) | Well-tempered metadynamics through OpenMM, with multiple walkers sharing a bias. | One collective variable: a center-of-mass distance. |
 | **SST2** ([page](skills/md-production/sst2.md)) | Simulated solute tempering: a single trajectory with REST2-style scaling and tempering moves, analyzed with `analyze_tempering`. | Explicit solvent with PME. |
 | **Weighted ensemble** ([skill](skills/md-we/SKILL.md)) | Split, merge and recycle walkers over distance, RMSD, dihedral or Q coordinates, locally or packed on GPUs with Slurm MPS. Gives rates and mean first-passage times from unbiased dynamics. | The rate holds only once the flux has converged. |
-| **Biased and steered MD** | Distance restraints and steering, PythonTorchForce custom forces, and PLUMED input. | PLUMED is limited to history-free actions: `DISTANCE`, `ANGLE`, `TORSION`, `GROUP`, `COM`, `CENTER`, `WHOLEMOLECULES`, `RESTRAINT`, `MOVINGRESTRAINT`, `PRINT`, `UNITS`. |
+| **Biased and steered MD** ([distance restraints](skills/md-production/distance-restraints.md), [PLUMED](skills/md-production/plumed.md)) | Harmonic atom or center-of-mass distance restraints, steering to target distances (including umbrella-window preparation), PythonTorchForce custom forces, and PLUMED restraints. | PLUMED is limited to history-free actions: `DISTANCE`, `ANGLE`, `TORSION`, `GROUP`, `COM`, `CENTER`, `WHOLEMOLECULES`, `RESTRAINT`, `MOVINGRESTRAINT`, `PRINT`, `UNITS`. |
 
 ### Preparation
 
@@ -338,8 +365,6 @@ optional software, which the doctor reports.
 **Methods that are not provided**
 
 - Replica exchange, and accelerated or Gaussian-accelerated MD.
-- Umbrella-sampling campaigns or a PMF estimator. Restraints can be applied by
-  hand, but WHAM is not included.
 - Relative binding free energies between ligands.
 - MM/PBSA, thermodynamic integration, and BAR as a separate estimator.
 - Coarse-grained or polarizable models, and QM/MM.
@@ -441,46 +466,75 @@ replaced.
 
 ## License
 
-MDClaw is MIT-licensed ([LICENSE](LICENSE)). The repository's only vendored
-third-party code is the Mol* viewer build in
-`mdclaw/visualization/molstar/vendor/`, which keeps its own MIT license there.
+MDClaw's own code and agent skills are licensed under the **MIT License**
+([LICENSE](LICENSE)). Third-party software, bundled files, model weights and
+reference data retain their respective licenses.
+
+### Bundled third-party files
+
+| Material | License and notices |
+|---|---|
+| Mol* viewer build | MIT. [License](mdclaw/visualization/molstar/vendor/LICENSE), [version and provenance](mdclaw/visualization/molstar/vendor/README.md). Notices embedded in the bundle are retained. |
+| MDDB workflow schema and constants | Apache-2.0. [License](mdclaw/evidence/mddb_schema_data/LICENSE), [upstream source and provenance](mdclaw/evidence/mddb_schema_data/README.md). |
+
+### Scientific packages
+
+The following summarizes the main scientific dependencies and optional tools.
+Versions and platform-specific installations are recorded in
+[pixi.lock](pixi.lock), [pixi.toml](pixi.toml), [pyproject.toml](pyproject.toml)
+and the source-build [recipes](recipes/). License labels below follow package
+metadata and upstream notices. Each package's license files govern its use.
+
+| Package | License |
+|---|---|
+| [OpenMM](https://docs.openmm.org/latest/userguide/library/01_introduction.html#license) | MIT for the APIs, application layer, CPU and reference platforms. LGPL-3.0-or-later for GPU platforms. Additional notices are included upstream. |
+| openmm-torch / PythonTorchForce | MIT ([recipe](recipes/openmm-torch/recipe/recipe.yaml)). |
+| PLUMED / openmm-plumed | LGPL-3.0-only / LGPL-3.0-or-later ([PLUMED recipe](recipes/plumed/recipe/recipe.yaml), [plugin recipe](recipes/openmm-plumed/recipe/recipe.yaml)). |
+| AmberTools | GPL-3.0-or-later, LGPL-3.0-or-later, BSD-3-Clause and MIT, depending on the component. These are not alternative licenses for the whole package. |
+| [SST2](https://github.com/matsunagalab/SST2/blob/3dc7013/LICENSE) | GPL-2.0. |
+| [MDAnalysis](https://github.com/MDAnalysis/mdanalysis/blob/develop/LICENSE) | LGPL-3.0-or-later, with component-specific notices. |
+| [MDTraj](https://pypi.org/project/mdtraj/1.11.1.post1/), ParmEd | LGPL-2.1-or-later. |
+| [mdahole2](https://github.com/MDAnalysis/mdahole2), HOLE2 | LGPL-2.1-or-later for mdahole2, Apache-2.0 for HOLE2. |
+| [PROPKA](https://pypi.org/project/propka/3.5.1/) | LGPL-2.1. |
+| [PDB2PQR](https://github.com/Electrostatics/pdb2pqr/blob/main/LICENSE.md) | BSD-style, with additional bundled-code notices. |
+| PDBFixer, openmmforcefields | MIT. |
+| OpenFF Toolkit, NAGL, [Pablo](https://github.com/openforcefield/openff-pablo/blob/main/LICENSE) | MIT. |
+| RDKit, PyTorch | BSD-3-Clause. |
+| pymbar, e3nn, [HPacker](https://github.com/gvisani/hpacker/blob/main/LICENSE) | MIT. |
+| dimorphite-dl | Apache-2.0. |
+| gemmi | MPL-2.0. |
+| Biopython | Biopython License (the pinned 1.81 package). |
+| NumPy, OpenBLAS | BSD-3-Clause. |
+| Matplotlib | PSF-based license, with third-party notices. |
+| [BioEmu](https://github.com/microsoft/bioemu/blob/main/LICENSE), [Boltz-2](https://github.com/jwohlwend/boltz/blob/main/LICENSE) | MIT for the software. Check the accompanying terms for downloaded model weights and data. |
+| [PyMOL, open-source build](https://github.com/schrodinger/pymol-open-source/blob/master/LICENSE) | PyMOL Open-Source License. |
+| [MODELLER](https://salilab.org/modeller/registration.html) | Proprietary. Requires a registered license key. Free use is limited to eligible academic nonprofit institutions. [Other users](https://salilab.org/modeller/nonacademic.html) need the applicable license. |
 
 <details>
-<summary><strong>Third-party software</strong></summary>
+<summary><strong>Supporting Python packages</strong></summary>
 
-<br>
-
-MDClaw orchestrates scientific software that is installed separately, from
-conda-forge and PyPI through Pixi or Conda, or prebuilt inside the published
-container images, and that remains under its own license. The main components, with
-license identifiers as declared by the installed packages:
-
-| Component | License |
+| Package | License |
 |---|---|
-| OpenMM | LGPL-3.0-or-later |
-| AmberTools | GPL-3.0-or-later AND LGPL-3.0-or-later AND BSD-3-Clause AND MIT |
-| MDAnalysis | LGPL-3.0-or-later |
-| MDTraj | LGPL-2.1-or-later |
-| ParmEd | LGPL-2.1-or-later |
-| PLUMED | LGPL-3.0 |
-| propka | LGPL-2.1 |
-| SST2 | GPL-2.0 (invoked as a separate subprocess) |
-| RDKit, PyTorch | BSD-3-Clause |
-| pdb2pqr | BSD-style |
-| PDBFixer, openmmforcefields, OpenFF toolkit / NAGL / Pablo, pymbar, e3nn, HPacker | MIT |
-| Mol*, BioEmu, Boltz-2 | MIT |
-| dimorphite-dl, HOLE2 | Apache-2.0 |
-| gemmi | MPL-2.0 |
-| PyMOL (open-source build) | PyMOL Open-Source License |
-| MODELLER | Proprietary; free for academic use with a registered license key |
+| PubChemPy, Pydantic, PyYAML, MCP Python SDK | MIT |
+| HTTPX, python-dotenv | BSD-3-Clause |
+| Requests, rustworkx | Apache-2.0 |
+| pyxdg | LGPL-2.0-only (locked package metadata) |
 
-The container images redistribute these components in binary form; the license texts
-travel inside the image with each conda package (`/opt/mdclaw/conda-meta/` and the
-packages' `share/` directories). Two components need explicit care. MODELLER ships in
-the image **without** a license key: each user supplies their own `KEY_MODELLER` at
-run time and accepts the Sali lab's academic-use terms. SST2 (GPL-2.0) is executed as
-a standalone subprocess rather than imported. MDClaw's MIT license covers only
-MDClaw's own files; using or redistributing the images means honoring the component
-licenses above.
+This is a summary of direct dependencies, not a complete inventory of every
+transitive dependency or operating-system library.
 
 </details>
+
+### Containers and redistribution
+
+Container images combine MDClaw with separately licensed packages. MDClaw's
+MIT license does not relicense those packages. Consult their copyright notices,
+license files and source-distribution requirements when redistributing an image.
+Conda package metadata is under `/opt/mdclaw/conda-meta/` in the images, and
+Python package metadata and bundled notices are in the installed package files.
+
+MODELLER is installed without a license key. Users supply their own
+`KEY_MODELLER` at runtime under the applicable MODELLER terms. A runtime key
+does not grant permission to redistribute MODELLER. Its
+[license agreement](https://salilab.org/modeller/registration.html) requires
+prior written permission for redistribution.
