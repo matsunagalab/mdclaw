@@ -115,6 +115,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "fep_hybrid_build_failed": "The hybrid System could not be assembled; read the message, fix the reported cause (mutation, force field), then branch and rerun.",
     "fep_endstate_build_failed": "build_amber_system failed for one end state; the nested result carries its own code — fix that first, then rerun build_hybrid_system.",
     "fep_endpoint_validation_failed": "The hybrid at lambda=0/1 does not reproduce the end-state energies; report the energy table from the failure manifest — do not sample this topology.",
+    "fep_dummy_misplaced": "The appearing side chain sits opposite the disappearing one on CB; do not sample this topology. Rebuild the mutant with another rotamer (rotate the wild-type side chain onto the mutant's CB substituent, or --mutant-backend pdbfixer) and re-run build_hybrid_system.",
     "fep_protocol_invalid": "Fix --lambda-schedule (strictly increasing lambdas from 0 to 1, as '0,0.1,...,1' or a JSON list of numbers) or --n-windows (>= 3).",
     "fep_lambda_index_invalid": "Use --lambda-indices like '0-6' or '0,3,7' within the protocol's window range (a fep -> fep child may only name its parent's windows), or omit it to sample all windows.",
     "fep_parent_ambiguous": "A fep node extends exactly one fep parent; create one child per parent and let the analyze node pool them.",

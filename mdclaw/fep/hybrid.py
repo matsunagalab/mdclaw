@@ -820,6 +820,69 @@ def relax_dummy_atoms(
     }
 
 
+DUMMY_PLACEMENT_MAX_ANGLE_DEG = 100.0
+
+
+def check_dummy_placement(build: HybridBuild, top_a, top_b, *, max_angle_deg: float = DUMMY_PLACEMENT_MAX_ANGLE_DEG) -> dict:
+    """Is every appearing atom on CB near a site the disappearing side chain
+    also occupies?
+
+    The appearing atoms are placed from the mutant model, superposed on the
+    shared backbone + CB. When the mutant's CB substituents sit on the other
+    side of CB than the wild type's (a different chi1 or an atom-naming
+    mismatch such as Ala HB vs Ser OG), the hybrid CB carries both sets 140-180
+    degrees apart and every window starts from a strained dummy that gives a
+    finite but wrong ddG. For each unique new atom bonded to CB this takes the
+    smallest angle to any unique old atom bonded to CB; sites of one
+    tetrahedral CB agree within ~60 degrees, a wrongly placed atom is >= 140
+    (calibrated on 16 hybrids: good <= 52, misplaced 143-149 degrees).
+    Returns ``{"checked": False}`` when there is nothing to compare (Gly, or
+    no unique atom on CB on one side).
+
+    ``map_mutation`` now pairs the CB hydrogens by site, which removes the
+    cause: a hydrogen facing the other state's gamma atom is unique instead of
+    shared, so the appearing atoms no longer start on a shared hydrogen. This
+    check stays as the backstop for a mapping built without coordinates or a
+    residue the site pairing does not cover.
+    """
+    import numpy as np
+
+    mapping = build.mapping
+    res_a = list(top_a.residues())[mapping.residue_index]
+    res_b = list(top_b.residues())[mapping.residue_index]
+    cb_a = next((a.index for a in res_a.atoms() if a.name == "CB"), None)
+    cb_b = next((a.index for a in res_b.atoms() if a.name == "CB"), None)
+    if cb_a is None or cb_b is None:
+        return {"checked": False, "reason": "no CB"}
+    old_set, new_set = set(mapping.unique_old), set(mapping.unique_new)
+
+    def _neighbours(top, cb, unique):
+        out = []
+        for bond in top.bonds():
+            i, j = bond.atom1.index, bond.atom2.index
+            if cb in (i, j):
+                other = j if i == cb else i
+                if other in unique:
+                    out.append(other)
+        return out
+
+    old_nb = [mapping.old_to_hybrid[i] for i in _neighbours(top_a, cb_a, old_set)]
+    new_nb = [mapping.new_to_hybrid[i] for i in _neighbours(top_b, cb_b, new_set)]
+    if not old_nb or not new_nb:
+        return {"checked": False, "reason": "no unique atom bonded to CB on one side"}
+    pos = np.asarray(build.positions_nm)
+    cb = pos[mapping.old_to_hybrid[cb_a]]
+
+    def _angle(a, b):
+        u, v = pos[a] - cb, pos[b] - cb
+        return float(np.degrees(np.arccos(np.clip(np.dot(u, v) / np.linalg.norm(u) / np.linalg.norm(v), -1.0, 1.0))))
+
+    per_new = {int(b): min(_angle(a, b) for a in old_nb) for b in new_nb}
+    worst = max(per_new.values())
+    return {"checked": True, "max_min_angle_deg": worst, "threshold_deg": float(max_angle_deg),
+            "passed": worst <= max_angle_deg, "min_angle_to_old_by_new_hybrid_index": per_new}
+
+
 def _energy_kj(system, positions_nm: np.ndarray, platform_name: Optional[str], *, groups=None,
                parameters: Optional[dict[str, float]] = None, box=None,
                platform_properties: Optional[dict] = None) -> float:
@@ -910,5 +973,5 @@ __all__ = [
     "DEFAULT_SOFTCORE_ALPHA", "FEP_PARAMETERS", "FORCE_GROUPS", "STATE_A", "STATE_B",
     "HybridBuild", "HybridBuildError", "HybridSystemBuilder", "MappingError",
     "build_hybrid", "hybrid_positions_to_state", "place_new_atom_positions",
-    "relax_dummy_atoms", "set_lambda_state", "validate_endpoints",
+    "relax_dummy_atoms", "check_dummy_placement", "set_lambda_state", "validate_endpoints",
 ]

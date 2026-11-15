@@ -214,6 +214,7 @@ source ─ prep_001 ─ solv ─ topo(hybrid) ─ min ─ eq ─ fep ─ analyze
 | `fep_coion_parameters_unavailable` | Charge-changing mutation but the box has no ion of the needed sign; branch a new `solv` node with `--salt --saltcon 0.15` and rebuild below it. |
 | `fep_coion_box_too_small` | No bulk water ≥ 1.5 nm from the site; branch a new `solv` node with a larger `--dist` and rebuild below it. |
 | `fep_coion_unsupported` | Net charge changes by more than 2 e or by a non-integer amount; report it, do not work around it. |
+| `fep_dummy_misplaced` | Do not sample. The mutant's side chain is on the other side of CB; rebuild with `--mutant-backend pdbfixer` or rotate the WT side chain onto the mutant's CB substituent, then rebuild. |
 | `fep_endpoint_validation_failed` | Do not sample. Report the energy table from the failure manifest. |
 | `fep_hybrid_topology_required` | The topo ancestor is not a hybrid; create a topo node with `build_hybrid_system` and re-branch min/eq. |
 | `fep_windows_incomplete` | Create `fep` nodes for the listed indices (same eq parent), parent the analyze node to all of them. |

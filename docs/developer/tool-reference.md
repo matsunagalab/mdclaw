@@ -835,7 +835,8 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   `fep_coion_parameters_unavailable` / `fep_coion_box_too_small` /
   `fep_coion_unsupported` rather than fall back; `"none"` runs uncorrected
   with a warning. `estimate_ddg` requires both legs to agree on it. Maps atoms (`fep/mapping.py`: backbone + CB core,
-  everything else in the residue is a dummy in one state), fuses the two
+  plus the CB hydrogens that sit on the same site of CB in both end states — paired by position, not by name, so a
+  mutant modelled with another chi1 keeps its orientation; everything else in the residue is a dummy in one state), fuses the two
   Systems (`fep/hybrid.py`), relaxes the appearing atoms at state B with the
   rest frozen, and checks that the hybrid reproduces both end-state energies
   at λ=0/1 (`endpoint_tolerance_kj_mol`, default 1; `platform` /
@@ -860,7 +861,7 @@ Hybrid-topology free energy perturbation for one point mutation, pure OpenMM
   `fep_mutation_residue_not_found`, `fep_mutation_residue_ambiguous`,
   `fep_mutant_model_failed`, `fep_endstate_build_failed`,
   `fep_environment_mismatch`, `fep_mapping_failed`, `fep_unsupported_force`,
-  `fep_hybrid_build_failed`, `fep_endpoint_validation_failed`,
+  `fep_hybrid_build_failed`, `fep_dummy_misplaced`, `fep_endpoint_validation_failed`,
   `fep_protocol_invalid`.
 - `run_fep(...)` (`fep` node; parents `eq` or `fep`, `mdclaw/fep/run.py`):
   for each selected window (`lambda_indices`: all, `"0-6"`, `"0,3,7"`)

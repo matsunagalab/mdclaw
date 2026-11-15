@@ -201,6 +201,92 @@ class TestMapping:
         assert len(names) == len(set(names))
         assert not (set(names) & {r.name for r in old})
 
+    # -- CB hydrogens are paired by the site they occupy, not by name ---------
+
+    @staticmethod
+    def _residue_xyz(names: list[str], cb_sites: dict[str, int]) -> list[tuple[float, float, float]]:
+        """Coordinates (Angstrom) for one residue: CB on +z of CA, its three
+        substituents on tetrahedral sites 0/1/2 (azimuth 60/180/300 degrees);
+        atoms beyond CB are put further out along their gamma atom's site."""
+        import math
+        fixed = {"N": (1.4, 0.0, -0.5), "H": (2.0, 0.8, -0.3), "CA": (0.0, 0.0, 0.0), "HA": (-0.5, 0.9, -0.4),
+                 "C": (-0.7, -1.2, -0.6), "O": (-1.9, -1.2, -0.7), "CB": (0.0, 0.0, 1.53)}
+        tilt = math.radians(70.5)
+
+        def site(k: int, r: float):
+            az = math.radians(60 + 120 * k)
+            return (r * math.sin(tilt) * math.cos(az), r * math.sin(tilt) * math.sin(az), 1.53 + r * math.cos(tilt))
+
+        heavy_site = next((k for n, k in cb_sites.items() if not n.startswith("H")), 0)
+        out, extra = [], 0
+        for n in names:
+            if n in fixed:
+                out.append(fixed[n])
+            elif n in cb_sites:
+                out.append(site(cb_sites[n], 1.09 if n.startswith("H") else 1.53))
+            else:
+                extra += 1
+                out.append(site(heavy_site, 2.5 + 0.3 * extra))
+        return out
+
+    @staticmethod
+    def _cb_bonds(records: list[AtomRecord], cb_sites: dict[str, int]) -> set[tuple[int, int]]:
+        by = {r.name: r.index for r in records}
+        pairs = [("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB")] + [("CB", n) for n in cb_sites]
+        return {(min(by[a], by[b]), max(by[a], by[b])) for a, b in pairs}
+
+    SER = BACKBONE + ["CB", "HB2", "HB3", "OG", "HG"]
+
+    def _map_ser_to(self, new_names: list[str], new_resname: str, ser_sites: dict[str, int], new_sites: dict[str, int]):
+        old, new = _records([("SER", self.SER)]), _records([(new_resname, new_names)])
+        m = map_mutation(old, new, 0,
+                         old_bonds=self._cb_bonds(old, ser_sites), new_bonds=self._cb_bonds(new, new_sites),
+                         old_positions=self._residue_xyz(self.SER, ser_sites),
+                         new_positions=self._residue_xyz(new_names, new_sites))
+        shared = {(old[a].name, new[b].name) for a, b in m.core_pairs if old[a].name.startswith("HB")}
+        return m, old, new, shared
+
+    def test_same_chi1_shares_both_cb_hydrogens(self):
+        sites = {"OG": 0, "HB2": 1, "HB3": 2}
+        m, old, new, shared = self._map_ser_to(LEU, "LEU", sites, {"CG": 0, "HB2": 1, "HB3": 2})
+        assert shared == {("HB2", "HB2"), ("HB3", "HB3")}
+        assert {old[a].name for a in m.unique_old} == {"OG", "HG"}
+        assert not {new[b].name for b in m.unique_new} & {"HB2", "HB3"}
+
+    def test_different_chi1_shares_only_the_coinciding_hydrogen(self):
+        # The mutant was modelled with CG where the wild type has HB3, and its
+        # HB3 where the wild type has OG. Pairing by name would keep the wild
+        # type's HB3 and add CG on top of it.
+        ser = {"OG": 0, "HB2": 1, "HB3": 2}
+        m, old, new, shared = self._map_ser_to(LEU, "LEU", ser, {"HB3": 0, "HB2": 1, "CG": 2})
+        assert shared == {("HB2", "HB2")}
+        assert {old[a].name for a in m.unique_old} == {"OG", "HG", "HB3"}
+        assert {"CG", "HB3"} <= {new[b].name for b in m.unique_new}
+        # the appearing HB3 gets a name that does not clash with the wild type's
+        names = list(m.hybrid_new_pdb_names.values())
+        assert len(names) == len(set(names)) and not (set(names) & set(self.SER))
+
+    def test_swapped_hydrogen_names_still_share_both(self):
+        # Same gamma site, HB2 and HB3 named the other way round: both shared, crosswise.
+        ser = {"OG": 0, "HB2": 1, "HB3": 2}
+        m, _old, new, shared = self._map_ser_to(LEU, "LEU", ser, {"CG": 0, "HB3": 1, "HB2": 2})
+        assert shared == {("HB2", "HB3"), ("HB3", "HB2")}
+        assert not {new[b].name for b in m.unique_new} & {"HB2", "HB3"}
+
+    def test_alanine_methyl_hydrogens_follow_the_site_not_the_name(self):
+        # ALA's HB1 sits on the wild type's HB3; the hydrogen that appears is
+        # the one facing OG, whatever it is called.
+        ser = {"OG": 0, "HB2": 1, "HB3": 2}
+        m, _old, new, shared = self._map_ser_to(ALA, "ALA", ser, {"HB3": 0, "HB2": 1, "HB1": 2})
+        assert shared == {("HB2", "HB2"), ("HB3", "HB1")}
+        assert {new[b].name for b in m.unique_new} == {"HB3"}
+
+    def test_without_coordinates_cb_hydrogens_pair_by_name(self):
+        old, new = _records([("SER", self.SER)]), _records([("LEU", LEU)])
+        m = map_mutation(old, new, 0)
+        assert {(old[a].name, new[b].name) for a, b in m.core_pairs if old[a].name.startswith("HB")} == {
+            ("HB2", "HB2"), ("HB3", "HB3")}
+
 
 # --------------------------------------------------------------------------- #
 # tripeptide                                                                    #
@@ -960,6 +1046,88 @@ class TestHybridVacuum:
         # the hybrid System must survive an XML round trip with its globals
         xml = openmm.XmlSerializer.serialize(build.system)
         assert all(name in xml for name in FEP_PARAMETERS)
+
+    @pytest.mark.parametrize("old,new,turn_deg", [
+        ("SER", "LEU", 120.0), ("SER", "LEU", -120.0), ("SER", "PHE", 120.0), ("PHE", "SER", 120.0), ("SER", "ALA", 120.0),
+    ])
+    def test_mutant_modelled_with_another_chi1(self, tmp_path, old, new, turn_deg):
+        """The mutant side chain sits on another site of CB than the wild
+        type's. The appearing gamma atom must not land on a shared hydrogen,
+        and the hybrid must still reproduce both end states."""
+        openmm = pytest.importorskip("openmm")
+        from openmm import app, unit
+
+        from mdclaw.fep.build import locate_residue_index
+        from mdclaw.fep.hybrid import build_hybrid, check_dummy_placement, relax_dummy_atoms, validate_endpoints
+        from mdclaw.fep.mapping import atom_records_from_topology, bonds_from_topology
+
+        ff = app.ForceField("amber14-all.xml")
+        def _chi1(xyz, at):
+            gamma = next(n for n in ("CG", "OG", "HB1") if n in at)
+            p0, p1, p2, p3 = (xyz[at[n]] for n in ("N", "CA", "CB", gamma))
+            b0, b1, b2 = p0 - p1, (p2 - p1) / np.linalg.norm(p2 - p1), p3 - p2
+            v, w = b0 - np.dot(b0, b1) * b1, b2 - np.dot(b2, b1) * b1
+            return np.degrees(np.arctan2(np.dot(np.cross(b1, v), w), np.dot(v, w)))
+
+        # Wild type: built and minimised as in the other vacuum tests.
+        top_a, pos = self._peptide(old, tmp_path)
+        sys_a = ff.createSystem(top_a, nonbondedMethod=app.NoCutoff, constraints=app.HBonds)
+        sim = app.Simulation(top_a, sys_a, openmm.VerletIntegrator(0.001), openmm.Platform.getPlatformByName("Reference"))
+        sim.context.setPositions(pos)
+        sim.minimizeEnergy(maxIterations=200)
+        pos_a = np.array(sim.context.getState(getPositions=True).getPositions().value_in_unit(unit.nanometer))
+        # Mutant: the wild type's backbone and CB with the new side chain grown
+        # on them (as the mutant modeller does), then turned about CA-CB.
+        pdbfixer = pytest.importorskip("pdbfixer")
+        keep = {"N", "CA", "C", "O", "CB"}
+        lines, serial = [], 0
+        for atom in top_a.atoms():
+            if atom.element.symbol == "H" or (atom.residue.name == old and atom.name not in keep):
+                continue
+            serial += 1
+            x, y, z = pos_a[atom.index] * 10.0
+            lines.append(_pdb_line(serial, atom.name, new if atom.residue.name == old else atom.residue.name,
+                                   int(atom.residue.id), x, y, z, atom.element.symbol))
+        path = tmp_path / f"mut_{new}.pdb"
+        path.write_text("\n".join(lines + ["END", ""]))
+        fixer = pdbfixer.PDBFixer(filename=str(path))
+        fixer.findMissingResidues()
+        fixer.findMissingAtoms()
+        fixer.addMissingAtoms()
+        fixer.addMissingHydrogens(7.0)
+        top_b = fixer.topology
+        sys_b = ff.createSystem(top_b, nonbondedMethod=app.NoCutoff, constraints=app.HBonds)
+        pos_b = np.array(fixer.positions.value_in_unit(unit.nanometer))
+        at_a = {a.name: a.index for a in [r for r in top_a.residues() if r.name == old][0].atoms()}
+        at_b = {a.name: a.index for a in [r for r in top_b.residues() if r.name == new][0].atoms()}
+        turn = _chi1(pos_a, at_a) + turn_deg - _chi1(pos_b, at_b)   # mutant gamma atom `turn_deg` from the wild type's
+        moving = [i for n, i in at_b.items() if n not in {"N", "H", "CA", "HA", "C", "O", "CB"}]
+        axis = pos_b[at_b["CB"]] - pos_b[at_b["CA"]]
+        axis /= np.linalg.norm(axis)
+        th = np.radians(turn)
+        k = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+        rot = np.eye(3) + np.sin(th) * k + (1 - np.cos(th)) * (k @ k)
+        pos_b[moving] = (pos_b[moving] - pos_b[at_b["CB"]]) @ rot.T + pos_b[at_b["CB"]]
+        ra, rb = atom_records_from_topology(top_a), atom_records_from_topology(top_b)
+        mapping = map_mutation(ra, rb, locate_residue_index(top_a, "A", "2"),
+                               old_bonds=bonds_from_topology(top_a), new_bonds=bonds_from_topology(top_b),
+                               old_positions=pos_a, new_positions=pos_b)
+        shared_h = [(ra[a].name, rb[b].name) for a, b in mapping.core_pairs if ra[a].name.startswith("HB")]
+        expected_shared = 2 if new == "ALA" else 1   # ALA: two of its three methyl hydrogens face wild-type hydrogens
+        assert len(shared_h) == expected_shared, shared_h
+        build = build_hybrid(sys_a, pos_a, sys_b, pos_b, mapping)
+        # no appearing atom starts on top of a shared atom of the residue
+        bonded_b = bonds_from_topology(top_b)
+        pairs = [(float(np.linalg.norm(build.positions_nm[mapping.new_to_hybrid[u]] - build.positions_nm[mapping.new_to_hybrid[c]])),
+                  rb[u].name, rb[c].name)
+                 for u in mapping.unique_new for _, c in mapping.core_pairs
+                 if (min(u, c), max(u, c)) not in bonded_b]
+        assert min(pairs)[0] > 0.12, sorted(pairs)[:3]
+        relax_dummy_atoms(build, platform_name="Reference")
+        placement = check_dummy_placement(build, top_a, top_b)
+        assert placement["checked"] and placement["passed"], placement
+        val = validate_endpoints(build, sys_a, sys_b, platform_name="Reference")
+        assert val["passed"], val
 
 
 # --------------------------------------------------------------------------- #

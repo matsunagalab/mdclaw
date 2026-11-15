@@ -43,6 +43,7 @@ from mdclaw.fep.hybrid import (
     HybridBuild,
     HybridBuildError,
     build_hybrid,
+    check_dummy_placement,
     relax_dummy_atoms,
     validate_endpoints,
 )
@@ -388,7 +389,8 @@ def _assemble_hybrid(endstates: dict, spec: MutationSpec, *, softcore_alpha: flo
             raise MappingError(code="fep_environment_mismatch",
                                message=f"mutated residue index differs between builds ({res_a} vs {res_b})")
         mapping = map_mutation(atom_records_from_topology(top_a), atom_records_from_topology(top_b), res_a,
-                               old_bonds=bonds_from_topology(top_a), new_bonds=bonds_from_topology(top_b))
+                               old_bonds=bonds_from_topology(top_a), new_bonds=bonds_from_topology(top_b),
+                               old_positions=pos_a, new_positions=pos_b)
         # Charge-changing mutation: a bulk water of the mutant end state
         # becomes the compensating ion before the two states are merged, so
         # the builder interpolates it and the end-point check covers it.
@@ -408,6 +410,7 @@ def _assemble_hybrid(endstates: dict, spec: MutationSpec, *, softcore_alpha: flo
                              coalchemical_hybrid_atoms=coion_hybrid)
         platform = platform_name or fastest_platform_name()
         relaxation = relax_dummy_atoms(build, platform_name=platform, platform_properties=platform_properties)
+        relaxation["placement"] = check_dummy_placement(build, top_a, top_b)
         validation = validate_endpoints(build, sys_a, sys_b, platform_name=platform,
                                         platform_properties=platform_properties,
                                         tolerance_kj_mol=endpoint_tolerance_kj_mol)
@@ -725,6 +728,15 @@ def build_hybrid_system(
         "charge_correction": manifest["charge_correction_detail"],
         "statistics": manifest["statistics"],
     })
+    placement = asm.relaxation.get("placement") or {}
+    if placement.get("checked") and not placement.get("passed"):
+        return _fail(BuildStepError(
+            code="fep_dummy_misplaced",
+            message="the appearing side chain sits on the opposite side of CB from the disappearing one "
+            f"(smallest angle to an old CB substituent {placement['max_min_angle_deg']:.0f} deg, limit "
+            f"{placement['threshold_deg']:.0f}); every window would start from a strained dummy and give a wrong ddG. "
+            "Rebuild with a different mutant rotamer: rotate the wild-type side chain so the matching atom lies on the "
+            "mutant's CB substituent, or use --mutant-backend pdbfixer; see hybrid_manifest.json (dummy_relaxation.placement)"))
     if not validation.get("passed") or not validation.get("all_finite"):
         return _fail(BuildStepError(
             code="fep_endpoint_validation_failed",

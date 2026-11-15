@@ -13,6 +13,22 @@ add the correction and say what it overturns.
 
 ---
 
+
+## 2026-11-15 — FEP のハイブリッド: CB の水素を名前ではなく位置で対応づける（2026-11-03 の不具合 1 の根本修正、未コミット）
+
+- 依頼: 「そうなってしまう根本を調査して」「位置で対応づける方法で修正して」。対象は NcPNG1 研究で見つけたダミー原子の誤配置（2026-11-03 の項の不具合 1、`/data1/rkp00079/rku00161/pngase/mdclaw_fix_request.md`）。
+- 原因（研究の 14 本のハイブリッドを、保存済みの両端状態から測った）:
+  1. `mapping.py` は CB の水素を名前で共通原子にして WT の座標に固定する。変異体の側鎖は HPacker / PDBFixer が独自の chi1 で作り、HB2/HB3 の名前は γ 原子の位置で決まるので、chi1 が違うと名前と位置がずれる。14 本中 10 本で食い違い、うち 7 本で新しい γ 原子（Ala では HB1）が共通水素から 0.5〜1.2 Å に置かれた。
+  2. `relax_dummy_atoms` の局所最小化は、7 本のうち 4 本を旧 γ 原子の位置へ移し、3 本を反転した停留点（2 つの共通水素から約 60°、旧 γ から 144〜161°）で止めた。始めの配置では見分けられない。
+  - 側鎖そのものは正常な回転異性体（HPacker は ±60° / 180° 付近）。問題は置き方だけ。
+- 修正: `map_mutation` に `old_positions` / `new_positions` を足した。結合と座標があれば、CB の置換基を各状態の N–CA–CB 座標系での方向で比べ、45° 以内で 1 対 1 に組にして、両方が水素の組だけを共通原子にする（`cb_hydrogen_pairs_by_site`）。相手側の重原子に向き合う水素は unique になる。座標が無ければ従来どおり名前で組む。`build_hybrid_system`（`_assemble_hybrid`）は両端状態の座標を渡す。変異体の側鎖は、モデルが作った向きのまま置かれる。
+- 検証:
+  - 14 本を新しい対応づけで組み直し、緩和と端点の検証まで GPU で実行（`pngase/scripts/hyb_verify_site_mapping.py`）。14/14 で端点の検証が通り、`check_dummy_placement` も通った（最大 38°）。誤配置だった 3 本のダミーの結合エネルギー（緩和後）は 239 → 1、439 → 31、395 → 19 kJ/mol。chi1 が合っていた脚は以前と同じ値。
+  - S273F_fold は 364 → 194 kJ/mol で、まだ高い（緩和前は 35。周りのタンパク質との衝突を避けて側鎖がゆがむ）。
+  - テスト: 純 Python の対応づけ 5 件と、真空の SER→LEU/PHE/ALA、PHE→SER で変異体を ±120° 回した 5 件を `tests/test_fep.py` に追加。後者は名前での対応づけに戻すと 5/5 で落ちる。FEP と登録系のテスト 281 件が通り、ruff も通った。
+- 未実施: この対応づけで FEP を走らせ直してはいない。変異体が好む向きから始められるので、S273F の順方向と逆方向の食い違い（2026-11-05 の項）が縮む可能性があるが、未検証の仮説。
+- 作業ツリーには、別に入っていた未コミットのガードレール（`check_dummy_placement`、`fep_dummy_misplaced`）がそのまま残っている。保険として残す。
+
 ## 2026-11-14 — README demo prompt now matches the video
 
 - Corrects the 2026-11-10 "CBI demo" entry: the detailed protocol prompt in the
