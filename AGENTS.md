@@ -149,6 +149,12 @@ there whenever you finish a piece of work or reach a conclusion that outlives th
 session. Newest first. When a later finding contradicts an earlier entry, add the
 correction and name what it overturns rather than editing the old entry away.
 
+Write the memo and every other tracked file in English. The repository is
+public: do not record cluster account or project IDs, other users' accounts, or
+personal home paths. Use the placeholders `$PROJECT`, `$USER`, `$MEMBER_A`, ...,
+`/home/$USER` (defined in the 2026-11-18 memo entry), inside backticks so GitHub
+does not render them as math.
+
 ## Adding Or Changing Tools
 
 1. Add or update the function in the appropriate `mdclaw/<tool>/` submodule.
