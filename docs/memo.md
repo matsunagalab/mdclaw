@@ -52,6 +52,16 @@ add the correction and say what it overturns.
   - Decision inputs: as of 2026-11-17, the lab has no machine that can run cuPotential (floyd is R550, n5 is GeForce below R615, RIKYU is aarch64). Even with (a), nothing is gained until the drivers are upgraded.
 - Undecided (first draft): (a) downgrade everything to OpenMM 8.4 + openmmforcefields 0.15.1, or (b) build a separate Ubuntu 24.04 + OpenMM 8.4 + cuPotential environment only for the run side (min/eq/prod). Either way, we need code that swaps `NonbondedForce` just before `new_simulation` (`mdclaw/_common.py`), and a guardrail that excludes systems that do not meet the requirements (membrane barostat, FEP, non-PME). It will not be enabled by default until accuracy and speed are measured on a GPU with a supported driver.
 
+## 2026-11-15 — Switched the shared RIKYU SIF to main 55c878b (with the position-based FEP mapping)
+
+- Request: "Rebuild the shared SIF." `/data1/rkp00079/mdclaw.sif` → `sif/mdclaw-0.6.15-55c878b3d368-arm64-cuda13.sif` (2026-11-15 17:08 JST, 7,425,392,640 bytes, sha256 `164ac0a5…19a5`).
+- Build: the same overwrite build as on 2026-11-01. The 0.6.15 image (6524d3e) was unpacked into a sandbox and the mdclaw package was reinstalled from a `git archive` of 55c878b. The only differences from 6524d3e are three files under `mdclaw/fep/` and `guardrail_codes.py`; `pixi.lock`, `recipes/`, `container/` and `pyproject.toml` are unchanged. The version stays 0.6.15.
+- Acceptance: the 255 package files in the image match 55c878b. `test-container.sh` 27 passed. GPU job 349312 (c286): `test-rikyu-gpu.sh` PASS, OpenMM 8.6.1 CUDA, MODELLER, POPC patch, and the 14 NcPNG1 hybrids rebuilt with the package inside the image, 14/14.
+- Rollback: `mdclaw.pre-sitepair-20261115.sif` → the 6524d3e image. "Current SIF" in `/data1/rkp00079/RIKYU.md` was updated. Procedure and records are in `/data1/rkp00079/rku00161/mdclaw-validation/sif-55c878b-20261115/`.
+- No dispatcher was running at the switch. My own 12 `t1r92_*` jobs (started 17:01 through the old alias) were running; each runs `apptainer exec` once at start, so they continue on the old image they have open.
+- The pi skill checkout was updated the same day with `pi update git:github.com/matsunagalab/mdclaw@main`, cc39557 → 55c878b (no dispatcher; 14 skills, no difference from `~/mdclaw/skills`). Image and skills are both at 55c878b.
+- Not done: replacing `sif_sha256` in the campaign templates.
+
 ## 2026-11-15 — FEP hybrid: map CB hydrogens by position rather than by name (root fix for bug 1 of 2026-11-03, uncommitted)
 
 - Request: "Investigate the root cause of why that happens." "Fix it with the approach that maps by position." The target is the dummy-atom misplacement found in the NcPNG1 study (bug 1 in the 2026-11-03 entry, `/data1/$PROJECT/$USER/pngase/mdclaw_fix_request.md`).
