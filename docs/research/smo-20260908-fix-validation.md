@@ -15,10 +15,10 @@ The originally alleged physical deletion of 29 SMO residues was **not reproduced
 
 ## Same-SMO acceptance
 
-Isolated study: `/home/rku00161/mdclaw/.validation/smo-20260908`.
-Original files under `/data1/rkp00079/rku00140/structures1/SMO_WT_active_6XBL` were read only. Source/prep and the saved oriented structure were imported as explicit fixtures, not represented as newly executed preparation/orientation. Normal CLI/DAG then executed embed, topology, minimization and equilibration; no manual ion replacement or alternative topology builder was used.
+Isolated study: `/home/$USER/mdclaw/.validation/smo-20260908`.
+Original files under `/data1/$PROJECT/$MEMBER_A/structures1/SMO_WT_active_6XBL` were read only. Source/prep and the saved oriented structure were imported as explicit fixtures, not represented as newly executed preparation/orientation. Normal CLI/DAG then executed embed, topology, minimization and equilibration; no manual ion replacement or alternative topology builder was used.
 
-Slurm account: **rkp00079**. Main job 87152; separate trajectory-observation branch 87258. ff19SB/lipid21/OPC, HMR off, 2 fs, 300 K, 1 bar, 0.1 ns NVT + 2.0 ns NPT. The normal 1,000-step/2 ps low-temperature warmup also ran. The observation branch adds test-only reporters and snapshots, without changing forces, integration or random numbers.
+Slurm account: **$PROJECT**. Main job 87152; separate trajectory-observation branch 87258. ff19SB/lipid21/OPC, HMR off, 2 fs, 300 K, 1 bar, 0.1 ns NVT + 2.0 ns NPT. The normal 1,000-step/2 ps low-temperature warmup also ran. The observation branch adds test-only reporters and snapshots, without changing forces, integration or random numbers.
 
 | Independent check | Result |
 | --- | --- |
@@ -78,10 +78,10 @@ Standalone evidence and exact old/new comparison live under `/tmp/mdclaw-sulfur-
 
 ### Shared SIF activated
 
-The existing path `/data1/rkp00079/mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-6f171d2f0fa5.sif` now points to `mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-sulfur-561049fe8254.sif` in the same directory. The old revision-bearing filename is a compatibility alias, not a statement of the active source revision.
+The existing path `/data1/$PROJECT/mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-6f171d2f0fa5.sif` now points to `mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-sulfur-561049fe8254.sif` in the same directory. The old revision-bearing filename is a compatibility alias, not a statement of the active source revision.
 
 - Active SIF SHA-256: `c4073304b856f66fc322f1a0e5c497441fab5d645c6760df04b18a5d9583cd8a`.
-- Original backup: `/data1/rkp00079/mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-6f171d2f0fa5.pre-sulfur-fix-20260908.sif`.
+- Original backup: `/data1/$PROJECT/mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-6f171d2f0fa5.pre-sulfur-fix-20260908.sif`.
 - Original SHA-256: `83a351ea43ab4f48418a13e395703a326b0b9f72ea9f12e68abfe59ab537c5a0`.
 - The backup preserves the previous image inode; the compatibility symlink was switched atomically. Running jobs using the already-open old image are not rewritten.
 - Image checksum, source manifest and deployment JSON are sidecars beside the new shared SIF. Rollback consists of atomically repointing the compatibility symlink to the backup.

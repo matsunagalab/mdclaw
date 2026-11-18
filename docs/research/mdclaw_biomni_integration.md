@@ -1,102 +1,101 @@
-# MDClaw × Biomni 連携の可能性（論文デモ用）
+# Possibilities for MDClaw × Biomni Integration (for a Paper Demo)
 
-作成日: 2026-09-12
+Created: 2026-09-12
 
-MDClaw 論文で「汎用 biomedical agent の MD 層として MDClaw を差し込む」デモを示せるかを、
-Biomni のソースを読んで判断した記録。境界の原則（request / evidence report / artifact
-reference / provenance だけを外に出す）は
-[`mdclaw_claw_family_integration.md`](./mdclaw_claw_family_integration.md) と同じ。
+A record of reading the Biomni source to judge whether the MDClaw paper can show a demo of
+"plugging MDClaw in as the MD layer of a general-purpose biomedical agent". The boundary principle (expose only
+request / evidence report / artifact reference / provenance) is the same as in
+[`mdclaw_claw_family_integration.md`](./mdclaw_claw_family_integration.md).
 
-## 結論
+## Conclusion
 
-- 連携はできる。どちらのコアも改変せずに作れる。
-- 推奨経路は **Biomni A1 が `#!BASH` で `mdclaw` CLI を呼び、MDClaw skills を Biomni の
-  custom software と know-how として渡す** 方式。Biomni の system prompt 自身が
-  "For CLI softwares, use Bash scripts" と指示しており、CLI が一級の経路になっている。
-- MCP（Biomni `add_mcp`）でも技術的には可能。ただし MDClaw は 5d9ec14（2026-02-21）で
-  「skills は CLI を呼ぶ」ことを理由に FastMCP を外した。MCP adapter をコアへ戻す理由はない。
-  必要になった場合も連携用ディレクトリに置く薄い wrapper に留める。
-- **必須の対処が 1 点ある。** Biomni の bash 実行器は非ゼロ終了時に stderr だけを返す。
-  このため MDClaw の構造化エラー（stdout の JSON envelope、exit 1）が消える。実測で確認した
-  （下記）。
+- Integration is possible. It can be built without modifying either core.
+- The recommended route is for **Biomni A1 to call the `mdclaw` CLI via `#!BASH`, with the MDClaw skills passed as Biomni
+  custom software and know-how**. Biomni's own system prompt instructs
+  "For CLI softwares, use Bash scripts", so the CLI is a first-class route.
+- MCP (Biomni `add_mcp`) is also technically possible. However, MDClaw removed FastMCP in 5d9ec14 (2026-02-21)
+  on the grounds that "skills call the CLI". There is no reason to bring an MCP adapter back into the core.
+  Even if one becomes necessary, keep it a thin wrapper placed in an integration directory.
+- **There is one required fix.** Biomni's bash executor returns only stderr on a non-zero exit.
+  As a result, MDClaw's structured error (the JSON envelope on stdout, exit 1) is lost. Confirmed by measurement
+  (below).
 
-## 調査対象
+## Subjects Examined
 
-- Biomni: `github.com/snap-stanford/biomni`、commit `400c1f3`（2026-01-14、main 最新）。
-  README には "This release was frozen as of April 15 2025, so it differs from the current
-  web platform" とある。論文は Science 2026-07-09 "Autonomous biomedical research with an
-  artificial intelligence agent"（doi:10.1126/science.adz4351、bioRxiv
-  10.1101/2025.05.30.656746）。
-- MDClaw: main `e299aee`、0.6.8、77 tools。
+- Biomni: `github.com/snap-stanford/biomni`, commit `400c1f3` (2026-01-14, latest main).
+  The README says "This release was frozen as of April 15 2025, so it differs from the current
+  web platform". The paper is Science 2026-07-09 "Autonomous biomedical research with an
+  artificial intelligence agent" (doi:10.1126/science.adz4351, bioRxiv
+  10.1101/2025.05.30.656746).
+- MDClaw: main `e299aee`, 0.6.8, 77 tools.
 
-## Biomni 側の事実（コードで確認）
+## Facts on the Biomni Side (Confirmed in Code)
 
-| 項目 | 内容 | 出典（commit 400c1f3） |
+| Item | Details | Source (commit 400c1f3) |
 |---|---|---|
-| エージェントの loop | LLM が `<execute>` 内に Python / `#!R` / `#!BASH` / `#!CLI` を書き、結果を `<observation>` で受け取る LangGraph loop | `biomni/agent/a1.py:1471-1553` |
-| 既定値 | `llm="claude-sonnet-4-5"`, `use_tool_retriever=True`, `timeout_seconds=600` | `biomni/config.py:33-40` |
-| 実行制限 | execute 1 回ごとに timeout（600 s）。observation は 10,000 文字で切り捨て。`recursion_limit` 500 | `a1.py:1482`, `a1.py:1521`, `a1.py:1774` |
-| bash の実行 | 毎回、一時スクリプトを新しい subprocess で実行する（`set -e` を自動付与）。**成功時は stdout のみ、失敗時は stderr のみを返す** | `biomni/utils.py:56-144` |
-| 拡張口 | `add_tool`（関数を Biomni のプロセス内で実行し、schema は LLM が生成）、`add_mcp`（stdio のみ、呼び出しごとにサーバを起動）、`add_software`（説明文を system prompt の CUSTOM SOFTWARE 節に**常時**掲載）、know-how（Markdown。LLM retrieval で選ばれた文書だけ全文を掲載）、`create_mcp_server`（Biomni のツールを MCP で公開） | `a1.py:225`, `:350`, `:777`, `:1646-1757`, `:1917-1935`, `:1995` |
-| MD の能力 | E1 環境に `openmm`（と env_desc 上の `pdbfixer`）はあるが、MD 用のツール関数はない。配位子力場（openff / openmmforcefields / AmberTools / GAFF）と軌跡解析（mdtraj / MDAnalysis）はリポジトリ全体に一切ない | `biomni/env_desc.py:116,172`、`biomni_env/*` |
-| docking | `docking_autodock_vina` は TDC Oracle（pyscreener）経由でスコアだけを返し、pose を出さない。`run_diffdock_with_smiles` は Docker が前提（HPC では通常使えない） | `biomni/tool/pharmacology.py:13-135` |
+| Agent loop | A LangGraph loop in which the LLM writes Python / `#!R` / `#!BASH` / `#!CLI` inside `<execute>` and receives the result in `<observation>` | `biomni/agent/a1.py:1471-1553` |
+| Defaults | `llm="claude-sonnet-4-5"`, `use_tool_retriever=True`, `timeout_seconds=600` | `biomni/config.py:33-40` |
+| Execution limits | A timeout (600 s) per execute. Observations are truncated at 10,000 characters. `recursion_limit` 500 | `a1.py:1482`, `a1.py:1521`, `a1.py:1774` |
+| bash execution | Each time, a temporary script is run in a new subprocess (`set -e` added automatically). **Returns only stdout on success and only stderr on failure** | `biomni/utils.py:56-144` |
+| Extension points | `add_tool` (runs a function inside the Biomni process; the schema is generated by the LLM), `add_mcp` (stdio only; starts the server on every call), `add_software` (description is **always** listed in the CUSTOM SOFTWARE section of the system prompt), know-how (Markdown; only documents chosen by LLM retrieval are included in full), `create_mcp_server` (exposes Biomni's tools over MCP) | `a1.py:225`, `:350`, `:777`, `:1646-1757`, `:1917-1935`, `:1995` |
+| MD capability | The E1 environment has `openmm` (and `pdbfixer` per env_desc), but no tool functions for MD. Ligand force fields (openff / openmmforcefields / AmberTools / GAFF) and trajectory analysis (mdtraj / MDAnalysis) are entirely absent from the repository | `biomni/env_desc.py:116,172`, `biomni_env/*` |
+| docking | `docking_autodock_vina` returns only a score via the TDC Oracle (pyscreener) and outputs no pose. `run_diffdock_with_smiles` assumes Docker (usually unavailable on HPC) | `biomni/tool/pharmacology.py:13-135` |
 
-Science 版の報道（Stanford / TechXplore）でも、25 分野・150 tools・105 software・59
-databases のなかに分子シミュレーションは挙がっていない。
+Coverage of the Science version (Stanford / TechXplore) also lists no molecular simulation among its 25 fields, 150 tools, 105 software and 59
+databases.
 
-## 接続方式の比較
+## Comparison of Connection Methods
 
-| 方式 | 利点 | 欠点 | 判断 |
+| Method | Advantages | Disadvantages | Verdict |
 |---|---|---|---|
-| **1. CLI + skills**（`#!BASH mdclaw ...`） | MDClaw の設計どおりの契約（skills は CLI を呼ぶ）。`bin/mdclaw` が SIF / conda へ振り分けるので、Biomni E1 環境と依存が衝突しない。状態は `--job-dir` の DAG に残るので、毎回新しい subprocess になる Biomni の bash とも整合する。論文で「skills と CLI が第三者の harness にそのまま移る」と主張できる | 失敗時の envelope が消える問題への対処が要る（下記 shim）。skills 全体（約 4,400 行）は大きすぎて system prompt に入れられない | **推奨** |
-| 2. MCP adapter（`add_mcp`） | ツールが Biomni の function dictionary に並ぶ。他の MCP client にも使い回せる | MDClaw が意図して外した層を戻すことになる。Biomni の wrapper は呼び出しごとにサーバを起動し、600 s の timeout 内で完了を待つ。77 tools は retrieval に多すぎるので選別が要る | 任意。やるなら連携ディレクトリに置く薄い wrapper |
-| 3. エージェント委譲（Biomni → headless Claude Code + MDClaw plugin） | MD 側は本来の harness で動く。境界が「質問 → evidence report」だけになる | LLM エージェントが 2 段になり、費用と失敗箇所が増える。「Biomni が MDClaw を使う」デモではなくなる | 論文の主デモには向かない |
+| **1. CLI + skills** (`#!BASH mdclaw ...`) | The contract MDClaw is designed around (skills call the CLI). `bin/mdclaw` dispatches to the SIF / conda, so dependencies do not clash with Biomni's E1 environment. State stays in the `--job-dir` DAG, which is consistent with Biomni's bash being a new subprocess every time. The paper can claim "skills and CLI carry over unchanged to a third-party harness" | Needs a fix for the envelope being lost on failure (shim below). The full skills (about 4,400 lines) are too large to put in the system prompt | **Recommended** |
+| 2. MCP adapter (`add_mcp`) | The tools appear in Biomni's function dictionary. Reusable with other MCP clients | Brings back a layer MDClaw deliberately removed. Biomni's wrapper starts the server on every call and waits for completion within the 600 s timeout. 77 tools are too many for retrieval, so a selection is needed | Optional. If done, a thin wrapper placed in the integration directory |
+| 3. Agent delegation (Biomni → headless Claude Code + MDClaw plugin) | The MD side runs in its native harness. The boundary is only "question → evidence report" | Two tiers of LLM agents, increasing cost and failure points. No longer a demo of "Biomni using MDClaw" | Not suited to the paper's main demo |
 
-逆方向（Biomni の `create_mcp_server` で database tools を公開し、MDClaw の md-study
-計画から ClinVar / ChEMBL / gnomAD を引く）も可能。ただし MDClaw には `search_proteins`
-や `pubmed_search` 等が既にあるので、優先度は低い。
+The reverse direction (exposing database tools with Biomni's `create_mcp_server` and pulling ClinVar / ChEMBL / gnomAD from MDClaw's md-study
+plan) is also possible. However, MDClaw already has `search_proteins`,
+`pubmed_search`, etc., so it is low priority.
 
-## 推奨構成
+## Recommended Configuration
 
 ```text
-Biomni A1（LLM loop、biomni_e1 環境、login/CPU ノード）
-  ├─ Biomni tools: query_pdb / query_uniprot / query_chembl / Vina CLI / 文献
-  └─ #!BASH mdclaw ...            ← add_software で常時提示、know-how で手順を提示
-        └─ bin/mdclaw → SIF または conda（MD スタックは隔離）
-        └─ submit_job → Slurm GPU（min / eq / prod）
-        └─ wait_node --timeout-seconds 540   ← 600 s の execute 制限内で待つ
-        └─ generate_md_report → evidence を Biomni へ返す
+Biomni A1 (LLM loop, biomni_e1 environment, login/CPU node)
+  ├─ Biomni tools: query_pdb / query_uniprot / query_chembl / Vina CLI / literature
+  └─ #!BASH mdclaw ...            ← always shown via add_software; procedure shown via know-how
+        └─ bin/mdclaw → SIF or conda (MD stack isolated)
+        └─ submit_job → Slurm GPU (min / eq / prod)
+        └─ wait_node --timeout-seconds 540   ← wait within the 600 s execute limit
+        └─ generate_md_report → return evidence to Biomni
 ```
 
-Biomni 側の設定（コア改変なし）:
+Settings on the Biomni side (no core modification):
 
-1. `agent.add_software({"mdclaw": "<短い説明>"})`。custom software は retrieval の対象外で
-   毎回 system prompt に載るので、ここに「まず `mdclaw --workflow` を読む」「skills は
-   `$MDCLAW_SKILLS/md-study/SKILL.md` から `cat` で読む」「生の OpenMM スクリプトを書かない」
-   を入れる。
-2. know-how 文書を 1 本用意する（`# Title` / `## Metadata` / `## Overview` 形式）。
-   MD の質問で retrieval に選ばれたとき全文が入るので、中身は skills への入口と Biomni 固有の
-   注意（timeout、shim、Slurm での待ち方）だけにする。skills の本文は agent が必要な頁を
-   `cat` で読む。Claude Code の progressive disclosure と同じ形。
-3. PATH の先頭に置く shim（下記）。
-4. 出力は既定の `--output brief` のまま使う（10,000 文字の切り捨てに収まる）。
-5. 長い stage は Slurm に投げ、`wait_node --timeout-seconds 540` を繰り返して待つ。手元の GPU で
-   短く回すなら `BIOMNI_TIMEOUT_SECONDS` を上げる。
-6. Biomni は LLM が生成したコードを全権限で実行する（README の警告）。共有クラスタでは専用の
-   作業ディレクトリと権限で動かす。
+1. `agent.add_software({"mdclaw": "<short description>"})`. Custom software is not subject to retrieval and
+   appears in the system prompt every time, so put "read `mdclaw --workflow` first", "read skills with `cat`, starting from
+   `$MDCLAW_SKILLS/md-study/SKILL.md`", and "do not write raw OpenMM scripts" here.
+2. Prepare one know-how document (`# Title` / `## Metadata` / `## Overview` format).
+   It is included in full when retrieval selects it for an MD question, so limit its content to the entry point into the skills and
+   Biomni-specific cautions (timeout, shim, how to wait on Slurm). The agent reads the skill pages it needs
+   with `cat`. The same shape as Claude Code's progressive disclosure.
+3. A shim placed at the front of PATH (below).
+4. Keep the default `--output brief` for output (fits within the 10,000-character truncation).
+5. Send long stages to Slurm and wait by repeating `wait_node --timeout-seconds 540`. To run short jobs on a local GPU,
+   raise `BIOMNI_TIMEOUT_SECONDS`.
+6. Biomni executes LLM-generated code with full privileges (warning in the README). On a shared cluster, run it with a dedicated
+   working directory and permissions.
 
-### 失敗時 envelope の消失（2026-09-12 実測）
+### Envelope Lost on Failure (Measured 2026-09-12)
 
-Biomni の `run_bash_script` を commit 400c1f3 のソースから `ast` で取り出し、そのまま実行した。
-呼んだのは書き込めない `--job-dir` への `create_node`。
+Extracted Biomni's `run_bash_script` with `ast` from the commit 400c1f3 source and ran it as is.
+The call was `create_node` on a non-writable `--job-dir`.
 
-- そのまま実行した場合（agent が普通に書く形）、observation は
-  `Error running Bash script (exit code 1): ERROR conda.cli.main_run ... failed` だけになる。
-  MDClaw の `code` / `hints` / `next` はすべて失われる。
-- `|| true` を付けると、`success:false`、`code`、`next`、`dag`、`hints` を含む envelope が
-  全文届く。
+- Run as is (the form an agent normally writes), the observation is only
+  `Error running Bash script (exit code 1): ERROR conda.cli.main_run ... failed`.
+  MDClaw's `code` / `hints` / `next` are all lost.
+- With `|| true` appended, the envelope containing `success:false`, `code`, `next`, `dag` and `hints`
+  arrives in full.
 
-LLM に毎回 `|| true` を書かせる方式は忘れやすい。Biomni 用の shim を PATH の先頭に置く:
+Having the LLM write `|| true` every time is easy to forget. Put a Biomni shim at the front of PATH:
 
 ```bash
 #!/usr/bin/env bash
@@ -107,65 +106,65 @@ LLM に毎回 `|| true` を書かせる方式は忘れやすい。Biomni 用の 
 exit 0
 ```
 
-Biomni への upstream 修正（失敗時も stdout と stderr を両方返す）は 1 行で済む。
-Biomni 自身にも有益なので PR の候補になる。
+An upstream fix to Biomni (return both stdout and stderr on failure too) is a one-line change.
+It is useful to Biomni itself, so it is a PR candidate.
 
-副次的な観察（MDClaw 側）: 書き込めない `--job-dir` への `create_node` は
-`unhandled_exception`（`OSError: Read-only file system`）になる。しかも `next` は、同じ
-パスで source node を作るよう勧める。sandbox 内で動く第三者 harness では起こりうるので、
-`job_dir` が書き込めないことを示す専用 code を検討する価値がある。
+Side observation (MDClaw side): `create_node` on a non-writable `--job-dir` becomes
+`unhandled_exception` (`OSError: Read-only file system`). Moreover, `next` recommends creating a source node at the same
+path. This can happen in a third-party harness running inside a sandbox, so a dedicated code indicating that
+`job_dir` is not writable is worth considering.
 
-## 論文デモ案
+## Paper Demo Ideas
 
-### A. Vina の pose を MD で選別する（推奨）
+### A. Screening Vina Poses with MD (Recommended)
 
-- 役割分担: Biomni が標的構造の取得、pocket の定義、Vina による docking（pose を書き出す）、
-  順位付けを行う。MDClaw は各 pose を `prepare_complex` → `solvate_structure` →
-  `build_amber_system`（GAFF）→ min → eq → prod（複数 replica）→ 配位子 RMSD と接触頻度の
-  解析 → `generate_md_report` まで進める。最後に Biomni が MD の安定性で順位を付け直し、報告を
-  書く。
-- 外部評価: DUD-E の active と decoy のラベルは agent に見せない（SMILES と匿名 ID だけを渡す）。
-  採点は MDClaw DAG の出力から決定的に計算する。比較するのは Vina のみの ROC AUC と、Vina に
-  MD を加えた ROC AUC。
-- 先行研究: Guterres & Im, J. Chem. Inf. Model. 2020, 60, 2189–2198。56 標的・560 配位子
-  （active 280、decoy 280）で、AutoDock Vina の結果に MD を加えると ROC AUC が 0.68 から 0.83 に
-  上がった。デモの主張は「専門家が組んだ既知の手順を、エージェント同士の連携で人手なしに再現
-  できた」であり、新しい生物学的知見ではない。
-- 規模の目安: 6 標的 × 10 配位子 × 3 replica × 10 ns ≈ 1.8 µs。約 40k 原子・HMR 4 fs で
-  1 GPU あたり 500 ns/day と仮定すると、およそ 4 GPU 日（GPU 10 枚なら半日）。
-  `estimate_md_throughput` で実測してから確定する。
-- 標的の選び方: EGFR / SMO は Kumari さんの AGIS 追試と重なるので避ける。
-- 注意: Biomni の `docking_autodock_vina` は pose を返さない。Vina CLI を直接使わせるか、
-  pose の生成手順を固定する。
+- Division of roles: Biomni retrieves the target structure, defines the pocket, docks with Vina (writing out poses),
+  and ranks them. MDClaw takes each pose through `prepare_complex` → `solvate_structure` →
+  `build_amber_system` (GAFF) → min → eq → prod (multiple replicas) → analysis of ligand RMSD and contact frequency
+  → `generate_md_report`. Finally, Biomni re-ranks by MD stability and writes the
+  report.
+- External evaluation: the DUD-E active and decoy labels are not shown to the agent (only SMILES and anonymous IDs are passed).
+  Scoring is computed deterministically from the MDClaw DAG output. The comparison is ROC AUC for Vina alone versus ROC AUC for Vina
+  plus MD.
+- Prior work: Guterres & Im, J. Chem. Inf. Model. 2020, 60, 2189–2198. On 56 targets and 560 ligands
+  (280 active, 280 decoy), adding MD to AutoDock Vina results raised ROC AUC from 0.68 to 0.83.
+  The demo's claim is "a known protocol assembled by experts was reproduced without human intervention through agent-to-agent
+  collaboration", not a new biological finding.
+- Scale estimate: 6 targets × 10 ligands × 3 replicas × 10 ns ≈ 1.8 µs. Assuming about 40k atoms, HMR 4 fs and
+  500 ns/day per GPU, roughly 4 GPU-days (half a day with 10 GPUs).
+  Confirm after measuring with `estimate_md_throughput`.
+- Choice of targets: avoid EGFR / SMO, which overlap with Kumari-san's AGIS replication.
+- Caution: Biomni's `docking_autodock_vina` does not return poses. Either have it use the Vina CLI directly or
+  fix the pose-generation procedure.
 
-### B. 臨床変異から構造機構を調べる（物語型）
+### B. Investigating Structural Mechanisms of Clinical Variants (Narrative)
 
-Biomni が ClinVar / gnomAD / UniProt / AlphaFold から domain 内の VUS を絞り込み、MDClaw が
-`create_mutated_structure` で WT と各変異体を分岐させて比較する。見せ方はわかりやすい。ただし
-100 ns 程度の MD で安定性の差がはっきり出る保証はなく、外部の基準（DMS の安定性データなど）も
-弱い。既存の kinase 安定化変異の結果につなげる場合、主結果と重複しないかを先に確認する。
+Biomni narrows down VUS within a domain from ClinVar / gnomAD / UniProt / AlphaFold, and MDClaw
+branches WT and each variant with `create_mutated_structure` and compares them. The presentation is easy to follow. However,
+there is no guarantee that MD of about 100 ns will clearly show stability differences, and external references (e.g. DMS stability data)
+are weak. If connecting to existing results on kinase-stabilizing mutations, first check that it does not overlap with the main results.
 
-### C. Biomni 単独と Biomni + MDClaw の比較（A と組み合わせる定量パネル）
+### C. Biomni Alone vs Biomni + MDClaw (Quantitative Panel Combined with A)
 
-LLM とタスクを同じにして、MDClaw の有無だけを変える。Biomni 単独でも openmm は使えるが、
-配位子力場の道具がないので、ad hoc な OpenMM スクリプトになる。指標は、妥当な production MD に
-到達した割合、人手介入の回数、wall time、token 数、provenance の完全性。MDDataBench の task と
-evaluator を流用し、Biomni harness を 1 条件として足すのが最も安い。
+Keep the LLM and tasks the same and vary only whether MDClaw is present. Biomni alone can use openmm, but
+it has no ligand force-field tools, so it ends up with ad hoc OpenMM scripts. Metrics: the fraction reaching valid production MD,
+the number of human interventions, wall time, token count, and completeness of provenance. The cheapest route is to reuse the MDDataBench tasks and
+evaluator and add the Biomni harness as one condition.
 
-## 論文で言えること・言えないこと
+## What the Paper Can and Cannot Claim
 
-- 言えること: MDClaw は、どちらのコアも改変せずに汎用 biomedical agent の MD 層として働く。
-  skills と CLI は第三者の harness（独自の prompt、retrieval、実行器）に移る
-  （pi + DeepSeek / Kimi での MDDataBench 実績に続く 3 例目の harness）。連携した pipeline は、
-  外部ラベルに対して既知の MD rescoring 効果を再現する（A を実施した場合）。
-- 言えないこと: Biomni の全タスクへの一般性。新しい生物学的発見（A は既知効果の再現）。
-  Biomni の web platform や Science 版との同一性（使うのは open-source の A1 で、commit を
-  固定して明記する）。
+- Can claim: MDClaw works as the MD layer of a general-purpose biomedical agent without modifying either core.
+  The skills and CLI carry over to a third-party harness (its own prompt, retrieval and executor)
+  (the third harness, following the MDDataBench results with pi + DeepSeek / Kimi). The integrated pipeline
+  reproduces the known MD rescoring effect against external labels (if A is carried out).
+- Cannot claim: generality across all Biomni tasks. New biological discoveries (A reproduces a known effect).
+  Identity with Biomni's web platform or the Science version (what is used is the open-source A1, with the commit
+  pinned and stated).
 
-## 次の一手（未着手）
+## Next Steps (Not Started)
 
-1. `examples/biomni/` に add_software の説明文、know-how 文書、shim、実行 script を置く。
-2. 1 系（例: 小さい kinase と配位子 1 つ）で smoke test をする。Biomni のログで、retrieval が
-   MDClaw の know-how を選んだこと、エラー時に envelope が届くこと、Slurm 待ちが 600 s 以内に
-   収まることを確認する。
-3. A の標的と配位子を決めて本番を回す。C の比較条件を MDDataBench 側に追加する。
+1. Put the add_software description, know-how document, shim and run script in `examples/biomni/`.
+2. Smoke test on one system (e.g. a small kinase and one ligand). In Biomni's logs, confirm that retrieval
+   selected MDClaw's know-how, that the envelope arrives on error, and that Slurm waits stay within
+   600 s.
+3. Choose the targets and ligands for A and do the production run. Add the comparison condition for C on the MDDataBench side.

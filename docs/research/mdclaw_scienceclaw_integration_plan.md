@@ -1,25 +1,25 @@
 # MDClaw and ScienceClaw Integration Plan
 
-作成日: 2026-05-01
+Date written: 2026-05-01
 
-追記（2026-09-06）: 以下は当時の構想です。旧レポートCLIは
-`generate_md_report` に統合済みです。現行仕様は
-[tool reference](../developer/tool-reference.md#evidence) を参照してください。
+Addendum (2026-09-06): What follows is the concept as of that time. The old report CLI has been
+merged into `generate_md_report`. For the current specification, see the
+[tool reference](../developer/tool-reference.md#evidence).
 
-## 目的
+## Purpose
 
-MDClaw を、ScienceClaw や細胞シミュレータ foundation model エージェントから自然に呼び出せる「原子レベル evidence provider」として発展させる。
+Develop MDClaw into an "atomic-level evidence provider" that ScienceClaw and cell-simulator foundation model agents can call naturally.
 
-ここでの重要な方針は、MDClaw の内部 DAG を ScienceClaw の DAG と無理に互換化しないこと。ScienceClaw から見えるべきものは、MDClaw の内部実行計画ではなく、次の2つでよい。
+The key policy here is not to force MDClaw's internal DAG to be compatible with ScienceClaw's DAG. What ScienceClaw needs to see is not MDClaw's internal execution plan; the following two things are enough.
 
-- 入力: 何を、どんな科学的問いで MD してほしいか
-- 出力: その MD から何が分かったか
+- Input: what to run MD on, and for what scientific question
+- Output: what was learned from that MD
 
-MDClaw 内部の `source -> prep -> solv -> topo -> eq -> prod -> analyze` DAG は、MDClaw が正しく再開可能に MD を実行し、provenance を残すための実装詳細として維持する。
+MDClaw's internal `source -> prep -> solv -> topo -> eq -> prod -> analyze` DAG is kept as an implementation detail that lets MDClaw run MD correctly and resumably, and leave provenance.
 
-## 基本構想
+## Basic concept
 
-ScienceClaw / 細胞シミュレータ側は、MDClaw を「trajectory generator」ではなく「cell model に渡せる atomistic evidence generator」として使う。
+The ScienceClaw / cell-simulator side uses MDClaw not as a "trajectory generator" but as an "atomistic evidence generator that can feed a cell model".
 
 ```text
 ScienceClaw / Cell Simulator Agent
@@ -38,13 +38,13 @@ ScienceClaw / Cell Simulator Agent
   └─ updates hypothesis, pathway model, or cell-scale parameters
 ```
 
-## 3つのレイヤ
+## Three layers
 
 ### 1. Execution Layer
 
-現在の MDClaw DAG。役割は「MD を正しく・再開可能に・記録付きで流す」こと。
+The current MDClaw DAG. Its role is to "run MD correctly, resumably, and with records".
 
-既存の主な構成要素:
+Main existing components:
 
 - `mdclaw/_node.py`
 - `create_node`
@@ -55,13 +55,13 @@ ScienceClaw / Cell Simulator Agent
 - `events/`
 - `artifacts/`
 
-この層は低レベル API として維持する。ScienceClaw や細胞 foundation model エージェントは、原則としてこの内部構造を直接理解しなくてよい。
+This layer is kept as a low-level API. ScienceClaw and cell foundation model agents, as a rule, need not understand this internal structure directly.
 
 ### 2. Study Layer
 
-新しく必要な層。外部エージェントやユーザーの科学的問いを、MDClaw の execution DAG に変換する。
+A newly needed layer. It converts the scientific questions of external agents and users into MDClaw execution DAGs.
 
-例: 外部からの request
+Example: a request from outside
 
 ```json
 {
@@ -78,7 +78,7 @@ ScienceClaw / Cell Simulator Agent
 }
 ```
 
-Study Layer が内部で束ねる job の例:
+Example of the jobs the Study Layer bundles internally:
 
 ```text
 WT:
@@ -91,17 +91,17 @@ Analysis:
   study/evidence/study_evidence_report.json
 ```
 
-重要: `job_dir` 内に複数 `source` root は作らない。`job_dir` は 1 physical
-system の durable execution unit として保ち、複数 source / 複数 system の
-比較は optional な `study_dir` が複数 `job_dir` を束ねて表現する。
+Important: do not create multiple `source` roots inside a `job_dir`. Keep a `job_dir` as the durable execution unit of one physical
+system; comparisons across multiple sources / multiple systems are expressed by an optional `study_dir`
+that bundles multiple `job_dir`s.
 
-実装候補:
+Implementation candidate:
 
 ```text
 mdclaw/study_server.py
 ```
 
-最初に置く低レベル study-index tool の例:
+Example of the low-level study-index tools to put in place first:
 
 ```python
 init_study(study_dir, title=None, objective=None)
@@ -110,12 +110,12 @@ record_study_decision(study_dir, phase, decision, reason)
 summarize_study(study_dir)
 ```
 
-Study Layer は OpenMM を直接触らず、既存の execution tools と `job_dir`
-DAGを組み合わせる。Mutation stability などの高レベル自律workflowは、
-この薄い study-index contract の上で、skill / harness / 外部agent が
-実行する。
+The Study Layer does not touch OpenMM directly; it combines the existing execution tools and `job_dir`
+DAGs. High-level autonomous workflows such as mutation stability are
+run by skills / harnesses / external agents on top of
+this thin study-index contract.
 
-優先 study type:
+Priority study types:
 
 - `stability_screen`
 - `mutation_effect_study`
@@ -126,11 +126,11 @@ DAGを組み合わせる。Mutation stability などの高レベル自律workflo
 
 ### 3. Evidence Layer
 
-外部連携の本命。MD の raw output を、ScienceClaw や細胞モデルが使える evidence report に変換する。
+The main target of external integration. It converts raw MD output into evidence reports that ScienceClaw and cell models can use.
 
-Evidence report は、自然言語 summary と型付き metrics の両方を持つ。自然言語だけでは、人間には読めても、外部エージェントが比較・ランキング・モデル更新に使いにくい。
+An evidence report carries both a natural-language summary and typed metrics. Natural language alone is readable by humans but hard for external agents to use for comparison, ranking, and model updates.
 
-例:
+Example:
 
 ```json
 {
@@ -173,14 +173,14 @@ Evidence report は、自然言語 summary と型付き metrics の両方を持�
 }
 ```
 
-実装候補:
+Implementation candidates:
 
 ```text
 mdclaw/evidence_server.py
 mdclaw/evidence_schema.py
 ```
 
-tool 例:
+Tool example:
 
 ```python
 def generate_md_evidence_report(
@@ -191,24 +191,24 @@ def generate_md_evidence_report(
     ...
 ```
 
-## 外部エージェントから見た MDClaw
+## MDClaw as seen from external agents
 
-MDClaw は、細胞シミュレータ foundation model エージェントにとって、次のような質問に答える専門ツールになる。
+For cell-simulator foundation model agents, MDClaw becomes a specialist tool that answers questions such as:
 
-- この変異はタンパク質を安定化/不安定化するか
-- 活性型/不活性型の population はどう変わるか
-- ligand binding は強まりそうか弱まりそうか
-- protein-protein interface は壊れそうか
-- membrane protein の gating / transport に影響しそうか
-- pathway model の rate / affinity / state transition parameter に反映できるか
+- Does this mutation stabilize/destabilize the protein?
+- How do the populations of the active/inactive forms change?
+- Is ligand binding likely to strengthen or weaken?
+- Is the protein-protein interface likely to break?
+- Is it likely to affect gating / transport of a membrane protein?
+- Can it be reflected in the rate / affinity / state transition parameters of a pathway model?
 
-細胞モデルが欲しいのは trajectory そのものではなく、MD から抽出された粗視化された evidence や parameter hint である。
+What a cell model wants is not the trajectory itself but coarse-grained evidence and parameter hints extracted from MD.
 
-## 実装順序
+## Implementation order
 
-### Step 1: Evidence Report Schema を決める
+### Step 1: Decide the Evidence Report Schema
 
-まず外部に返す contract を固定する。最小フィールド:
+First fix the contract returned to the outside. Minimum fields:
 
 - `evidence_type`
 - `target`
@@ -223,29 +223,29 @@ MDClaw は、細胞シミュレータ foundation model エージェントにと�
 - `artifacts`
 - `provenance`
 
-### Step 2: 既存 DAG から evidence report を作る tool を追加する
+### Step 2: Add a tool that builds an evidence report from the existing DAG
 
-Study Layer はまだ作らず、既存の `prod` / `analyze` node から report を生成する。
+Do not build the Study Layer yet; generate the report from existing `prod` / `analyze` nodes.
 
-最初の tool:
+First tool:
 
 ```python
 generate_md_evidence_report(job_dir, report_type="stability")
 ```
 
-### Step 3: 最小 Study Layer を作る
+### Step 3: Build a minimal Study Layer
 
-最初は特定の科学workflowを固定せず、`study_dir` の薄いファイル契約を作る。
+At first, do not fix a specific scientific workflow; create a thin file contract for `study_dir`.
 
-理由:
+Reasons:
 
-- 普通のMD研究（WT vs mutant, apo vs holo, forcefield comparison）にも使える
-- AlphaGenome/Evo2/トランスクリプトーム等の連携を optional annotation にできる
-- `job_dir` を 1 source-bundle execution unit として保つ
+- It can also be used for ordinary MD research (WT vs mutant, apo vs holo, forcefield comparison)
+- Integration with AlphaGenome/Evo2/transcriptomics etc. can be an optional annotation
+- It keeps a `job_dir` as one source-bundle execution unit
 
-### Step 4: ScienceClaw / 細胞エージェント向け request schema を追加する
+### Step 4: Add a request schema for ScienceClaw / cell agents
 
-外部エージェントは、MDClaw の低レベル node を直接指定せず、次のような request を投げる。
+External agents do not specify MDClaw's low-level nodes directly; they send requests like the following.
 
 ```json
 {
@@ -267,63 +267,63 @@ generate_md_evidence_report(job_dir, report_type="stability")
 }
 ```
 
-## 重要な設計判断
+## Key design decisions
 
-### MDClaw DAG を外部互換化しすぎない
+### Do not make the MDClaw DAG overly externally compatible
 
-MDClaw の内部 DAG を ScienceClaw の DAG と無理に統合しない。内部 DAG は MD 実行のための durable execution graph として保持する。
+Do not force MDClaw's internal DAG to merge with ScienceClaw's DAG. The internal DAG is kept as a durable execution graph for running MD.
 
-外部に出す contract は次の4つに絞る。
+Narrow the contract exposed to the outside to these four:
 
 - MD request
 - MD evidence report
 - artifact references
 - provenance
 
-### 自然言語だけにしない
+### Do not rely on natural language alone
 
-Evidence report には自然言語 summary が必要だが、それだけでは不十分。
+An evidence report needs a natural-language summary, but that alone is not enough.
 
-ScienceClaw や細胞モデルが次の判断に使うには、少数の型付き指標が必要。
+For ScienceClaw and cell models to use it in their next decisions, a small number of typed indicators is needed.
 
-自然言語:
+Natural language:
 
-- 人間が読める
-- 意味づけに強い
-- limitations を説明しやすい
+- Readable by humans
+- Strong at conveying meaning
+- Easy to explain limitations with
 
-型付き metrics:
+Typed metrics:
 
-- 比較できる
-- ranking できる
-- threshold 判定できる
-- downstream model の parameter hint に使える
+- Can be compared
+- Can be ranked
+- Can be judged against thresholds
+- Can be used as parameter hints for downstream models
 
-### confidence と limitations を必ず返す
+### Always return confidence and limitations
 
-細胞 foundation model との接続では、過信が危険。
+In connecting with cell foundation models, overconfidence is dangerous.
 
-MDClaw は結論だけでなく、どの程度信用できるか、何が限界かを必ず返す。
+MDClaw always returns not only the conclusion but also how far it can be trusted and what its limits are.
 
-例:
+Example:
 
 - `low`: short single-replicate screen; qualitative only
 - `medium`: multiple replicates with consistent RMSD/RMSF shift
 - `high`: longer sampling plus free-energy estimate and replicate agreement
 
-## 最小ゴール
+## Minimum goal
 
-最初の完成形:
+The first finished form:
 
 ```text
-外部エージェント:
-  "P12345 V148A は安定性に影響する？"
+External agent:
+  "Does P12345 V148A affect stability?"
 
 MDClaw:
-  mutation_stability_study を実行
-  WT vs mutant の短時間 replicate MD を流す
-  RMSD/RMSF/active-site flexibility を比較
-  evidence report を返す
+  Run mutation_stability_study
+  Run short replicate MD for WT vs mutant
+  Compare RMSD/RMSF/active-site flexibility
+  Return the evidence report
 ```
 
-この形にすると、MDClaw は細胞シミュレータ foundation model にとって自然な「原子レベル evidence provider」になる。
+In this form, MDClaw becomes a natural "atomic-level evidence provider" for cell-simulator foundation models.

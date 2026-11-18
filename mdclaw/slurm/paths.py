@@ -4,7 +4,7 @@ A compute node sees the cluster's shared filesystems, not this host's
 ``/tmp`` or a filesystem held in its memory. MDDataBench v5 lost 11 first
 jobs to such paths: an ``--output-dir`` under ``/tmp``, a container bind of a
 directory that existed only on the login side, and job directories with a
-typo (``/data1/rku00161`` for ``/data1/rkp00079/rku00161``) that existed only
+typo (``/data1/$USER`` for ``/data1/$PROJECT/$USER``) that existed only
 because the agent's sandbox root was a tmpfs it could write to. The
 container then failed to start (``FATAL: container creation failed: mount
 hook function failure``) seconds into the job. Each is refused here.

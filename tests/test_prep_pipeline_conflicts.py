@@ -1,4 +1,4 @@
-"""Fast regression tests for the prep-pipeline residue-modification 导线.
+"""Fast regression tests for the prep-pipeline residue-modification wiring.
 
 These encode the 10 conflict cases found by the multi-agent audit so the
 "fix -> re-check -> loop until all pass" cycle is test-driven instead of

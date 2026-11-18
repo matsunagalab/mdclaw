@@ -1,49 +1,49 @@
 ---
-title: CUDA 12・13対応環境の現状と対応案
+title: Current state of CUDA 12 / 13 compatible environments and proposed responses
 category: research
 updated: 2026-10-23
-status: 調査時点の記録・2026-10-24に実装修正・GPU実機未検証
+status: Record as of the investigation; implementation revised on 2026-10-24; not yet verified on real GPU hardware
 ---
 
-# CUDA 12・13対応環境の現状と対応案
+# Current state of CUDA 12 / 13 compatible environments and proposed responses
 
-対象は `7ac36a7`。ホストのCUDA Toolkitに環境を追従させるより、必要な最古ドライバとGPU世代に合わせて実行環境を固定する。新しいドライバでは古いCUDA runtimeを利用できるため、CUDA 13対応ホストにもCUDA 12版を使える。ただしOpenMMの実行時コンパイルと各ライブラリのGPU世代対応を確認する必要がある。[NVIDIA互換性](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html)
+The target is `7ac36a7`. Rather than making the environment follow the host's CUDA Toolkit, pin the runtime environment to the oldest driver and GPU generation that must be supported. Newer drivers can use an older CUDA runtime, so the CUDA 12 build can also be used on CUDA 13 capable hosts. However, OpenMM's runtime compilation and each library's GPU-generation support must be checked. [NVIDIA compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html)
 
-2026-10-24追記：本人承認で標準DockerのCUDA 12.9統一、ARM Pixi lockと公式ARM版MODELLERの導入、GPU実計算検査の共通化を実装した。RIKYU構成は維持。以下は調査時点の記録であり、現在の変更と検証範囲は[開発記録](../memo.md)・[導入手順](../agents/deployment.md)を参照。
+Addendum 2026-10-24: with the owner's approval, we implemented unifying the standard Docker image on CUDA 12.9, adding an ARM Pixi lock and the official ARM build of MODELLER, and sharing the real GPU computation checks. The RIKYU configuration is kept. What follows is the record as of the investigation; for the current changes and the scope of verification, see the [development record](../memo.md) and the [deployment guide](../agents/deployment.md).
 
-同日追加指示：n1〜n5の互換性を優先し、標準コンテナの12.9化は撤回。GPU依存を一括除去してcu118 Torch・CPU JAX・11.8でソースビルドしたOpenMMに置換する。Linux Pixiの12.9とRIKYUの13系は別構成で維持。実機合格は未確認。
+Additional instruction the same day: prioritize compatibility with n1–n5, and withdraw moving the standard container to 12.9. Remove the GPU dependencies wholesale and replace them with cu118 Torch, CPU JAX, and OpenMM built from source against 11.8. Keep Linux Pixi's 12.9 and RIKYU's 13.x as separate configurations. Passing on real hardware has not been confirmed.
 
-## 現状
+## Current state
 
-| 経路 | 実際の定義・固定内容 | 問題・制約 |
+| Path | Actual definition / pinned contents | Problems / constraints |
 |---|---|---|
-| Linux x86_64 pixi | OpenMM 8.6.1、PyTorch 2.7.1 cuda129、NVRTC 12.9.86 | CUDA 12.9単一環境。CUDA 12の古いドライバ全般を保証できない |
-| 標準Docker／そのSIF | 上記lockを導入後、Torchを2.7.1+cu118へ置換、OpenMM 8.5.1をCUDA 11.8でソースビルド | condaのlibtorch・CUDA 12.9依存を除去する処理がなく残留する構成。最終的なロード先・ABI整合は実物での検証が必要 |
-| RIKYU arm64 Docker／そのSIF | environment.ymlを加工してmambaで解決。OpenMM 8.5.1、NVRTC 13.0、Torch 2.10.0 cuda130、CUDA数学ライブラリ13.1・cuFFT 12.1以上 | pixi.lockを使わない。openmm-torchはsm_100向け。一般のARM GPUすべてを対象とする構成ではない |
-| Linux aarch64 pixi | workspaceに宣言あり | defaultに入るmodeller featureが対象外とするため、default環境・lockにARM用パッケージがない |
-| macOS arm64 pixi | OpenMM 8.6.1、CPU版Torch | NVIDIA CUDAの検証環境にはならない |
+| Linux x86_64 pixi | OpenMM 8.6.1, PyTorch 2.7.1 cuda129, NVRTC 12.9.86 | A single CUDA 12.9 environment. Cannot guarantee all older CUDA 12 drivers |
+| Standard Docker / its SIF | After installing the above lock, Torch is replaced with 2.7.1+cu118, and OpenMM 8.5.1 is built from source against CUDA 11.8 | There is no step that removes conda's libtorch and CUDA 12.9 dependencies, so they remain. The final load targets and ABI consistency must be verified on the actual artifact |
+| RIKYU arm64 Docker / its SIF | environment.yml is rewritten and solved with mamba. OpenMM 8.5.1, NVRTC 13.0, Torch 2.10.0 cuda130, CUDA math libraries 13.1, cuFFT 12.1 or later | Does not use pixi.lock. openmm-torch targets sm_100. Not a configuration that targets all ARM GPUs in general |
+| Linux aarch64 pixi | Declared in the workspace | The modeller feature included in default excludes this platform, so the default environment / lock has no ARM packages |
+| macOS arm64 pixi | OpenMM 8.6.1, CPU Torch | Cannot serve as a verification environment for NVIDIA CUDA |
 
-根拠: [pixi.toml](../../pixi.toml)、[pixi.lock](../../pixi.lock)、[標準Dockerfile](../../container/Dockerfile)、[RIKYU Dockerfile](../../container/Dockerfile.rikyu-arm64)。`pixi 0.82.1 info --json`でdefaultの対象がlinux-64-cuda／osx-arm64のみと確認。`pixi list --locked --no-install --platform linux-aarch64-cuda '^openmm$'`は「No packages found」。Linux x86_64は同コマンドで上表の固定版を確認した。インストール・lock更新はしていない。
+Evidence: [pixi.toml](../../pixi.toml), [pixi.lock](../../pixi.lock), [standard Dockerfile](../../container/Dockerfile), [RIKYU Dockerfile](../../container/Dockerfile.rikyu-arm64). `pixi 0.82.1 info --json` confirmed that default targets only linux-64-cuda / osx-arm64. `pixi list --locked --no-install --platform linux-aarch64-cuda '^openmm$'` returns "No packages found". For Linux x86_64, the same command confirmed the pinned versions in the table above. Nothing was installed and the lock was not updated.
 
-## 互換性を決めるもの
+## What determines compatibility
 
-- ホストのNVIDIAドライバ、GPUの世代、環境内のCUDA runtime／NVRTC／数学ライブラリは別々に確認する。DockerにはホストのCUDA Toolkit自体は不要。[NVIDIA Container Toolkit](https://github.com/NVIDIA/nvidia-container-toolkit/blob/main/README.md?plain=1)
-- CUDA 12.xはR525以降、13.xはR580以降というminor互換の範囲があるが、PTXというGPU向け中間コードを古いドライバが読めない場合は対象外。OpenMM [8.5.1](https://raw.githubusercontent.com/openmm/openmm/8.5.1/platforms/cuda/src/CudaContext.cpp)と[8.6.1](https://raw.githubusercontent.com/openmm/openmm/8.6.1/platforms/cuda/src/CudaContext.cpp)はNVRTCでPTXを生成し、ドライバで読み込む。[NVIDIAの制限](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html)
-- NVRTC 12.9版の保守的な基準はR575級（12.9 GAは575.51.03、Update 1は575.57.08）。これはCUDA 12.9の全プログラムに必須という意味ではない。同様に標準Dockerfileの「CUDA 11.8なら450+」はOpenMMの無条件保証としては過大。11.8対応ドライバ520.61.05以上を保守的な基準とし、それより古い構成は個別検証が必要。[版ごとの対応](https://docs.nvidia.com/cuda/archive/13.0.0/cuda-toolkit-release-notes/index.html)、[11.8](https://docs.nvidia.com/cuda/archive/11.8.0/cuda-toolkit-release-notes/index.html)
-- BlackwellはCUDA 12.8からネイティブ対応があり、CUDA 13が一律必須ではない。CUDA 13はMaxwell・Pascal・Voltaのコンパイル／ライブラリ対応を削除しているので、全GPUの13統一は適さない。[Blackwell](https://docs.nvidia.com/cuda/archive/12.8.0/blackwell-compatibility-guide/index.html)、[CUDA 13](https://docs.nvidia.com/cuda/archive/13.0.0/cuda-toolkit-release-notes/index.html)
-- Pixiの`cuda`宣言と`CONDA_OVERRIDE_CUDA`は互換能力の宣言・上書きであり、ドライバを更新するものではない。runtimeは依存指定とlockで固定する。[Pixi](https://pixi.prefix.dev/latest/workspace/system_requirements/)
+- Check the host's NVIDIA driver, the GPU generation, and the CUDA runtime / NVRTC / math libraries inside the environment separately. Docker does not need the host's CUDA Toolkit itself. [NVIDIA Container Toolkit](https://github.com/NVIDIA/nvidia-container-toolkit/blob/main/README.md?plain=1)
+- Minor-version compatibility covers CUDA 12.x from R525 and 13.x from R580, but it does not apply when an older driver cannot read PTX, the intermediate GPU code. OpenMM [8.5.1](https://raw.githubusercontent.com/openmm/openmm/8.5.1/platforms/cuda/src/CudaContext.cpp) and [8.6.1](https://raw.githubusercontent.com/openmm/openmm/8.6.1/platforms/cuda/src/CudaContext.cpp) generate PTX with NVRTC and load it through the driver. [NVIDIA's limitations](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html)
+- The conservative baseline for NVRTC 12.9 is the R575 class (12.9 GA is 575.51.03, Update 1 is 575.57.08). This does not mean it is required for every CUDA 12.9 program. Likewise, the standard Dockerfile's "450+ for CUDA 11.8" overstates what OpenMM unconditionally supports. Take driver 520.61.05 or later, which supports 11.8, as the conservative baseline; older configurations need individual verification. [Per-version support](https://docs.nvidia.com/cuda/archive/13.0.0/cuda-toolkit-release-notes/index.html), [11.8](https://docs.nvidia.com/cuda/archive/11.8.0/cuda-toolkit-release-notes/index.html)
+- Blackwell has native support from CUDA 12.8, so CUDA 13 is not universally required. CUDA 13 removes compilation / library support for Maxwell, Pascal, and Volta, so unifying all GPUs on 13 is not appropriate. [Blackwell](https://docs.nvidia.com/cuda/archive/12.8.0/blackwell-compatibility-guide/index.html), [CUDA 13](https://docs.nvidia.com/cuda/archive/13.0.0/cuda-toolkit-release-notes/index.html)
+- Pixi's `cuda` declaration and `CONDA_OVERRIDE_CUDA` declare / override a compatibility capability; they do not update the driver. The runtime is pinned by dependency specifications and the lock. [Pixi](https://pixi.prefix.dev/latest/workspace/system_requirements/)
 
-## 優先する改善案
+## Proposed improvements, in priority order
 
-1. **最小ドライバとGPU世代を先に決める。** 現在の12.9を標準にできるのは、そのNVRTCを実行できるドライバ群を対象にする場合。R535／R550等も含むなら、低いNVRTCでのソースビルドか既存11.8版の維持が必要。CUDA 13対応ドライバという理由だけで13版へ切り替えない。
-2. **各構成を最初から整合した依存として解決する。** 通常CUDA 12版、必要な既存RIKYU CUDA 13版、必要なら旧環境向け11.8版を区別する。互いに競合するCUDA版を同じsolve-groupへ押し込まず、Pixi環境ごとにlockする。ARM用のMODELLER配布経路も分ける。Dockerは対応するlockから作り、OpenMM／Torchの後置換をなくすか、ソースビルド層を明示し同じ版を使う。12.9より古いOpenMMビルドのパッケージ供給方法は実装時に検討する。
-3. **実計算の検査を共通にする。** doctorは既にContext生成・エネルギー・1ステップを試すが、GPUが使えなくてもCPUが動けば成功する。GPU必須の受入検査ではCUDAを明示し、失敗をCPU成功で通さない。OpenMMの力・PME、TorchのGPU演算・FFT、PythonTorchForceの力／勾配を検査する。DockerとSIFの両方で実行する。
-4. **ロードされたライブラリを確認する。** ドライバ、GPU名・compute capability、OpenMM／Torch／NVRTC版、libcuda・NVRTC・cuFFT・libtorchの実ロード先を記録する。SIFの`--nv`はホストのライブラリを取り込むため、ホストの設定も影響する。`--nvccli`はexperimentalで、一律の置換策にしない。[Apptainer](https://apptainer.org/docs/user/latest/gpu.html)
+1. **Decide the minimum driver and GPU generations first.** The current 12.9 can be the standard only if the target is the set of drivers that can run that NVRTC. If R535 / R550 etc. are also included, either a source build against a lower NVRTC or keeping the existing 11.8 build is needed. Do not switch to a 13 build merely because the drivers support CUDA 13.
+2. **Solve each configuration as a consistent set of dependencies from the start.** Distinguish the normal CUDA 12 build, the existing RIKYU CUDA 13 build where needed, and, if needed, an 11.8 build for older environments. Do not force mutually conflicting CUDA versions into the same solve-group; lock each Pixi environment separately. Also separate the MODELLER distribution path for ARM. Build Docker images from the corresponding lock, and either eliminate the after-the-fact OpenMM / Torch replacement or make the source-build layer explicit and use the same version. How to supply packages for OpenMM builds older than 12.9 is to be decided at implementation time.
+3. **Share the real computation checks.** doctor already tries Context creation, energy, and one step, but it succeeds if the CPU works even when the GPU is unusable. In GPU-required acceptance checks, specify CUDA explicitly and do not let a CPU success mask a failure. Check OpenMM forces / PME, Torch GPU operations / FFT, and PythonTorchForce forces / gradients. Run them in both Docker and the SIF.
+4. **Check which libraries are actually loaded.** Record the driver, GPU name / compute capability, OpenMM / Torch / NVRTC versions, and the actual load paths of libcuda, NVRTC, cuFFT, and libtorch. SIF `--nv` pulls in host libraries, so the host configuration also matters. `--nvccli` is experimental and should not be used as a blanket replacement. [Apptainer](https://apptainer.org/docs/user/latest/gpu.html)
 
-既存の[標準smoke](../../container/scripts/test-container.sh)はGPUなしをSKIPし、GPUありでもOpenMMのCUDA登録確認まで。[RIKYU検査](../../container/scripts/test-rikyu-gpu.sh)は実際のOpenMM計算・PME・Torch FFTまで行うが、PythonTorchForceはimport確認のみ。[doctor](../../scripts/_internal/doctor.py)と[platform inspection](../../mdclaw/simulation/platform.py)は登録確認より強い検査へ既に改善済み。[CI](../../.github/workflows/ci.yml)・[Container](../../.github/workflows/container.yml)・[SIF download](../../.github/workflows/sif.yml)はGPU実行の保証にはならない。
+The existing [standard smoke](../../container/scripts/test-container.sh) SKIPs when there is no GPU, and even with a GPU it only goes as far as checking OpenMM's CUDA registration. The [RIKYU check](../../container/scripts/test-rikyu-gpu.sh) goes as far as actual OpenMM computation, PME, and Torch FFT, but PythonTorchForce is only import-checked. [doctor](../../scripts/_internal/doctor.py) and [platform inspection](../../mdclaw/simulation/platform.py) have already been improved to checks stronger than registration checks. [CI](../../.github/workflows/ci.yml), [Container](../../.github/workflows/container.yml), and [SIF download](../../.github/workflows/sif.yml) do not guarantee GPU execution.
 
-起動側の追加論点: [runtime.sh](../../scripts/_internal/runtime.sh)はnvidia-smiの存在でGPUオプションを付けるだけで、CUDA版に合うイメージ／Pixi環境は選ばない。[entrypoint.sh](../../container/scripts/entrypoint.sh)のcompat判定もドライバ版ではなくnvidia-smiの有無。互換パッケージの自動注入は、対応GPU・ドライバを確認した例外に限定する。[NVIDIA forward compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/forward-compatibility.html)
+Additional launch-side issues: [runtime.sh](../../scripts/_internal/runtime.sh) only adds GPU options based on the presence of nvidia-smi; it does not select an image / Pixi environment that matches the CUDA version. The compat decision in [entrypoint.sh](../../container/scripts/entrypoint.sh) is likewise based on whether nvidia-smi exists, not on the driver version. Limit automatic injection of compatibility packages to exceptions whose GPU and driver support has been confirmed. [NVIDIA forward compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/forward-compatibility.html)
 
-## 未確認
+## Not yet confirmed
 
-調査端末はmacOS arm64。対象計算サーバーの現在のドライバ／GPU一覧、最終イメージの動的リンク先、各ドライバでのGPU計算は今回未確認。大学停電に関する既存指示に従いSSH接続していない。公開済みSIFの内容を現checkoutのDockerfileと同一とはみなしていない。次の実装判断に必要なのは、対応対象ホストのドライバ・GPU・CPUアーキテクチャの一覧。
+The investigation machine was macOS arm64. The current driver / GPU inventory of the target compute servers, the dynamic link targets of the final images, and GPU computation under each driver were not confirmed this time. Following the existing instruction concerning the university power outage, no SSH connection was made. The contents of the published SIF are not assumed to be identical to the current checkout's Dockerfile. What the next implementation decision needs is a list of the drivers, GPUs, and CPU architectures of the hosts to be supported.

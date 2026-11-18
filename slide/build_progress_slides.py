@@ -8,9 +8,9 @@ from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.oxml.ns import qn
 from lxml import etree
 
-OUTPUT = Path(
-    "/Users/yasu/gdrive/work/mdclaw/slide/"
-    "20260420_進捗報告_MDClawによるエージェント駆動MD_松永.pptx"
+OUTPUT = (
+    Path.home() / "gdrive/work/mdclaw/slide"
+    / "20260420_progress_report_agent_driven_MD_with_MDClaw_Matsunaga.pptx"
 )
 
 # ---------- palette ----------
@@ -551,7 +551,7 @@ def slide_title_page(prs):
     filled_rect(s, 0, 0, 0.4, SLIDE_H, ACCENT)
     # project eyebrow
     text(s, 0.9, 1.5, SLIDE_W - 1.3, 0.35,
-         "MDCLAW · 進捗報告 · 2026.04",
+         "MDCLAW · PROGRESS REPORT · 2026.04",
          size=12, bold=True, color=ACCENT, align=PP_ALIGN.LEFT)
     # main title
     text(s, 0.9, 2.05, SLIDE_W - 1.3, 1.4,
@@ -623,7 +623,7 @@ def slide_background(prs):
         ("Fits the 'auto-research' paradigm (cf. Karpathy): agents as full-stack researchers, not only copilots", 1),
         ("Matsunaga lab × R-CCS AI4Science Unit: prepare for FugakuNEXT-class AI-driven science", 1),
         ("Aligns with two funded lab initiatives:", 1),
-        ("NBDC 育成型 MDDB-AI Hub — a Japanese MD data & model commons, federated with European MDDB", 2),
+        ("NBDC development-stage MDDB-AI Hub — a Japanese MD data & model commons, federated with European MDDB", 2),
         ("sim2real — transfer-learn nanobody Tm / ddG from MD-generated FEP data into ESM-2", 2),
         "",
         "Why MD is an ideal testbed for agentic auto-research:",
@@ -1165,7 +1165,7 @@ def slide_ecosystem(prs):
          "MDDB-AI Hub (federated\n"
          "with European MDDB /\n"
          "IRB Barcelona).\n\n"
-         "On HPCI共用 1.5 PB.",
+         "On HPCI shared storage, 1.5 PB.",
          C_STEP),
         ("Paper-methods writer",
          "Draft the Methods",

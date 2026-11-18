@@ -1,89 +1,88 @@
 # Agent-Orchestrated Molecular Dynamics — Research Notes
 
-**作成日**: 2026-04-19
-**著者**: 松永康佑 (RIKEN) × Claude (Opus 4.7)
-**目的**: 別マシンで議論を継続するための文脈復元ドキュメント。
-冒頭の「Continuation prompt」をコピペすれば、別マシンの Claude が続きから議論できる。
+**Date written**: 2026-04-19
+**Authors**: Yasuhiro Matsunaga (RIKEN) × Claude (Opus 4.7)
+**Purpose**: A context-restoration document for continuing the discussion on another machine.
+Copy and paste the "Continuation prompt" at the top, and Claude on another machine can pick up the discussion where it left off.
 
-> **Legacy note (2026-05 update)**: 本メモが書かれた時点では `build_amber_system` が
-> `tleap` を使い `parm7` / `rst7` を出力していた。現在はその経路は
-> openmmforcefields-unification refactor で書き換えられ、
-> `openmmforcefields.SystemGenerator` / `GAFFTemplateGenerator`、OpenFF Pablo を介して
-> `system.xml` + `topology.pdb` + `state.xml` の modern artifact triple を
-> 出すようになっている。DAG / node 設計、ancestor-based artifact resolution、
-> failure-as-data といったメタな議論は現行設計に概ね引き継がれているが、
-> 具体的なファイル名・ツール名は現行コード（`AGENTS.md` 等）を正とする。
+> **Legacy note (2026-05 update)**: When this memo was written, `build_amber_system`
+> used `tleap` and output `parm7` / `rst7`. That path has since been
+> rewritten by the openmmforcefields-unification refactor, and it now
+> outputs the modern artifact triple `system.xml` + `topology.pdb` + `state.xml`
+> via `openmmforcefields.SystemGenerator` / `GAFFTemplateGenerator` and OpenFF Pablo.
+> The meta-level discussion, such as the DAG / node design, ancestor-based artifact resolution,
+> and failure-as-data, largely carries over to the current design, but
+> for concrete file names and tool names, the current code (`AGENTS.md`, etc.) is authoritative.
 
 ---
 
-## 0. Continuation prompt（他マシンの Claude 向け）
+## 0. Continuation prompt (for Claude on another machine)
 
 ```
-@docs/research/agent_orchestrated_md.md を読んで、議論の続きをしたい。
-前回の到達点は「sub-agent × REMD を agent orchestration の
-科学計算ベンチマークとして立てる」ところ。
-次の一歩として、(a) 最小プロトタイプのスコープ確定 / (b) DAG 緩和の Level 1-2
-（エッジのロール型付け + 入力解決の宣言化）の mdclaw への先行実装 /
-(c) 論文構成のドラフト、のどれから進めるかを一緒に決めたい。
+Read @docs/research/agent_orchestrated_md.md; I want to continue the discussion.
+Last time we got as far as "set up sub-agent × REMD as a
+scientific-computing benchmark for agent orchestration".
+As the next step, I want to decide together which to start with: (a) pinning down the scope of a minimal prototype / (b) implementing
+DAG relaxation Levels 1-2 (role-typing of edges + declarative input resolution) in mdclaw ahead of time /
+(c) drafting the paper structure.
 ```
 
 ---
 
-## 1. Context — 出発点となった問題提起
+## 1. Context — the problem statement that started this
 
-SNS で観測された議論:
+A discussion observed on social media:
 
-- ThoughtWorks の Technology Radar で **LangGraph が Adapt → Trial に格下げ** された
-- 批判の骨子: 「エージェント状態をローカルライブラリのグラフ構造として持ってしまうと、
-  そこで**耐久実行**も**他ワークフローへの展開**も死ぬ。スケールするマルチエージェントが
-  最初から無理」
-- より一般化すると: 「LangGraph / LangChain / deepagents の強みは自分でエージェントの
-  ステート管理をしているところだが、まさにそのアーキテクチャこそが**スケーリングや耐性実行に
-  致命的なインコンピテンシー**を生む。特定アーキテクチャにコミットすることで難しくなる展開が
-  あるという典型例」
+- In ThoughtWorks' Technology Radar, **LangGraph was downgraded from Adapt to Trial**
+- The gist of the criticism: "If you hold agent state as a graph structure in a local library,
+  that kills both **durable execution** and **deployment to other workflows**. Scalable multi-agent
+  systems are impossible from the start."
+- More generally: "The strength of LangGraph / LangChain / deepagents is that they manage the agent's
+  state themselves, but that very architecture creates **fatal incompetencies for scaling and durable
+  execution**. A textbook example of how committing to a specific architecture makes some deployments
+  harder."
 
-この批判は mdclaw（MD 計算を DAG でモデリングするフレームワーク）にも刺さるのか？ というのが
-議論の出発点。
+The starting point of the discussion was: does this criticism also apply to mdclaw (a framework that models MD computations as a DAG)?
 
 ---
 
-## 2. Position — mdclaw の DAG は別物
+## 2. Position — mdclaw's DAG is a different thing
 
-**結論**: 種類が違う硬直であり、LangGraph 批判は部分的にしか当たらない。
+**Conclusion**: It is a different kind of rigidity, and the LangGraph criticism only partially applies.
 
-| 観点 | LangGraph 型 | mdclaw 型 |
+| Aspect | LangGraph type | mdclaw type |
 |---|---|---|
-| グラフが表現するもの | エージェント思考・制御フロー | **計算アーティファクトの系譜** |
-| 状態の所在 | ライブラリ内メモリ | **ファイルシステム永続** (`node.json`, `artifacts/`, `events/`) |
-| ノード追加 | コード変更（グラフ定義） | `create_node` 呼び出しだけ（エージェントが動的に生やす） |
-| エージェント | グラフ内部 | **グラフの外側**（Claude が外から DAG を操作） |
-| 耐久実行 | 苦しい | ネイティブ（ディスク再入で任意時点再開可） |
+| What the graph represents | Agent reasoning and control flow | **Lineage of computational artifacts** |
+| Where state lives | In-library memory | **Persisted on the filesystem** (`node.json`, `artifacts/`, `events/`) |
+| Adding a node | Code change (graph definition) | Just a `create_node` call (the agent grows it dynamically) |
+| Agent | Inside the graph | **Outside the graph** (Claude operates the DAG from outside) |
+| Durable execution | Hard | Native (re-entry from disk allows resuming at any point) |
 
-3 つの批判点に対する回答:
+Answers to the 3 points of criticism:
 
-1. **耐久実行**: むしろ強い（DB 不要、ファイルシステムが state）
-2. **他ワークフローへの展開**: DAG はただのファイルツリー + JSON なので外部ツールから読める
-3. **マルチエージェントスケール**: `_lock.py` で同一 `job_dir` を複数プロセスが触れる設計
+1. **Durable execution**: actually strong (no DB needed; the filesystem is the state)
+2. **Deployment to other workflows**: the DAG is just a file tree + JSON, so external tools can read it
+3. **Multi-agent scale**: designed so that multiple processes can touch the same `job_dir` via `_lock.py`
 
 ---
 
-## 3. Architectural commitments in mdclaw — 本当に硬い部分
+## 3. Architectural commitments in mdclaw — the truly rigid parts
 
-ただし mdclaw にも「アーキテクチャ・コミットメント」は確実にある。具体的には 2 箇所:
+That said, mdclaw definitely has "architectural commitments" too. Specifically, in 2 places:
 
-### 3.1 `NODE_TYPES` 列挙 — `mdclaw/_node.py:36`
+### 3.1 The `NODE_TYPES` enumeration — `mdclaw/_node.py:36`
 
 ```python
 NODE_TYPES = frozenset({"source", "prep", "solv", "topo", "eq", "prod", "analyze"})
 ```
 
-ここにない型は `create_node` が弾く（`_node.py:148-152`）。また型ごとのバリデーション
-（source は parent 不可、prep は source 祖先が 1 つだけ、continue_from は prod 専用）が
-ハードコードされている。
+`create_node` rejects any type not listed here (`_node.py:148-152`). Per-type validation
+(source cannot have a parent, prep must have exactly one source ancestor, continue_from is prod-only)
+is also hard-coded.
 
-### 3.2 `resolve_node_inputs` の型別ロジック — `mdclaw/_node.py:680-813`
+### 3.2 Type-specific logic in `resolve_node_inputs` — `mdclaw/_node.py:680-813`
 
-各 `node_type` ごとに「どの祖先のどの artifact を何という引数名で渡すか」が if/elif で分岐:
+For each `node_type`, "which artifact of which ancestor is passed under which argument name" branches in if/elif:
 
 ```python
 elif node_type == "topo":
@@ -94,50 +93,50 @@ elif node_type == "eq":
     sx = find_ancestor_artifact(job_dir, node_id, "topo", "system_xml")
     # ...
 elif node_type == "prod":
-    # prod は特別扱い: continued_from の厳密解決 + eq/prod 祖先の checkpoint fallback
+    # prod is special-cased: strict resolution of continued_from + checkpoint fallback from eq/prod ancestors
 ```
 
-**つまり「ノード型 = データフロー契約」が 1:1 で紐付いている**。これが mdclaw の硬直の本体。
+**In other words, "node type = data-flow contract" is bound 1:1.** This is the core of mdclaw's rigidity.
 
-### 3.3 何が easy / 何が hard か
+### 3.3 What is easy / what is hard
 
-| 変更タイプ | 必要な作業 |
+| Type of change | Work required |
 |---|---|
-| パラメータのバリエーション（温度、圧力、restraint） | **コード変更不要**（`conditions` に入れるだけ） |
-| 同じフローで変種を増やす | **コード変更不要**（既存型で分岐） |
-| 新しい**ステップ型**（fep_window など） | `NODE_TYPES` + `resolve_node_inputs` に追記、新 tool 追加 |
-| 新しい**データフロー形状**（多対一、横方向交換） | `find_ancestor_artifact`（単一祖先型を上に辿る BFS）の前提ごと書き直し |
-| 非 DAG 的な構造（REMD の相互交換） | DAG モデルを捨てる必要あり |
+| Parameter variations (temperature, pressure, restraint) | **No code change** (just put them in `conditions`) |
+| Adding variants in the same flow | **No code change** (branch with existing types) |
+| A new **step type** (fep_window, etc.) | Add to `NODE_TYPES` + `resolve_node_inputs`, add a new tool |
+| A new **data-flow shape** (many-to-one, lateral exchange) | Rewrite including the premise of `find_ancestor_artifact` (a BFS that walks up for a single ancestor type) |
+| Non-DAG structure (mutual exchange in REMD) | The DAG model must be abandoned |
 
 ---
 
-## 4. DAG 緩和の 5 Levels — 次の研究の足場
+## 4. 5 Levels of DAG relaxation — the foothold for the next research
 
-補足（2026-05）: 複数 source root / 複数 physical system を 1 つの
-`job_dir` に入れる方向ではなく、`job_dir` は source-bundle execution
-unit として維持し、`study_dir` が複数 `job_dir` を束ねる方針に寄せる。
-source bundle の中には NMR model や生成構造 ensemble のような複数候補を
-入れられ、`prep` が 1 つを選んで physical system にする。これにより普通の
-MD研究での単純さを保ちながら、agentic campaign や AI for Science 連携を
-上位レイヤで扱える。
+Addendum (2026-05): rather than putting multiple source roots / multiple physical systems into one
+`job_dir`, the direction is to keep `job_dir` as the source-bundle execution
+unit and to have a `study_dir` bundle multiple `job_dir`s.
+A source bundle can contain multiple candidates, such as NMR models or ensembles of generated structures,
+and `prep` selects one and makes it a physical system. This keeps the simplicity of ordinary
+MD research while handling agentic campaigns and AI for Science integration
+in a higher layer.
 
-> **問い**: アーティファクト系譜 DAG の最小限の拡張で、FEP / REMD / アンサンブル解析 /
-> 適応的サンプリングをカバーできるか？ 制御フロー DAG に退化せずに。
+> **Question**: Can a minimal extension of the artifact-lineage DAG cover FEP / REMD / ensemble analysis /
+> adaptive sampling, without degenerating into a control-flow DAG?
 
-### Level 1: エッジのロール型付け（ほぼタダ）
+### Level 1: Role-typing of edges (almost free)
 
-今は `parent_node_ids: list[str]` が未ラベルの集合。これを
-`parents: [{node_id, role}]` にするだけで:
+Currently `parent_node_ids: list[str]` is an unlabeled set. Simply changing it to
+`parents: [{node_id, role}]` gives:
 
-- `analyze` ノード: N 個の prod を `role="sample"` で受け取る
-- FEP の差分解析: N 個の fep_window を `role="lambda_endpoint"` で受ける
-- bias-source / base-topo の区別ができる
+- `analyze` node: receives N prods with `role="sample"`
+- FEP difference analysis: receives N fep_windows with `role="lambda_endpoint"`
+- bias-source / base-topo can be distinguished
 
-`resolve_node_inputs` の if/elif が**型スキーマ宣言**に昇格する素地になる。
+This lays the groundwork for promoting the if/elif in `resolve_node_inputs` to a **type-schema declaration**.
 
-### Level 2: 入力解決の宣言化（中程度）
+### Level 2: Declarative input resolution (moderate)
 
-`_node.py:680-813` のハードコード分岐を、各 node_type が**自分で宣言**する形に:
+Turn the hard-coded branches in `_node.py:680-813` into a form where each node_type **declares its own** inputs:
 
 ```python
 TOPO_SCHEMA = {
@@ -147,210 +146,210 @@ TOPO_SCHEMA = {
 }
 ```
 
-ユーザが**コード変更せずに**新しい node_type をプラグインとして登録できる。Snakemake /
-Nextflow の `input:` ブロックが近い発想。
+Users can register a new node_type as a plugin **without changing code**. The `input:` block of Snakemake /
+Nextflow is a similar idea.
 
-### Level 3: fan-in アグリゲータ（小〜中）
+### Level 3: Fan-in aggregators (small to moderate)
 
-Umbrella / FEP / bootstrap 解析はここで落ちる。必要なのは:
+Umbrella / FEP / bootstrap analysis falls into place here. What is needed:
 
-- `find_ancestors_of_type(node_id, type)` — 単数ではなく**複数**取る BFS
-- `aggregate_artifacts(nodes, key)` — 横断で集める
+- `find_ancestors_of_type(node_id, type)` — a BFS that takes **multiple** ancestors rather than one
+- `aggregate_artifacts(nodes, key)` — collect across them
 
-umbrella の WHAM、FEP の BAR/MBAR、REUS の解析まで **DAG を壊さず**書ける。
+Umbrella WHAM, FEP BAR/MBAR, and even REUS analysis can be written **without breaking the DAG**.
 
-### Level 4: 階層的コンポジション（中〜大・面白い）
+### Level 4: Hierarchical composition (moderate to large; interesting)
 
-FEP 実験全体 = 1 ノード（外から見ると）、内部は fep_window の DAG。
+A whole FEP experiment = 1 node (seen from outside); internally, a DAG of fep_windows.
 
-- 外の DAG では `fep_experiment → analyze` と素直に直列
-- 内部の細かい並列性は外に漏らさない
-- Bazel の `genrule` 内の hermetic 実行、あるいは sub-DAG / nested workflow に相当
-- カテゴリー論的には**函手** — sub-DAG を outer graph の 1 点に潰して見る操作
+- In the outer DAG, simply `fep_experiment → analyze` in series
+- Fine-grained internal parallelism does not leak outside
+- Equivalent to hermetic execution inside a Bazel `genrule`, or a sub-DAG / nested workflow
+- Category-theoretically a **functor** — the operation of collapsing a sub-DAG to a single point of the outer graph
 
-### Level 5: REMD のような coupled state（ここが本物の研究）
+### Level 5: Coupled state like REMD (this is the real research)
 
-選択肢:
+Options:
 
-- **(a) 時間離散化**: exchange 周期ごとにノードを切る。N replica × K exchange = N×K ノード。
-  グラフは DAG のままで、交換エッジが replica 間を渡る。コスト: ノード数爆発。
-- **(b) Group node + event stream**: replica 群を 1 ノードに潰し、交換は `events/` の
-  append-only ログで記録。DAG は綺麗だが**ノード内部が非透明**。
-- **(c) 同期点ノード**: M 交換ごとに "barrier" ノードを入れ、その間は独立なサブ DAG。
-  粒度パラメータで (a)(b) を連続的に繋ぐ中間案。
+- **(a) Time discretization**: cut a node at every exchange period. N replicas × K exchanges = N×K nodes.
+  The graph stays a DAG, with exchange edges crossing between replicas. Cost: node-count explosion.
+- **(b) Group node + event stream**: collapse the replica group into 1 node and record exchanges in an append-only log in `events/`.
+  The DAG is clean, but **the node internals are opaque**.
+- **(c) Synchronization-point nodes**: insert a "barrier" node every M exchanges, with independent sub-DAGs in between.
+  An intermediate option that continuously connects (a) and (b) through a granularity parameter.
 
-**(c) が一番バランス良さそうで、粒度を自由に選べるのが研究的に面白い**（精度 vs メタデータ
-コストのトレードオフ曲線を引ける）。
+**(c) looks the most balanced, and being able to choose the granularity freely is interesting for research** (one can draw the trade-off curve of accuracy vs. metadata
+cost).
 
 ---
 
-## 5. Sub-Agent × REMD 研究構想 — 最重要セクション
+## 5. Sub-Agent × REMD research concept — the most important section
 
-> 「1 replica = 1 sub-agent」と捉えると、REMD は MD の問題ではなく
-> **multi-agent orchestration** の問題になる。
+> If you think of "1 replica = 1 sub-agent", REMD becomes not an MD problem but
+> a **multi-agent orchestration** problem.
 
-### 5.1 エージェント判断が効くレイヤ
+### 5.1 The layers where agent judgment matters
 
-- **inner loop**（1 ps ごとの積分）: 決定論的、エージェント不要
-- **meta loop**（チェックポイント単位〜交換周期）: **ここが全部エージェント仕事**
+- **inner loop** (integration every 1 ps): deterministic, no agent needed
+- **meta loop** (from checkpoint units to exchange periods): **all of this is agent work**
 
-従来の REMD framework（GROMACS `-multidir`, OpenMM replica）は meta loop も
-ハードコードだった。そこを **judgment に置き換える**のが新規性の核。
+Conventional REMD frameworks (GROMACS `-multidir`, OpenMM replica) hard-coded the meta loop too.
+**Replacing that with judgment** is the core of the novelty.
 
-### 5.2 各エージェントが担う役割
+### 5.2 The role each agent plays
 
 #### Replica worker agent
 
-- **局所的な失敗復旧**: NaN 爆発 → 直近 trajectory を読む → clash 箇所特定 →
-  少し前の checkpoint + 違う seed で再開 → coordinator に事象を報告
-- **局所的な品質判断**: 「この温度で 5 ns やったが RMSD が安定しない、
-  thermostat coupling 弱めたい」
-- **rare event 検出**: CV をリアルタイム監視し「今珍しい状態にいる、forking 要請」
-- **GPU / platform 切替**: OOM → CPU 落ちせずに別 GPU に migrate
+- **Local failure recovery**: NaN blow-up → read the recent trajectory → locate the clash →
+  restart from a slightly earlier checkpoint + a different seed → report the incident to the coordinator
+- **Local quality judgment**: "I ran 5 ns at this temperature but the RMSD does not stabilize;
+  I want to weaken the thermostat coupling"
+- **Rare-event detection**: monitor CVs in real time: "I am in a rare state now; requesting a fork"
+- **GPU / platform switching**: OOM → migrate to another GPU instead of falling back to CPU
 
 #### Coordinator agent
 
-- **温度ラダーの動的調整**: `rep_005 ↔ rep_006` 交換受理率が 5% まで落ちた →
-  中間温度 `rep_005.5` を spawn、ラダー再構成
-- **異種 enhanced sampling の混在**: rep_000 は tempering、rep_001 は metadynamics、
-  rep_002 は REST2 — coordinator が「今の系なら REST2 が効きそう」と判断して構成を変える
-- **予算管理**: GPU 時間を replica ごとに再配分（停滞してる replica から活発な replica へ）
-- **収束判定**: 単純な time-based ではなく「ensemble として free energy surface が
-  安定したか」の判断
+- **Dynamic adjustment of the temperature ladder**: the `rep_005 ↔ rep_006` exchange acceptance rate dropped to 5% →
+  spawn an intermediate temperature `rep_005.5` and reconstruct the ladder
+- **Mixing heterogeneous enhanced sampling**: rep_000 uses tempering, rep_001 metadynamics,
+  rep_002 REST2 — the coordinator judges "REST2 is likely to work for the current system" and changes the configuration
+- **Budget management**: reallocate GPU time per replica (from stalled replicas to active ones)
+- **Convergence judgment**: not simply time-based, but judging "whether the free energy surface has
+  stabilized as an ensemble"
 
-#### 人間エージェント（あり得る）
+#### Human agent (possible)
 
-特定の replica だけ専門家が介入 — ensemble 全体は止めない。これは従来のバッチ MD では
-**構造的に不可能**だった使い方。
+An expert intervenes only on specific replicas — without stopping the whole ensemble. This is a usage that was
+**structurally impossible** in conventional batch MD.
 
-### 5.3 アーキテクチャ・スケッチ
+### 5.3 Architecture sketch
 
 ```
 job_dir/
   nodes/
-    remd_001/                       # outer DAG: ensemble 全体は 1 ノード
-      node.json                     # 温度ラダー, 交換ログの index
+    remd_001/                       # outer DAG: the whole ensemble is 1 node
+      node.json                     # temperature ladder, index of the exchange log
       replicas/
         rep_000/
-          agent_session.jsonl       # この replica のエージェント対話ログ
+          agent_session.jsonl       # agent conversation log for this replica
           artifacts/trajectory.dcd
           events/                   # local incident log
         rep_001/
         ...
       coordinator/
-        agent_session.jsonl         # coordinator の思考ログ
-        decisions.jsonl             # ラダー変更等の意思決定履歴
+        agent_session.jsonl         # coordinator's reasoning log
+        decisions.jsonl             # decision history such as ladder changes
   events/
-    exchange_log.jsonl              # グローバル交換イベント（append-only）
+    exchange_log.jsonl              # global exchange events (append-only)
 ```
 
-**3 層分離**:
+**3-layer separation**:
 
-- **DAG** = artifact lineage（outer）
-- **Events** = 時間軸に並んだ疎結合通信（exchange, incident）
-- **Filesystem subtree** = 各エージェントの私有状態
+- **DAG** = artifact lineage (outer)
+- **Events** = loosely coupled communication ordered on a time axis (exchange, incident)
+- **Filesystem subtree** = each agent's private state
 
-Erlang の supervision tree + actor model が一番近い。ただし「各 actor が LLM エージェント」
-「state が filesystem 永続」という点が novel。
+Erlang's supervision tree + actor model is the closest analogue. What is novel, however, is that "each actor is an LLM agent"
+and "state is persisted on the filesystem".
 
-### 5.4 LangGraph 批判への最強のカウンター
+### 5.4 The strongest counter to the LangGraph criticism
 
-| 批判 | mdclaw × multi-agent REMD での回答 |
+| Criticism | Answer with mdclaw × multi-agent REMD |
 |---|---|
-| エージェント状態をローカル library graph に持つと死ぬ | 各 replica agent は**独立ファイルシステム subtree** を持つ。別マシンにも動かせる |
-| 耐久実行が死ぬ | 各 replica は個別に crash & resume 可能。coordinator 死んでも workers は動き続ける |
-| マルチエージェント・スケールが最初から無理 | N replica = N プロセス = N GPU = N ノード、疎結合。交換だけが同期点 |
+| Holding agent state in a local library graph kills you | Each replica agent has an **independent filesystem subtree**. It can even be moved to another machine |
+| Durable execution dies | Each replica can crash & resume individually. Even if the coordinator dies, the workers keep running |
+| Multi-agent scale is impossible from the start | N replicas = N processes = N GPUs = N nodes, loosely coupled. Only exchanges are synchronization points |
 
-つまり **"multi-agent is flexible and durable" を実データで示せる科学計算ユースケース**に
-なる。チャットエージェント協調より遥かに説得力がある。
+In other words, it becomes **a scientific-computing use case that can show "multi-agent is flexible and durable" with real data**.
+Far more convincing than chat-agent collaboration.
 
 ---
 
-## 6. Experiment Proposal — 最小プロトタイプ
+## 6. Experiment Proposal — minimal prototype
 
-### 実験対象
+### Experimental target
 
-- **系**: Trp-cage (20残基のミニタンパク、フォールディングベンチマーク) か alanine dipeptide
-- **比較**: 従来 REMD vs agent-supervised REMD
+- **System**: Trp-cage (a 20-residue mini-protein, a folding benchmark) or alanine dipeptide
+- **Comparison**: conventional REMD vs agent-supervised REMD
 
-### 評価指標
+### Evaluation metrics
 
-- **convergence time**: free energy surface が収束するまでの wall time / GPU hour
-- **acceptance rate stability**: 交換受理率の時間変動、低下時の自動回復
-- **failure recovery rate**: 人為的に NaN / crash を注入した時のリカバリ成功率
-- **sampling efficiency**: 単位 GPU hour あたりの conformational space カバレッジ
+- **convergence time**: wall time / GPU hours until the free energy surface converges
+- **acceptance rate stability**: temporal variation of the exchange acceptance rate, and automatic recovery when it drops
+- **failure recovery rate**: recovery success rate when NaN / crashes are artificially injected
+- **sampling efficiency**: conformational space coverage per GPU hour
 
-### 実装計画
+### Implementation plan
 
-1. **mdclaw 拡張**: `remd_group` ノード型 + replica sub-agent launcher を追加
-2. **coordinator**: Claude Code 自身（Opus 4.7）
-3. **worker**: 軽量 agent（Haiku 相当）、各 replica の失敗判断専用
-4. **通信**: filesystem events (`events/`) + JSONL message log
+1. **mdclaw extension**: add a `remd_group` node type + a replica sub-agent launcher
+2. **coordinator**: Claude Code itself (Opus 4.7)
+3. **worker**: a lightweight agent (Haiku-class), dedicated to failure judgment for each replica
+4. **communication**: filesystem events (`events/`) + JSONL message log
 
-### タイムライン
+### Timeline
 
-3-6 ヶ月で論文 1 本目のプロトタイプ。
+A prototype for the first paper in 3-6 months.
 
 ---
 
 ## 7. Related Work Pointers
 
-直接参照すべき先行研究:
+Prior work to reference directly:
 
-- **W3C PROV モデル**: `Entity / Activity / Agent` + `wasDerivedFrom` — 役割付き
-  エッジの素直な形式化
-- **Pegasus / Nextflow / Snakemake**: 宣言的 I/O バインディング（Level 2 の既存解）
-- **Bazel / Nix**: 純関数 artifact DAG、ハッシュベース再利用
-- **CWL (Common Workflow Language)**: scatter/gather のパターン化
-- **Dagster**: software-defined assets（アセット DAG として workflow を見る思想）
-- **AutoGen / CrewAI**: multi-agent だが durable state なし、chat タスク中心
-- **Parallel Tempering 自動ラダー最適化論文**: 統計的最適化、LLM の semantic reasoning なし
+- **W3C PROV model**: `Entity / Activity / Agent` + `wasDerivedFrom` — a straightforward formalization of
+  role-labeled edges
+- **Pegasus / Nextflow / Snakemake**: declarative I/O binding (the existing solution to Level 2)
+- **Bazel / Nix**: pure-function artifact DAG, hash-based reuse
+- **CWL (Common Workflow Language)**: patterning of scatter/gather
+- **Dagster**: software-defined assets (the idea of viewing a workflow as an asset DAG)
+- **AutoGen / CrewAI**: multi-agent but no durable state, centered on chat tasks
+- **Papers on automatic ladder optimization for Parallel Tempering**: statistical optimization, no LLM semantic reasoning
 - **Erlang supervision tree**: actor model + fault tolerance via process restart
 
-**新規性の束**:
+**The bundle of novelty**:
 
-1. LLM エージェントが replica supervisor（初？）
-2. DAG + events + filesystem の 3 層分離を multi-agent durable execution の形式として提案
-3. MD の meta-decision を自然言語 reasoning に置き換える具体例
-4. Science benchmark としての multi-agent: chat ベンチマークと違い**客観的指標**
-   （free energy 精度, sampling efficiency）がある
+1. An LLM agent as a replica supervisor (the first?)
+2. Proposing the 3-layer separation of DAG + events + filesystem as a form of multi-agent durable execution
+3. A concrete example of replacing MD meta-decisions with natural-language reasoning
+4. Multi-agent as a science benchmark: unlike chat benchmarks, it has **objective metrics**
+   (free energy accuracy, sampling efficiency)
 
 ---
 
 ## 8. Research Questions / Open Points
 
-### 理論
+### Theory
 
-- **トークンコスト vs MD コストのバランス**: 1 replica が数日走るなら agent 介入は秒〜分粒度で
-  十分 → コスト無視できる。逆に短時間 sweep だと agent overhead が効く → 閾値が研究対象
-- **agent が持つべき context**: 過去の trajectory 全部は渡せない。どう要約するか
-  （RMSD 時系列 + 最近のログだけで判断可能か？）
-- **coordinator の権限範囲**: どこまで自律的にラダー変更を許すか、human gate をどこに置くか
+- **Balancing token cost vs MD cost**: if 1 replica runs for days, agent intervention at a granularity of seconds to minutes is
+  enough → the cost is negligible. Conversely, for short sweeps the agent overhead matters → the threshold is a research subject
+- **The context an agent should have**: the entire past trajectory cannot be passed. How to summarize it
+  (can it judge from just the RMSD time series + recent logs?)
+- **Scope of the coordinator's authority**: how far to allow autonomous ladder changes, and where to put a human gate
 
-### 工学
+### Engineering
 
-- **failure mode**: agent が暴走して replica を殺し続ける、等の病的パターン検出
-- **再現性**: agent 判断が入った REMD の結果は再現できるか、seed だけでなく agent trace を
-  artifact に含める必要
-- **粒度選択**: Level 5 の (a)(b)(c) のどの粒度を標準にするか、ユーザに選ばせるか
+- **failure modes**: detecting pathological patterns, such as an agent running amok and repeatedly killing replicas
+- **Reproducibility**: can the results of REMD with agent judgment be reproduced? The agent trace, not just the seed,
+  must be included in the artifacts
+- **Granularity choice**: which of Level 5's (a)(b)(c) granularities to make standard, or whether to let the user choose
 
-### 論文戦略
+### Paper strategy
 
-論文 2 本に分けられそう:
+It looks like it can be split into 2 papers:
 
-1. **Level 1 + 2 + 3** を 1 本目（実装 + MD ケーススタディ）
-2. **Level 5 (c)** と **Sub-agent × REMD** を 2 本目（理論 + 実験 + 意思決定ログ分析）
+1. **Level 1 + 2 + 3** as the first (implementation + MD case study)
+2. **Level 5 (c)** and **Sub-agent × REMD** as the second (theory + experiments + decision-log analysis)
 
 ---
 
-## 9. 関連ファイル（mdclaw 内）
+## 9. Related files (in mdclaw)
 
-議論で参照した具体的コード位置:
+Concrete code locations referenced in the discussion:
 
-- `mdclaw/_node.py:36` — `NODE_TYPES` 定義
-- `mdclaw/_node.py:121-314` — `create_node` 実装
-- `mdclaw/_node.py:605-677` — `find_ancestor_artifact` (BFS で祖先 artifact 探索)
-- `mdclaw/_node.py:680-813` — `resolve_node_inputs` (型別入力解決、ハードコード分岐)
-- `CLAUDE.md` / `docs/developer/architecture.md` — プロジェクト全体像、schema v3 の説明
-- `mdclaw/_event.py` — append-only イベントログ（将来 REMD 交換ログに転用可能）
-- `mdclaw/_lock.py` — ファイルロック（マルチプロセス前提の設計）
+- `mdclaw/_node.py:36` — `NODE_TYPES` definition
+- `mdclaw/_node.py:121-314` — `create_node` implementation
+- `mdclaw/_node.py:605-677` — `find_ancestor_artifact` (BFS search for ancestor artifacts)
+- `mdclaw/_node.py:680-813` — `resolve_node_inputs` (type-specific input resolution, hard-coded branches)
+- `CLAUDE.md` / `docs/developer/architecture.md` — project overview, explanation of schema v3
+- `mdclaw/_event.py` — append-only event log (could be repurposed for the REMD exchange log in the future)
+- `mdclaw/_lock.py` — file lock (designed on the premise of multiple processes)

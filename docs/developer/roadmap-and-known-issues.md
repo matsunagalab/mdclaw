@@ -81,7 +81,7 @@ Proposed fix (`mdclaw/_receipt.py` and the prep envelope):
 3. Consider a hint on the prep result when a glycan was auto-included and the
    study plan or `--conditions` names no glycan.
 
-Evidence: `/data1/rkp00079/rku00161/runs/glm-5.3-flash-skill-pilot/attempts/069_soluble_1aol/`
+Evidence: `/data1/$PROJECT/$USER/runs/glm-5.3-flash-skill-pilot/attempts/069_soluble_1aol/`
 (`agent.stdout.jsonl`, `workspace/study/jobs/main/nodes/prep_001/result.json`);
 `docs/memo.md` entry of 2026-09-14 on the glm-5.3-flash pilot.
 
@@ -137,7 +137,7 @@ the `embed_in_membrane` preflight):
 3. Optionally exclude `dist_wat` from the fingerprint when it only changes the
    water slab, if the patch geometry allows re-solvating a cached patch.
 
-Evidence: `/data1/rkp00079/rku00161/runs/glm-5.3-flash-skill-full/attempts/002_membrane_5zk3/cli_skill_sif__pi__rikyu-glm-5.3-flash__r1/workspace/.mddatabench/tmp/solv_err.log`;
+Evidence: `/data1/$PROJECT/$USER/runs/glm-5.3-flash-skill-full/attempts/002_membrane_5zk3/cli_skill_sif__pi__rikyu-glm-5.3-flash__r1/workspace/.mddatabench/tmp/solv_err.log`;
 `docs/memo.md` entry of 2026-09-15.
 
 ### packmol-memgen NumPy Compatibility

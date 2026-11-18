@@ -5,8 +5,8 @@ description: "Display existing molecular structures, MD trajectories, or the pro
 
 # MDClaw Common Conventions
 
-For a molecule/trajectory display request (including 「再生して」「回して見たい」
-「準備後の全系を見せて」 and 「静止画を見せて」), follow [visual-qa.md](visual-qa.md) directly and stop
+For a molecule/trajectory display request (including "play it", "I want to rotate it",
+"show the whole prepared system" and "show me a still image"), follow [visual-qa.md](visual-qa.md) directly and stop
 after display. It owns intent selection, current-session capability checks,
 and fallback. Viewing existing files does not start an MD workflow.
 Stage-specific contents and any display-copy processing are selected there too.

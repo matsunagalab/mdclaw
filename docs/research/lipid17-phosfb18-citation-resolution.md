@@ -121,7 +121,7 @@ The XML prefix is `lib/python3.12/site-packages/openmmforcefields/ffxml/amber/`.
 | `dat/leap/parm/lipid17.dat` | `8165899354c80bbbbae4a7d7413726135b0a05287e754237e40b56fd13bb6573` |
 | `dat/leap/lib/oldff/lipid17.lib` | `1aa1d697ebca330e7953ebcc200900e9ba09d39d21fd53e162d7086ecf3e6e14` |
 
-The inspected SIF is `/home/yasu/tmp/mdclaw/mdclaw/mdclaw.sif` (5,656,682,496
+The inspected SIF is `/home/$USER/tmp/mdclaw/mdclaw/mdclaw.sif` (5,656,682,496
 bytes at inspection); identity of the relevant contents is pinned by the hashes
 above, not inferred from the mutable SIF filename. XML source-package fields are
 conversion provenance, and their embedded source MD5 alone does not hash every

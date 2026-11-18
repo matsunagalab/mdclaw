@@ -41,16 +41,16 @@ Synthetic cylindrical carbon walls have prescribed radii 5 and 3 Å, with defaul
 | OpenMM CUDA/PME, cuFFT prefault, PyTorch FFT | Passed |
 | Shell syntax / repository-configured Ruff / diff whitespace | Passed |
 
-Slurm job **87590**, account **rkp00079**, NVIDIA GB200. The synthetic test requires no downloaded structure, user data or scientific MD workflow. It does not claim that a particular pathway in SMO is a conducting pore; selecting and validating that pathway is a separate analysis.
+Slurm job **87590**, account **$PROJECT**, NVIDIA GB200. The synthetic test requires no downloaded structure, user data or scientific MD workflow. It does not claim that a particular pathway in SMO is a conducting pore; selecting and validating that pathway is a separate analysis.
 
-Evidence is retained in `/home/rku00161/mdclaw/.validation/hole-20260908`, with construction logs under `/tmp/mdclaw-hole-candidate`.
+Evidence is retained in `/home/$USER/mdclaw/.validation/hole-20260908`, with construction logs under `/tmp/mdclaw-hole-candidate`.
 
 ## Shared deployment
 
 The existing shared compatibility path
-`/data1/rkp00079/mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-6f171d2f0fa5.sif`
+`/data1/$PROJECT/mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-6f171d2f0fa5.sif`
 was switched after acceptance to
-`/data1/rkp00079/mdclaw-rikyu-arm64-cuda130-cufft121-hole2-b7526a99807f.sif`.
+`/data1/$PROJECT/mdclaw-rikyu-arm64-cuda130-cufft121-hole2-b7526a99807f.sif`.
 The immediately previous SMO-fix SIF remains intact, with a rollback reference
-`/data1/rkp00079/mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-6f171d2f0fa5.pre-hole-20260908.sif`.
+`/data1/$PROJECT/mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-6f171d2f0fa5.pre-hole-20260908.sif`.
 Checksum, runtime manifest and deployment JSON are sidecars beside the new image. Previously opened images are not modified in place. User repositories and simulation artifacts are untouched.

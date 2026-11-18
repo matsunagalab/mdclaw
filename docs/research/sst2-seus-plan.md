@@ -1,544 +1,544 @@
-# SST2 ベースの拡張アンサンブル実装計画（SST2 / SEUS）— 改訂版
+# Implementation plan for SST2-based expanded ensembles (SST2 / SEUS) — revised edition
 
-作成: 2026-09-16（Opus 案を Claude が SST2 コードと MDClaw コードを実地調査して改訂。同日、gREST 論文で境界項の規約を確認し、Abl–abltide の PMF は存在しないとの指摘を反映）
+Written: 2026-09-16 (Opus's draft revised by Claude after hands-on investigation of the SST2 code and the MDClaw code. The same day, the boundary-term convention was confirmed in the gREST paper, and the point that no Abl–abltide PMF exists was incorporated)
 
-MDClaw に単一ウォーカー型の拡張アンサンブルを 2 つ載せる。
+Add two single-walker expanded ensembles to MDClaw.
 
-- (A) **SST2**（Simulated Solute Tempering 2）で、solute を CDR-H3 などの部分領域に限定した
-  REST2 型サンプリング。CV フリー。主力。
-- (B) **SEUS**（Serial / Expanded-ensemble Umbrella Sampling）。umbrella の窓インデックスを
-  1 本のトラジェクトリが歩く、expanded ensemble 版の REUS。CV が明確な用途に限定。
+- (A) **SST2** (Simulated Solute Tempering 2): REST2-type sampling with the solute restricted to a
+  subregion such as CDR-H3. CV-free. The main workhorse.
+- (B) **SEUS** (Serial / Expanded-ensemble Umbrella Sampling). An expanded-ensemble version of REUS in which
+  a single trajectory walks the umbrella window index. Limited to uses where the CV is clear.
 
-対象は VHH / CDR-H3 の surrogate model 用データ生成だが、既存系にも使える設計にする。
+The target is data generation for a VHH / CDR-H3 surrogate model, but the design should also work for existing systems.
 
-改訂の要点（Opus 案からの変更）は §0 にまとめた。以降は Opus 案と同じ章立てで、
-確認できた事実と修正を織り込んである。
+The key points of the revision (changes from Opus's draft) are summarized in §0. The rest follows the same chapter structure as Opus's draft,
+with the confirmed facts and corrections woven in.
 
 ---
 
-## 0. Opus 案からの主な修正点
+## 0. Main corrections to Opus's draft
 
-| # | Opus 案 | 調査結果と修正 |
+| # | Opus's draft | Findings and correction |
 | --- | --- | --- |
-| 1 | `-solute_sel` で残基範囲を指定 | CLI フラグは **`-select`**（`dest="solute_sel"`）。既定 `"chain A"`。選択文字列は `pdb_numpy` の文法 |
-| 2 | H3 限定 solute は「新規実装不要、検証のみ」 | **実装が要る。** Amber 系力場では境界をまたぐ 1-4 対（`NonbondedForce` の exception）が **一切スケールされず**、しかもエネルギー分解では √λ 項として扱われる。`LJ14_solute_boundary` は CHARMM の `CustomBondForce` 専用。さらに副 System の PDB 再構築が solute を挟む残基間に**偽のペプチド結合**を作る（§2.4）。両方とも 2026-09-16 に fork で修正し、テストで固定した（§4） |
-| 3 | SST2 は CLI 呼び出しで疎結合にできる | `bin/launch_SST2_pdb.py` は PDB から pdbfixer → 溶媒和 → 力場名で System 構築まで自前でやる。MDClaw の `system.xml + topology.pdb + state.xml` を受け取れない。さらに `REST2` クラスは **`openmm.app.ForceField` オブジェクトを必須**とし、solute 単独・溶媒単独の副 System を `forcefield.createSystem()` で作る。prmtop 由来の System には渡せない（§2.3）。→ fork 側に **System 複製方式の副 System ビルダー**と **XML 三点セットを受けるドライバ** を足し、MDClaw はそれを subprocess で呼ぶ |
-| 4 | REUS 版の「収束した重み = PMF の符号反転」 | 正確には重み g_m は**窓ごとの自由エネルギー f_m**（PMF をバイアスのガウスで畳み込んだもの）。PMF そのものは保存した (ξ_t, m_t) 系列から pymbar MBAR で出す（エネルギー再評価は不要という点は正しい）。重みの安定性を収束モニタに使う点は正しい（§5） |
-| 5 | 受理判定は「紙で確認」 | 確認した。現行の「隣接 2 候補をシャッフルし単一乱数 r で順に判定」は **π 不変でない**（§2.5）。Δ が λ^f に線形なので全 rung の Gibbs（独立）サンプリングに置き換えるのがコストゼロで正しい。`st.py` の ST 版も別の非標準規則（確率の高い方から判定） |
-| 6 | Abl–abltide の umbrella PMF と突き合わせる | その PMF は存在しない（ユーザー確認）。SEUS の基準は MDClaw の既存 umbrella ルート + pymbar で同じ系・同じ窓から作る（§6） |
-| 7 | alanine dipeptide φ は解析的比較対象になる | ならない。解析解があるのは 1 次元の人工ポテンシャル（`CustomExternalForce` の二重井戸）。alanine dipeptide は通常の umbrella + MBAR と突き合わせる |
-| 8 | rung 数は REMD Temperature Generator で | SST2 自身に `tools.compute_ladder_num()`（Denschlag 2009 の式、REST2 平衡化 CSV のエネルギー揺らぎから推定）があり、launch スクリプトは経験則でその 2 倍を使う。Web ツールは不要 |
-| 9 | `enhanced_ensemble` ノード型を新設 | MDClaw では steering / umbrella が **`prod` ラベル付きノードで実装済み（ノード型は増やさない）** という前例がある（memo 2026-09-06）。新ノード型は 15 箇所の登録が要る。前例に従い `prod` ノード + `sampling_method` 条件で実装する（§7） |
-| 10 | seus.py を SST2 fork 内に書く | SEUS は REST2 のエネルギー分解を一切使わない。MDClaw 側（MIT）に `CustomCVForce` + 重み適応 + Gibbs 更新で書く方が、GPL 境界も再利用（`restraints.py` / `steering.py` の sidecar 方式）も素直。上流には後で移植を提案する |
-| 11 | Phase 1 は 1–2 週間 | 副 System ビルダーと境界 1-4 修正、受理規則修正が乗るので **2–3 週間** |
-| 12 | （記述なし） | gREST 論文（Kamiya & Sugita 2018、式 (3)）で境界項の規約を確認: (β_m/β_0)^(k/l)、l は結合/LJ/Coulomb=2、角度=3、二面角・improper=4、CMAP=8。SST2 の二面角 k/4・CMAP k/8 は**一致**。境界 1-4 は k=1, l=2 で √λ。gREST は境界の結合・角度・improper も k/l でスケールするが、SST2 は Stirnemann–Sterpone 流に proper torsion 以外の結合項をスケールしない。GENESIS 側で `param_type` を二面角 + LJ + Coulomb に絞れば同じポテンシャルになる（§2.4） |
+| 1 | Specify the residue range with `-solute_sel` | The CLI flag is **`-select`** (`dest="solute_sel"`). Default `"chain A"`. The selection string uses `pdb_numpy` grammar |
+| 2 | An H3-only solute "needs no new implementation, only verification" | **Implementation is needed.** With Amber-family force fields, 1-4 pairs crossing the boundary (exceptions of `NonbondedForce`) are **not scaled at all**, and moreover the energy decomposition treats them as √λ terms. `LJ14_solute_boundary` is only for CHARMM's `CustomBondForce`. In addition, the PDB reconstruction of the sub-Systems creates **spurious peptide bonds** between the residues flanking the solute (§2.4). Both were fixed in the fork on 2026-09-16 and locked in with tests (§4) |
+| 3 | SST2 can be loosely coupled via CLI calls | `bin/launch_SST2_pdb.py` does everything itself from the PDB: pdbfixer → solvation → System construction by force-field name. It cannot accept MDClaw's `system.xml + topology.pdb + state.xml`. Moreover, the `REST2` class **requires an `openmm.app.ForceField` object** and builds the solute-only and solvent-only sub-Systems with `forcefield.createSystem()`. A prmtop-derived System cannot be passed to it (§2.3). → Add to the fork a **copy-based sub-System builder** and a **driver that accepts the XML triple**, and have MDClaw call it as a subprocess |
+| 4 | REUS version: "the converged weights = the sign-inverted PMF" | Precisely, the weights g_m are the **per-window free energies f_m** (the PMF convolved with the Gaussian of the bias). The PMF itself is obtained with pymbar MBAR from the saved (ξ_t, m_t) series (the point that no energy re-evaluation is needed is correct). Using the stability of the weights as a convergence monitor is correct (§5) |
+| 5 | Acceptance criterion "checked on paper" | Checked. The current "shuffle the two neighboring candidates and test them in turn with a single random number r" is **not π-invariant** (§2.5). Since Δ is linear in λ^f, replacing it with Gibbs (independence) sampling over all rungs is correct at zero cost. The ST version in `st.py` also uses a different nonstandard rule (testing from the higher-probability candidate first) |
+| 6 | Compare against the Abl–abltide umbrella PMF | That PMF does not exist (confirmed by the user). The SEUS reference is built with MDClaw's existing umbrella route + pymbar from the same system and the same windows (§6) |
+| 7 | Alanine dipeptide φ can serve as an analytical comparison | It cannot. Analytical solutions exist only for a 1D artificial potential (a double well in `CustomExternalForce`). Alanine dipeptide is compared against ordinary umbrella + MBAR |
+| 8 | Use the REMD Temperature Generator for the number of rungs | SST2 itself has `tools.compute_ladder_num()` (the Denschlag 2009 formula, estimated from energy fluctuations in the REST2 equilibration CSV), and the launch script uses twice that as a rule of thumb. No web tool is needed |
+| 9 | Add a new `enhanced_ensemble` node type | MDClaw has a precedent: steering / umbrella are **already implemented as `prod`-labeled nodes (no node types added)** (memo 2026-09-06). A new node type requires registration in 15 places. Following the precedent, implement it as a `prod` node + a `sampling_method` condition (§7) |
+| 10 | Write seus.py inside the SST2 fork | SEUS does not use REST2's energy decomposition at all. Writing it on the MDClaw side (MIT) with `CustomCVForce` + weight adaptation + Gibbs updates is more straightforward for both the GPL boundary and reuse (the sidecar approach of `restraints.py` / `steering.py`). Porting upstream will be proposed later |
+| 11 | Phase 1 takes 1–2 weeks | **2–3 weeks**, since the sub-System builder, the boundary 1-4 fix, and the acceptance-rule fix are added |
+| 12 | (not described) | Confirmed the boundary-term convention in the gREST paper (Kamiya & Sugita 2018, Eq. (3)): (β_m/β_0)^(k/l), with l = 2 for bonds/LJ/Coulomb, 3 for angles, 4 for dihedrals/impropers, and 8 for CMAP. SST2's k/4 for dihedrals and k/8 for CMAP **agree**. Boundary 1-4 is k=1, l=2, giving √λ. gREST also scales boundary bonds, angles, and impropers by k/l, whereas SST2, following Stirnemann–Sterpone, does not scale bonded terms other than proper torsions. Restricting `param_type` on the GENESIS side to dihedrals + LJ + Coulomb gives the same potential (§2.4) |
 
-MDClaw 側の前提（調査で確認）: パッケージ 0.6.8、OpenMM ≥ 8.5.1、pymbar 4.2、ParmEd あり、
-`openmmtools` と `pdb_numpy` はなし。バイアス力は force group 31、CV の CSV と `.meta.json`
-（pymbar 入力を再構成する前提で設計済み）、`steering.json` 型の sidecar、Slurm job array が既にある。
-`_load_state_into_simulation` は Context の global parameter を**復元しない**（NPT↔NVT 切替のため）。
-
----
-
-## 1. 背景と方針
-
-（Opus 案のまま。要旨のみ）
-
-- **CV フリーを主力にする。** CDR-H3 の遅い座標は主鎖二面角、torso の kink、H3–framework
-  パッキング、塩橋、VHH の H3 由来 disulfide に分散しており、CV を事前に選べる保証がない。
-  CV ベースだと直交方向の欠損が検出できず、surrogate 訓練データとして最悪。
-- **simulated tempering 型にする。** 必要なのは MBAR で再重み付けできる重み付き平衡分布。
-  単一トラジェクトリで通信不要なので、独立ラン N 本 = 独立ノード N 個になり、MDClaw の DAG と
-  GB200 の MPS パッキングにそのまま乗る。Rosta & Hummer の「通信なし ST の並列は REMD と同等」が根拠。
-- REUS 側は結合自由エネルギーなど CV が明確な用途に限定。
+Assumptions on the MDClaw side (confirmed in the investigation): package 0.6.8, OpenMM ≥ 8.5.1, pymbar 4.2, ParmEd present,
+`openmmtools` and `pdb_numpy` absent. Bias forces are in force group 31; the CV CSV and `.meta.json`
+(already designed on the assumption of reconstructing pymbar input), the `steering.json`-style sidecar, and Slurm job arrays already exist.
+`_load_state_into_simulation` does **not restore** the Context's global parameters (to allow NPT↔NVT switching).
 
 ---
 
-## 2. SST2 の現状（2026-09-16、commit `31c76a4` を clone して確認）
+## 1. Background and approach
 
-リポジトリ: https://github.com/samuelmurail/SST2 （GPL-2.0、star 23、CI なし）
-論文: Stratmann, Moroy, Tuffery, Murail, *JCTC* **21**, 10705 (2025). https://pubs.acs.org/doi/10.1021/acs.jctc.5c00950
-最新コミット `31c76a4`（2026-07-09, "implement energy recomputation script"）。
+(Unchanged from Opus's draft. Summary only)
 
-### 2.1 論文より実装が先行している（確認済み）
+- **Make the CV-free method the main workhorse.** The slow coordinates of CDR-H3 are spread across backbone dihedrals, the torso kink, H3–framework
+  packing, salt bridges, and the H3-derived disulfide of VHHs, and there is no guarantee that a CV can be chosen in advance.
+  With a CV-based method, missing coverage in orthogonal directions cannot be detected, which is the worst case for surrogate training data.
+- **Use a simulated-tempering type.** What is needed is a weighted equilibrium distribution that can be reweighted with MBAR.
+  A single trajectory needs no communication, so N independent runs = N independent nodes, which fits MDClaw's DAG and
+  MPS packing on GB200 directly. The grounds are Rosta & Hummer's "parallel communication-free ST is equivalent to REMD".
+- The REUS side is limited to uses where the CV is clear, such as binding free energies.
 
-- `solute_index` は任意の原子インデックスリスト。CLI は `-select`（既定 `"chain A"`）。
-- `-only_dihed`（gREST 流、二面角のみスケール）、`-nonbonded_RF`、`-exclude_Pro_omega` あり。
-- 二面角の **k/4 分数バケット**: solute 原子数 k=1..4 ごとに `CustomTorsionForce` を分け、
-  global parameter `lambda_{k}_4 = λ^(k/4)` でスケール。CMAP は k/8 の 8 バケット。
-  境界 1-4 の `LJ14_solute_boundary`（√λ）は **CHARMM の `CustomBondForce` LJ14 専用**。
-- CMAP 分離と NBFIX スケーリングがあり、README の「CHARMM36 未対応」は古い。
-- 論文の future work に「gREST 流に二面角 / CMAP のみスケールする実装」が明記されている。
-  Murail 氏自身が gREST 方向に進んでいるので、部分 solute の提案は受け入れられやすい。
+---
 
-論文から確認した数値: rung は小系で 10 本（λ 1.07 → 0.56、**T_ref より低温の rung がある**）、
-交換間隔 2 ps、摩擦 1 ps⁻¹、重み収束 CLN025 0.5–1 µs、Trp-cage 2–10 µs、
-荷電 solute では OpenMM ≥ 8.3.1 推奨（背景電荷補正の有無で交換の 99.9 % が一致）。
+## 2. Current state of SST2 (2026-09-16, confirmed by cloning commit `31c76a4`)
 
-### 2.2 コード構成
+Repository: https://github.com/samuelmurail/SST2 (GPL-2.0, 23 stars, no CI)
+Paper: Stratmann, Moroy, Tuffery, Murail, *JCTC* **21**, 10705 (2025). https://pubs.acs.org/doi/10.1021/acs.jctc.5c00950
+Latest commit `31c76a4` (2026-07-09, "implement energy recomputation script").
 
-| ファイル | 行数 | 役割 |
+### 2.1 The implementation is ahead of the paper (confirmed)
+
+- `solute_index` is an arbitrary list of atom indices. The CLI is `-select` (default `"chain A"`).
+- `-only_dihed` (gREST style, scaling dihedrals only), `-nonbonded_RF`, and `-exclude_Pro_omega` exist.
+- **k/4 fractional buckets** for dihedrals: a separate `CustomTorsionForce` for each number of solute atoms k=1..4,
+  scaled by the global parameter `lambda_{k}_4 = λ^(k/4)`. CMAP has 8 buckets of k/8.
+  The boundary 1-4 `LJ14_solute_boundary` (√λ) is **only for CHARMM's `CustomBondForce` LJ14**.
+- There is CMAP separation and NBFIX scaling, so the README's "CHARMM36 not supported" is outdated.
+- The paper's future work explicitly mentions "an implementation that scales only dihedrals / CMAP, gREST style".
+  Murail himself is moving in the gREST direction, so a partial-solute proposal is likely to be well received.
+
+Numbers confirmed from the paper: 10 rungs for small systems (λ 1.07 → 0.56; **there are rungs colder than T_ref**),
+exchange interval 2 ps, friction 1 ps⁻¹, weight convergence 0.5–1 µs for CLN025 and 2–10 µs for Trp-cage,
+OpenMM ≥ 8.3.1 recommended for charged solutes (99.9 % of exchanges agree with and without the background-charge correction).
+
+### 2.2 Code layout
+
+| File | Lines | Role |
 | --- | --- | --- |
-| `src/SST2/rest2.py` | 2167 | REST2 本体。solute 定義、分数バケット、副 System、エネルギー分解、`run_rest2` |
-| `src/SST2/sst2.py` | 718 | SST2 ドライバ（`SST2Reporter` が走行平均更新と交換試行を担う） |
-| `src/SST2/st.py` | 532 | ST（Eastman の `SimulatedTempering` 由来） |
+| `src/SST2/rest2.py` | 2167 | REST2 core. Solute definition, fractional buckets, sub-Systems, energy decomposition, `run_rest2` |
+| `src/SST2/sst2.py` | 718 | SST2 driver (`SST2Reporter` handles running-average updates and exchange attempts) |
+| `src/SST2/st.py` | 532 | ST (derived from Eastman's `SimulatedTempering`) |
 | `src/SST2/sst1.py`, `rest1.py` | 577, 1352 | SST1 / REST1 |
-| `src/SST2/tools.py` | 1407 | 準備、`compute_ladder_num`、`get_fastest_platform_name` など |
-| `src/SST2/analysis/` | — | `data_plot.py`（重み RMSD、rung 占有、交換確率）、`trajectory.py`（Opus 案の表にない） |
-| `src/SST2/tests/` | 1147 | `test_rest2.py` 4 本 + `test_sst2.py` 1 本。全て**鎖全体を solute**にする。入力 1.1 MB、CPU で走る |
-| `bin/` | — | `launch_SST2_pdb.py` など。`recompute_energy_traj.py` はトラジェクトリのエネルギー再計算 |
+| `src/SST2/tools.py` | 1407 | Preparation, `compute_ladder_num`, `get_fastest_platform_name`, etc. |
+| `src/SST2/analysis/` | — | `data_plot.py` (weight RMSD, rung occupancy, exchange probability), `trajectory.py` (not in Opus's table) |
+| `src/SST2/tests/` | 1147 | 4 in `test_rest2.py` + 1 in `test_sst2.py`. All use **the whole chain as the solute**. 1.1 MB of input; runs on CPU |
+| `bin/` | — | `launch_SST2_pdb.py`, etc. `recompute_energy_traj.py` recomputes energies along a trajectory |
 
-`pyproject.toml` の不備: `license = {text="GNUv2.0"}` に対し classifier が BSD、
-`[project.scripts] SST2 = "SST2.__main__:main"` だが `__main__.py` が存在しない（console script が壊れている）。
-依存は `openmm>=7.7`, `pdb_numpy`, `pandas`, `pdbfixer`。
+Defects in `pyproject.toml`: the classifier is BSD while `license = {text="GNUv2.0"}`;
+`[project.scripts] SST2 = "SST2.__main__:main"` but `__main__.py` does not exist (the console script is broken).
+Dependencies are `openmm>=7.7`, `pdb_numpy`, `pandas`, `pdbfixer`.
 
-### 2.3 エネルギー分解の実体（MDClaw 統合の制約になる）
+### 2.3 What the energy decomposition actually does (a constraint on MDClaw integration)
 
-PME モードでは 3 つの Context を持つ: 本体、solute 単独、溶媒単独。交換試行ごとに
-座標を副 System に代入して評価し、E_pw = E_nb(全) − E_nb(solute) − E_nb(溶媒) を √λ で割る。
+In PME mode it holds 3 Contexts: the main one, solute-only, and solvent-only. At each exchange attempt it
+copies coordinates into the sub-Systems, evaluates them, and divides E_pw = E_nb(all) − E_nb(solute) − E_nb(solvent) by √λ.
 
-- 副 System は **`forcefield.createSystem(pdb_subset.topology, ..., ignoreExternalBonds=True)`** で作る。
-  RF モードも `forcefield.createSystem` で全系を作り直す。**`app.ForceField` が必須。**
-- PME の α は本体から読むだけで副 System に `setPMEParameters` していない。副 System の α は
-  cutoff と誤差許容から決まるので、**本体と cutoff / tolerance が一致していないと分解が狂う**。
-- 部分 solute では、副 System は鎖を切り出した断片の PDB から作る。切断が残基境界なら
-  `ignoreExternalBonds` で内部残基テンプレートに一致するはず。残基内で切ると一致しない。
+- The sub-Systems are built with **`forcefield.createSystem(pdb_subset.topology, ..., ignoreExternalBonds=True)`**.
+  RF mode also rebuilds the whole system with `forcefield.createSystem`. **`app.ForceField` is required.**
+- The PME α is only read from the main System; `setPMEParameters` is not applied to the sub-Systems. The sub-Systems' α is
+  determined from the cutoff and error tolerance, so **the decomposition goes wrong unless the cutoff / tolerance match the main System**.
+- With a partial solute, the sub-Systems are built from a PDB of fragments cut out of the chain. If the cuts are at residue boundaries,
+  `ignoreExternalBonds` should match internal residue templates. Cutting inside a residue will not match.
 
-MDClaw の System は `build_amber_system`（prmtop 由来、ForceField オブジェクトなし）または
-`SystemGenerator`（GAFF テンプレート込みの ForceField あり）で作られ、run 側は
-`system.xml` から deserialize するだけで ForceField を再構築しない（CLAUDE.md の契約）。
-したがって **本体 System から粒子部分集合を複製して副 System を作るビルダー**が要る。
-複製方式なら α・grid・cutoff も本体と同一になり、上の脆さも消える。ParmEd の
-`Structure[mask].createSystem()` でも代替できるが、PME パラメータ一致の保証は複製方式の方が強い。
+MDClaw's Systems are built by `build_amber_system` (prmtop-derived, no ForceField object) or by
+`SystemGenerator` (with a ForceField including GAFF templates), and the run side only deserializes
+`system.xml` without reconstructing a ForceField (the CLAUDE.md contract).
+Therefore **a builder that creates sub-Systems by copying particle subsets from the main System** is needed.
+With the copy approach, α, grid, and cutoff are also identical to the main System, and the fragility above disappears. ParmEd's
+`Structure[mask].createSystem()` could be used instead, but the copy approach gives a stronger guarantee of matching PME parameters.
 
-### 2.4 部分 solute で見つかった正しさの穴
+### 2.4 Correctness holes found with a partial solute
 
-`find_solute_nb_index()` は **solute–solute の exception だけ**を集め、`update_nonbonded()` は
-それらの chargeProd と ε を λ 倍する。境界をまたぐ 1-4 exception（Amber では `NonbondedForce`
-の exception）は集められず、λ=1 のまま残る。一方、solute 原子の電荷は √λ 倍されるので、
-意図した REST2 ポテンシャル（境界 1-4 は √λ）から外れる。さらに `compute_all_energies()` は
-その未スケール項を E_pw に含めて √λ で割るので、**受理エネルギーが λ≠1 で自己矛盾する**。
-量は境界 2 箇所の 1-4 対数本分で小さいが、分布を静かに歪める種類の誤り。
+`find_solute_nb_index()` collects **only solute–solute exceptions**, and `update_nonbonded()` multiplies
+their chargeProd and ε by λ. 1-4 exceptions crossing the boundary (in Amber, exceptions of `NonbondedForce`)
+are not collected and stay at λ=1. Meanwhile, solute atom charges are multiplied by √λ, so the potential departs from
+the intended REST2 potential (boundary 1-4 at √λ). Moreover, `compute_all_energies()` includes
+those unscaled terms in E_pw and divides by √λ, so **the acceptance energy is self-inconsistent at λ≠1**.
+The magnitude is small, a few 1-4 pairs at the 2 boundaries, but it is the kind of error that silently distorts the distribution.
 
-修正: 境界 exception を別リストに集め、chargeProd と ε を √λ 倍する。E_pw の分解は
-(全 NB − solute NB − 溶媒 NB)/√λ なので、境界項が √λ でスケールされていれば追加の計上は要らない。
-**2026-09-16 に fork の `mdclaw` ブランチで修正済み**（§4 の実測を参照）。
+Fix: collect the boundary exceptions in a separate list and multiply their chargeProd and ε by √λ. The E_pw decomposition is
+(all NB − solute NB − solvent NB)/√λ, so once the boundary terms are scaled by √λ no extra accounting is needed.
+**Fixed on 2026-09-16 on the fork's `mdclaw` branch** (see the measurements in §4).
 
-**もう 1 つの穴（同日発見）: 副 System の偽ペプチド結合。** 副 System は Modeller で切り出した
-Topology を一度 PDB テキストに書き、`PDBFile` で読み直して作っていた。`PDBFile` は鎖内で
-連続する残基の C–N を結合するので、solute を除いた鎖では solute を挟む両隣の残基が隣接扱いに
-なり、偽のペプチド結合（テスト系では ASP1:C–GLY5:N、0.82 nm、9.6 万 kJ/mol）と 1-2 / 1-3 / 1-4 の
-exception 15 個が溶媒副 System に入る。E_ww の結合項が壊れるだけでなく、E_pw に λ に依らない
-定数 17.2 kJ/mol が混入し、√λ で割られて受理エネルギーが λ 依存になる。修正は PDB を経由せず
-Modeller の Topology（元の結合と box を保つ）から直接 `createSystem` すること。修正済み。
-VHH の H3 なら残基 94 と 103 の間に同じ偽結合ができるはずだった。
+**One more hole (found the same day): spurious peptide bonds in the sub-Systems.** The sub-Systems were built by writing the Topology
+cut out with Modeller to PDB text once and reading it back with `PDBFile`. `PDBFile` bonds C–N between residues that are consecutive
+within a chain, so in the chain with the solute removed, the two residues flanking the solute are treated as adjacent,
+and a spurious peptide bond (in the test system ASP1:C–GLY5:N, 0.82 nm, 96,000 kJ/mol) plus 15 1-2 / 1-3 / 1-4
+exceptions enter the solvent sub-System. Not only are the bonded terms of E_ww broken, but a λ-independent
+constant of 17.2 kJ/mol leaks into E_pw, which, divided by √λ, makes the acceptance energy λ-dependent. The fix is to build with `createSystem`
+directly from Modeller's Topology (which keeps the original bonds and box) without going through PDB. Fixed.
+For a VHH H3, the same spurious bond would have formed between residues 94 and 103.
 
-二面角の λ^(k/4) 規約は gREST 論文の式 (3) と**一致する**（添付 PDF で確認）。gREST は
-E_m = λ E_uu + Σ_i λ^(k_i/l_i) E_uv,i + E_vv で、l_i は結合 / LJ / Coulomb = 2、角度 = 3、
-二面角・improper = 4、CMAP = 8、k_i は solute 側の粒子数。境界 1-4 の LJ / Coulomb は k=1, l=2 で
-√λ となり、上の修正案と同じ。
+The λ^(k/4) convention for dihedrals **agrees** with Eq. (3) of the gREST paper (confirmed in the attached PDF). gREST uses
+E_m = λ E_uu + Σ_i λ^(k_i/l_i) E_uv,i + E_vv, where l_i = 2 for bonds / LJ / Coulomb, 3 for angles,
+4 for dihedrals/impropers, and 8 for CMAP, and k_i is the number of particles on the solute side. Boundary 1-4 LJ / Coulomb is k=1, l=2,
+giving √λ, the same as the fix above.
 
-GENESIS gREST との違いは残る: gREST は境界をまたぐ結合（k/2）、角度（k/3）、improper（k/4）も
-スケールするが、SST2 は Stirnemann & Sterpone 流に **結合項のうち proper torsion しかスケールしない**
-（結合・角度・improper は E_pp⁽²⁾ として非スケール）。どちらも一貫した expanded ensemble なので
-λ=1 への MBAR 再重み付けは正しいが、Phase 3 で GENESIS と突き合わせるときは GENESIS 側の
-`param_type` を二面角 + LJ + Coulomb に絞り、同じポテンシャルにしてから比較する。
+A difference from GENESIS gREST remains: gREST also scales bonds (k/2), angles (k/3), and impropers (k/4) crossing the boundary,
+whereas SST2, following Stirnemann & Sterpone, **scales only proper torsions among the bonded terms**
+(bonds, angles, and impropers are unscaled as E_pp⁽²⁾). Both are consistent expanded ensembles, so
+MBAR reweighting to λ=1 is correct, but when comparing with GENESIS in Phase 3, restrict GENESIS's
+`param_type` to dihedrals + LJ + Coulomb so that both use the same potential before comparing.
 
-### 2.5 受理判定と重み（差し替えの抽象境界）
+### 2.5 Acceptance criterion and weights (the abstraction boundary for replacement)
 
-`sst2.py` は 4 段に分かれており、Opus 案の抽象境界は正しい。
+`sst2.py` is split into 4 stages, and the abstraction boundary in Opus's draft is correct.
 
-1. `SST2Reporter.report()` が `compute_all_energies()` を呼び、rung ごとの走行平均を更新
-2. `_attemptTemperatureChange()` が隣接 rung との log 受理確率を計算
-3. 受理なら `rest2.scale_nonbonded_torsion(λ)`
-4. `_compute_weight(i, j)` が Park & Pande の台形則で走行平均から w_j − w_i を出す
+1. `SST2Reporter.report()` calls `compute_all_energies()` and updates the per-rung running averages
+2. `_attemptTemperatureChange()` computes the log acceptance probability for the neighboring rungs
+3. If accepted, `rest2.scale_nonbonded_torsion(λ)`
+4. `_compute_weight(i, j)` computes w_j − w_i from the running averages using Park & Pande's trapezoidal rule
 
-確認した事実:
+Confirmed facts:
 
-- 受理式 Δ_ij = Σ_t (λ_i^f − λ_j^f) E_t + (λ_i^½ − λ_j^½) E_pw + (w_j − w_i)、
-  kT_ref で割る。符号・単位ともに論文と一致。
-- **重み配列 `_weights` は更新されず**、毎回走行平均から差分を再計算する（on-the-fly 方式）。
-  `weights` プロパティは常に 0 を返し、**有効重みはログに残らない**。再開時は CSV から平均を
-  再構成する。`weights=` で固定重みを渡すモードはあるが、再開との併用に穴がある
-  （コード中に "TO CHANGE ! This is BAD MOKAY" とある）。
-- **受理ループは詳細釣り合いを満たさない。** 隣接候補 a, b の確率 p_a, p_b をシャッフルし、
-  単一の乱数 r で順に `r < p` を判定する。i→a の遷移確率は
-  ½ p_a + ½ max(0, p_a − p_b) となり、もう一方の隣の p_b に依存する。端の rung では候補が
-  1 つなので提案確率 1 になり、内側からの提案確率 ½ と非対称。よって結合分布 π(X, m) が不変分布に
-  ならない。修正は、Δ が λ^f に線形で全 rung 分が無料で出るので、**全 rung に対する Gibbs
-  （独立）サンプリング**（Chodera & Shirts 2011。Eastman の原実装と同じ）に置き換える。
-  3 状態の玩具モデルで定常分布を検証するテストを付けて上流に PR する。`st.py` も同じ修正。
-- 乱数は `random` モジュールで未シード。ノード再現性のためシードを通す。
-- 適応的に重みが変わる期間のサンプルは厳密には平衡ではない。**適応段階（重み学習）→
-  固定重み段階（生産）の 2 段プロトコル**にし、MBAR は固定段階のサンプルにかける。
-  生産段階でも重み推定は続けて収束モニタに使う。
+- Acceptance formula Δ_ij = Σ_t (λ_i^f − λ_j^f) E_t + (λ_i^½ − λ_j^½) E_pw + (w_j − w_i),
+  divided by kT_ref. Both sign and units agree with the paper.
+- **The weight array `_weights` is never updated**; the difference is recomputed from the running averages each time (on-the-fly approach).
+  The `weights` property always returns 0, and **the effective weights are not logged**. On restart, the averages are
+  reconstructed from the CSV. There is a mode that passes fixed weights via `weights=`, but combining it with restart has a hole
+  (the code contains "TO CHANGE ! This is BAD MOKAY").
+- **The acceptance loop does not satisfy detailed balance.** It shuffles the probabilities p_a, p_b of neighboring candidates a, b
+  and tests `r < p` in turn with a single random number r. The transition probability i→a is
+  ½ p_a + ½ max(0, p_a − p_b), which depends on the other neighbor's p_b. At an end rung there is only
+  one candidate, so the proposal probability is 1, asymmetric with the proposal probability ½ from the inside. Hence the joint distribution π(X, m) is not
+  an invariant distribution. Since Δ is linear in λ^f and comes for free for all rungs, the fix is to replace it with **Gibbs
+  (independence) sampling over all rungs** (Chodera & Shirts 2011; the same as Eastman's original implementation).
+  Submit a PR upstream with a test that verifies the stationary distribution on a 3-state toy model. Apply the same fix to `st.py`.
+- Random numbers come from the `random` module, unseeded. Pass a seed through for node reproducibility.
+- Samples from the period when the weights change adaptively are not strictly at equilibrium. Use a **two-stage protocol: adaptive stage (weight learning) →
+  fixed-weight stage (production)**, and apply MBAR to the samples of the fixed stage.
+  Keep estimating weights in the production stage too, and use it as a convergence monitor.
 
-### 2.6 SEUS が SST2 より軽い理由（Opus 案のまま、正しい）
+### 2.6 Why SEUS is lighter than SST2 (unchanged from Opus's draft, correct)
 
-窓ごとに違うのはバイアス項だけなので必要なのは CV の値 ξ だけ。受理は
-`log P(i→j) = −β[w_j(ξ) − w_i(ξ)] + (g_j − g_i)`、w は調和関数なので解析的。
-エネルギー再評価も副 System も PME の扱いも不要。
+Only the bias term differs between windows, so only the CV value ξ is needed. Acceptance is
+`log P(i→j) = −β[w_j(ξ) − w_i(ξ)] + (g_j − g_i)`, and w is harmonic, so it is analytical.
+No energy re-evaluation, no sub-Systems, and no PME handling are needed.
 
 ---
 
-## 3. Phase 0 — fork とライセンス（1 時間 + メール）
+## 3. Phase 0 — fork and licensing (1 hour + email)
 
-### ライセンス
+### Licensing
 
-SST2 は GPL-2.0、MDClaw は MIT。conda 環境 / SIF への同梱は GPL-2 第 2 節の mere aggregation で
-問題ない。避けるのは MDClaw 本体が `import SST2` して単一プログラムになること。
+SST2 is GPL-2.0 and MDClaw is MIT. Bundling in the conda environment / SIF is fine as mere aggregation under GPL-2 section 2.
+What to avoid is MDClaw itself doing `import SST2` and becoming a single program.
 
-**Opus 案の「CLI を呼ぶだけ」は、上流の CLI では成立しない**（§2.3）。方針を次のように改める。
+**Opus's draft "just call the CLI" does not work with the upstream CLI** (§2.3). Revise the approach as follows.
 
-- MDClaw が必要とする OpenMM レベルの接続（XML 三点セットの読込、複製方式の副 System、
-  sidecar への状態書き出し）は **fork の `bin/` 配下のドライバ**として GPL で書く。
-  例: `bin/sst2_from_xml.py --system system.xml --topology topology.pdb --state state.xml
+- Write the OpenMM-level connection MDClaw needs (loading the XML triple, copy-based sub-Systems,
+  writing state to a sidecar) under GPL as **a driver under the fork's `bin/`**.
+  Example: `bin/sst2_from_xml.py --system system.xml --topology topology.pdb --state state.xml
   --solute-indices idx.json --ladder ladder.json --out-dir ...`
-- MDClaw 側の `run_sst2` ツールは入力を整えて subprocess で呼び、成果物を DAG に記録する。
-  AmberTools を呼ぶのと同じパターン。プロセス境界で分離される。
-- solute 選択は MDClaw 側で mdtraj DSL（`restraints.py` と同じ）から原子インデックスに解決して
-  渡す。fork のドライバは `pdb_numpy` に依存させない（MDClaw 環境にない）。SIF に SST2 を
-  入れるときは `pdb_numpy` も入る（上流の依存）が、ドライバはそれを使わない。
-- SEUS は MDClaw 側に MIT で書く（§5）。共通化したい重み適応（SAMS 等）は自作なので
-  MIT で書き、fork へは著者としてデュアルライセンスで持ち込める。
+- The MDClaw-side `run_sst2` tool prepares the inputs, calls it as a subprocess, and records the artifacts in the DAG.
+  This is the same pattern as calling AmberTools. They are separated by the process boundary.
+- The solute selection is resolved on the MDClaw side from the mdtraj DSL (as in `restraints.py`) to atom indices and
+  passed in. The fork's driver must not depend on `pdb_numpy` (not in the MDClaw environment). When SST2 is put
+  into the SIF, `pdb_numpy` comes along too (an upstream dependency), but the driver does not use it.
+- SEUS is written on the MDClaw side under MIT (§5). Weight adaptation that we want to share (SAMS etc.) is our own work, so
+  write it under MIT; it can be brought into the fork under a dual license as its author.
 
 ### fork
 
-- GitHub の本当の fork として `matsunagalab/SST2` を作る（detach しない）。
-- `main` は上流同期用、作業は `mdclaw` などの feature branch。
-- pip install は tag / commit 固定: `pip install git+https://github.com/matsunagalab/SST2.git@<tag>`
-- 版番号は `0.0.1+mdclaw.1` 形式。`sst2.py` の `__version__` も同じ値にする。
-- SIF に同梱した commit hash を記録し、`LICENSE` とクレジットをイメージ内に残す。改造版は GPL-2.0 のまま公開。
+- Create `matsunagalab/SST2` as a real GitHub fork (do not detach).
+- `main` is for syncing with upstream; work happens on feature branches such as `mdclaw`.
+- Pin pip installs to a tag / commit: `pip install git+https://github.com/matsunagalab/SST2.git@<tag>`
+- Version numbers take the form `0.0.1+mdclaw.1`. Set `__version__` in `sst2.py` to the same value.
+- Record the commit hash bundled into the SIF, and keep `LICENSE` and the credits inside the image. Publish the modified version under GPL-2.0.
 
-### 上流への還元（今はやらない）
+### Contributing back upstream (not now)
 
-上流への PR / issue / メールは、Phase 1 で修正が動いてテストが通ってから判断する。
-それまでは fork の feature branch に閉じて進める。そのとき出す候補として記録だけしておく。
+Decide on upstream PRs / issues / emails after the fixes work and the tests pass in Phase 1.
+Until then, keep the work confined to the fork's feature branch. Just record the candidates to submit at that point.
 
-- 軽微: `pyproject.toml` の license classifier（BSD → GPL-2.0）、存在しない `SST2.__main__` を指す
-  console script、README の CHARMM36 未対応記述。
-- 実質: 部分 solute で境界 1-4 exception がスケールされない件（§2.4）、受理ループが詳細釣り合いを
-  満たさない件（§2.5）。いずれも再現テストと修正を添えて出せる状態にしてから。
-- 論文の future work が gREST なので、部分 solute の方向は受け入れられやすいはず。
+- Minor: the license classifier in `pyproject.toml` (BSD → GPL-2.0), the console script pointing to the nonexistent `SST2.__main__`,
+  and the README statement that CHARMM36 is not supported.
+- Substantive: boundary 1-4 exceptions are not scaled with a partial solute (§2.4), and the acceptance loop does not satisfy
+  detailed balance (§2.5). Submit both only once they are ready with reproduction tests and fixes.
+- The paper's future work is gREST, so the partial-solute direction should be well received.
 
 ---
 
-## 4. Phase 1 — REST2 側の実装と検証（2–3 週間）
+## 4. Phase 1 — implementation and verification on the REST2 side (2–3 weeks)
 
-Opus 案では「検証のみ」だったが、§2.3–2.5 の実装が乗る。
+Opus's draft had "verification only", but the implementation from §2.3–2.5 is added.
 
-### 実装（fork 側）
+### Implementation (fork side)
 
-1. **複製方式の副 System ビルダー**（~200 行）。本体 System から粒子集合を指定して、粒子・拘束・
-   Bond / Angle / Torsion / CMAP（全原子が集合内の項）・`NonbondedForce`（粒子と exception、
-   PME α・grid・cutoff・tolerance をコピー）を持つ新 System を作る。`REST2(subsystem="copy")`
-   で選べるようにし、既定は上流互換の `"forcefield"` のまま。
-   検証: 上流テスト系（5awl）で両方式の副 System のエネルギー項が一致すること。
-2. **境界 1-4 exception の √λ スケーリング**と frac=0.5 バケットへの計上（~40 行）。
-3. **受理の Gibbs 化**とシード（`sst2.py`、`st.py`）。
-4. **重みのログ出力**（各交換試行時の有効 g_m）と **固定重み段階**への切替。
-5. **XML 三点セットを受けるドライバ**と sidecar（現在 rung、走行平均、試行回数、乱数状態、段階）。
+1. **Copy-based sub-System builder** (~200 lines). Given a set of particles from the main System, create a new System with the particles, constraints,
+   Bond / Angle / Torsion / CMAP (terms whose atoms are all in the set), and `NonbondedForce` (particles and exceptions,
+   copying PME α, grid, cutoff, and tolerance). Make it selectable with `REST2(subsystem="copy")`,
+   keeping the upstream-compatible `"forcefield"` as the default.
+   Verification: on the upstream test system (5awl), the sub-Systems' energy terms agree between the two approaches.
+2. **√λ scaling of boundary 1-4 exceptions** and accounting them in the frac=0.5 bucket (~40 lines).
+3. **Gibbs acceptance** and seeding (`sst2.py`, `st.py`).
+4. **Logging the weights** (the effective g_m at each exchange attempt) and switching to the **fixed-weight stage**.
+5. **A driver that accepts the XML triple** and the sidecar (current rung, running averages, attempt counts, random state, stage).
 
-### 2026-09-16 の実測（fork `mdclaw` ブランチ、2HPL テスト系、CPU）
+### Measurements on 2026-09-16 (fork `mdclaw` branch, 2HPL test system, CPU)
 
-`src/SST2/tests/test_rest2_partial_solute.py` を追加（鎖 B の残基 2–4、鎖 A の残基 11–20 を solute）。
-上流 HEAD では 3 本とも失敗、修正後は 4 本とも通る。上流の 5 本は修正前後で同じ結果
-（3 pass、2 fail。失敗 2 本は commit 89a4de6 で `E_solvent` が溶媒 NB を含まなくなったのに
-テストが追随していないためで、部分 solute とは無関係）。
+Added `src/SST2/tests/test_rest2_partial_solute.py` (solute: residues 2–4 of chain B, residues 11–20 of chain A).
+On upstream HEAD all 3 fail; after the fix all 4 pass. The 5 upstream tests give the same results before and after the fix
+(3 pass, 2 fail; the 2 failures are because commit 89a4de6 made `E_solvent` no longer include the solvent NB while
+the tests were not updated, and are unrelated to the partial solute).
 
-| 状態 | E_pw「非スケール」の λ=1 → 0.5 のずれ（鎖 B 残基 2–4） |
+| State | Shift of the "unscaled" part of E_pw from λ=1 → 0.5 (chain B residues 2–4) |
 | --- | --- |
-| 上流 HEAD | −1132.5 → −1020.1 kJ/mol（112 kJ/mol、10 %） |
-| 境界 1-4 を √λ に | −1132.5 → −1125.4 kJ/mol（7 kJ/mol、0.6 %） |
-| + 副 System を Topology 直接構築に | 相対 1e-4 以内で不変。溶媒副 System と全系の ww 部分の差 17.2 → 0.0001 kJ/mol |
+| Upstream HEAD | −1132.5 → −1020.1 kJ/mol (112 kJ/mol, 10 %) |
+| Boundary 1-4 at √λ | −1132.5 → −1125.4 kJ/mol (7 kJ/mol, 0.6 %) |
+| + sub-Systems built directly from the Topology | Unchanged within relative 1e-4. Difference between the solvent sub-System and the ww part of the whole system 17.2 → 0.0001 kJ/mol |
 
-鎖全体を solute にした場合（上流の使い方）は修正前後でエネルギーが変わらない（境界 exception 0、
-偽結合なし）。バケット数の例: 鎖 B 残基 2–4 で 1/4: 5、2/4: 10、3/4: 11、4/4: 152、非スケール 15。
+When the whole chain is the solute (the upstream usage), the energies do not change before vs. after the fix (0 boundary exceptions,
+no spurious bonds). Example bucket counts: for chain B residues 2–4, 1/4: 5, 2/4: 10, 3/4: 11, 4/4: 152, unscaled 15.
 
-同日中に fork 側の実装 5 件を終えた（ブランチ `mdclaw`、6 コミット、テスト 19 本 pass、
-上流由来の 2 本は既知の失敗のまま）:
+All 5 fork-side implementation items were finished the same day (branch `mdclaw`, 6 commits, 19 tests pass,
+the 2 upstream-derived tests still the known failures):
 
-- `SST2/subsystem.py`: 複製方式の副 System ビルダー。`REST2(subsystem="copy")` で
-  ForceField なしに動く。PME 設定を丸ごと写すので、solute 副 System の NB エネルギーは
-  全系で溶媒を零にした値と 0.05 kJ/mol 以内で一致し、forcefield 方式と項ごとに一致する。
-- `sst2.py`: 受理を全 rung の Gibbs サンプリングに（`move="neighbor"` で対称提案の
-  Metropolis も選べる）。`seed`。`weights=` の固定重みが実際に効くようにした（従来は走行平均が
-  初期化されず reporter が落ち、与えた重みも受理に使われていなかった）。有効重み f_m − f_0 を
-  レポート CSV に列として出力。
-- `SST2/driver.py` + `bin/sst2_from_xml.py`: `system.xml + topology.pdb + state.xml` と solute
-  原子番号 JSON から 1 ウォーカーを走らせる。sidecar JSON（rung、ラダー、有効重み、rung ごとの
-  走行平均と回数、seed、provenance）を書き、`--restart-json` で同じウォーカーを継続。
-  `--weights-json` で固定重み段階、`--pressure-bar 0` で NVT。
+- `SST2/subsystem.py`: the copy-based sub-System builder. With `REST2(subsystem="copy")` it works
+  without a ForceField. It copies the PME settings wholesale, so the solute sub-System's NB energy
+  agrees within 0.05 kJ/mol with the whole-system value with the solvent zeroed, and agrees term by term with the forcefield approach.
+- `sst2.py`: acceptance changed to Gibbs sampling over all rungs (`move="neighbor"` also allows symmetric-proposal
+  Metropolis). `seed`. Made the fixed weights of `weights=` actually take effect (previously the running averages were
+  not initialized so the reporter crashed, and the given weights were not used for acceptance). The effective weights f_m − f_0 are
+  output as columns in the report CSV.
+- `SST2/driver.py` + `bin/sst2_from_xml.py`: runs one walker from `system.xml + topology.pdb + state.xml` and a solute
+  atom-index JSON. Writes a sidecar JSON (rung, ladder, effective weights, per-rung
+  running averages and counts, seed, provenance), and continues the same walker with `--restart-json`.
+  `--weights-json` for the fixed-weight stage, `--pressure-bar 0` for NVT.
 
-**実系での確認（同日、1KXV）**: キャンペーンに残っていた MDClaw の topo 成果物（prmtop 由来、
-HMR 4 amu、53,716 原子、prod の `state.xml`）で `subsystem="copy"` を確認。CDR-H3 は配列から
-Kabat Cys92（YYC の Cys95）と WGQG（Trp111）で挟んで残基 98–110 の 13 残基（Cys106 を含む。
-1KXV は H3–CDR1 の Cys106–Cys30 ジスルフィドを持つので、最後の Cys を取ると誤る）。
+**Check on a real system (same day, 1KXV)**: confirmed `subsystem="copy"` with MDClaw topo artifacts left over from the campaign (prmtop-derived,
+HMR 4 amu, 53,716 atoms, prod's `state.xml`). CDR-H3, from the sequence, is bracketed by
+Kabat Cys92 (Cys95 of YYC) and WGQG (Trp111): the 13 residues 98–110 (including Cys106;
+1KXV has an H3–CDR1 Cys106–Cys30 disulfide, so taking the last Cys would be wrong).
 
-| solute | 原子数 | 電荷 | 境界 exception | バケット 1/4, 2/4, 3/4, 4/4 | 非スケール量の λ ドリフト | 閉包 |
+| solute | Atoms | Charge | Boundary exceptions | Buckets 1/4, 2/4, 3/4, 4/4 | λ drift of the unscaled quantity | Closure |
 | --- | --- | --- | --- | --- | --- | --- |
-| H3 のみ | 198 | +1 | 40 | 14, 12, 14, 567 | ≤ 2.4e-6 | 1e-9 |
-| H3 + 5 Å 殻（Cys30 含む） | 443 | 0 | 165 | 57, 55, 55, 1219 | ≤ 1.8e-6 | 1e-9 |
+| H3 only | 198 | +1 | 40 | 14, 12, 14, 567 | ≤ 2.4e-6 | 1e-9 |
+| H3 + 5 Å shell (including Cys30) | 443 | 0 | 165 | 57, 55, 55, 1219 | ≤ 1.8e-6 | 1e-9 |
 
-GPU（GB200 1 枚、CUDA）で 5 rung（300/357/424/505/600 K）、交換 2 ps、20 ps の試走:
-566 ns/day（交換と副 System 評価込み）。ウォーカーは 20 ps で 300 K から 600 K まで登った
-（初期の on-the-fly 重みは大きく動くので、これは適応段階の挙動として想定内）。
-solute 選択と殻の生成スクリプトは fork の `examples/mdclaw_1kxv/` に置いた。
+Trial run on GPU (1 GB200, CUDA) with 5 rungs (300/357/424/505/600 K), 2 ps exchange, 20 ps:
+566 ns/day (including exchanges and sub-System evaluation). The walker climbed from 300 K to 600 K in 20 ps
+(the initial on-the-fly weights move a lot, so this is expected behavior for the adaptive stage).
+The solute selection and shell generation scripts are in the fork's `examples/mdclaw_1kxv/`.
 
-**MDClaw 側（同日）**: `run_sst2` ツールを `mdclaw/simulation/tempering.py` に追加した。`prod` ノードとして
-`@node_tool(node_type="prod")`、solute は mdtraj DSL か JSON、ラダー・交換間隔・固定重み・NVT/NPT を
-引数に取り、`MDCLAW_SST2_HOME` の fork を `python -m SST2.driver` で subprocess 実行する（MDClaw は
-SST2 を import しない）。成果物は `trajectory.dcd` / `energy.dat` / `state.xml` / `final_structure.pdb` /
-`tempering.csv` / `tempering.json` / `solute_indices.json` / `sst2_driver.log`。`--continue-from` で
-親の sidecar を自動で拾い同じウォーカーを継続、`final_step` は累積。ガードレールコード 8 個を登録。
-テスト `tests/test_tempering.py`（単体 + fork ありの結合テスト: 単独実行、ノードモードで実行と継続、
-失敗の封印）。スキル `skills/md-production/sst2.md`、`tool-reference.md`、`configuration.md` を更新。
-Phase 4 のうちノード統合はこれで骨格ができた。残りは `analyze` 側の収束チェックと MBAR 再重み付け。
-SST2 は SIF / Docker / conda に同梱する: `environment.yml` と両 Dockerfile に fork のコミット
-（5590f4f、版 `0.0.1+mdclaw.1`）を pip で固定し、`MDCLAW_SST2_REVISION` で宣言。GPL-2.0 の同梱は
-aggregation で、MDClaw は subprocess でしか呼ばない。`MDCLAW_SST2_HOME` は開発用オーバーライド。
-イメージ `mdclaw-rikyu-arm64-cuda130-cufft121-sst2-0a15ed1cf7d1.sif`（2026-09-16、overlay ビルド、
-1KXV の DAG 上で `run_sst2` の GPU 受け入れ済み）は `/data1/rkp00079` に配置済み。共有名の symlink はキャンペーン終了まで v2fix のまま。
+**MDClaw side (same day)**: added the `run_sst2` tool to `mdclaw/simulation/tempering.py`. As a `prod` node with
+`@node_tool(node_type="prod")`, it takes the solute as an mdtraj DSL or JSON, and the ladder, exchange interval, fixed weights, and NVT/NPT as
+arguments, and runs the fork at `MDCLAW_SST2_HOME` as a subprocess via `python -m SST2.driver` (MDClaw does not
+import SST2). Artifacts are `trajectory.dcd` / `energy.dat` / `state.xml` / `final_structure.pdb` /
+`tempering.csv` / `tempering.json` / `solute_indices.json` / `sst2_driver.log`. `--continue-from` automatically picks up
+the parent's sidecar and continues the same walker; `final_step` is cumulative. 8 guardrail codes registered.
+Tests in `tests/test_tempering.py` (unit + integration tests with the fork: standalone run, run and continuation in node mode,
+sealing of failures). Updated the skill `skills/md-production/sst2.md`, `tool-reference.md`, and `configuration.md`.
+This gives the skeleton of the node integration part of Phase 4. What remains is the convergence check and MBAR reweighting on the `analyze` side.
+SST2 is bundled in the SIF / Docker / conda: the fork's commit
+(5590f4f, version `0.0.1+mdclaw.1`) is pinned via pip in `environment.yml` and both Dockerfiles, and declared with `MDCLAW_SST2_REVISION`. Bundling GPL-2.0 is
+aggregation, and MDClaw calls it only via subprocess. `MDCLAW_SST2_HOME` is a development override.
+The image `mdclaw-rikyu-arm64-cuda130-cufft121-sst2-0a15ed1cf7d1.sif` (2026-09-16, overlay build,
+`run_sst2` GPU acceptance passed on the 1KXV DAG) has been placed in `/data1/$PROJECT`. The shared-name symlink stays at v2fix until the campaign ends.
 
-### 検証項目
+### Verification items
 
-- λ=1 で素の MD と全エネルギー項が一致。上流の `check_decomposition`（`test_rest2.py`）は
-  E_rebuilt = Σ λ^f E_t + E_pp⁽²⁾ + E_ww + √λ E_pw と Context のエネルギーの閉包を確認する。
-  これを **部分 solute**（5awl 鎖 A の残基 3–7 など）で λ=0.6 でも通す。修正 2 の前は失敗し、
-  後は通るはず。これが regression test になる。
-- 境界二面角の k/4 バケット振り分けを VHH の H3 境界で手で数えて突き合わせる。
-- 境界 exception の本数を手で数えて突き合わせる。
-- 荷電 solute（H3 はほぼ確実に荷電）で PME と RF の受理率を比較。OpenMM は MDClaw の 8.5.1。
-  可能なら H3 の選択範囲を残基単位で伸縮させて正味電荷を小さくする。
-- NPT で走る（`setup_simulation` は barostat を入れる）ので、λ で系の正味電荷が変わる PME の
-  背景項は体積依存になる。論文は影響 0.1 % 未満と報告。念のため NVT でも 1 本走らせて比較。
-- rung 数は `tools.compute_ladder_num(..., sst2_score=True)` を REST2 平衡化 CSV に適用し、
-  launch スクリプトに倣って 2 倍から始める。H3 限定なら solute 原子数 200–300 で rung は少ない。
-- 上流テスト 5 本が CPU で通ることを fork の CI（GitHub Actions を追加）で機械的に確認する。
+- At λ=1, all energy terms agree with plain MD. The upstream `check_decomposition` (`test_rest2.py`) checks the closure of
+  E_rebuilt = Σ λ^f E_t + E_pp⁽²⁾ + E_ww + √λ E_pw against the Context's energy.
+  Make this pass with a **partial solute** (e.g. residues 3–7 of 5awl chain A) at λ=0.6 as well. It should fail before fix 2
+  and pass after. This becomes the regression test.
+- Count the k/4 bucket assignment of boundary dihedrals by hand at the VHH H3 boundary and cross-check.
+- Count the number of boundary exceptions by hand and cross-check.
+- Compare PME and RF acceptance rates for a charged solute (H3 is almost certainly charged). OpenMM is MDClaw's 8.5.1.
+  If possible, extend or shrink the H3 selection residue by residue to reduce the net charge.
+- It runs in NPT (`setup_simulation` adds a barostat), so the PME background term, through which the system's net charge
+  changes with λ, becomes volume-dependent. The paper reports an effect below 0.1 %. To be safe, also run one in NVT and compare.
+- For the number of rungs, apply `tools.compute_ladder_num(..., sst2_score=True)` to the REST2 equilibration CSV, and,
+  following the launch script, start from twice that. With an H3-only solute of 200–300 atoms, few rungs are needed.
+- Mechanically confirm in the fork's CI (adding GitHub Actions) that the 5 upstream tests pass on CPU.
 
-### solute の切り方（VHH 試走で比較する）
+### How to cut the solute (compare in the VHH trial run)
 
-H3 だけを solute にすると、H3 内部は λ、H3–framework は √λ、framework 同士は 1 でスケールされる。
-VHH の H3 は FR2（元の VL 界面、Kabat 37 / 44 / 45 / 47）に折り重なることが多く、その接触は
-√λ でしか弱まらない。H3 の遅さが H3–FR2 のパッキングや H1 / H2 との接触にあるなら、
-gREST の結合サイト流に「H3 + 接触残基」を solute にする方が効く。framework を冷たいままに
-できるのは surrogate 用データとしては利点（native framework の中での H3 アンサンブル）。
+With only H3 as the solute, H3 internals scale by λ, H3–framework by √λ, and framework–framework by 1.
+The VHH H3 often folds over FR2 (the former VL interface, Kabat 37 / 44 / 45 / 47), and that contact
+is weakened only by √λ. If H3's slowness lies in H3–FR2 packing or contacts with H1 / H2,
+making "H3 + contact residues" the solute, in the style of gREST binding sites, is more effective. Being able to keep the framework cold
+is an advantage for surrogate data (the H3 ensemble within the native framework).
 
-1KXV などの VHH 1 本で次の 3 通りを比べる。いずれも残基境界で切る。**本試走は run 以外の部分も
-MDClaw のスキルで組む**: `md-study` で study と `jobs/<solute 条件>` を計画し、`md-prepare` →
-`md-equilibration` で各 job の `eq` まで作り、`run_sst2` を `prod` ノードとして `hpc-run` で Slurm に
-投げる（seed ごとに独立ノード、`continue_from` で延長）。キャンペーンの成果物を直接使うのは
-SIF 受け入れの smoke test までとし、収束の実測はスキル経由の DAG で記録する。
+Compare the following 3 options on one VHH such as 1KXV. All cut at residue boundaries. **The main trial run builds the parts other than the run
+with MDClaw skills too**: plan the study and `jobs/<solute condition>` with `md-study`, build each job up to `eq` with `md-prepare` →
+`md-equilibration`, and submit `run_sst2` as a `prod` node to Slurm with `hpc-run`
+(an independent node per seed, extended with `continue_from`). Direct use of the campaign's artifacts is limited to
+the SIF acceptance smoke test; convergence measurements are recorded in the skill-driven DAG.
 
-1. **H3 のみ**（Kabat 95–102 相当）。
-2. **H3 + 接触殻**: H3 の重原子から 5 Å 以内の残基。H3 から出る disulfide があれば相手の Cys を
-   必ず含める（S–S 結合・角度はどのみち非スケールだが、S–S 周りの二面角が k/4 に落ちるのを避ける）。
-3. **二面角のみ**（`-only_dihed`、gREST の dihedral-only）: 電荷が変わらないので PME の
-   正味電荷問題が消える。H3–framework のパッキングは弱まらないので、それが律速なら効かない。
+1. **H3 only** (equivalent to Kabat 95–102).
+2. **H3 + contact shell**: residues within 5 Å of H3 heavy atoms. If there is a disulfide from H3, always include the partner Cys
+   (the S–S bond and angles are unscaled anyway, but this avoids the dihedrals around the S–S falling into k/4).
+3. **Dihedrals only** (`-only_dihed`, gREST's dihedral-only): charges do not change, so the PME
+   net-charge issue disappears. H3–framework packing is not weakened, so it will not help if that is rate-limiting.
 
-比較指標は λ=1 の閉包チェック、rung ごとの受理率、H3 backbone dihedral の遷移数、
-rung 往復回数。solute 原子数は 1 で 150–250、2 で 300–500 の見込みで、rung は 4–8 本。
-正味電荷は 1・2 とも残基単位で選択を伸縮させて小さくする。
+Comparison metrics are the λ=1 closure check, per-rung acceptance rates, the number of H3 backbone dihedral transitions,
+and the number of rung round trips. Solute atom counts are expected to be 150–250 for 1 and 300–500 for 2, with 4–8 rungs.
+For both 1 and 2, extend or shrink the selection residue by residue to keep the net charge small.
 
-### 成果物
+### Deliverables
 
-「H3 限定 solute が正しく構成されている」証拠と、それを恒久化した regression test。
-上の 3 通りのうちどれを本番の solute 定義にするかの判断と、その根拠。
-そして **重み収束にかかる時間の実測**。CLN025 0.5–1 µs、Trp-cage 2–10 µs に対し VHH H3 が
-何 µs かはここで初めて分かる。10 µs を超えるなら方針再考。
+Evidence that "the H3-only solute is constructed correctly", and a regression test that makes it permanent.
+A decision on which of the 3 options above becomes the production solute definition, and its rationale.
+And **a measurement of the time weight convergence takes**. Against 0.5–1 µs for CLN025 and 2–10 µs for Trp-cage, how many µs VHH H3 takes
+will be known only here. If it exceeds 10 µs, reconsider the approach.
 
-解析の入口は `analyze_tempering`（§7 収束判定）。50 ns ブロックごとに走らせ、`verdict` が
-`weights_converged` になった時点を「重み収束にかかる時間」として記録する。
-
----
-
-## 5. Phase 2 — SEUS の実装（2–3 週間、MDClaw 側）
-
-`mdclaw/simulation/expanded_ensemble.py`（仮）を MIT で書く。REST2 の分解は使わない。
-
-**状態の表現**: 既存の `restraints.py` の `CustomCentroidBondForce` / `CustomCVForce` を流用し、
-中心 ξ₀ と力定数 k を global parameter にする。窓の切替は `context.setParameter()` 2 回。
-
-**受理判定**: 全窓の log 重み `−β w_m(ξ) + g_m` を解析的に出し、Gibbs サンプリングで次の窓を選ぶ
-（隣接限定にする理由がない。窓の跳躍は自由エネルギーが許す範囲で自然に制限される）。
-
-**重み更新**: 2 方式を選べるようにする。
-- Park & Pande 型: g_{m+1} − g_m = β⟨w_{m+1} − w_m⟩ の台形則（SST2 と同じ構造）。
-- **SAMS**（Tan 2017、Rao-Blackwellized 更新）: 漸近最適で窓数が多いとき速い。約 100 行で自作。
-  `openmmtools` は conda 専用で環境にないので依存させない。
-
-**成果物の定義を訂正**: 収束した g_m は窓の自由エネルギー f_m。PMF F(ξ) は保存した
-(ξ_t, m_t, k, ξ₀) から **pymbar 4.2 の MBAR**（環境にある。memo 2026-08-26 の `generate_fes`
-の落とし穴 3 点に注意）で出す。g_m の時間変化を収束判定に使う。
-
-**適応段階 → 固定段階**の 2 段プロトコル、シード、sidecar は SST2 と共通の設計。
-
-**玩具検証（CPU、コンテナ内で完結）**
-1. `CustomExternalForce` の 1 次元二重井戸: PMF が解析的。窓数 10–20 で MBAR の PMF が一致すること。
-2. alanine dipeptide の φ: 同じ窓で通常 umbrella（既存の `steered_X → umbrella_X` ルート）+ MBAR と一致。
+The entry point for analysis is `analyze_tempering` (§7 convergence criteria). Run it every 50 ns block, and record the point at which `verdict` becomes
+`weights_converged` as "the time weight convergence takes".
 
 ---
 
-## 6. Phase 3 — 検証（2–3 週間、最重要）
+## 5. Phase 2 — SEUS implementation (2–3 weeks, MDClaw side)
 
-間違っていても動いてしまうのが本当のリスク。省略しない。
+Write `mdclaw/simulation/expanded_ensemble.py` (tentative) under MIT. REST2's decomposition is not used.
 
-### SEUS 側
+**State representation**: reuse the existing `CustomCentroidBondForce` / `CustomCVForce` from `restraints.py`, and
+make the center ξ₀ and force constant k global parameters. Switching windows is 2 calls to `context.setParameter()`.
 
-- 基準は MDClaw の既存 umbrella ルート（`steered_X → umbrella_X`、native の
-  `CustomCentroidBondForce`）で同じ系・同じ CV・同じ窓を回し、pymbar で PMF を出して作る。
-  Torch バイアス経路は 2 倍遅い（memo 2026-08-26）ので使わない。
-- 系は 2 段: alanine dipeptide の φ（Phase 2 の玩具検証と共用）と、実サイズの 1 系
-  （結合距離 CV のペプチド–タンパク質複合体など、GPU で数百 ns 規模）。
-  **2026-09-16/17 の実施状況（memo 参照）**: キャップ付き Ala3 の末端間距離（3 手法が 0.6–1.5 nm で
-  0.3–1 kJ/mol 一致、0.55 nm 以下は φ₁ の α_R/α_L が隠れた遅い変数で不決定）、deca-alanine
-  （ξ 方向は平坦、ヘリックス含量が隠れた遅い変数で walker が 150 ns 捕捉）、chignolin CLN025 の
-  Cα1–Cα10 距離（ξ 方向に本当の障壁、実行中）。p53–MDM2 の解離距離は非結合状態を定義する
-  flat-bottom（漏斗）拘束が要るので、`distance_restraints` に `flat_bottom_radius_nm` 型の
-  円筒拘束を足してから。
-- 同じ CV・窓配置で SEUS を走らせ、MBAR の PMF が統計誤差内で一致するか。窓ごとの滞在時間と
-  往復回数も記録し、通常 umbrella の総コストと比較する。
+**Acceptance criterion**: compute the log weights `−β w_m(ξ) + g_m` of all windows analytically, and choose the next window by Gibbs sampling
+(there is no reason to restrict to neighbors; window jumps are naturally limited to what the free energy allows).
 
-### REST2 側（GPU）
+**Weight updates**: make two schemes selectable.
+- Park & Pande type: trapezoidal rule g_{m+1} − g_m = β⟨w_{m+1} − w_m⟩ (the same structure as SST2).
+- **SAMS** (Tan 2017, Rao-Blackwellized update): asymptotically optimal and fast when there are many windows. About 100 lines, written in-house.
+  `openmmtools` is conda-only and not in the environment, so do not depend on it.
 
-VHH 1 本で
-- SST2（H3 限定 solute、rung × 200 ns 相当、固定重み段階のみ MBAR）
-- 通常 MD 2–3 µs
-- **GENESIS gREST**（同じ H3 選択。境界二面角の規約を揃える）
+**Corrected definition of the deliverable**: the converged g_m are the window free energies f_m. The PMF F(ξ) is obtained from the saved
+(ξ_t, m_t, k, ξ₀) with **pymbar 4.2's MBAR** (available in the environment; beware the 3 pitfalls of `generate_fes`
+in memo 2026-08-26). The time evolution of g_m is used for the convergence decision.
 
-を回し、H3 の backbone dihedral 分布と自由エネルギー面が一致するか見る。GENESIS は独立実装なので
-fork 側改造の正否の基準になる。ここが合わなければ、その後何本溜めても訓練データにならない。
+The two-stage **adaptive stage → fixed stage** protocol, seeds, and sidecar share the design with SST2.
+
+**Toy verification (CPU, self-contained in the container)**
+1. A 1D double well in `CustomExternalForce`: the PMF is analytical. With 10–20 windows, the MBAR PMF should agree.
+2. Alanine dipeptide φ: agreement with ordinary umbrella (the existing `steered_X → umbrella_X` route) + MBAR on the same windows.
 
 ---
 
-## 7. Phase 4 — MDClaw への統合（1–2 週間）
+## 6. Phase 3 — verification (2–3 weeks, most important)
 
-### ノード型は増やさない
+The real risk is that it runs even when it is wrong. Do not skip this.
 
-memo 2026-09-06 の前例（steering / umbrella は `prod` ラベル `steered_X → umbrella_X`、
-`continue_from` で延長）に従う。新ノード型は `node/constants.py` の 5 表、`inputs.py`、
-`lifecycle.py`（`continue_from` は `prod` 限定）、`prod_chain.py`、`_receipt.py`、`_envelope.py`、
-`guardrail_codes.py`、可視化、study workflow、CLI 契約 golden、テスト 3 本、docs と約 15 箇所に
-及び、得るものが少ない。
+### SEUS side
 
-- `run_sst2` / `run_seus` を `@node_tool(node_type="prod")` で追加し、条件契約に
-  `sampling_method: sst2 | seus`、ラダー / 窓、T_ref、交換間隔、段階（adaptive / fixed）を載せる。
-- `_load_state_into_simulation` は global parameter を復元しないので、現在 rung / 窓、走行平均、
-  試行回数、乱数状態は `steering.json` と同じ **sidecar JSON** に持ち、再開時に復元する。
-- 積分器は `production.py` が T 固定・摩擦 1 ps⁻¹ を固定している。SST2 は積分器温度を変えず
-  solute をスケールするので整合し、摩擦も論文の設定と同じ。
-- 独立ラン N 本 = `prod` ノード N 個。既存の Slurm job array（`submit_array_job`）が使える。
-- SST2 は fork のドライバを subprocess で呼ぶ。SEUS は MDClaw 内で直接走らせる。
+- The reference is built by running MDClaw's existing umbrella route (`steered_X → umbrella_X`, native
+  `CustomCentroidBondForce`) on the same system, same CV, and same windows, and computing the PMF with pymbar.
+  The Torch bias path is 2× slower (memo 2026-08-26), so it is not used.
+- Systems in two tiers: alanine dipeptide φ (shared with the Phase 2 toy verification) and one realistic-size system
+  (e.g. a peptide–protein complex with a binding-distance CV, on the scale of hundreds of ns on GPU).
+  **Status as of 2026-09-16/17 (see memo)**: end-to-end distance of capped Ala3 (the 3 methods agree to 0.3–1 kJ/mol over
+  0.6–1.5 nm; below 0.55 nm it is undetermined because φ₁'s α_R/α_L is a hidden slow variable), deca-alanine
+  (flat along ξ; helix content is a hidden slow variable and trapped the walker for 150 ns), and chignolin CLN025's
+  Cα1–Cα10 distance (a real barrier along ξ, running). The p53–MDM2 dissociation distance needs a flat-bottom (funnel) restraint
+  that defines the unbound state, so it waits until a cylindrical restraint of the `flat_bottom_radius_nm` type is added to
+  `distance_restraints`.
+- Run SEUS with the same CV and window placement, and check whether the MBAR PMF agrees within statistical error. Also record per-window residence times and
+  round-trip counts, and compare against the total cost of ordinary umbrella.
 
-### 出力
+### REST2 side (GPU)
 
-- トラジェクトリ、`energy.dat`
-- `tempering.csv`（step, rung, λ, 分数バケットごとの E_t, E_pw）/ `collective_variables.csv` に窓列を追加
-- `weights.json`（走行平均、試行回数、有効 g_m の履歴、段階）
-- 受理率、往復回数、rung / 窓占有率（`analyze` ノードで算出）
-- SEUS は `analyze` で pymbar MBAR の PMF
+On one VHH, run
+- SST2 (H3-only solute, equivalent to rung × 200 ns, MBAR on the fixed-weight stage only)
+- 2–3 µs of ordinary MD
+- **GENESIS gREST** (same H3 selection, with the boundary dihedral convention aligned)
 
-### 収束判定（`analyze` ノードのチェック）
-
-SST2 側は `analyze_tempering`（2026-09-18 実装、`mdclaw/analyze/tempering.py`）が担う。
-walker の `run_sst2` prod 葉を親にした analyze ノードで、`tempering.csv` から全 rung の MBAR、
-`weights.json`（次段の固定重み）、`tempering_frames.csv`（フレームごとの rung と 300 K 重み。
-surrogate 用の λ 付きデータ形式）、`verdict` を出す。判定基準:
-
-- 全 rung を訪問していること（未訪問なら rung を挿す）
-- 各 walker の on-the-fly 重みと、各 walker 単独の MBAR が、プールした MBAR f_k から 2.5 kJ/mol
-  （300 K の 1 kT）以内
-- walker ごとに往復 5 回以上、rung 変化率 0.1 以上
-- 落ちたら `verdict_reasons` に従って `continue_from` で延長、罠にはまった walker は
-  `weights.json` を初期重みにして別 seed で張り直す、ラダーが粗ければ rung を挿して適応段階をやり直す。
-
-1KXV 50 ns ブロックの判定: H3 のみは walker 間で最上段 f_k が 15 kJ/mol 違い `weights_drifting`
-（延長が必要）、H3 + 殻も同様、二面角のみは seed 1 が往復 1 回で罠。
-SEUS 側は `run_seus` の `seus.json` と MBAR（別セッション）。
-
-### surrogate へ渡す形
-
-重みを落とさない。T_ref の rung のフレームを並べて学習させると biased な分布を学ぶ。
-MBAR 重みで resample して非重み付きにする（ESS は減る）か、重み付き損失にするかを明示的に選ぶ。
-特徴量は H3 の backbone dihedral を主軸に、framework align 後の Cartesian と接触マップを併記。
-
-### データセット生成の方針（2026-09-17、ユーザー決定: surrogate は動力学ではなくアンサンブル）
-
-surrogate / 基盤モデルの教師は 300 K の p(x | 配列) だけでよい（時間発展は学習しない）。
-これで SST2 の熱力学データがそのまま教師になり、300 K の通常 MD 群れ（動力学用）は不要。
-
-- **エンジン**: SST2、solute は Kabat 位置で定義した H3 + 環境セット、Boltz-2 の予測構造（複数サンプル）から出発。
-  結晶出発は推論時の分布とずれる。MPS 8 本詰め、緩衝 10 Å。
-- **全 rung を使う**: 各フレームに λ（rung）と MBAR 重みを付けて保存し、温度条件付きの生成モデルとして学習する。
-  300 K だけ再重み付けすると ESS は 25 % 程度（1KXV H3 のみ: 2,449 / 10,000）だが、λ 条件付きなら全フレームが教師になる。
-- **配列セットは 3 層**: 幅（1,000–2,000 配列 × 1 walker × 200–300 ns、H3 長・framework 族・電荷で層化）、
-  深さ（100 配列 × 3 × 1 µs、収束基準と検証）、変異近傍（20 親 × 30 変異体 × 300 ns、Δp(x) の学習）。
-  合計 1 万–1.5 万 GPU 時間。均一に 1,000 × 3 × 1 µs は 4.4 万 GPU 時間（1KXV 実測 0.0145 GPU 時間/ns）で非効率。
-- **能動的に選ぶ**: 幅の層の半分でモデルを一度学習し、モデル試料の force field 再重み付け ESS が低い配列や
-  モデル間不一致が大きい配列を次に回す。
-- **細部**: 適応段階の初期重みを solute 原子数からの回帰で与えて適応 50 → 10–20 ns、出力 20–50 ps、
-  1 µs は 500 ns × 2 ブロック（gpu パーティション上限 4 日、1 本 275 ns/日）。
+and see whether the H3 backbone dihedral distributions and free energy surfaces agree. GENESIS is an independent implementation, so it
+serves as the reference for whether the fork-side modifications are correct. If these do not agree, no number of runs accumulated afterward will make training data.
 
 ---
 
-## 8. リスク
+## 7. Phase 4 — integration into MDClaw (1–2 weeks)
 
-| リスク | 内容 | 対応 |
+### No new node types
+
+Follow the precedent of memo 2026-09-06 (steering / umbrella use the `prod` labels `steered_X → umbrella_X`,
+extended with `continue_from`). A new node type would touch the 5 tables in `node/constants.py`, `inputs.py`,
+`lifecycle.py` (`continue_from` is `prod`-only), `prod_chain.py`, `_receipt.py`, `_envelope.py`,
+`guardrail_codes.py`, visualization, the study workflow, the CLI contract golden, 3 tests, and docs, about 15 places,
+for little gain.
+
+- Add `run_sst2` / `run_seus` with `@node_tool(node_type="prod")`, and put
+  `sampling_method: sst2 | seus`, ladder / windows, T_ref, exchange interval, and stage (adaptive / fixed) in the condition contract.
+- `_load_state_into_simulation` does not restore global parameters, so keep the current rung / window, running averages,
+  attempt counts, and random state in a **sidecar JSON** like `steering.json`, and restore them on restart.
+- For the integrator, `production.py` fixes T and the friction at 1 ps⁻¹. SST2 scales the solute without changing the integrator temperature,
+  so this is consistent, and the friction matches the paper's setting.
+- N independent runs = N `prod` nodes. The existing Slurm job array (`submit_array_job`) can be used.
+- SST2 calls the fork's driver as a subprocess. SEUS runs directly inside MDClaw.
+
+### Outputs
+
+- Trajectory, `energy.dat`
+- `tempering.csv` (step, rung, λ, E_t per fractional bucket, E_pw) / add a window column to `collective_variables.csv`
+- `weights.json` (running averages, attempt counts, history of effective g_m, stage)
+- Acceptance rates, round-trip counts, rung / window occupancy (computed in an `analyze` node)
+- For SEUS, the pymbar MBAR PMF in `analyze`
+
+### Convergence criteria (checks in the `analyze` node)
+
+On the SST2 side this is handled by `analyze_tempering` (implemented 2026-09-18, `mdclaw/analyze/tempering.py`).
+In an analyze node whose parents are the walkers' `run_sst2` prod leaves, it outputs MBAR over all rungs from `tempering.csv`,
+`weights.json` (fixed weights for the next stage), `tempering_frames.csv` (per-frame rung and 300 K weight;
+the λ-annotated data format for the surrogate), and `verdict`. Criteria:
+
+- Every rung has been visited (if any is unvisited, insert rungs)
+- Each walker's on-the-fly weights and each walker's own MBAR are within 2.5 kJ/mol
+  (1 kT at 300 K) of the pooled MBAR f_k
+- At least 5 round trips per walker, and a rung-change rate of at least 0.1
+- On failure, extend with `continue_from` according to `verdict_reasons`; re-seed a trapped walker
+  with `weights.json` as the initial weights and a different seed; if the ladder is coarse, insert rungs and redo the adaptive stage.
+
+Verdicts on the 1KXV 50 ns blocks: H3 only has top-rung f_k differing by 15 kJ/mol between walkers, `weights_drifting`
+(extension needed); H3 + shell likewise; dihedrals only has seed 1 trapped with 1 round trip.
+On the SEUS side, `run_seus`'s `seus.json` and MBAR (separate session).
+
+### Form handed to the surrogate
+
+Do not drop the weights. Training on frames from the T_ref rung lined up as-is learns a biased distribution.
+Explicitly choose between resampling by MBAR weights to make it unweighted (ESS decreases) or using a weighted loss.
+Features: H3 backbone dihedrals as the main axis, with Cartesian coordinates after framework alignment and contact maps alongside.
+
+### Dataset generation approach (2026-09-17, user decision: the surrogate learns the ensemble, not the dynamics)
+
+The teacher for the surrogate / foundation model only needs p(x | sequence) at 300 K (time evolution is not learned).
+This makes SST2's thermodynamic data usable as the teacher as-is, and a swarm of ordinary 300 K MD runs (for dynamics) is unnecessary.
+
+- **Engine**: SST2, with the solute being H3 + an environment set defined by Kabat positions, starting from Boltz-2 predicted structures (multiple samples).
+  Crystal starting structures deviate from the inference-time distribution. Packed 8 per MPS, 10 Å buffer.
+- **Use all rungs**: save each frame with its λ (rung) and MBAR weight, and train a temperature-conditioned generative model.
+  Reweighting to 300 K alone gives an ESS of about 25 % (1KXV H3 only: 2,449 / 10,000), but with λ conditioning every frame becomes a teacher.
+- **Three tiers of sequence sets**: breadth (1,000–2,000 sequences × 1 walker × 200–300 ns, stratified by H3 length, framework family, and charge),
+  depth (100 sequences × 3 × 1 µs, for convergence criteria and verification), and mutational neighborhood (20 parents × 30 variants × 300 ns, for learning Δp(x)).
+  10,000–15,000 GPU hours in total. A uniform 1,000 × 3 × 1 µs is 44,000 GPU hours (1KXV measured 0.0145 GPU hours/ns), which is inefficient.
+- **Select actively**: train the model once on half of the breadth tier, and run next the sequences whose model samples have low force-field reweighting ESS or
+  large disagreement between models.
+- **Details**: give the adaptive stage's initial weights by regression from the solute atom count to cut adaptation from 50 → 10–20 ns; output every 20–50 ps;
+  1 µs as 2 blocks of 500 ns (gpu partition limit 4 days, 275 ns/day per run).
+
+---
+
+## 8. Risks
+
+| Risk | Description | Response |
 | --- | --- | --- |
-| 重み収束が律速 | CLN025 0.5–1 µs、Trp-cage 2–10 µs。VHH H3 は未知 | Phase 1 で実測。H3 限定で rung が減る効果を見る |
-| 部分 solute の実装ギャップ | 境界 1-4 exception 未スケール、副 System が ForceField 必須 | Phase 1 で修正。閉包テストを部分 solute で通す |
-| 受理規則の非可逆性 | 現行ループは π 不変でない | Gibbs 化。玩具モデルで定常分布を検証 |
-| 適応中のサンプルは非平衡 | on-the-fly 重み更新 | 2 段プロトコル。MBAR は固定段階のみ |
-| 荷電 solute の PME | λ で正味電荷が変わり、NPT では体積依存 | 残基単位で電荷を小さく選ぶ。NVT との比較。RF との受理率比較 |
-| 残基内で切る solute | 断片テンプレートが一致しない | 残基境界で切る。ドライバで検査して拒否 |
-| rung 占有の偏り | 低温側 rung が過剰占有 | 重みを高温側に傾ける補正 |
-| 直交する遅い自由度 | SEUS は CV 依存で χSS2 型の問題が残る | SST2（CV フリー）と併用。両方作る理由 |
-| 窓の飢餓 | 初期に一部の窓が枯れる | SAMS / burn-in |
-| インデックス空間の拡散 | K 窓の往復に K² 程度の遷移 | 独立ラン本数で稼ぐ。Gibbs なら隣接限定より速い |
-| 静かな誤り | 符号・指数の誤りは分布だけ狂う | Phase 3 を省略しない |
-| 上流の保守継続性 | 単一ラボのツール、CI なし | fork して持つ。fork に CI を足す。プロセス境界で疎結合 |
-| GENESIS との規約差 | SST2 は結合・角度・improper を非スケール、gREST は k/l でスケール | GENESIS の `param_type` を二面角 + LJ + Coulomb に絞って比較 |
+| Weight convergence is rate-limiting | CLN025 0.5–1 µs, Trp-cage 2–10 µs. VHH H3 unknown | Measure in Phase 1. Look at the effect of fewer rungs with an H3-only solute |
+| Implementation gaps for a partial solute | Boundary 1-4 exceptions unscaled; sub-Systems require a ForceField | Fix in Phase 1. Make the closure test pass with a partial solute |
+| Irreversibility of the acceptance rule | The current loop is not π-invariant | Switch to Gibbs. Verify the stationary distribution on a toy model |
+| Samples during adaptation are non-equilibrium | On-the-fly weight updates | Two-stage protocol. MBAR on the fixed stage only |
+| PME with a charged solute | Net charge changes with λ, volume-dependent under NPT | Choose residues to keep the charge small. Compare with NVT. Compare acceptance rates with RF |
+| Solute cut inside a residue | Fragment templates do not match | Cut at residue boundaries. Check and refuse in the driver |
+| Biased rung occupancy | Low-temperature rungs over-occupied | Correction that tilts the weights toward high temperature |
+| Orthogonal slow degrees of freedom | SEUS is CV-dependent, so χSS2-type problems remain | Use together with SST2 (CV-free). The reason to build both |
+| Window starvation | Some windows dry up early | SAMS / burn-in |
+| Diffusion in index space | Round trips over K windows take on the order of K² transitions | Make up for it with the number of independent runs. Gibbs is faster than neighbor-only |
+| Silent errors | Sign or exponent errors distort only the distribution | Do not skip Phase 3 |
+| Continuity of upstream maintenance | Single-lab tool, no CI | Fork and own it. Add CI to the fork. Loose coupling via the process boundary |
+| Convention differences from GENESIS | SST2 leaves bonds, angles, and impropers unscaled; gREST scales them by k/l | Restrict GENESIS's `param_type` to dihedrals + LJ + Coulomb when comparing |
 
 ---
 
-## 9. 工数と分担
+## 9. Effort and division of labor
 
-| Phase | 内容 | 期間 | 主担当 |
+| Phase | Content | Duration | Lead |
 | --- | --- | --- | --- |
-| 0 | fork・ライセンス整理（上流への PR / issue は Phase 1 の後に判断） | 1 時間 | 松永 |
-| 1 | 副 System ビルダー、境界 1-4、Gibbs 化、ドライバ、部分 solute 検証、重み収束の実測 | 2–3 週間 | 実装は Claude、レビューは松永、系を回すのは榎本 / 川合 |
-| 2 | SEUS（MDClaw 側）、玩具検証 | 2–3 週間 | ドラフトは Claude、レビューは松永 |
-| 3 | 通常 umbrella + MBAR との突き合わせ、GENESIS gREST との突き合わせ | 2–3 週間 | GPU 環境 |
-| 4 | MDClaw 統合（`prod` ラベル、sidecar、analyze チェック） | 1–2 週間 | — |
+| 0 | Fork and licensing (upstream PRs / issues decided after Phase 1) | 1 hour | Matsunaga |
+| 1 | Sub-System builder, boundary 1-4, Gibbs acceptance, driver, partial-solute verification, measurement of weight convergence | 2–3 weeks | Implementation by Claude, review by Matsunaga, running the systems by Enomoto / Kawai |
+| 2 | SEUS (MDClaw side), toy verification | 2–3 weeks | Draft by Claude, review by Matsunaga |
+| 3 | Comparison with ordinary umbrella + MBAR, comparison with GENESIS gREST | 2–3 weeks | GPU environment |
+| 4 | MDClaw integration (`prod` labels, sidecar, analyze checks) | 1–2 weeks | — |
 
-合計 7–11 週間。Phase 1 の重み収束の実測次第で Phase 3 が伸びる。
-Phase 1 の閉包テストと Phase 2 の玩具検証はコンテナ内 CPU で完結する。
-
----
-
-## 10. 次のアクション
-
-1. `matsunagalab/SST2` へ fork。CI（pytest、CPU）を足す。
-2. 5awl で部分 solute の閉包テストを書き、失敗を確認（修正前の証拠）。
-3. 複製方式の副 System ビルダーと境界 1-4 修正を書き、閉包テストを通す。
-4. VHH 1 本（MDDataBench の 1KXV など、prep 済み）で solute の切り方 3 通り（H3 のみ / H3 + 接触殻 / 二面角のみ）を試走し比較。
-5. ~~並行して SEUS の玩具検証（1 次元二重井戸）を MDClaw 側で着手。~~ **2026-09-22 に SEUS は撤去**（memo 参照、後継は well-tempered metadynamics）。経緯: 2026-09-16 に `run_seus`
-   （`mdclaw/simulation/expanded_ensemble.py`、prod ノード、SAMS + 全窓 Gibbs）を実装し、
-   玩具検証はキャップ付き Ala3 の end-to-end 距離（水中、23 窓）で既存 umbrella ルートと
-   突き合わせる形に置き換えた（memo 2026-09-16 参照）。
-6. SEUS の実サイズ検証系を 1 つ決め、既存 umbrella ルートで基準 PMF を作る。
+7–11 weeks in total. Phase 3 may stretch depending on the Phase 1 measurement of weight convergence.
+The Phase 1 closure tests and the Phase 2 toy verification are self-contained on CPU inside the container.
 
 ---
 
-## 参考
+## 10. Next actions
 
-- SST2 リポジトリ: https://github.com/samuelmurail/SST2
-- SST2 論文: https://pubs.acs.org/doi/10.1021/acs.jctc.5c00950
-- SST2 トラジェクトリ: https://doi.org/10.5281/zenodo.13772542
-- SST2 ドキュメント（`method.rst` に受理式と重み式）: https://sst2.readthedocs.io
+1. Fork to `matsunagalab/SST2`. Add CI (pytest, CPU).
+2. Write the partial-solute closure test on 5awl and confirm it fails (evidence before the fix).
+3. Write the copy-based sub-System builder and the boundary 1-4 fix, and make the closure test pass.
+4. On one VHH (e.g. 1KXV from MDDataBench, already prepped), trial-run and compare the 3 ways of cutting the solute (H3 only / H3 + contact shell / dihedrals only).
+5. ~~In parallel, start the SEUS toy verification (1D double well) on the MDClaw side.~~ **SEUS was removed on 2026-09-22** (see memo; succeeded by well-tempered metadynamics). History: on 2026-09-16, `run_seus`
+   (`mdclaw/simulation/expanded_ensemble.py`, prod node, SAMS + all-window Gibbs) was implemented, and
+   the toy verification was replaced by a comparison against the existing umbrella route on the end-to-end distance of capped Ala3 (in water, 23 windows)
+   (see memo 2026-09-16).
+6. Choose one realistic-size verification system for SEUS, and build the reference PMF with the existing umbrella route.
+
+---
+
+## References
+
+- SST2 repository: https://github.com/samuelmurail/SST2
+- SST2 paper: https://pubs.acs.org/doi/10.1021/acs.jctc.5c00950
+- SST2 trajectories: https://doi.org/10.5281/zenodo.13772542
+- SST2 documentation (acceptance and weight formulas in `method.rst`): https://sst2.readthedocs.io
 - gREST: Kamiya & Sugita, *J. Chem. Phys.* **149**, 072304 (2018)
-- 独立サンプリング: Chodera & Shirts, *J. Chem. Phys.* **135**, 194110 (2011)
+- Independence sampling: Chodera & Shirts, *J. Chem. Phys.* **135**, 194110 (2011)
 - SAMS: Tan, *J. Comput. Graph. Stat.* **26**, 54 (2017)
-- Psivant femto（OpenMM の REST2 実装）: https://github.com/Psivant/femto
+- Psivant femto (an OpenMM REST2 implementation): https://github.com/Psivant/femto
 - MDDataBench: https://github.com/matsunagalab/MDDataBench
 - MDClaw: https://github.com/matsunagalab/mdclaw

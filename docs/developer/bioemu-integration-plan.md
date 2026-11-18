@@ -1,17 +1,17 @@
-# MD surrogate source を mdclaw に統合する改善案
+# Improvement Proposal for Integrating MD Surrogate Sources into mdclaw
 
 > **Partly superseded (2026-08-13, commit a9c6255).** Command examples below
 > that use `setup_surrogate_backend` / `check_surrogate_backend` are stale;
 > use `setup_model_backend --model bioemu` / `check_model_backend --model
 > bioemu`. The design rationale is unchanged.
 
-## 結論
+## Conclusion
 
-BioEmu 統合は、最初から「surrogate ensemble → sidechain 復元 → 自動選択 → k 並列 MD → 集約解析」まで一気通貫に作ると複雑になりすぎる。MVP は **MD surrogate 由来の複数構造を mdclaw の `source_bundle` として、side-chain 込みの all-atom PDB として作れること**に絞る。
+Building the BioEmu integration end to end from the start, "surrogate ensemble → sidechain reconstruction → automatic selection → k parallel MD runs → aggregate analysis", would be far too complex. The MVP is narrowed to **being able to produce multiple structures from an MD surrogate as an mdclaw `source_bundle`, as all-atom PDBs including side chains**.
 
-> **更新 (2026-05-16)**: Phase 1 の sidechain 復元 backend は HPacker に置き換えた。OpenMM minimize / energy ranking は引き続き後フェーズ。詳細は §改善後の Phase 設計を参照。
+> **Update (2026-05-16)**: The Phase 1 sidechain reconstruction backend was replaced with HPacker. OpenMM minimize / energy ranking remain later phases. See §Improved Architecture for details.
 
-ただし、将来的に BioEmu 以外の MD surrogate モデルも使う前提にする。公開 CLI は BioEmu 固有名ではなく、surrogate 共通 CLI に `--model bioemu` を渡す形にする。BioEmu は最初の backend として実装する。
+However, assume that MD surrogate models other than BioEmu will also be used in the future. The public CLI does not use a BioEmu-specific name; instead it passes `--model bioemu` to a CLI shared by all surrogates. BioEmu is implemented as the first backend.
 
 ```bash
 mdclaw generate_surrogate_candidates \
@@ -23,11 +23,11 @@ mdclaw generate_surrogate_candidates \
   --node-id source_001
 ```
 
-このコマンドの責務は、指定された surrogate model を backend ごとの実行環境で動かし、出力 trajectory / 構造群を `candidate_NNN.pdb` 群に正規化し、`source_bundle.json` を作るところまで。下流の `prepare_complex --source-candidate-id candidate_NNN` は既存実装を使う。
+This command's responsibility extends as far as running the specified surrogate model in the per-backend runtime environment, normalizing the output trajectory / structures into a set of `candidate_NNN.pdb` files, and creating `source_bundle.json`. Downstream, `prepare_complex --source-candidate-id candidate_NNN` uses the existing implementation.
 
-## モデル差し替え設計
+## Model Swapping Design
 
-MD surrogate は `surrogate_server.py` の中で backend registry として扱う。
+MD surrogates are handled as a backend registry inside `surrogate_server.py`.
 
 ```python
 SURROGATE_BACKENDS = {
@@ -37,7 +37,7 @@ SURROGATE_BACKENDS = {
 }
 ```
 
-候補生成の公開 CLI は原則 1 つにする。
+As a rule, there is one public CLI for candidate generation.
 
 ```python
 generate_surrogate_candidates(
@@ -53,40 +53,40 @@ generate_surrogate_candidates(
 ) -> dict
 ```
 
-backend の共通契約:
+Common backend contract:
 
-1. 入力 validation を行う。
-2. モデル固有 env / subprocess / local Python API を呼ぶ。
-3. MDTraj-readable な topology + trajectory、または PDB/mmCIF の構造群を返す。
-4. 共通 helper で `candidate_NNN.pdb` に正規化する。
-5. `source_bundle.json` に `source_type="surrogate"`、`origin.kind=<model>` を書く。
+1. Validate the input.
+2. Call the model-specific env / subprocess / local Python API.
+3. Return an MDTraj-readable topology + trajectory, or a set of PDB/mmCIF structures.
+4. Normalize to `candidate_NNN.pdb` with a common helper.
+5. Write `source_type="surrogate"` and `origin.kind=<model>` to `source_bundle.json`.
 
-BioEmu 固有の `msa_path`、`checkpoint`、`filter_samples` などは `model_options` として BioEmu backend だけが解釈する。将来の backend を足すときは、CLI 名や下流 DAG を増やさず、backend registry に 1 件追加する。
+BioEmu-specific options such as `msa_path`, `checkpoint` and `filter_samples` are passed as `model_options` and interpreted only by the BioEmu backend. When adding a future backend, do not add CLI names or downstream DAG structure; add one entry to the backend registry.
 
-## Deploy を簡単にする
+## Making Deployment Easy
 
-BioEmu backend の導入は、ユーザに conda env 手作成を要求しない。mdclaw が backend runtime を管理する。ただし、コンテナは分けない。Docker/Singularity を使う場合は、既存の mdclaw container image に BioEmu backend を同梱する。
+Installing the BioEmu backend does not require the user to create a conda env by hand. mdclaw manages the backend runtime. However, containers are not split. When using Docker/Singularity, the BioEmu backend is bundled into the existing mdclaw container image.
 
-**決定**: local でも container でも、BioEmu は conda の `mdclaw` environment には入れない。常に mdclaw 本体 Python から隔離された venv に入れる。`generate_surrogate_candidates --model bioemu` は、その venv の Python を subprocess で呼ぶ。
+**Decision**: whether local or in a container, BioEmu is not installed into the `mdclaw` conda environment. It always goes into a venv isolated from the main mdclaw Python. `generate_surrogate_candidates --model bioemu` calls that venv's Python as a subprocess.
 
 ```bash
 mdclaw setup_surrogate_backend --model bioemu --device cuda
 mdclaw check_surrogate_backend --model bioemu
 ```
 
-方針:
+Policy:
 
-- mdclaw 本体 env には BioEmu を入れない。
-- local workstation / conda install では managed venv を使う。BioEmu backend は `~/.cache/mdclaw/surrogates/bioemu/venv` のような mdclaw 管理 venv に隔離する。
-- managed venv では、`uv` があれば `uv venv` / `uv pip install` を使い、なければ標準の `python -m venv` + `pip` に fallback する。
-- `--device cpu` は `pip install bioemu`、`--device cuda` は `pip install "bioemu[cuda]"` を実行する。
-- Docker/Singularity image では、build 時に BioEmu backend を image 内の隔離 venv に作っておく。conda の `mdclaw` env には入れない。実行時の `setup_surrogate_backend` は原則不要で、`check_surrogate_backend` だけでよい。
-- 初回実行時に必要な AF2 / BioEmu model weights は upstream に任せて cache させる。mdclaw は cache path と download failure をわかりやすく報告するだけにする。
-- クラスタ運用では cache directory だけ shared filesystem に置けるようにする。
+- Do not install BioEmu into the main mdclaw env.
+- For a local workstation / conda install, use a managed venv. The BioEmu backend is isolated in an mdclaw-managed venv such as `~/.cache/mdclaw/surrogates/bioemu/venv`.
+- For the managed venv, use `uv venv` / `uv pip install` if `uv` is available; otherwise fall back to the standard `python -m venv` + `pip`.
+- `--device cpu` runs `pip install bioemu`, and `--device cuda` runs `pip install "bioemu[cuda]"`.
+- In the Docker/Singularity image, the BioEmu backend is created at build time in an isolated venv inside the image. It is not installed into the `mdclaw` conda env. At run time `setup_surrogate_backend` is generally unnecessary; `check_surrogate_backend` alone is enough.
+- The AF2 / BioEmu model weights needed on the first run are left to upstream to download and cache. mdclaw only reports the cache path and download failures clearly.
+- For cluster operation, allow only the cache directory to be placed on a shared filesystem.
 
-`generate_surrogate_candidates --model bioemu` は、backend が未導入なら勝手に install しない。かわりに `setup_surrogate_backend` の再現可能なコマンドを error に出す。自動 install は便利だが、HPC や proxy 環境で予期せぬ network access を起こすので、明示コマンドに分ける。
+`generate_surrogate_candidates --model bioemu` does not install the backend on its own if it is missing. Instead it puts a reproducible `setup_surrogate_backend` command in the error. Automatic installation is convenient, but it causes unexpected network access on HPC or behind proxies, so it is split out into an explicit command.
 
-最小実装では以下の 2 つを utility CLI として追加する。
+The minimal implementation adds the following two as utility CLIs.
 
 ```python
 setup_surrogate_backend(
@@ -102,54 +102,54 @@ check_surrogate_backend(
 ) -> dict
 ```
 
-`check_surrogate_backend` は venv path または container 内 backend path、import check、version、device hint、cache path を返す。実際の sampling はしない。
+`check_surrogate_backend` returns the venv path or the backend path inside the container, an import check, the version, a device hint, and the cache path. It does no actual sampling.
 
-Docker/Singularity を使う場合の注意:
+Notes when using Docker/Singularity:
 
-- コンテナを分けない。既存 `mdclaw:latest` image に BioEmu backend 用 venv を同梱する。
-- Singularity は Docker image から作る既存方針を維持する。
-- Singularity では `--nv` が必須。GPU なしなら CPU runtime として動かすが、実用速度は期待しない。
-- container 内外で cache path が変わると重みを何度も download するので、BioEmu / ColabFold 相当の cache を mdclaw cache 配下に bind mount する。
+- Do not split containers. Bundle a venv for the BioEmu backend into the existing `mdclaw:latest` image.
+- Keep the existing policy of building Singularity from the Docker image.
+- `--nv` is required with Singularity. Without a GPU it runs as a CPU runtime, but do not expect practical speed.
+- If the cache path differs inside and outside the container, the weights are downloaded repeatedly, so bind mount the BioEmu / ColabFold-equivalent cache under the mdclaw cache.
 
-## 直すべき点
+## What Needs Fixing
 
-### 1. MVP が大きすぎる
+### 1. The MVP Is Too Large
 
-元プランは Phase 1 に以下が入りかけていた。
+The original plan was about to put the following into Phase 1:
 
 - BioEmu sampling
-- trajectory から候補 PDB への分割
-- 全 candidate の sidechain 復元
-- OpenMM minimize と energy scoring
-- source bundle 更新
+- Splitting the trajectory into candidate PDBs
+- Sidechain reconstruction for all candidates
+- OpenMM minimize and energy scoring
+- Source bundle update
 - skill/docs/tests
 
-これは失敗点が多い。BioEmu は backend 専用 runtime、backbone-only 出力、model weight cache、GPU/Linux 要件を持つので、MVP では BioEmu 固有の不確実性だけを閉じ込めるべき。
+This has many failure points. BioEmu has a backend-dedicated runtime, backbone-only output, a model weight cache, and GPU/Linux requirements, so the MVP should confine only BioEmu-specific uncertainty.
 
-改善後の Phase 1 は **共通候補生成 CLI 一発 + source_bundle 化 + HPacker repack** にする。OpenMM minimize / energy scoring / 候補選択 / 多分岐 MD は Phase 2 以降。HPacker は mutation workflow と同じ side-chain backend なので、ユーザが期待する「1 CLI で side-chain 込みアンサンブル」を満たせる。
+The improved Phase 1 is **a single shared candidate-generation CLI + source_bundle creation + HPacker repack**. OpenMM minimize / energy scoring / candidate selection / multi-branch MD are Phase 2 and later. HPacker is the same side-chain backend as the mutation workflow, so it satisfies what users expect: "an ensemble including side chains from one CLI".
 
-### 2. 全 candidate の sidechain 復元は HPacker repack に限定する
+### 2. Limit Sidechain Reconstruction for All Candidates to HPacker Repack
 
-BioEmu の出力は backbone-only で、そのままでは `prepare_complex` の前提を満たさない。当初はこれを Phase 3 に先送りしていたが、
+BioEmu output is backbone-only and as is does not satisfy the assumptions of `prepare_complex`. This was originally deferred to Phase 3, but since
 
-- HPacker repack は mutation workflow と同じ backend で扱える
-- HPacker は `environment.yml` 経由でコンテナに同梱する
-- ユーザが「1 CLI で side-chain 込みアンサンブル」を期待する
+- HPacker repack can be handled with the same backend as the mutation workflow
+- HPacker is bundled into the container via `environment.yml`
+- users expect "an ensemble including side chains from one CLI"
 
-ので Phase 1 に取り込み、`generate_surrogate_candidates` の中で各 frame に対し HPacker を呼ぶ。OpenMM minimize / energy ranking / clustering は引き続き Phase 2 以降。
+it was brought into Phase 1, and HPacker is called on each frame inside `generate_surrogate_candidates`. OpenMM minimize / energy ranking / clustering remain Phase 2 and later.
 
-実装上は次の通り。
+The implementation is as follows.
 
-1. `generate_surrogate_candidates --model bioemu` が backbone candidates を抽出した後、HPacker で in-place repack する。
-2. backbone-only PDB は `<artifacts>/candidates_backbone/` に provenance として保管する。
-3. candidate の `tags` は `hpacker_repacked`（または disable 時 `backbone_only`）。
-4. opt-out したい場合は `--reconstruct-sidechains false`。
+1. After `generate_surrogate_candidates --model bioemu` extracts the backbone candidates, they are repacked in place with HPacker.
+2. The backbone-only PDBs are kept as provenance in `<artifacts>/candidates_backbone/`.
+3. The candidate `tags` is `hpacker_repacked` (or `backbone_only` when disabled).
+4. To opt out, use `--reconstruct-sidechains false`.
 
-### 3. `selection.<tag>` は既存 API では見えにくい
+### 3. `selection.<tag>` Is Hard to See Through the Existing API
 
-`source_bundle.json` は extra metadata を許すが、`list_source_candidates` は任意の bundle-level `selection.<tag>` を一級 API として扱わない。選択結果を既存 API で見せたいなら、bundle-level 独自スキーマよりも、各 candidate record の `tags` / `metrics` / `rank` / `is_primary` に寄せるほうが堅い。
+`source_bundle.json` allows extra metadata, but `list_source_candidates` does not treat an arbitrary bundle-level `selection.<tag>` as a first-class API. If selection results should be visible through the existing API, it is more robust to put them in each candidate record's `tags` / `metrics` / `rank` / `is_primary` than in a custom bundle-level schema.
 
-Phase 2 の選択 CLI は、まず次の程度に留める。
+The Phase 2 selection CLI should first stay at about the following level.
 
 ```bash
 mdclaw select_source_candidates \
@@ -160,31 +160,31 @@ mdclaw select_source_candidates \
   --tag bioemu_k10
 ```
 
-出力は各 candidate に以下を追記する。
+The output appends the following to each candidate.
 
 - `tags`: `["selected:bioemu_k10"]`
 - `metrics.selection_rank`: 1, 2, ...
-- `metrics.selection_strategy`: `"evenly_spaced"` など
+- `metrics.selection_strategy`: `"evenly_spaced"`, etc.
 
-これなら既存の source bundle の自由度の範囲で済み、後から `list_source_candidates` の表示拡張もしやすい。
+This stays within the existing freedom of the source bundle and makes it easy to extend the display of `list_source_candidates` later.
 
-### 4. multi-prod concat は topology 互換性を前提にする
+### 4. Multi-prod concat Assumes Topology Compatibility
 
-同一 job 内で `source_001 -> prep_001..prep_K -> prod_001..prod_K -> analyze_001` とする設計は、既存 DAG と整合する。ただし、multi-prod `concat_trajectory` は共有 topology を前提に動くため、全分岐の atom order / atom count が互換であることを運用上の invariant として明記する必要がある。
+A design of `source_001 -> prep_001..prep_K -> prod_001..prod_K -> analyze_001` within one job is consistent with the existing DAG. However, multi-prod `concat_trajectory` works on the assumption of a shared topology, so it must be stated explicitly as an operational invariant that the atom order / atom count of all branches are compatible.
 
-BioEmu 候補は同じ配列の monomer に限定し、`prepare_complex` の設定も全分岐で同一にする。枝ごとに protonation、欠損補完、ligand、chain selection が変わるような使い方は MVP では非対応にする。
+BioEmu candidates are limited to monomers of the same sequence, and the `prepare_complex` settings are identical across all branches. Usage where protonation, missing-residue completion, ligands or chain selection differ per branch is not supported in the MVP.
 
-### 5. `branch_prep_for_candidates` は急がない
+### 5. Do Not Rush `branch_prep_for_candidates`
 
-`prepare_complex` は既に `--source-candidate-id` を受け取れる。MVP では branch 作成 CLI を増やさず、まず 1 candidate を選んで既存 MD workflow に流す。
+`prepare_complex` already accepts `--source-candidate-id`. In the MVP, do not add a branch-creation CLI; first select one candidate and feed it into the existing MD workflow.
 
-多分岐が必要になった段階で、薄い helper として `branch_prep_for_candidates` を追加する。これは新しい DAG 規約ではなく、`create_node(job_dir, "prep", parent_node_ids=["source_001"], conditions={"source_candidate_id": ...})` を繰り返すだけにする。
+When multiple branches become necessary, add `branch_prep_for_candidates` as a thin helper. It is not a new DAG convention; it just repeats `create_node(job_dir, "prep", parent_node_ids=["source_001"], conditions={"source_candidate_id": ...})`.
 
-## 改善後アーキテクチャ
+## Improved Architecture
 
-### Phase 1: surrogate source bundle 生成だけ
+### Phase 1: Surrogate Source Bundle Generation Only
 
-候補生成の新規 CLI は 1 つ。これとは別に deploy 確認用の utility CLI として `setup_surrogate_backend` / `check_surrogate_backend` を置く。
+There is one new CLI for candidate generation. Separately, `setup_surrogate_backend` / `check_surrogate_backend` are provided as utility CLIs for checking deployment.
 
 ```python
 generate_surrogate_candidates(
@@ -200,49 +200,49 @@ generate_surrogate_candidates(
 ) -> dict
 ```
 
-責務:
+Responsibilities:
 
-1. 入力 validation を行う。
-2. `model` で backend を選ぶ。
-3. backend 固有の managed venv 内で surrogate model を subprocess 実行する。
-4. trajectory/topology 出力、または構造群を受け取る。
-5. `candidate_NNN.pdb` に分割する。
-6. `source_bundle.json` を `source_type="surrogate"` で作る。
-7. node mode なら source node を complete する。
+1. Validate the input.
+2. Select the backend by `model`.
+3. Run the surrogate model as a subprocess inside the backend-specific managed venv.
+4. Receive the trajectory/topology output or the set of structures.
+5. Split into `candidate_NNN.pdb`.
+6. Create `source_bundle.json` with `source_type="surrogate"`.
+7. In node mode, complete the source node.
 
-Phase 1 で作るファイル:
+Files created in Phase 1:
 
 - `mdclaw/surrogate_server.py`
 - `tests/test_surrogate_server.py`
 - `skills/bioemu-sample/SKILL.md`
 - `docs/research/md_surrogate_integration.md`
-- `docs/developer/configuration.md` の surrogate backend deploy 説明
+- The surrogate backend deployment description in `docs/developer/configuration.md`
 
-Phase 1 で既存改修するファイル:
+Existing files modified in Phase 1:
 
-- `mdclaw/source_bundle.py`: trajectory を candidate PDB に分割する helper
-- `mdclaw/_registry.py`: surrogate server 登録
-- `mdclaw/__init__.py`: export 更新
-- `README.md`: MD surrogate source の位置づけを短く追記
+- `mdclaw/source_bundle.py`: helper to split a trajectory into candidate PDBs
+- `mdclaw/_registry.py`: surrogate server registration
+- `mdclaw/__init__.py`: export update
+- `README.md`: short addition on where MD surrogate sources fit
 
-Phase 1 でやること:
+What Phase 1 does:
 
-- BioEmu sampling と source_bundle 化
-- HPacker による side-chain repack（in-process、`--reconstruct-sidechains false` で無効化可）
-- backbone-only PDB の provenance 保管
+- BioEmu sampling and source_bundle creation
+- Side-chain repack with HPacker (in-process; can be disabled with `--reconstruct-sidechains false`)
+- Keeping backbone-only PDBs as provenance
 
-Phase 1 でやらないこと:
+What Phase 1 does not do:
 
-- OpenMM minimize / 制約付き relax
+- OpenMM minimize / restrained relax
 - energy ranking
 - clustering
 - prep fan-out
-- multi-prod 解析拡張
+- multi-prod analysis extensions
 - reweighting
 
-### Phase 2: 少数候補の選択
+### Phase 2: Selecting a Small Number of Candidates
 
-候補選択 CLI を 1 つ追加する。
+Add one candidate-selection CLI.
 
 ```bash
 mdclaw select_source_candidates \
@@ -253,29 +253,29 @@ mdclaw select_source_candidates \
   --tag bioemu_k10
 ```
 
-最初の strategy は軽くする。
+Keep the first strategies light.
 
-- `evenly_spaced`: source bundle の順序から等間隔に取る
-- `random_seeded`: seed 固定でランダムに取る
-- `rmsd_farthest`: Cα RMSD の farthest-first sampling
+- `evenly_spaced`: take evenly spaced entries from the source bundle order
+- `random_seeded`: take randomly with a fixed seed
+- `rmsd_farthest`: farthest-first sampling by Cα RMSD
 
-`cluster_kmedoid`、energy ranking、clash score は後でよい。最初から sklearn や独自 k-medoid を入れない。
+`cluster_kmedoid`, energy ranking and clash scores can come later. Do not bring in sklearn or a custom k-medoid from the start.
 
-### Phase 3: 選ばれた候補の補正と relax
+### Phase 3: Correcting and Relaxing the Selected Candidates
 
-HPacker repack は Phase 1 で済ませてあるので、ここでは relax / minimize 系の補正を加える。
+HPacker repack is already done in Phase 1, so this phase adds relax / minimize corrections.
 
-候補:
+Candidates:
 
-1. 選択済み k 個に対する OpenMM local minimize（clash 解消）。
-2. `bioemu.sidechain_relax` 相当の制約付き短時間 MD equilibration（任意）。
-3. HPacker helper を `create_mutated_structure` と共有する。
+1. OpenMM local minimize on the k selected structures (clash removal).
+2. Restrained short MD equilibration equivalent to `bioemu.sidechain_relax` (optional).
+3. Share the HPacker helper with `create_mutated_structure`.
 
-この Phase のゴールは「選択済み k 個を安定して prep に渡す」ことであり、全 BioEmu sample を minimize することではない。
+The goal of this phase is "to hand the k selected structures to prep stably", not to minimize every BioEmu sample.
 
-### Phase 4: 多分岐 MD
+### Phase 4: Multi-Branch MD
 
-必要になったら `branch_prep_for_candidates` を追加する。
+Add `branch_prep_for_candidates` when it becomes necessary.
 
 ```bash
 mdclaw branch_prep_for_candidates \
@@ -285,22 +285,22 @@ mdclaw branch_prep_for_candidates \
   --dry-run
 ```
 
-この CLI は dry-run を標準導線にする。作る node の一覧、candidate ID、label、予想される `prepare_complex` 引数を先に表示し、実行時は `prep` node を作るだけにする。
+This CLI makes dry-run the standard path. It first shows the list of nodes to be created, the candidate IDs, labels and expected `prepare_complex` arguments; on execution it only creates the `prep` nodes.
 
-### Phase 5: 集約解析
+### Phase 5: Aggregate Analysis
 
-既存の analyze multi-parent を使う。ただし、以下の invariant を満たすときだけ対応する。
+Use the existing analyze multi-parent support. However, support it only when the following invariants hold.
 
-- 全 prod parent が同じ配列由来
-- 全 branch の topology が atom-order-compatible
-- 同一 solvent/modeling options で作られている
-- analyze parent は prod のみで mixed parent にしない
+- All prod parents come from the same sequence
+- The topologies of all branches are atom-order-compatible
+- They were built with the same solvent/modeling options
+- analyze parents are prod only, with no mixed parents
 
-`frame_provenance.json` などの provenance 拡張はこの段階で追加する。MVP には入れない。
+Provenance extensions such as `frame_provenance.json` are added at this stage. They are not in the MVP.
 
-## Source bundle 設計
+## Source Bundle Design
 
-`source_bundle` の schema は変えない。source type は backend 固有名ではなく `"surrogate"` にし、実際のモデル名は `origin.kind` に入れる。
+Do not change the `source_bundle` schema. The source type is `"surrogate"`, not a backend-specific name, and the actual model name goes into `origin.kind`.
 
 ```json
 {
@@ -325,13 +325,13 @@ mdclaw branch_prep_for_candidates \
 }
 ```
 
-共通情報:
+Common information:
 
-- `origin.kind`: `"bioemu"` などの backend 名
-- `origin.surrogate_model`: backend 名または model id
+- `origin.kind`: a backend name such as `"bioemu"`
+- `origin.surrogate_model`: the backend name or model id
 - `origin.surrogate_version`
 
-BioEmu 固有情報は `origin` に寄せる。
+BioEmu-specific information goes into `origin`.
 
 - `bioemu_frame_index`
 - `bioemu_checkpoint`
@@ -341,42 +341,42 @@ BioEmu 固有情報は `origin` に寄せる。
 - `filter_samples`
 - `bioemu_filter_passed`
 
-MVP では `metrics` を無理に埋めない。confidence がないことを正直に表現する。
+In the MVP, do not force-fill `metrics`. Represent the absence of confidence honestly.
 
-## エラー方針
+## Error Policy
 
-Phase 1 のエラーは backend 実行と bundle 生成に限定する。
+Phase 1 errors are limited to backend execution and bundle generation.
 
-| 状況 | 挙動 |
+| Situation | Behaviour |
 |---|---|
-| backend が現在の OS/GPU に非対応 | early error。BioEmu 実走は Linux/GPU を推奨 |
-| 未対応の `--model` | 利用可能 model 一覧を返して fail |
-| backend venv がない | `setup_surrogate_backend --model ...` のコマンドを返して fail |
-| backend import 失敗 | `check_surrogate_backend` の結果と reinstall 手順を返して fail |
-| multimer/ligand/PTM らしき入力 | early reject。Boltz-2 を案内 |
-| sequence 長が短すぎる | early reject |
-| backend subprocess 失敗 | stderr と再現コマンドを artifact に保存 |
-| trajectory が読めない | fail。source node は complete しない |
-| accepted candidate が 0 | fail |
-| accepted candidate が要求より少ない | warning 付きで bundle 化 |
+| Backend does not support the current OS/GPU | Early error. Linux/GPU is recommended for real BioEmu runs |
+| Unsupported `--model` | Fail, returning the list of available models |
+| No backend venv | Fail, returning the `setup_surrogate_backend --model ...` command |
+| Backend import failure | Fail, returning the `check_surrogate_backend` result and reinstall steps |
+| Input that looks like a multimer/ligand/PTM | Early reject. Point to Boltz-2 |
+| Sequence too short | Early reject |
+| Backend subprocess failure | Save stderr and the reproduction command as an artifact |
+| Trajectory unreadable | Fail. The source node is not completed |
+| Zero accepted candidates | Fail |
+| Fewer accepted candidates than requested | Create the bundle with a warning |
 
-自動 retry は最初は入れない。retry は便利だが、失敗原因を隠してテストも複雑にする。
+Do not add automatic retry at first. Retry is convenient, but it hides failure causes and complicates testing.
 
-## テスト計画
+## Test Plan
 
 ### Unit
 
-- `generate_surrogate_candidates --model bioemu` は subprocess を完全 mock する。
-- `setup_surrogate_backend` は install command construction を mock し、実 network install は unit test で行わない。
-- `check_surrogate_backend` は managed venv の Python 実行を mock する。
-- mock trajectory から `candidate_NNN.pdb` が生成されることを確認する。
-- `source_bundle.json` が `source_type="surrogate"` と `origin.kind="bioemu"` を持つことを確認する。
-- CLI discovery で `generate_surrogate_candidates` が出ることを確認する。
-- macOS / missing env / invalid sequence の early error を確認する。
+- `generate_surrogate_candidates --model bioemu` fully mocks the subprocess.
+- `setup_surrogate_backend` mocks install command construction; no real network install in unit tests.
+- `check_surrogate_backend` mocks the Python execution in the managed venv.
+- Confirm that `candidate_NNN.pdb` files are generated from a mock trajectory.
+- Confirm that `source_bundle.json` has `source_type="surrogate"` and `origin.kind="bioemu"`.
+- Confirm that `generate_surrogate_candidates` appears in CLI discovery.
+- Confirm the early errors for macOS / missing env / invalid sequence.
 
 ### Smoke
 
-GPU/Linux 環境があるときだけ skip 解除する。
+Unskip only when a GPU/Linux environment is available.
 
 ```bash
 mdclaw generate_surrogate_candidates \
@@ -394,7 +394,7 @@ mdclaw list_source_candidates \
 
 ### Integration
 
-Phase 1 の integration は 1 candidate だけを既存 `prepare_complex` に渡すところまで。
+Phase 1 integration goes only as far as passing one candidate to the existing `prepare_complex`.
 
 ```bash
 mdclaw prepare_complex \
@@ -403,27 +403,27 @@ mdclaw prepare_complex \
   --source-candidate-id candidate_001
 ```
 
-候補は HPacker repack 済みなので、prepare 側で side-chain が無いことに起因する破綻は出ない前提。それでも prepare が壊れる場合は Phase 3 で minimize/relax を加える設計に進む。
+The candidates are already HPacker-repacked, so failures on the prepare side caused by missing side chains are assumed not to occur. If prepare still breaks, proceed to the design that adds minimize/relax in Phase 3.
 
-## 採用する実装順
+## Adopted Implementation Order
 
-1. `generate_surrogate_candidates --model bioemu` を作る。
-2. `setup_surrogate_backend` / `check_surrogate_backend` で BioEmu deploy を mdclaw から確認できるようにする。
-3. backbone candidate を抽出して source bundle 化する。
-4. 抽出後に HPacker で in-place repack し、`candidates_backbone/` に raw を保管する。
-5. `list_source_candidates` で候補が見えることを確認する。
-6. 1 candidate を `prepare_complex` に渡して、どこで壊れるか観測する。
-7. 壊れた事実に基づき Phase 3 で minimize / relax を最小実装する。
-8. 選択 CLI を追加する。
-9. 多分岐 prep helper を追加する。
-10. 最後に multi-prod 解析 provenance を追加する。
+1. Build `generate_surrogate_candidates --model bioemu`.
+2. Make BioEmu deployment checkable from mdclaw with `setup_surrogate_backend` / `check_surrogate_backend`.
+3. Extract backbone candidates and turn them into a source bundle.
+4. After extraction, repack in place with HPacker and keep the raw structures in `candidates_backbone/`.
+5. Confirm the candidates are visible with `list_source_candidates`.
+6. Pass one candidate to `prepare_complex` and observe where it breaks.
+7. Based on the observed breakage, implement minimal minimize / relax in Phase 3.
+8. Add the selection CLI.
+9. Add the multi-branch prep helper.
+10. Finally, add multi-prod analysis provenance.
 
-## 判断基準
+## Decision Criteria
 
-この統合の価値は「MD surrogate model を mdclaw の source generator として安全に差し込めること」にある。したがって、最初の成功条件は ensemble MD の完全自動化ではなく、次の 3 点にする。
+The value of this integration lies in "being able to plug MD surrogate models safely into mdclaw as source generators". Therefore, the first success criterion is not full automation of ensemble MD but the following three points.
 
-- BioEmu など backend 固有の重い依存関係が mdclaw env を汚さず、mdclaw の utility CLI で導入確認できる。
-- surrogate 出力が既存 `source_bundle` 契約に収まる。
-- 既存の `prepare_complex --source-candidate-id` に 1 候補を渡せる。
+- Heavy backend-specific dependencies such as BioEmu do not pollute the mdclaw env, and their installation can be checked with mdclaw's utility CLIs.
+- Surrogate output fits within the existing `source_bundle` contract.
+- One candidate can be passed to the existing `prepare_complex --source-candidate-id`.
 
-この 3 点が安定してから、候補選択、多分岐、解析を足す。
+Only after these three points are stable, add candidate selection, multi-branch runs and analysis.

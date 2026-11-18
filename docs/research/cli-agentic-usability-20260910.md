@@ -3,7 +3,7 @@
 2026-09-10, revised the same day with a deeper pass. Evidence: the first 33 sealed
 `cli_skill_sif` and 33 sealed `cli_sif` attempts (pi + kimi-k3, 20-minute agent
 budget, image mode, membrane tasks 001-011) of the three-condition campaign
-`/data1/rkp00079/rku00161/runs/kimi-k3-3cond-full`, read through the campaign's
+`/data1/$PROJECT/$USER/runs/kimi-k3-3cond-full`, read through the campaign's
 transcript metrics (`metrics.phases`, `mdclaw_error_codes`, `recovery`,
 `timeline.jsonl`) and, for every error, the command that caused it, the result
 it received, and what the agent did next. The MDClaw code paths behind each

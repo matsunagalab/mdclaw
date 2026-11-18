@@ -1,132 +1,132 @@
-# Round 駆動サンプリング（replica / Weighted Ensemble）を DAG に載せる実装計画
+# Implementation Plan for Putting Round-Driven Sampling (Replica / Weighted Ensemble) on the DAG
 
-作成: 2026-09-21（ユーザー案を Claude が MDClaw のコードを実地調査して具体化。同日、
-「WE 専用仕様を避け、既存 DAG を使い、他の MD 手法にも使い回せる形に」というユーザー方針で
-汎用の round 駆動 + WE は policy の一つ、に組み替えた。実装前のレビュー用）
+Created: 2026-09-21 (Claude made the user's proposal concrete by surveying the MDClaw code in practice. The same day,
+following the user's direction "avoid a WE-specific design, use the existing DAG, and make it reusable for other MD methods",
+it was restructured into generic round driving with WE as one policy. For review before implementation.)
 
-## 0. 用語とユーザー案との対応
+## 0. Terminology and Correspondence with the User's Proposal
 
-| 用語 | 意味 |
+| Term | Meaning |
 | --- | --- |
-| replica / walker | 1 本の軌道。WE では重みを持つ |
-| round（反復） | 全 replica を τ だけ進め、次の batch を決める 1 周 |
-| segment（区間） | 1 round 分の 1 replica の軌道片。**segment = `prod` ノード 1 個** |
-| batch | 1 round の `prod` ノード集合 |
-| scheme | round 駆動の定義（policy、τ、replica 数、開始ノード、実行方法）。`progress.json.params.sampling_schemes[<id>]` |
-| policy | round の終わりに次の batch を決める規則。`replicas`（全部続ける、内蔵）または analyze ツール（`we_resample` …）が `next_round.json` を書く |
+| replica / walker | One trajectory. In WE it carries a weight |
+| round (iteration) | One cycle that advances every replica by τ and decides the next batch |
+| segment | One replica's trajectory piece for one round. **segment = one `prod` node** |
+| batch | The set of `prod` nodes of one round |
+| scheme | The definition of round driving (policy, τ, number of replicas, start node, execution method). `progress.json.params.sampling_schemes[<id>]` |
+| policy | The rule that decides the next batch at the end of a round. `replicas` (continue all; built in) or an analyze tool (`we_resample` …) writes `next_round.json` |
 
-| ユーザー案 | 本計画 |
+| User's proposal | This plan |
 | --- | --- |
-| prod ノードに weight を保存 | segment ノードの `conditions.weight`（作成時、plan の写し）と `metadata.weight`（完了時）。台帳は policy ノードの `next_round.json` |
-| 分裂したら weight も分裂 | `we_resample` が子 spec（親、開始 state、重み、seed）を `next_round.json` に書き、`run_rounds` がそこから子ノードを `continue_from=<親>` + `dependency_node_ids=[policy ノード]` で作る |
-| 分裂の判断は prod 群を親にした analysis ノードで | round ごとに analyze ノード 1 個。親 = その round の segment 全部（`create_node` は複数 prod 親を既に許す）。`analysis_data_scope: segment` |
-| 末端の analysis ノードで WE 解析、fitting で kinetics | `analyze_we`。親 = policy ノード（analyze→analyze 親は許可済み）。§7 |
-| `run_we` は replica でも使えると便利 / 既存 DAG を使い、他手法にも | ドライバは `run_rounds`（policy 非依存）。`--policy replicas` で「N seed × k 継続」を local でも MPS でも回す。WE 固有は `we_resample` と `analyze_we` だけ（§5） |
+| Store the weight on the prod node | The segment node's `conditions.weight` (at creation, a copy of the plan) and `metadata.weight` (at completion). The ledger is the policy node's `next_round.json` |
+| When split, the weight is split too | `we_resample` writes child specs (parent, start state, weight, seed) to `next_round.json`, and `run_rounds` creates child nodes from it with `continue_from=<parent>` + `dependency_node_ids=[policy node]` |
+| The split decision is made in an analysis node whose parents are the prod group | One analyze node per round. Parents = all segments of that round (`create_node` already allows multiple prod parents). `analysis_data_scope: segment` |
+| WE analysis in a terminal analysis node, kinetics by fitting | `analyze_we`. Parent = policy node (analyze→analyze parents are already allowed). §7 |
+| It would be handy if `run_we` also worked for replicas / use the existing DAG and other methods too | The driver is `run_rounds` (policy-independent). `--policy replicas` runs "N seeds × k continuations" both locally and under MPS. The only WE-specific parts are `we_resample` and `analyze_we` (§5) |
 
 ---
 
-## 1. 方針
+## 1. Policy
 
-- 新ノード型・新 scope・新 state 形式を増やさない。`prod` / `analyze`、`continue_from`、`dependency_node_ids`、`conditions`、`update_job_params`、`submit_mps_job` / `submit_array_job` をそのまま使う。
-- 「prod 群 → 解析 → 次の prod 群」の round を**汎用契約**にする。WE、単純 replica、SST2 の「適応ブロック → `analyze_tempering` → 固定重みブロック」、adaptive sampling（frame から再開）は全部この形。
-- ガードレールは tool に置く（CLAUDE.md）。WE で「数値は出るが間違っている」失敗（同 seed の兄弟が同一軌道、重みの和 ≠ 1、揃う前に resample、target 未到達で rate）は `code` 付きで拒否。
-- 目的（科学）: 遷移の速度定数と MFPT を無バイアスの力学から得る。対象は (i) ペプチド・小タンパクの折り畳み（pcoord: q / rmsd）、(ii) 構造変化（pcoord: 状態 A と B の参照構造への RMSD の 2 次元、または dihedral。target = B の近傍）、(iii) リガンドの解離・結合（pcoord: 分子間距離 + リガンド RMSD、k_off と濃度規格化した k_on）。
+- Do not add new node types, new scopes or new state formats. Use `prod` / `analyze`, `continue_from`, `dependency_node_ids`, `conditions`, `update_job_params`, `submit_mps_job` / `submit_array_job` as they are.
+- Make the "prod group → analysis → next prod group" round a **generic contract**. WE, simple replicas, SST2's "adaptive block → `analyze_tempering` → fixed-weight block", and adaptive sampling (restart from a frame) all take this shape.
+- Put guardrails in the tool (CLAUDE.md). The WE failures that "produce numbers but are wrong" (siblings with the same seed giving identical trajectories, weights summing to ≠ 1, resampling before the round is complete, a rate without reaching the target) are refused with a `code`.
+- Goal (scientific): obtain transition rate constants and MFPTs from unbiased dynamics. Targets are (i) folding of peptides and small proteins (pcoord: q / rmsd), (ii) conformational change (pcoord: 2-D RMSD to reference structures of states A and B, or a dihedral; target = neighbourhood of B), (iii) ligand unbinding and binding (pcoord: intermolecular distance + ligand RMSD; k_off and concentration-normalized k_on).
 
 ---
 
-## 2. コードの事実（2026-09-21 調査、設計を縛るもの）
+## 2. Facts in the Code (Surveyed 2026-09-21; Constraints on the Design)
 
-| # | 事実 | 影響 |
+| # | Fact | Impact |
 | --- | --- | --- |
-| 1 | `create_node(parent_node_ids, dependency_node_ids, label, conditions, continue_from)`。metadata は `continued_from` だけ。1 回ごとにロック + `progress.json` 全書き換え + `explain_node` preflight（`node/lifecycle.py:243`） | 10⁴ ノード（4 MB）で 1 round 100 ノード ≈ 10–20 s。MD が数分/round なら許容。一括版は実測で要るときに（v1.5） |
-| 2 | `_ALLOWED_PARENT_TYPES`: `prod ← {eq, prod}`、`analyze ← {prod, fep, analyze}`。analyze の複数 prod 親は `branches_input`。`dependency_node_ids` は実行時に completed 必須（`validate_node_execution_context`） | round の形はそのまま作れる。子 segment の `dependency_node_ids=[policy ノード]` で「plan 確定後に走る」を tool が保証 |
-| 3 | `_resolve_md_restart`: `continued_from` 最優先、`state` → `checkpoint`。`read_ancestor_final_step` が step を復元 | 子 segment は `continue_from=<親 segment>`。basis から再開する子（再循環）は親を basis ノード（`eq` または `prod`）にする |
-| 4 | `run_production` のシード: `_restart_random_seed(random_seed, restart_step)`（`production.py:760`）。同じ親・同じ seed の兄弟は**同一シード → 同一軌道** | replica でも WE でも致命的。`propagate_batch` は node ごとの `random_seed` を必須にし、`run_production` に兄弟衝突ガード |
-| 5 | `_load_state_into_simulation` は `.xml` / `.chk`。positions / velocities / box のみ転送 | state 形式は変えない。7 万原子で XML 8–10 MB、保存 ≈ 1 s |
-| 6 | `_walk_prod_chain_from` は `continued_from` → 最初の親を辿り prod 以外で止まる | replica / walker の系譜は `concat_trajectory` でそのまま連結できる |
-| 7 | `dag_snapshot` は `completed` 全 id を列挙し、`dag` は PROTECTED（`node/snapshot.py`、`_envelope.py`） | 10⁴ ノードで毎回 MB 級の出力。上限を入れる（汎用） |
-| 8 | `submit_job(script=<コマンド文字列>)` はノード無しで投げられる。`submit_mps_job` / `submit_array_job` の task は `node_id` 必須 | executor `mps` / `array` は task = segment ノード（現行契約そのまま）。ドライバ自身は `submit_job --script` で投げられる |
-| 9 | 共有 SIF: OpenMM 8.5.1（`DCDReporter(..., atomSubset=None)`）、scipy 1.18、mdtraj 1.11.1、pymbar 4.2 | solute だけの DCD、`curve_fit`、mdtraj の rmsd / dihedral / 接触 |
-| 10 | `analyze_tempering`: 親 prod 群を自前で集め `verdict` と `_frames.csv`。`run_sst2`: `@node_tool("prod")`、`validate_node_execution_context(actual_conditions=…)`、sidecar | 同じ型で書く |
-| 11 | code はキーワード形 `code="…"`（scanner）。golden: `tests/data/guardrail_codes.json`、`cli_contract.json`。`test_registry.py` は server 数 17 | 新 server `rounds`（仮）で 18 |
-| 12 | 1KXV（71k 原子）GB200 単独 ≈ 820 ns/day、MPS 8 本で集計 2.65 倍（52k 原子） | τ = 50 ps ≈ 5 s/segment（local-batch）。プロセス起動 10–20 s なので executor `mps` は τ ≳ 200 ps |
-| 13 | `run_production` は 1 ノードにつき `runtime_system.xml`（≈ 10 MB）と全原子 DCD を書く | 短い segment を大量に作るなら batch で共有・solute だけの DCD に |
+| 1 | `create_node(parent_node_ids, dependency_node_ids, label, conditions, continue_from)`. The only metadata is `continued_from`. Each call takes a lock + rewrites all of `progress.json` + runs the `explain_node` preflight (`node/lifecycle.py:243`) | At 10⁴ nodes (4 MB), 100 nodes per round ≈ 10–20 s. Acceptable if MD is several minutes per round. A bulk version only when measurement shows it is needed (v1.5) |
+| 2 | `_ALLOWED_PARENT_TYPES`: `prod ← {eq, prod}`, `analyze ← {prod, fep, analyze}`. Multiple prod parents of an analyze are `branches_input`. `dependency_node_ids` must be completed at run time (`validate_node_execution_context`) | The round shape can be built as is. With the child segment's `dependency_node_ids=[policy node]`, the tool guarantees "runs after the plan is finalized" |
+| 3 | `_resolve_md_restart`: `continued_from` takes top priority, then `state` → `checkpoint`. `read_ancestor_final_step` restores the step | Child segments use `continue_from=<parent segment>`. A child restarting from the basis (recycling) takes the basis node (`eq` or `prod`) as its parent |
+| 4 | `run_production` seeding: `_restart_random_seed(random_seed, restart_step)` (`production.py:760`). Siblings with the same parent and same seed get **the same seed → identical trajectories** | Fatal for both replicas and WE. `propagate_batch` requires a per-node `random_seed`, and `run_production` gets a sibling-collision guard |
+| 5 | `_load_state_into_simulation` takes `.xml` / `.chk`. Transfers only positions / velocities / box | Do not change the state format. 8–10 MB of XML at 70k atoms; saving ≈ 1 s |
+| 6 | `_walk_prod_chain_from` follows `continued_from` → first parent and stops at a non-prod | Replica / walker lineages can be concatenated with `concat_trajectory` as is |
+| 7 | `dag_snapshot` lists every `completed` id, and `dag` is PROTECTED (`node/snapshot.py`, `_envelope.py`) | MB-scale output every time at 10⁴ nodes. Add a cap (generic) |
+| 8 | `submit_job(script=<command string>)` can be submitted without a node. Tasks of `submit_mps_job` / `submit_array_job` require a `node_id` | For executors `mps` / `array`, task = segment node (the current contract as is). The driver itself can be submitted with `submit_job --script` |
+| 9 | Shared SIF: OpenMM 8.5.1 (`DCDReporter(..., atomSubset=None)`), scipy 1.18, mdtraj 1.11.1, pymbar 4.2 | Solute-only DCD, `curve_fit`, mdtraj rmsd / dihedral / contacts |
+| 10 | `analyze_tempering`: gathers its parent prod group itself and writes a `verdict` and `_frames.csv`. `run_sst2`: `@node_tool("prod")`, `validate_node_execution_context(actual_conditions=…)`, sidecar | Write in the same style |
+| 11 | Codes use the keyword form `code="…"` (scanner). Golden files: `tests/data/guardrail_codes.json`, `cli_contract.json`. `test_registry.py` has 17 servers | 18 with a new server `rounds` (tentative) |
+| 12 | 1KXV (71k atoms) GB200 alone ≈ 820 ns/day; 8 MPS processes give 2.65× aggregate (52k atoms) | τ = 50 ps ≈ 5 s/segment (local-batch). Process startup is 10–20 s, so executor `mps` needs τ ≳ 200 ps |
+| 13 | `run_production` writes a `runtime_system.xml` (≈ 10 MB) and an all-atom DCD per node | If producing many short segments, share it per batch and use a solute-only DCD |
 
 ---
 
-## 3. 汎用部品（replica / WE / 将来の adaptive で共用）
+## 3. Generic Components (Shared by Replicas / WE / Future Adaptive Sampling)
 
-### 3.1 scheme（`params.sampling_schemes[<id>]`、`setup_rounds` が検証して記録）
+### 3.1 scheme (`params.sampling_schemes[<id>]`, validated and recorded by `setup_rounds`)
 
 ```json
 {
   "scheme_id": "h3flip",
   "policy": "weighted_ensemble",            // "replicas" | "<analyze tool name>"
-  "policy_args": {...},                       // policy ツールへ渡す（WE: pcoord, bins, walkers_per_bin, target, recycle）
-  "stage_tool": "run_production",             // segment を走らせる tool（run_sst2 も可）
+  "policy_args": {...},                       // passed to the policy tool (WE: pcoord, bins, walkers_per_bin, target, recycle)
+  "stage_tool": "run_production",             // tool that runs a segment (run_sst2 also allowed)
   "stage_args": {"simulation_time_ns": 0.05, "pressure_bar": 1.0, "output_frequency_ps": 10,
                  "trajectory_selection": "protein", "platform": "CUDA"},
-  "start": {"node_ids": ["eq_001"], "n_replicas": 20},   // replicas: seed 違い n 本。WE: bin あたり M 本
+  "start": {"node_ids": ["eq_001"], "n_replicas": 20},   // replicas: n with different seeds. WE: M per bin
   "seed": 20260921,
-  "retention": {"prune_states_after_rounds": null}      // 既定 null（消さない）
+  "retention": {"prune_states_after_rounds": null}      // default null (delete nothing)
 }
 ```
 
-### 3.2 `run_rounds`（job レベル、policy 非依存、再入可能）
+### 3.2 `run_rounds` (job level, policy-independent, re-entrant)
 
 ```
 loop:
-  batch = 未完了の segment があればそれ、無ければ前 round の next_round.json（round 1 は scheme）から create_node で作る
+  batch = incomplete segments if any; otherwise create them with create_node from the previous round's next_round.json (the scheme for round 1)
   propagate(batch, executor)      # local-batch | local | mps | array
   if policy != "replicas":
-      analyze ノードを作り（親 = batch、dependency = 前 policy ノード）policy tool を走らせ next_round.json を得る
-  stop? (--max-rounds / --max-aggregate-ns / --max-wall-hours / policy の stop 指示)
+      create an analyze node (parents = batch, dependency = previous policy node), run the policy tool, get next_round.json
+  stop? (--max-rounds / --max-aggregate-ns / --max-wall-hours / stop instruction from the policy)
 ```
 
-- executor `local`: 各 node の stage tool（既定 `run_production`）をこのプロセスで順に呼ぶ（§3.3）。`mps`: `submit_mps_job` に task = node で投げ、`--wait` で `check_job` を回して完了を待つ（Ala3 / chignolin の実測後に入れる）。`--chain`（次 round の `run_rounds` を `afterok` で自己投入）は v1.5。
-- 再入: DAG だけを見る。pending segment は走らせる、failed segment は同じ親・同じ重み・新 seed の兄弟を作る（同じ系譜 3 回連続失敗で `rounds_replica_unstable`）、policy ノードが completed なら飛ばす。
-- `--policy replicas`: analyze ノードなし。各 replica を `continue_from` で k 本繋ぐ。既存 `submit-mps.md` の bash ループの置き換え。
-- 各 segment ノードの `conditions`: `scheme_id`, `round`, `replica`, `random_seed`, `parent_segment`（node id | null）, `weight`（policy が与えたとき）。label `"<scheme>:r<round>:<replica>"`。
-- `retention.prune_states_after_rounds = K`（opt-in）: round 完了後、K round より古い segment の `state` を消し、ノードに `state_pruned` event、`_select_md_restart_ancestor` はファイル欠損時 `restart_state_pruned` を返す（next_action: 保持内の子孫から分岐、または最終フレームから速度を引き直す）。
+- executor `local`: calls each node's stage tool (default `run_production`) sequentially in this process (§3.3). `mps`: submits to `submit_mps_job` with task = node and waits for completion by looping `check_job` with `--wait` (added after measurements on Ala3 / chignolin). `--chain` (self-submitting the next round's `run_rounds` with `afterok`) is v1.5.
+- Re-entry: looks only at the DAG. Pending segments are run; for a failed segment, a sibling with the same parent, same weight and a new seed is created (three consecutive failures in the same lineage give `rounds_replica_unstable`); if the policy node is completed it is skipped.
+- `--policy replicas`: no analyze node. Each replica chains k segments with `continue_from`. Replaces the bash loop in the existing `submit-mps.md`.
+- `conditions` of each segment node: `scheme_id`, `round`, `replica`, `random_seed`, `parent_segment` (node id | null), `weight` (when the policy supplies it). Label `"<scheme>:r<round>:<replica>"`.
+- `retention.prune_states_after_rounds = K` (opt-in): after a round completes, delete the `state` of segments older than K rounds and write a `state_pruned` event on the node; `_select_md_restart_ancestor` returns `restart_state_pruned` when the file is missing (next_action: branch from a descendant still retained, or redraw velocities from the final frame).
 
-### 3.3 segment の実行 = `run_production` をそのまま呼ぶ（2026-09-21 ユーザー判断）
+### 3.3 Running a Segment = Calling `run_production` As Is (User Decision, 2026-09-21)
 
-新しい実行ツールは作らない。executor `local` はドライバのプロセス内で segment ごとに
-`run_production(job_dir=…, node_id=…, random_seed=<node の条件>, …)` を関数呼び出しする。
-executor `mps` は同じコマンドを `submit_mps_job` の task にする。
+Do not create a new execution tool. Executor `local` calls
+`run_production(job_dir=…, node_id=…, random_seed=<node's condition>, …)` as a function for each segment inside the driver process.
+Executor `mps` makes the same command a task of `submit_mps_job`.
 
-- オーバーヘッドの見積もり（プロセス内呼び出し）: Simulation 構築（CUDA context 1–3 s）+ XML 読み書き（小系 0.5 s、7 万原子で 2 s）≈ 2–4 s / segment。ペプチド・小タンパク（1–3 万原子、GB200 で 1–3 µs/day）なら τ = 100–200 ps で MD が 4–15 s、オーバーヘッドは 2–3 割。別プロセス（`mps`）は import が乗るので τ ≳ 200 ps。実測して skill に書く。
-- ディスク: `run_production` は segment ごとに `runtime_system.xml`（小系 1–2 MB、7 万原子 10 MB）と `final_structure.pdb` を書く。10⁴ segment で 10–100 GB。小系なら許容、大きくなったら retention（opt-in）で消す。
-- seed: segment の `random_seed` は `run_rounds` が (scheme seed, round, replica) から決めて条件に書き、`run_production` は `_restart_random_seed(seed, restart_step)` で兄弟ごとに異なる実効シードになる。手で作った兄弟が同じ seed で同一軌道になる事故は `run_production` 側の `production_sibling_seed_collision` で拒否。
-- SST2 の round は同じ executor で `run_sst2` を呼ぶだけ（`stage_tool`）。
+- Overhead estimate (in-process call): Simulation construction (CUDA context 1–3 s) + XML read/write (0.5 s for a small system, 2 s at 70k atoms) ≈ 2–4 s / segment. For peptides and small proteins (10k–30k atoms, 1–3 µs/day on GB200), τ = 100–200 ps gives 4–15 s of MD, so overhead is 20–30 %. A separate process (`mps`) adds import time, so τ ≳ 200 ps. Measure and write it into the skill.
+- Disk: `run_production` writes a `runtime_system.xml` (1–2 MB for a small system, 10 MB at 70k atoms) and `final_structure.pdb` per segment. 10–100 GB for 10⁴ segments. Acceptable for small systems; when it gets large, delete with retention (opt-in).
+- seed: `run_rounds` derives each segment's `random_seed` from (scheme seed, round, replica) and writes it into the conditions; `run_production` turns it into a different effective seed per sibling via `_restart_random_seed(seed, restart_step)`. The accident of hand-made siblings with the same seed giving identical trajectories is refused on the `run_production` side with `production_sibling_seed_collision`.
+- An SST2 round just calls `run_sst2` with the same executor (`stage_tool`).
 
-### 3.4 ノード id（フォルダ名）の規則
+### 3.4 Rules for Node ids (Folder Names)
 
-今の id は型ごとの連番 `<type>_<seq:03d>`（`_next_node_id`、非数値の接尾辞は無視する）。
-scheme が作るノードは数が多いので、フォルダ名だけで scheme / round / replica が読める構造化 id にする。
-連番 id と同居でき、`_next_node_id` の連番には影響しない。
+Current ids are per-type sequence numbers `<type>_<seq:03d>` (`_next_node_id`, which ignores non-numeric suffixes).
+Nodes created by a scheme are numerous, so they get structured ids from which scheme / round / replica can be read from the folder name alone.
+They can coexist with sequential ids and do not affect `_next_node_id`'s numbering.
 
-| ノード | id | 例 |
+| Node | id | Example |
 | --- | --- | --- |
-| 通常のノード | `<type>_<seq:03d>`（変更なし） | `prod_007` |
-| scheme の segment | `<type>_<scheme>_r<round:04d>_w<replica:04d>` | `prod_h3flip_r0013_w0050` |
-| scheme の policy ノード | `analyze_<scheme>_r<round:04d>` | `analyze_h3flip_r0013` |
-| 末端解析 | 通常の連番 | `analyze_004` |
+| Ordinary node | `<type>_<seq:03d>` (unchanged) | `prod_007` |
+| Scheme segment | `<type>_<scheme>_r<round:04d>_w<replica:04d>` | `prod_h3flip_r0013_w0050` |
+| Scheme policy node | `analyze_<scheme>_r<round:04d>` | `analyze_h3flip_r0013` |
+| Terminal analysis | Ordinary sequence number | `analyze_004` |
 
-- `scheme_id` は `[a-z][a-z0-9]{0,15}`（小文字英数、下線なし）に限定して id の区切りを一意にする（`rounds_scheme_invalid`）。
-- `r` = round、`w` = walker / replica の番号。`ls nodes/` が scheme → round → replica の順に並ぶ。
-- 割当は `create_node` の非公開引数 `_node_id`（下線始まりは CLI に出ない。`run_rounds` だけが渡し、形式と一意性を検証する）。公開の `node_id` 引数は今までどおり拒否（エージェントが id を選ぶことはない）。
-- 大きな DAG で id を列挙する箇所（`dag_snapshot`、`node_missing_error` の `existing_node_ids`、`parent_required` の候補、`describe_nodes`）には上限を入れる（Phase 0、汎用）。
+- `scheme_id` is restricted to `[a-z][a-z0-9]{0,15}` (lowercase alphanumerics, no underscore) so the id delimiters are unambiguous (`rounds_scheme_invalid`).
+- `r` = round, `w` = walker / replica number. `ls nodes/` sorts in scheme → round → replica order.
+- Assignment is via `create_node`'s private argument `_node_id` (arguments starting with an underscore are not exposed on the CLI; only `run_rounds` passes it, and the format and uniqueness are validated). The public `node_id` argument is refused as before (the agent never chooses an id).
+- Places that enumerate ids in a large DAG (`dag_snapshot`, `existing_node_ids` of `node_missing_error`, `parent_required` candidates, `describe_nodes`) get a cap (Phase 0, generic).
 
-### 3.5 その他の汎用変更
+### 3.5 Other Generic Changes
 
-- `dag_snapshot`: 各リストは 40 件超で先頭 20 + 末尾 20 と件数（`truncated: true`）。`node_missing` の `existing_node_ids`、`parent_required` の候補も同じ上限。
-- CV 評価 `mdclaw/analyze/cv.py`: `distance`（質量重心、分子内は raw・分子間は最小像。`restraints.resolve_centroid_groups` 再利用。分子間の target は半箱長未満に限る: `we_target_exceeds_half_box`）、`rmsd`（参照 PDB。`align_selection` で重ね合わせ、`selection` で測る: タンパク質で合わせてリガンドで測る形が解離・結合の pcoord）、`dihedral`（4 原子、`md.compute_dihedrals`）、`q`（Best–Hummer–Eaton の天然接触割合）。軌道（DCD + topology）から frame ごとに評価。折り畳みには rmsd / q、解離・結合には distance + rmsd が要るので 4 種とも v1。
-- solute だけの DCD（`--trajectory-selection`）は小系では要らない（1 万原子 × 1 frame/segment × 10⁴ = 1.2 GB）。大きな系で必要になったら `run_production` の汎用オプションとして足す。
+- `dag_snapshot`: each list over 40 entries becomes the first 20 + last 20 plus the count (`truncated: true`). `existing_node_ids` of `node_missing` and the `parent_required` candidates get the same cap.
+- CV evaluation `mdclaw/analyze/cv.py`: `distance` (centre of mass; raw within a molecule, minimum image between molecules; reuses `restraints.resolve_centroid_groups`. Intermolecular targets are limited to under half the box length: `we_target_exceeds_half_box`), `rmsd` (reference PDB; superpose on `align_selection`, measure on `selection`: superposing on the protein and measuring on the ligand is the pcoord for unbinding and binding), `dihedral` (4 atoms, `md.compute_dihedrals`), `q` (Best–Hummer–Eaton fraction of native contacts). Evaluated per frame from the trajectory (DCD + topology). Folding needs rmsd / q and unbinding/binding needs distance + rmsd, so all four are v1.
+- A solute-only DCD (`--trajectory-selection`) is unnecessary for small systems (10k atoms × 1 frame/segment × 10⁴ = 1.2 GB). Add it as a generic `run_production` option when large systems need it.
 
 ---
 
-## 4. DAG の形（WE の場合）
+## 4. DAG Shape (for WE)
 
 ```mermaid
 flowchart LR
@@ -139,7 +139,7 @@ flowchart LR
   w11 -->|continue_from<br/>split w/2| w21[prod r2 k1]
   w11 -->|split w/2| w22[prod r2 k2]
   w1N -->|merge survivor<br/>w1N + w12| w23[prod r2 k3]
-  eq -.->|recycled: basis から| w24[prod r2 k4]
+  eq -.->|recycled: from basis| w24[prod r2 k4]
   p1 -. dependency .-> w21
   p1 -. dependency .-> w22
   w21 --> p2[analyze_002<br/>we_resample r2]
@@ -148,37 +148,37 @@ flowchart LR
   p2 --> an[analyze_003<br/>analyze_we]
 ```
 
-`--policy replicas` なら analyze ノードが無く、各 replica が `continue_from` の鎖になるだけ。`inspect_job` / `explain_node` / `trace_failure` / `concat_trajectory` は無改造で効く。
+With `--policy replicas` there are no analyze nodes; each replica is simply a `continue_from` chain. `inspect_job` / `explain_node` / `trace_failure` / `concat_trajectory` work without modification.
 
 ---
 
-## 5. WE 固有部品
+## 5. WE-Specific Components
 
-### 5.1 `we_resample`（policy ツール、`@node_tool("analyze")`）
+### 5.1 `we_resample` (Policy Tool, `@node_tool("analyze")`)
 
-親 = round の segment 全部。`policy_args` は scheme から読む。
+Parents = all segments of the round. `policy_args` is read from the scheme.
 
-- pcoord（1–2 次元、§3.4 の CV）を各 segment の軌道から評価（末尾フレームで bin 割当、全フレームは `pcoord.csv` に）。
-- bin: 次元ごとの `edges`（外側は ±inf を自動補完、警告）。`walkers_per_bin` M（既定 5）。
-- 手順（WESTPA 既定の Huber–Kim）: bin 割当 → 再循環（`target` 内の walker は重みを保って basis から新規開始、flux に計上） → bin ごとに n > M なら最軽量 2 本を併合（生存者は重み比で抽選、重みは和）、n < M なら最重量を 2 分割 → Σw の検算（|1 − Σw| < 1e-12 で正規化、残差記録）。乱数は (scheme seed, round) から決定的。
-- 出力 `next_round.json`（汎用契約: `children[] = {replica, parent_node_id | basis_node_id, weight, random_seed, label}`）と `we_round.json`（walker ごとの bin / pcoord / fate、bin 集団、flux、重み min/max）。併合で消えた walker は sealed なので、消えた側に `merged_into` の event を書く。
-- v1.5: 重み比の分裂・併合閾値、MAB（適応 bin）。
+- Evaluate the pcoord (1–2 dimensions, the CVs of §3.4) from each segment's trajectory (bin assignment on the last frame; all frames go to `pcoord.csv`).
+- bins: per-dimension `edges` (the outer edges are auto-completed with ±inf, with a warning). `walkers_per_bin` M (default 5).
+- Procedure (Huber–Kim, the WESTPA default): bin assignment → recycling (walkers in `target` restart from the basis keeping their weight, counted in the flux) → per bin, if n > M merge the two lightest (the survivor is drawn in proportion to weight; weights are summed), if n < M split the heaviest in two → check Σw (normalize if |1 − Σw| < 1e-12, record the residual). Random numbers are deterministic from (scheme seed, round).
+- Outputs `next_round.json` (generic contract: `children[] = {replica, parent_node_id | basis_node_id, weight, random_seed, label}`) and `we_round.json` (per-walker bin / pcoord / fate, bin populations, flux, weight min/max). A walker that disappears in a merge is sealed, so a `merged_into` event is written on the disappearing side.
+- v1.5: weight-ratio split/merge thresholds, MAB (adaptive bins).
 
-### 5.2 `analyze_we`（末端、§7）
+### 5.2 `analyze_we` (Terminal, §7)
 
 ---
 
-## 6. `next_round.json`（汎用契約）と `we_round.json`（WE の台帳）
+## 6. `next_round.json` (Generic Contract) and `we_round.json` (WE Ledger)
 
 ```json
-// next_round.json — run_rounds が読む。policy に依らず同じ形
+// next_round.json — read by run_rounds. Same shape regardless of policy
 {"scheme_id": "h3flip", "round": 12, "stop": false,
  "children": [
    {"replica": 1, "parent_node_id": "prod_1203", "weight": 0.00615, "random_seed": 91203001, "label": "h3flip:r13:1"},
    {"replica": 50, "basis_node_id": "eq_001", "weight": 0.004, "random_seed": 91203050, "label": "h3flip:r13:50"}
  ]}
 
-// we_round.json — WE の台帳
+// we_round.json — the WE ledger
 {"walkers": [
    {"node_id": "prod_1203", "replica": 3, "weight": 0.0123, "pcoord": [1.42], "bin": 7, "fate": "split", "children": [1, 2]},
    {"node_id": "prod_1204", "replica": 4, "weight": 1.0e-6, "pcoord": [1.40], "bin": 7, "fate": "merged", "merged_into": "prod_1203"},
@@ -188,84 +188,84 @@ flowchart LR
  "weight_sum_in": 1.0, "weight_sum_out": 1.0, "weight_residual": 1.1e-16}
 ```
 
-子ノードの id は `run_rounds` が作った後に `round_children.json` として policy ノードの artifacts 隣に追記する（policy ノードの node.json は変えない）。
+After `run_rounds` creates the child nodes, their ids are appended as `round_children.json` next to the policy node's artifacts (the policy node's node.json is not changed).
 
 ---
 
-## 7. 末端解析 `analyze_we`（kinetics）
+## 7. Terminal Analysis `analyze_we` (Kinetics)
 
-親 = 最後の policy ノード（複数 scheme の比較・プールは複数親）。`dependency_node_ids` を遡って全 round の `we_round.json` を集める。
+Parent = the last policy node (multiple parents for comparing / pooling multiple schemes). Walks back through `dependency_node_ids` to gather `we_round.json` from every round.
 
-- `we_iterations.csv`: round, time_ns (= r·τ), n_walkers, flux（再循環重み / τ）, cumulative flux, P_target（再循環前の target 重み）, weight min/max, bins occupied。
-- `we_bins.csv` / `we_pcoord_hist.csv`: burn-in 後の bin 集団と frame 重み付き pcoord ヒストグラム（−kT ln P）。再循環ありなら「NESS 分布」と明記。
-- `we_frames.csv`: walker, node_id, round, frame, time_ns, weight, pcoord…（`tempering_frames.csv` と同じ役割）。
-- rate（scheme の `recycle` から自動）:
-  - **再循環あり（NESS）**: k_AB = flux の定常平均、MFPT = 1/k。F(t) = F_ss (1 − e^{−t/τ_r}) を `curve_fit` し、最終 1/4 の平均が F_ss の誤差内なら `flux_steady`、外なら `flux_transient`（下限として報告）。事象ゼロは `we_no_target_events`（rate なしで完了）。解離（basis = 結合状態、target = 解離状態）なら k_off = flux_ss。結合（basis = 解離状態、target = 結合状態）なら k_on = flux_ss / C、C = 1 / (N_A ⟨V⟩)（箱にリガンド 1 個。⟨V⟩ は segment の state / energy から）を M⁻¹s⁻¹ で併記し、箱が小さいほど k_on が過大になる注意を verdict に載せる。
-  - **再循環なし**: P_B(t) = P_B^∞ (1 − e^{−(k_AB + k_BA) t}) の 2 状態フィット。k_AB = k_tot P_B^∞、k_BA = k_tot (1 − P_B^∞)。
-  - 誤差: round のブロック bootstrap（ブロック長 ≈ τ_r）、複数 scheme があれば平均 ± SEM。
-  - v1.5: history label（Suárez 2014）、RED 補正（DeGrave 2021）、haMSM。
-- `verdict` / `verdict_reasons`（`analyze_tempering` と同型）、図（flux vs time + フィット、bin 集団、pcoord 分布）。
+- `we_iterations.csv`: round, time_ns (= r·τ), n_walkers, flux (recycled weight / τ), cumulative flux, P_target (target weight before recycling), weight min/max, bins occupied.
+- `we_bins.csv` / `we_pcoord_hist.csv`: bin populations after burn-in and the frame-weighted pcoord histogram (−kT ln P). With recycling, state explicitly that it is the "NESS distribution".
+- `we_frames.csv`: walker, node_id, round, frame, time_ns, weight, pcoord… (same role as `tempering_frames.csv`).
+- rate (automatically from the scheme's `recycle`):
+  - **With recycling (NESS)**: k_AB = steady-state mean of the flux, MFPT = 1/k. Fit F(t) = F_ss (1 − e^{−t/τ_r}) with `curve_fit`; if the mean over the final 1/4 is within the error of F_ss, `flux_steady`, otherwise `flux_transient` (reported as a lower bound). Zero events gives `we_no_target_events` (completes without a rate). For unbinding (basis = bound state, target = unbound state), k_off = flux_ss. For binding (basis = unbound state, target = bound state), report k_on = flux_ss / C, C = 1 / (N_A ⟨V⟩) (one ligand in the box; ⟨V⟩ from the segments' state / energy) alongside in M⁻¹s⁻¹, and put in the verdict the caution that the smaller the box, the more k_on is overestimated.
+  - **Without recycling**: two-state fit of P_B(t) = P_B^∞ (1 − e^{−(k_AB + k_BA) t}). k_AB = k_tot P_B^∞, k_BA = k_tot (1 − P_B^∞).
+  - Error: block bootstrap over rounds (block length ≈ τ_r); with multiple schemes, mean ± SEM.
+  - v1.5: history labels (Suárez 2014), RED correction (DeGrave 2021), haMSM.
+- `verdict` / `verdict_reasons` (same form as `analyze_tempering`), figures (flux vs time + fit, bin populations, pcoord distribution).
 
 ---
 
-## 8. ガードレール（code）
+## 8. Guardrails (code)
 
-| code | 発生 | 扱い |
+| code | Occurs when | Handling |
 | --- | --- | --- |
-| `rounds_scheme_invalid` | scheme の JSON 不備（policy 未知、stage_tool 未知、start ノードが eq/prod でない、WE で pcoord と bin の次元不一致） | 拒否 |
-| `rounds_scheme_exists` | 同 id がある | 拒否（round 0 の間だけ `--overwrite`） |
-| `rounds_round_incomplete` | policy 実行時に pending/running/failed segment がある | 拒否（`run_rounds` が先に埋める） |
-| `rounds_plan_applied` | その policy ノードの子が既にある | 既存を返す（冪等） |
-| `rounds_batch_heterogeneous` | `propagate_batch` の node 群が topo / 設定で揃わない | 拒否 |
-| `rounds_seed_required` | segment に `random_seed` が無い | 拒否 |
-| `rounds_replica_unstable` | 同じ系譜が 3 回連続失敗 | ドライバ停止 |
-| `production_sibling_seed_collision` | `run_production` で同じ親・同じ step・同じ seed の完了済み兄弟 | 拒否 |
-| `restart_state_pruned` | retention で消した state からの再開 | 拒否 + 代替手順 |
-| `we_policy_args_invalid` | pcoord / bins / target / basis の不備 | 拒否 |
-| `we_pcoord_selection_invalid` | 選択が空 / 溶媒を含む / 参照と原子数不一致 | 拒否 |
-| `we_weights_invalid` | 入力重みの和が 1 から 1e-9 以上ずれる、負・非有限 | 拒否 |
-| `we_pcoord_out_of_bins` | ±inf 補完を切った bin で範囲外 | 拒否 |
-| `we_target_exceeds_half_box` | 分子間距離の target / bin 境界が半箱長を超える | 拒否 |
-| `we_no_target_events` | rate を求めるのに再循環事象ゼロ | verdict で報告 |
+| `rounds_scheme_invalid` | Malformed scheme JSON (unknown policy, unknown stage_tool, start node not eq/prod, pcoord and bin dimensions mismatch in WE) | Refuse |
+| `rounds_scheme_exists` | The same id exists | Refuse (`--overwrite` only while at round 0) |
+| `rounds_round_incomplete` | There are pending/running/failed segments when the policy runs | Refuse (`run_rounds` fills them first) |
+| `rounds_plan_applied` | That policy node already has children | Return the existing ones (idempotent) |
+| `rounds_batch_heterogeneous` | The nodes of a `propagate_batch` do not match in topo / settings | Refuse |
+| `rounds_seed_required` | A segment has no `random_seed` | Refuse |
+| `rounds_replica_unstable` | The same lineage fails three times in a row | Stop the driver |
+| `production_sibling_seed_collision` | In `run_production`, a completed sibling with the same parent, same step and same seed | Refuse |
+| `restart_state_pruned` | Restart from a state deleted by retention | Refuse + alternative procedure |
+| `we_policy_args_invalid` | Malformed pcoord / bins / target / basis | Refuse |
+| `we_pcoord_selection_invalid` | Selection is empty / contains solvent / atom count differs from the reference | Refuse |
+| `we_weights_invalid` | Input weights sum deviates from 1 by 1e-9 or more, or are negative / non-finite | Refuse |
+| `we_pcoord_out_of_bins` | Out of range with bins whose ±inf completion is turned off | Refuse |
+| `we_target_exceeds_half_box` | An intermolecular-distance target / bin edge exceeds half the box length | Refuse |
+| `we_no_target_events` | Zero recycling events when a rate is requested | Reported in the verdict |
 
 ---
 
-## 9. フェーズ
+## 9. Phases
 
-| Phase | 内容 | テスト | 目安 |
+| Phase | Content | Tests | Estimate |
 | --- | --- | --- | --- |
-| 0 | 汎用の下回り（最小）: 構造化 id（`create_node` の `_node_id`、§3.4）、`dag_snapshot` と id 列挙の上限、`run_production` の兄弟 seed 衝突ガード | 既存 golden 更新、`test_node.py` に構造化 id と連番の同居、seed 衝突のテスト | 1–2 日 |
-| 1 | 汎用 round: `mdclaw/rounds/`（`setup_rounds`, `run_rounds`、executor `local`（プロセス内で `run_production` を呼ぶ）、policy = replicas / policy ツール、`next_round.json`、再入）、registry、codes、envelope の `next`（scheme ノードの次は `run_rounds`） | `test_rounds.py`: 2 原子 XML 三点セット・Reference で replicas 3 本 × 3 round、中断再開、失敗 segment の再走 | 3–4 日 |
-| 2 | WE: `analyze/cv.py`（distance / rmsd / dihedral / q）、`we_resample`（bin・分裂併合・再循環）、`analyze_we`（flux フィット、2 状態フィット、bootstrap） | `test_we_resample.py`（重み保存、分裂併合数、再循環、決定性）、`test_we_kinetics.py`（1 次元二重井戸のマルコフ連鎖で resampler + 推定量を通し、brute force の rate と一致）、`test_we_nodes.py`（2 原子系の結合長を pcoord にした WE 3 round × 4 walker） | 1 週 |
-| 3 | GPU 実測: (a) キャップ付き Ala3 end-to-end 距離（SEUS と同じ CV・系）で伸長↔収縮 rate を通常 MD と比較し、segment あたりのオーバーヘッドと round あたりの DAG I/O を測る、(b) chignolin 折り畳み（Q / RMSD）を文献値と比較、(c) β-シクロデキストリン + 小分子ゲスト（k_off ≈ 10⁶–10⁸ s⁻¹）の解離を brute force と比較 | memo に数値 | 1–2 週 |
-| 3.5 | 実測で決めるもの: executor `mps` + `--wait`、retention（opt-in）、`create_node` / `complete_node` の一括版、solute だけの DCD | — | 実測後 |
-| 4 | 運用と文書: `skills/md-production/rounds.md`（replica）、`skills/md-we/`（SKILL.md + pcoord-and-bins.md + kinetics.md）、`tool-reference.md`、`architecture.md` の DAG 節、memo | Level 4 | 3–5 日 |
+| 0 | Generic groundwork (minimal): structured ids (`create_node`'s `_node_id`, §3.4), caps on `dag_snapshot` and id enumeration, sibling seed-collision guard in `run_production` | Update existing golden files; tests in `test_node.py` for structured ids coexisting with sequential ones and for seed collisions | 1–2 days |
+| 1 | Generic rounds: `mdclaw/rounds/` (`setup_rounds`, `run_rounds`, executor `local` (calls `run_production` in-process), policy = replicas / policy tool, `next_round.json`, re-entry), registry, codes, envelope `next` (the next step for a scheme node is `run_rounds`) | `test_rounds.py`: 3 replicas × 3 rounds on a 2-atom XML artifact triple with Reference, interrupt and resume, rerun of failed segments | 3–4 days |
+| 2 | WE: `analyze/cv.py` (distance / rmsd / dihedral / q), `we_resample` (bins, split/merge, recycling), `analyze_we` (flux fit, two-state fit, bootstrap) | `test_we_resample.py` (weight conservation, split/merge counts, recycling, determinism), `test_we_kinetics.py` (run the resampler + estimators through a Markov chain on a 1-D double well; agrees with the brute-force rate), `test_we_nodes.py` (WE 3 rounds × 4 walkers with the bond length of a 2-atom system as pcoord) | 1 week |
+| 3 | GPU measurements: (a) end-to-end distance of capped Ala3 (same CV and system as SEUS), comparing the extended↔contracted rate with plain MD and measuring per-segment overhead and per-round DAG I/O, (b) chignolin folding (Q / RMSD) compared with literature values, (c) unbinding of a small-molecule guest from β-cyclodextrin (k_off ≈ 10⁶–10⁸ s⁻¹) compared with brute force | Numbers in the memo | 1–2 weeks |
+| 3.5 | Things decided by measurement: executor `mps` + `--wait`, retention (opt-in), bulk versions of `create_node` / `complete_node`, solute-only DCD | — | After measurement |
+| 4 | Operations and docs: `skills/md-production/rounds.md` (replicas), `skills/md-we/` (SKILL.md + pcoord-and-bins.md + kinetics.md), `tool-reference.md`, the DAG section of `architecture.md`, memo | Level 4 | 3–5 days |
 
-Phase 0–2 はコンテナ内 CPU で完結する。Phase 0 → 2 を縦に薄く通してから Phase 3 に行く。
+Phases 0–2 can be completed on CPU inside the container. Run a thin vertical slice through Phase 0 → 2 before going to Phase 3.
 
 ---
 
-## 10. リスク
+## 10. Risks
 
-| リスク | 内容 | 対応 |
+| Risk | Details | Mitigation |
 | --- | --- | --- |
-| ノード数 | 10⁴ 級の prod ノード。`progress.json` 4 MB、`events/` 3×10⁴ ファイル | 1 round 100 ノードの作成・完了 ≈ 10–20 s。10⁵ に近づいたら一括版（v1.5）。`inspect_job` の `nodes` は brief で stub 済み |
-| ディスク | 全原子 DCD と XML state | `trajectory_selection`、opt-in の retention。7 万原子で state 10 MB/segment なので 10⁴ segment = 100 GB |
-| solute DCD と既存メトリクス | 原子数が topo と合わない | `trajectory_topology` を resolver が優先（汎用変更） |
-| executor mps の起動コスト | 1 task = 1 プロセス | τ ≳ 200 ps を skill に書く。shard 化は v2 |
-| 直交する遅い自由度 | bin は pcoord 上だけ | 2 次元 pcoord、複数 scheme の分散で検出。history label / haMSM は v1.5 |
-| 定常前の rate | transient を定常と誤読 | フィットと最終 1/4 の一致で `flux_transient` |
-| 同一軌道の兄弟 | 事実 #4 | node ごとの seed 必須 + `run_production` ガード |
-| 併合の sealed ノード | 消えた walker に書けない | `we_round.json` と event |
+| Node count | 10⁴-scale prod nodes. `progress.json` 4 MB, 3×10⁴ files in `events/` | Creating and completing 100 nodes per round ≈ 10–20 s. Bulk versions as it approaches 10⁵ (v1.5). `nodes` of `inspect_job` is already stubbed in brief |
+| Disk | All-atom DCD and XML state | `trajectory_selection`, opt-in retention. At 70k atoms the state is 10 MB/segment, so 10⁴ segments = 100 GB |
+| Solute DCD and existing metrics | Atom count does not match the topo | The resolver prefers `trajectory_topology` (generic change) |
+| Startup cost of executor mps | 1 task = 1 process | Write τ ≳ 200 ps into the skill. Sharding in v2 |
+| Orthogonal slow degrees of freedom | Bins are on the pcoord only | Detect with a 2-D pcoord and the variance across multiple schemes. History labels / haMSM in v1.5 |
+| Rate before steady state | Misreading a transient as steady | `flux_transient` from agreement between the fit and the final 1/4 |
+| Siblings with identical trajectories | Fact #4 | Per-node seed required + `run_production` guard |
+| Sealed nodes in merges | Cannot write to a walker that disappeared | `we_round.json` and events |
 
 ---
 
-## 11. 進捗（2026-09-21）
+## 11. Progress (2026-09-21)
 
-- Phase 0–2 を実装、CPU テストまで通した（memo 2026-09-21 参照）: `mdclaw/rounds/`（`setup_rounds` / `run_rounds` / `inspect_rounds`）、`mdclaw/analyze/cv.py`、`mdclaw/we/`（`we_resample` / `analyze_we`）、`create_node` の `_node_id` / `_metadata`、`dag` の上限、`production_sibling_seed_collision`。
-- 1 次元格子の二重井戸（`tests/test_we_kinetics.py`）で resampler + 再循環 + 定常 flux が厳密 MFPT の逆数と 30 % 以内で一致。
-- 次: Phase 3（GPU 実測: Ala3 → chignolin → β-CD）、その結果で executor `mps` / retention / 一括版を判断。
-- 2026-09-21 夜: executor `mps` を実装（テスター WE-4、§3.5 の「実測で決めるもの」のうち `mps + wait`）。ドライバはホスト、segment は `submit_mps_job` の task、policy は launcher 経由。詳細は `docs/memo.md` の同日エントリ。
-- 同夜: owner record + heartbeat（`mdclaw/rounds/owner.py`）で、死んだ driver が残した running node を `run_rounds` が回復（WE-16）。roadmap: MPS task 1 本で k segment を順に回すオプション（WE-17、起動コストの償却; task = node 契約の変更が要る）。
-- 同夜: `close_rounds`（WE-18）、MPS job の `--no-requeue` + held 検出（WE-19）、CLI preflight の progress.json 再読（compute node 側の一時的な読取失敗で親を missing と誤判定していた）。詳細は memo。
-- 9/22: `run_segment_batch` + `--mps-segments-per-task`（WE-17、既定は GPU の slot が埋まってから k を増やす自動）。WE-3 はユーザー判断で見送り（segment の runtime_system.xml / checkpoint は残す）。kinetics の判定は WE-21〜24 で定常区間・level check・感度表に拡張。
+- Implemented Phases 0–2 and passed the CPU tests (see memo 2026-09-21): `mdclaw/rounds/` (`setup_rounds` / `run_rounds` / `inspect_rounds`), `mdclaw/analyze/cv.py`, `mdclaw/we/` (`we_resample` / `analyze_we`), `create_node`'s `_node_id` / `_metadata`, the cap on `dag`, `production_sibling_seed_collision`.
+- On a 1-D lattice double well (`tests/test_we_kinetics.py`), resampler + recycling + steady-state flux agrees with the inverse of the exact MFPT to within 30 %.
+- Next: Phase 3 (GPU measurements: Ala3 → chignolin → β-CD), and decide on executor `mps` / retention / bulk versions from the results.
+- 2026-09-21 night: implemented executor `mps` (tester WE-4; the `mps + wait` item among the "things decided by measurement" in §3.5). The driver runs on the host, segments are `submit_mps_job` tasks, and the policy goes through the launcher. Details in the same-day entry of `docs/memo.md`.
+- Same night: with an owner record + heartbeat (`mdclaw/rounds/owner.py`), `run_rounds` recovers running nodes left by a dead driver (WE-16). Roadmap: an option to run k segments sequentially in one MPS task (WE-17, amortizing startup cost; requires changing the task = node contract).
+- Same night: `close_rounds` (WE-18), `--no-requeue` + held detection for MPS jobs (WE-19), re-reading progress.json in the CLI preflight (a transient read failure on the compute node side had been misjudging the parent as missing). Details in the memo.
+- 9/22: `run_segment_batch` + `--mps-segments-per-task` (WE-17; the default is automatic, increasing k once the GPU's slots are filled). WE-3 deferred by user decision (keep the segments' runtime_system.xml / checkpoint). The kinetics verdict was extended in WE-21 to WE-24 with steady-state intervals, a level check and a sensitivity table.

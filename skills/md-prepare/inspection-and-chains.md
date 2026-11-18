@@ -64,7 +64,7 @@ Ligand selection rule:
   `unique_id` to `--include-ligand-ids`.
 - Use `--include-associated-ligands` only when all same-author associated
   ligand candidates should be included.
-- When the user says "no ligand" / "ligandなし", exclude ligands explicitly in
+- When the user says "no ligand" / "without the ligand", exclude ligands explicitly in
   the prep command by omitting `ligand` from `--include-types` and passing
   `--no-process-ligands`. Do not pass `--include-ligand-ids []` or a bare
   `--include-ligand-ids`; the CLI expects one or more values when the flag is

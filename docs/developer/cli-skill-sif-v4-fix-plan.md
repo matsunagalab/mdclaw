@@ -1,44 +1,43 @@
-# MDDataBench v4 の cli_skill_sif 失敗4件：原因と MDClaw（CLI・skill）の修正計画
+# The 4 cli_skill_sif failures in MDDataBench v4: causes and the fix plan for MDClaw (CLI and skills)
 
-作成: 2026-09-28。実装前の計画（引き継ぎ用）。checkout `53f2595`。下で参照する
-`mdclaw/node/lifecycle.py`、`mdclaw/node/constants.py`、`mdclaw/slurm/submit.py`、
-`mdclaw/slurm/preflight.py`、`mdclaw/simulation/production.py`、`mdclaw/_envelope.py`、
-`skills/hpc-run/submit-single.md`、`skills/md-prepare/SKILL.md` は、キャンペーンで使ったイメージの
-`0528df5` から変わっていない（行番号はどちらでも同じ）。
+Written: 2026-09-28. A pre-implementation plan (for handoff). Checkout `53f2595`. The files referenced below,
+`mdclaw/node/lifecycle.py`, `mdclaw/node/constants.py`, `mdclaw/slurm/submit.py`,
+`mdclaw/slurm/preflight.py`, `mdclaw/simulation/production.py`, `mdclaw/_envelope.py`,
+`skills/hpc-run/submit-single.md`, and `skills/md-prepare/SKILL.md`, are unchanged from `0528df5`, the image used
+in the campaign (line numbers are the same in either).
 
-根拠: MDDataBench のキャンペーン `runs/glm-5.3-flash-3cond-full-v4`（pi + rikyu/glm-5.3-flash、
-98 タスク × 3 条件 × 3 反復 = 882 試行、エージェント隔離あり、イメージ membranecache-3dd0abe30156 =
-mdclaw `0528df5`、pi の skill は `87050da`、2026-09-26 21:30 〜 09-28 01:43 JST）。
-cli_skill_sif は 290/294 合格。失敗した4件をすべて transcript・ジョブ・コードまでさかのぼって調べた。
+Evidence: the MDDataBench campaign `runs/glm-5.3-flash-3cond-full-v4` (pi + rikyu/glm-5.3-flash,
+98 tasks × 3 conditions × 3 repeats = 882 attempts, with agent isolation, image membranecache-3dd0abe30156 =
+mdclaw `0528df5`, pi skills at `87050da`, 2026-09-26 21:30 to 09-28 01:43 JST).
+cli_skill_sif passed 290/294. All 4 failures were traced back through the transcript, the jobs, and the code.
 
-範囲: MDClaw の CLI と skill だけ。ハーネス（MDDataBench）側の対応（採点ジョブ投入の再試行、
-010 r3 の採点し直しなど）は含めない。
+Scope: MDClaw's CLI and skills only. Harness-side (MDDataBench) work (retrying scorer-job submission, rescoring
+010 r3, etc.) is not included.
 
-## 要約
+## Summary
 
-| 試行 | 失敗コード | 直接の原因 | 主な修正箇所 |
+| Attempt | Failure code | Direct cause | Main fix location |
 |---|---|---|---|
-| 004_membrane_5zkb r3 | `node_execution_context_invalid` | prod を topo の子として作れた | `create_node` の親の型検査、`submit_job` の事前検査 |
-| 010_membrane_6kux r3 | `scorer_submit_failed`（ハーネス側） | Slurm のタイムアウト後、同じ prod ノードに2本目のジョブ | `submit_job` の結果不明時の扱い、`begin_node` の二重実行防止 |
-| 015_antibody_1ahw r1 | `agent_no_submission` | 鎖ごとの残基範囲を知るため自作した python が無限ループ | `inspect_molecules` の既定出力、source 完了時の `next`、`prepare_complex` |
-| 015_antibody_1ahw r2 | `production_incomplete` | 3 ns を 20 分のジョブ1本に入れ、時間切れで打ち切り | `run_production` の時間制限の扱い、`submit_job` の見積もり |
+| 004_membrane_5zkb r3 | `node_execution_context_invalid` | prod could be created as a child of topo | Parent-type check in `create_node`, preflight in `submit_job` |
+| 010_membrane_6kux r3 | `scorer_submit_failed` (harness side) | After a Slurm timeout, a second job on the same prod node | Handling of an unknown result in `submit_job`, double-run prevention in `begin_node` |
+| 015_antibody_1ahw r1 | `agent_no_submission` | A self-written python script to get per-chain residue ranges looped forever | Default output of `inspect_molecules`, `next` on source completion, `prepare_complex` |
+| 015_antibody_1ahw r2 | `production_incomplete` | 3 ns put into a single 20-minute job, cut off by the time limit | Time-limit handling in `run_production`, estimate in `submit_job` |
 
-4件とも、skill に書かれた手順自体は正しかった。エージェントが skill から外れたとき、CLI がそれを
-受け付けたか、必要な情報を既定では出していなかった。設計原則（skill は意図を述べ、ツールが拒否する）に
-従い、直すのは CLI で、skill は短くするだけにする。
+In all 4 cases, the procedure written in the skills was itself correct. When the agent strayed from the skill, the CLI
+accepted it, or did not output the needed information by default. Following the design principle (skills state intent, tools refuse),
+the fix goes into the CLI, and the skills are only shortened.
 
-共通する構造（MDDataBench 側のセッションでも独立に同じ結論に達した）: **実行時にしか行われない検査は、
-エージェントには見えない。** 拒否や打ち切りが Slurm ジョブの中で起きるころには、エージェントは
-セッションを終えている（004 r3 は 1800 秒中 462 秒、015 r2 は 669 秒で終了）。`create_node` や
-`submit_job` のように、エージェントが結果を受け取る同期的な呼び出しで拒否していれば、残り時間で
-直せた。したがって、実行時の検査をなくすのではなく、同じ検査を作成時・投入時にも行う。
+Common structure (a session on the MDDataBench side independently reached the same conclusion): **checks that only happen at run time
+are invisible to the agent.** By the time a refusal or cut-off happens inside a Slurm job, the agent has already
+ended its session (004 r3 ended at 462 of 1800 seconds, 015 r2 at 669 seconds). Had the refusal come in a synchronous call whose result the agent receives,
+such as `create_node` or `submit_job`, it could have been fixed in the remaining time. So rather than removing the run-time checks, the same checks are also done at creation and submission time.
 
-## 1. `create_node` が親の型を検査しない（004_membrane_5zkb r3）
+## 1. `create_node` does not check the parent type (004_membrane_5zkb r3)
 
-### 経過
+### Sequence of events
 
-- 37 回の LLM 呼び出し、462 秒。skill を 16 ページ読んでいる（`hpc-run/submit-single.md` を含む）。
-- min・eq・prod を一度に、すべて `topo_001` の子として作った（transcript の原文）:
+- 37 LLM calls, 462 seconds. It read 16 skill pages (including `hpc-run/submit-single.md`).
+- It created min, eq, and prod at once, all as children of `topo_001` (verbatim from the transcript):
 
   ```bash
   ./mdc.sh --job-dir $JD create_node --node-type min --parent-node-ids topo_001 \
@@ -49,188 +48,187 @@ cli_skill_sif は 290/294 合格。失敗した4件をすべて transcript・ジ
     --conditions '{"simulation_time_ns": 1.0}'
   ```
 
-- 3 つとも `success: true`。prod_001 の `submit_job` も成功し、`condition_preflight` は `code: ok` だった。
-- ジョブ: 141574（min）COMPLETED、141575（eq）COMPLETED、141576（prod）FAILED。
-  - eq は互換用の経路で topo_001 から走り、min_001 の出力は使われなかった。
-  - prod は実行時に `Node 'prod_001' cannot run with parent 'topo_001' of type 'topo'; expected one of ['eq', 'prod']`
-    で拒否された。
-- skill の例（`skills/hpc-run/submit-single.md:8`、`:19`）は min ← topo、eq ← min と正しい。エージェントが外れた。
+- All 3 returned `success: true`. `submit_job` for prod_001 also succeeded, and `condition_preflight` was `code: ok`.
+- Jobs: 141574 (min) COMPLETED, 141575 (eq) COMPLETED, 141576 (prod) FAILED.
+  - eq ran from topo_001 via the legacy-compatibility path, and the output of min_001 was not used.
+  - prod was refused at run time with `Node 'prod_001' cannot run with parent 'topo_001' of type 'topo'; expected one of ['eq', 'prod']`.
+- The skill examples (`skills/hpc-run/submit-single.md:8`, `:19`) correctly have min ← topo and eq ← min. The agent strayed.
 
-### 原因（コード）
+### Cause (code)
 
-- `create_node` は、親ノードが存在するかどうかしか見ていない（`mdclaw/node/lifecycle.py:544-551`）。
-- 親の型の表 `_ALLOWED_PARENT_TYPES`（`mdclaw/node/constants.py:168`）は実行時の検査
-  （`mdclaw/node/lifecycle.py:1453-1469`）でだけ使われる。この表では prod の親は `{"eq", "prod"}`。
-  eq の親には互換用に `topo` も入っている。
-- `submit_job` の事前検査（`mdclaw/slurm/preflight.py:60-108`）は、run_production の宣言した条件値と
-  CLI の引数を比べるだけで、ノードの親の型は見ない。
-- 拒否したのは、ジョブが計算ノードで動き始めてからの `run_production` だけだった。その時点で
-  エージェントはもう終了している（462 秒で終了、持ち時間は 1800 秒）。作成時か投入時に拒否されて
-  いれば、時間内に直せた。
+- `create_node` only checks whether the parent node exists (`mdclaw/node/lifecycle.py:544-551`).
+- The parent-type table `_ALLOWED_PARENT_TYPES` (`mdclaw/node/constants.py:168`) is used only by the run-time check
+  (`mdclaw/node/lifecycle.py:1453-1469`). In this table, the parents of prod are `{"eq", "prod"}`.
+  The parents of eq also include `topo` for compatibility.
+- The `submit_job` preflight (`mdclaw/slurm/preflight.py:60-108`) only compares the condition values declared by run_production with
+  the CLI arguments; it does not look at the node's parent type.
+- The only refusal came from `run_production` after the job had started on a compute node. By then
+  the agent had already finished (ended at 462 seconds, with 1800 seconds allotted). Had it been refused at creation or submission time,
+  it could have been fixed in time.
 
-### 修正
+### Fix
 
-1. **`create_node` で親の型を検査する。**
-   - 明示された各親について、`nodes_index[parent]["type"] in _ALLOWED_PARENT_TYPES[node_type]` を確かめる。
-   - 合わなければ `success: false`、`code: parent_type_invalid`（実行時の検査がすでに使っているコード）で拒否する。
-   - `next_action` には `_auto_resolve_parent` で求めた正しい親を入れる
-     （例: `mdclaw create_node --job-dir J --node-type prod --parent-node-ids eq_001`）。
-     「`--parent-node-ids` を省けば自動で解決する」とも添える。
-   - fep や ABFE の topo ← eq など、表に書かれた特別な組み合わせは表のとおりに通す。
-   - `parent_type_invalid` が `mdclaw/guardrail_codes.py` と `tests/data/guardrail_codes.json` に
-     登録されているか確かめ、なければ登録する（`tests/test_guardrail_code_registry.py`）。
-2. **canonical な study ジョブでは、topo の下に eq を作らせない。**
-   - 同じ topo の下に min がある（またはジョブが study 文脈を持つ）のに eq の親に topo を指定したら、
-     拒否するか警告する（新しいコード、例: `eq_parent_should_be_min`）。
-   - topo → eq は、min のない古い DAG のためだけに残す。
-3. **`submit_job` の事前検査で、構造の検査をすべての run_* に広げる。**
-   - 実行時の検査（`lifecycle.py` の context 検査）のうち、ノードの型とツールの対応、親の型、終了済みかどうか
-     だけを投入前にも行う。親が pending なのはチェーン投入のために許す。
-   - 引っかかれば sbatch を呼ぶ前に `node_execution_context_invalid` で拒否する。
+1. **Check the parent type in `create_node`.**
+   - For each explicitly given parent, verify `nodes_index[parent]["type"] in _ALLOWED_PARENT_TYPES[node_type]`.
+   - If it does not match, refuse with `success: false`, `code: parent_type_invalid` (the code the run-time check already uses).
+   - Put the correct parent found by `_auto_resolve_parent` in `next_action`
+     (e.g. `mdclaw create_node --job-dir J --node-type prod --parent-node-ids eq_001`).
+     Also add "omitting `--parent-node-ids` resolves it automatically".
+   - Special combinations written in the table, such as topo ← eq for fep and ABFE, pass as the table says.
+   - Check whether `parent_type_invalid` is registered in `mdclaw/guardrail_codes.py` and `tests/data/guardrail_codes.json`,
+     and register it if not (`tests/test_guardrail_code_registry.py`).
+2. **In canonical study jobs, do not allow eq to be created under topo.**
+   - If topo is given as the parent of eq while a min exists under the same topo (or the job has a study context),
+     refuse or warn (a new code, e.g. `eq_parent_should_be_min`).
+   - Keep topo → eq only for old DAGs without min.
+3. **Extend the structural checks in the `submit_job` preflight to every run_*.**
+   - Of the run-time checks (the context check in `lifecycle.py`), perform only the node type vs. tool correspondence, the parent type, and whether the node is terminal
+     before submission as well. A pending parent is allowed, for chained submission.
+   - If any fails, refuse with `node_execution_context_invalid` before calling sbatch.
 
-### テスト・受け入れ条件
+### Tests and acceptance criteria
 
-- `create_node` が prod ← topo、min ← eq などを `parent_type_invalid` で拒否し、`next_action` に正しい親を出す。
-- prod ← eq、prod ← prod、eq ← min、eq ← eq、ABFE の topo ← eq はこれまでどおり通る。
-- min のない古い DAG での eq ← topo の既存テストが通る。
-- 親が topo の prod ノードに対する `submit_job` を、sbatch を呼ぶ前に拒否する。
+- `create_node` refuses prod ← topo, min ← eq, etc. with `parent_type_invalid` and gives the correct parent in `next_action`.
+- prod ← eq, prod ← prod, eq ← min, eq ← eq, and ABFE's topo ← eq pass as before.
+- The existing tests for eq ← topo in old DAGs without min pass.
+- `submit_job` for a prod node whose parent is topo is refused before sbatch is called.
 
-### 同じ修正で防げる他の失敗
+### Other failures the same fix prevents
 
-- 039_ligand_3ikd cli_sif r3、027_complex_1b6c cli_sif r1（同じパターン）。
-
-### skill
-
-変更は不要。
-
-## 2. `submit_job` の「結果不明の投入」と `begin_node` の二重実行（010_membrane_6kux r3）
-
-試行としての最終的な失敗は、ハーネスの採点ジョブ投入が同じ Slurm のタイムアウトで落ちたもので、
-今回の範囲外。MDClaw 側の問題は、その手前で同じ prod ノードに2本のジョブが走ったこと。
-
-### 経過（時刻は UTC）
-
-- 17:03:11 min（141977）、17:03:17 eq（141978）を投入。
-- 17:03:33 prod の投入で sbatch が
-  `sbatch: error: Batch job submission failed: Socket timed out on send/recv operation` を返した。
-  実際には Slurm がジョブ 141979（prod_6kux）を作っていた。
-- `submit_job` は `success: false`、`code: unhandled_error`、
-  `next_action: "Read the message and errors, fix the reported cause, then retry."` を返した。
-- 17:03:46 エージェントがそれに従って投入し直し、141980（prod_6kux）ができた。
-- 141979 と 141980 は、どちらも 02:05:09 JST に開始し、同じ prod_001 を GPU 2枚で約3分ずつ計算した。
-  - 141980 が 02:08:05 に COMPLETED になり、ノードを確定させた。
-  - 141979 は 02:08:06 に `node_terminal`（`terminal node.json record is sealed`）で FAILED になった。
-
-### 原因（コード）
-
-- `mdclaw/slurm/submit.py:444` で sbatch を呼ぶ。
-  - `CalledProcessError` はすべて `errors.append("sbatch failed: …")` になり、`code` が付かない
-    （`submit.py:528-532`）。そのため CLI の外枠が `unhandled_error` を付ける（`mdclaw/_common.py:565`）。
-  - `finally` で `_clear_slurm_submission_intent` を呼び、ノードの投入予約を消す（`submit.py:536-541`）。
-    ジョブが作られていても、ノードは未投入に見える。
-- `begin_node`（`mdclaw/node/lifecycle.py:1187`）は `_apply_status(..., "running")` を呼ぶだけ。
-  `_apply_status` は終了済みのノードへの書き込みは拒むが、running → running は通す。
-  2本目のジョブも最後まで計算してから、完了の書き込みで初めて落ちる。
-
-### 修正
-
-1. **投入に印を付け、結果が不明なときは Slurm に問い合わせる。**
-   - sbatch スクリプトに `#SBATCH --comment=mdclaw:<submission_intent_id>` を入れる
-     （`submission_intent_id` は `submit.py:431` ですでに作っている）。
-   - 結果が不明な失敗（`Socket timed out on send/recv operation`、`Unable to contact slurm controller`、
-     `Zero Bytes were transmitted or received`、`subprocess.TimeoutExpired` など）では、
-     `squeue --me -h -o "%i|%k"`（なければ sacct）で印を 30〜60 秒探す。
-     - 見つかれば投入できたものとして扱う（`_stamp_slurm_on_node`、追跡記録、`success: true` と警告）。
-     - 見つからなければ `code: slurm_submit_uncertain` を返し、投入予約は消さない。
-       `next_action` は `mdclaw check_job --job-dir J --node-id N`（印で探して、見つかれば記録し、
-       なければ予約を解く）。
-   - `_validate_node_ready_for_slurm_submit` は、結果不明の予約が残っているノードへの再投入を拒む。
-2. **その他の sbatch の失敗には安定したコードを付ける。**
-   - `code: slurm_submit_failed` と sbatch の stderr を返し、`unhandled_error` にしない。
-3. **`begin_node` で二重実行を防ぐ。**
-   - `node.lock` の中で、実行者（`SLURM_JOB_ID`、ホスト、pid、開始時刻）を metadata に記録する。
-   - すでに running で、記録された別の実行者が生きている（Slurm のジョブが RUNNING、または同じホストの
-     pid が生きている）なら、計算を始める前に `node_already_running` で終了する。
-   - 記録された実行者がもういなければ引き継ぐ（異常終了したジョブの後始末）。
-   - `submit_array_job` と `submit_mps_job` の経路も同じ `begin_node` を通るので、あわせて守られる。
-
-### テスト・受け入れ条件
-
-- タイムアウトを出して終了コード 1 で終わるが、ジョブは作られている偽の sbatch（偽の squeue が印を返す）で、
-  `submit_job` がそのジョブを採用し、ノードに記録する。
-- ジョブが作られていない偽の sbatch では `slurm_submit_uncertain` を返し、予約が残り、2回目の投入は拒否される。
-  `check_job` で予約が解ける。
-- `begin_node` は、生きている別の実行者がいれば `node_already_running` で拒否し、いなければ引き継ぐ。
+- 039_ligand_3ikd cli_sif r3, 027_complex_1b6c cli_sif r1 (same pattern).
 
 ### skill
 
-必要なら hpc-run に「`slurm_submit_uncertain` は `next_action` に従い、同じノードに投入し直さない」の1行を足す。
-`next_action` が十分なら不要。
+No change needed.
 
-### 補足
+## 2. "Unknown-result submission" in `submit_job` and double execution in `begin_node` (010_membrane_6kux r3)
 
-キャンペーンの監視で「隔離のすり抜け」として検出された 141979 は、この経過で記録の残らなかったジョブ。
-ジョブ自体は隔離のラッパー経由で投入されている。
+The final failure of the attempt was the harness's scorer-job submission failing with the same Slurm timeout, which is
+outside this scope. The problem on the MDClaw side is that, before that, two jobs ran on the same prod node.
 
-## 3. 鎖ごとの残基範囲が既定の出力に出ない（015_antibody_1ahw r1）
+### Sequence of events (times in UTC)
 
-### 経過
+- 17:03:11 min (141977) and 17:03:17 eq (141978) were submitted.
+- 17:03:33, when submitting prod, sbatch returned
+  `sbatch: error: Batch job submission failed: Socket timed out on send/recv operation`.
+  In fact, Slurm had created job 141979 (prod_6kux).
+- `submit_job` returned `success: false`, `code: unhandled_error`,
+  `next_action: "Read the message and errors, fix the reported cause, then retry."`.
+- 17:03:46 the agent followed that and resubmitted, creating 141980 (prod_6kux).
+- 141979 and 141980 both started at 02:05:09 JST and each computed the same prod_001 on 2 GPUs for about 3 minutes.
+  - 141980 became COMPLETED at 02:08:05 and finalized the node.
+  - 141979 became FAILED at 02:08:06 with `node_terminal` (`terminal node.json record is sealed`).
 
-- タスクは「chain A 1–214、chain B 1–214、chain C 4–211」。1AHW には蛋白質の鎖が A〜F の6本ある。
-- エージェントは skill を 16 ページ読み、study を作り、source を取得した（source_001 completed。
-  `next` は「prep を作る」）。
-- `skills/md-prepare/SKILL.md:144` は `inspect_molecules` の実行を指示しているが、エージェントは飛ばした。
-  代わりに、鎖ごとの著者番号の範囲と欠損を出す python を自分で書き、鎖 A〜F について回した。
-- その python では、内側の `while` の `i += 1` が `if p[idx['label_asym_id']] == ch:` の中にしかなかった。
-  別の鎖の最初の原子で `i` が進まなくなり、無限ループになった。
-- このツール呼び出しは戻らず、エージェントは 1800 秒の持ち時間を使い切り、ジョブは未投入。
+### Cause (code)
 
-### 原因（出力）
+- sbatch is called at `mdclaw/slurm/submit.py:444`.
+  - Every `CalledProcessError` becomes `errors.append("sbatch failed: …")` with no `code` attached
+    (`submit.py:528-532`). So the CLI's outer wrapper attaches `unhandled_error` (`mdclaw/_common.py:565`).
+  - The `finally` calls `_clear_slurm_submission_intent`, which clears the node's submission reservation (`submit.py:536-541`).
+    Even if a job was created, the node looks unsubmitted.
+- `begin_node` (`mdclaw/node/lifecycle.py:1187`) only calls `_apply_status(..., "running")`.
+  `_apply_status` refuses writes to terminal nodes but allows running → running.
+  The second job also computes to the end, and only fails at the completion write.
 
-- `inspect_molecules` の既定の出力では `chains` がまるごと省略される
-  （`{"_omitted": true, "chars": 104090, "see": "rerun with --output full"}`、`mdclaw/_envelope.py:284`）。
-  `summary` と `action_contract` には鎖 ID しかない。
-- `--output full` の `chains[].residue_numbering` には `count`、`first`、`last` と全残基の一覧がある。
-  1AHW の鎖 C は first 4 THR、last 211 GLY、count 200 で、4–211 の途中に 8 残基の欠損がある。
-- つまり、勧められたツールを使っても、エージェントが欲しかった情報は既定では見えない。
-- source が完了したときの `next` は、`inspect_molecules` を飛ばして prep の作成を示す。
+### Fix
 
-### 修正
+1. **Mark the submission, and query Slurm when the result is unknown.**
+   - Put `#SBATCH --comment=mdclaw:<submission_intent_id>` in the sbatch script
+     (`submission_intent_id` is already created at `submit.py:431`).
+   - For failures whose result is unknown (`Socket timed out on send/recv operation`, `Unable to contact slurm controller`,
+     `Zero Bytes were transmitted or received`, `subprocess.TimeoutExpired`, etc.),
+     search for the mark with `squeue --me -h -o "%i|%k"` (sacct if unavailable) for 30 to 60 seconds.
+     - If found, treat it as submitted (`_stamp_slurm_on_node`, tracking record, `success: true` with a warning).
+     - If not found, return `code: slurm_submit_uncertain` and do not clear the submission reservation.
+       `next_action` is `mdclaw check_job --job-dir J --node-id N` (searches by the mark; records the job if found,
+       otherwise releases the reservation).
+   - `_validate_node_ready_for_slurm_submit` refuses resubmission to a node that still holds an unknown-result reservation.
+2. **Give other sbatch failures a stable code.**
+   - Return `code: slurm_submit_failed` and sbatch's stderr, not `unhandled_error`.
+3. **Prevent double execution in `begin_node`.**
+   - Inside `node.lock`, record the executor (`SLURM_JOB_ID`, host, pid, start time) in metadata.
+   - If the node is already running and the recorded other executor is alive (the Slurm job is RUNNING, or the pid on the same host
+     is alive), exit with `node_already_running` before starting the computation.
+   - If the recorded executor no longer exists, take over (cleanup after an abnormally terminated job).
+   - The `submit_array_job` and `submit_mps_job` paths also go through the same `begin_node`, so they are protected as well.
 
-1. **`inspect_molecules` の既定の出力に `chain_ranges` を足す（省略の対象にしない）。**
-   - 鎖ごとに1行: `chain_id`、`author_chain`、型、最初と最後の残基（著者番号、挿入コード、残基名）、残基数、
-     欠損（著者番号での区間のリスト）、挿入コード付きの残基（例: `1A`）。
-   - 6 本の鎖でも数百文字に収まる。
-2. **source の完了時の結果に同じ `chain_ranges` を載せ、`next` で prep より先に `inspect_molecules` を示す。**
-   - 対象は `fetch_structure` と `register_local_structure`。
-3. **`prepare_complex --residue-ranges` の結果に、鎖ごとに実際に残した範囲 `kept_residue_ranges` を返す。**
-   - 次の場合は警告を出す: 指定した範囲が欠損をまたぐ（欠けた残基を示す）、境界と同じ番号の挿入コード残基を
-     落とす（例: `A:1-79` が `1A` を落とす）、指定した範囲が構造にある残基を超える。
+### Tests and acceptance criteria
 
-### テスト・受け入れ条件
-
-- 欠損と挿入コードを含む構造で `chain_ranges` が正しく、既定の出力に入っている。
-- `prepare_complex` が `kept_residue_ranges` を返し、挿入コードの取りこぼしと欠損をまたぐ範囲に警告を出す。
-
-### 同じ修正で防げる他の失敗
-
-- 036_ligand_1ceb cli_sif r2（`A:1-79` で 1A が落ちた）。
-- 028_complex_1dfj cli_sif r1・r2（範囲を指定せず、鎖 I の N 末端の ACE が残った）。
-- 024_antibody_5cba cli_sif r2（範囲を指定せず、鎖 B が1残基多くなった）。
-- いずれも、残した範囲が結果に出ていれば、エージェントがタスクの指定と照らし合わせられた。
+- With a fake sbatch that prints a timeout and exits with code 1 but has created the job (a fake squeue returns the mark),
+  `submit_job` adopts that job and records it on the node.
+- With a fake sbatch that has not created a job, it returns `slurm_submit_uncertain`, the reservation remains, and a second submission is refused.
+  `check_job` releases the reservation.
+- `begin_node` refuses with `node_already_running` if another live executor exists, and takes over otherwise.
 
 ### skill
 
-`skills/md-prepare/SKILL.md` の手順4を「残基番号と欠損は source の結果か `inspect_molecules` の
-`chain_ranges` で確かめ、構造ファイルを自分で解析しない」に短くする。
+If needed, add one line to hpc-run: "for `slurm_submit_uncertain`, follow `next_action`; do not resubmit to the same node".
+Not needed if `next_action` is sufficient.
 
-## 4. `run_production` がジョブの時間制限を見ない（015_antibody_1ahw r2）
+### Note
 
-### 経過
+141979, detected by the campaign monitoring as an "isolation escape", is the job that left no record through this sequence.
+The job itself was submitted through the isolation wrapper.
 
-- ハーネスは MD ジョブ1本の上限を 20 分にしている（エージェントの CAPABILITIES.md にも
-  「Each MD Slurm job wall limit: 00:20:00」とある）。
-- エージェントは次のように投入した（eq への afterok 依存付き）:
+## 3. Per-chain residue ranges do not appear in the default output (015_antibody_1ahw r1)
+
+### Sequence of events
+
+- The task is "chain A 1–214, chain B 1–214, chain C 4–211". 1AHW has 6 protein chains, A to F.
+- The agent read 16 skill pages, created the study, and fetched the source (source_001 completed;
+  `next` was "create prep").
+- `skills/md-prepare/SKILL.md:144` instructs running `inspect_molecules`, but the agent skipped it.
+  Instead, it wrote its own python to output per-chain author-numbering ranges and gaps, and ran it over chains A to F.
+- In that python, the `i += 1` of the inner `while` was only inside `if p[idx['label_asym_id']] == ch:`.
+  At the first atom of a different chain, `i` stopped advancing, causing an infinite loop.
+- This tool call never returned; the agent used up its 1800-second allotment, and no job was submitted.
+
+### Cause (output)
+
+- In the default output of `inspect_molecules`, `chains` is omitted entirely
+  (`{"_omitted": true, "chars": 104090, "see": "rerun with --output full"}`, `mdclaw/_envelope.py:284`).
+  `summary` and `action_contract` contain only chain IDs.
+- `chains[].residue_numbering` in `--output full` has `count`, `first`, `last`, and a list of all residues.
+  Chain C of 1AHW has first 4 THR, last 211 GLY, count 200, with an 8-residue gap within 4–211.
+- In other words, even using the recommended tool, the information the agent wanted is not visible by default.
+- The `next` on source completion skips `inspect_molecules` and points to creating prep.
+
+### Fix
+
+1. **Add `chain_ranges` to the default output of `inspect_molecules` (not subject to omission).**
+   - One row per chain: `chain_id`, `author_chain`, type, first and last residue (author number, insertion code, residue name), residue count,
+     gaps (a list of intervals in author numbering), and residues with insertion codes (e.g. `1A`).
+   - Even 6 chains fit in a few hundred characters.
+2. **Put the same `chain_ranges` in the result on source completion, and have `next` point to `inspect_molecules` before prep.**
+   - Targets are `fetch_structure` and `register_local_structure`.
+3. **Return `kept_residue_ranges`, the range actually kept per chain, in the result of `prepare_complex --residue-ranges`.**
+   - Warn in these cases: the specified range spans a gap (show the missing residues), an insertion-code residue with the same number as a boundary
+     is dropped (e.g. `A:1-79` drops `1A`), or the specified range exceeds the residues present in the structure.
+
+### Tests and acceptance criteria
+
+- For a structure with gaps and insertion codes, `chain_ranges` is correct and is included in the default output.
+- `prepare_complex` returns `kept_residue_ranges` and warns about dropped insertion codes and ranges that span gaps.
+
+### Other failures the same fix prevents
+
+- 036_ligand_1ceb cli_sif r2 (`A:1-79` dropped 1A).
+- 028_complex_1dfj cli_sif r1 and r2 (no range specified; the N-terminal ACE of chain I remained).
+- 024_antibody_5cba cli_sif r2 (no range specified; chain B had one extra residue).
+- In every case, had the kept range appeared in the result, the agent could have checked it against the task specification.
+
+### skill
+
+Shorten step 4 of `skills/md-prepare/SKILL.md` to "check residue numbers and gaps with the source result or `inspect_molecules`'s
+`chain_ranges`; do not parse structure files yourself".
+
+## 4. `run_production` does not look at the job time limit (015_antibody_1ahw r2)
+
+### Sequence of events
+
+- The harness caps a single MD job at 20 minutes (the agent's CAPABILITIES.md also says
+  "Each MD Slurm job wall limit: 00:20:00").
+- The agent submitted as follows (with an afterok dependency on eq):
 
   ```bash
   submit_job --job-dir "$JOB" --node-id prod_001 \
@@ -239,80 +237,79 @@ cli_skill_sif は 290/294 合格。失敗した4件をすべて transcript・ジ
     --dependency afterok:144251
   ```
 
-- eq_001 は 1 ns の NVT と 1 ns の NPT（4 fs、HMR）を 11 分 54 秒で終えていた。約 10 ns/時なので、
-  3 ns には約 18 分かかり、準備の時間を足すと 20 分を超える。
-- ジョブ 144252 は 1221 秒で「DUE TO TIME LIMIT」で打ち切られた。
-  - 残った成果物: trajectory.dcd（1.49 GB）、state.xml と checkpoint.chk（打ち切りの時刻に書かれている）、
-    energy.dat。
-  - prod_001 は `running` のままで、採点では `production_incomplete` になった。
-  - エージェントは 669 秒の時点でもう終了していた。
-- 合格した r3 は、1.4 ns の prod を2本（`--continue-from`）に分け、それぞれ約 10 分で通している。
+- eq_001 had finished 1 ns of NVT and 1 ns of NPT (4 fs, HMR) in 11 minutes 54 seconds. At about 10 ns/hour,
+  3 ns takes about 18 minutes, and adding setup time exceeds 20 minutes.
+- Job 144252 was cut off at 1221 seconds "DUE TO TIME LIMIT".
+  - Remaining artifacts: trajectory.dcd (1.49 GB), state.xml and checkpoint.chk (written at the time of the cut-off),
+    energy.dat.
+  - prod_001 stayed `running`, and scoring gave `production_incomplete`.
+  - The agent had already finished at 669 seconds.
+- The passing r3 split the prod into two 1.4 ns runs (`--continue-from`), each finishing in about 10 minutes.
 
-### 原因（コード）
+### Cause (code)
 
-- `mdclaw/simulation/production.py` には、ジョブの時間制限を見る処理がない
-  （`SLURM_JOB_END_TIME`、walltime、time_limit、deadline のどれも出てこない）。
-- eq の metadata には step 数はあるが、計算速度（ns/day）や所要秒は記録されていない。
+- `mdclaw/simulation/production.py` has no handling that looks at the job time limit
+  (none of `SLURM_JOB_END_TIME`, walltime, time_limit, or deadline appears).
+- The eq metadata has the step count, but not the computation speed (ns/day) or elapsed seconds.
 
-### 修正
+### Fix
 
-1. **`run_production` を時間制限の手前で止め、ノードを使える状態で閉じる。**
-   - 締め切りはジョブの終了時刻（環境変数 `SLURM_JOB_END_TIME` があればそれ、なければ
-     `squeue -h -j $SLURM_JOB_ID -o %e` か `scontrol show job`）。
-   - 締め切りから余裕（例: 90 秒と出力間隔2回分の大きい方）を引いた時刻で積分を止める。
-     portable な state を書き、trajectory と energy を閉じる。
-   - ノードは completed にし、metadata に実際の `simulation_time_ns`、`requested_simulation_time_ns`、
-     `stopped_reason: "time_limit"` を記録し、警告を付ける。
-   - `next` には残りの長さと延長の手順（`create_node --node-type prod --continue-from <node>`）を示す。
-   - completed のノードは変更できないので、延長は既存の prod → prod で行う。
-2. **min・eq・prod の metadata に計算速度を記録する。**
-   - `ns_per_day` と所要秒。
-3. **`submit_job` の事前検査で、本計算の所要時間を見積もる。**
-   - 見積もり = `simulation_time_ns` ÷ 直近の完了した祖先の `ns_per_day` + 準備の時間。
-   - `--time-limit` から余裕を引いた時間を超えるなら、`production_exceeds_time_limit` で拒否する。
-     `next_action` には、1本あたりの長さと `--continue-from` でのつなぎ方（例: 「1.5 ns × 2 本」）を示す。
-   - 祖先がまだ完了していない（チェーン投入）ときは、警告に留める。
-4. （1 の後はまれだが）ノードの同期で Slurm の TIMEOUT を `slurm_time_limit` として失敗扱いにし、
-   最後に書いた state を示す。`trace_failure` が延長を提案できるようにする。
+1. **Stop `run_production` before the time limit and close the node in a usable state.**
+   - The deadline is the job's end time (the environment variable `SLURM_JOB_END_TIME` if present, otherwise
+     `squeue -h -j $SLURM_JOB_ID -o %e` or `scontrol show job`).
+   - Stop integration at the deadline minus a margin (e.g. the larger of 90 seconds and two output intervals).
+     Write a portable state and close the trajectory and energy files.
+   - Mark the node completed, record the actual `simulation_time_ns`, `requested_simulation_time_ns`, and
+     `stopped_reason: "time_limit"` in metadata, and attach a warning.
+   - In `next`, show the remaining length and the extension procedure (`create_node --node-type prod --continue-from <node>`).
+   - Completed nodes cannot be changed, so extension is done with the existing prod → prod.
+2. **Record the computation speed in the metadata of min, eq, and prod.**
+   - `ns_per_day` and elapsed seconds.
+3. **Estimate the production run time in the `submit_job` preflight.**
+   - Estimate = `simulation_time_ns` ÷ the `ns_per_day` of the nearest completed ancestor + setup time.
+   - If it exceeds `--time-limit` minus a margin, refuse with `production_exceeds_time_limit`.
+     In `next_action`, show the length per run and how to chain them with `--continue-from` (e.g. "2 runs × 1.5 ns").
+   - If the ancestor has not completed yet (chained submission), only warn.
+4. (Rare after 1.) In node synchronization, treat Slurm TIMEOUT as a failure with `slurm_time_limit`,
+   and point to the last written state, so that `trace_failure` can propose an extension.
 
-### テスト・受け入れ条件
+### Tests and acceptance criteria
 
-- `SLURM_JOB_END_TIME` を近い時刻にして `run_production` を動かすと、手前で止まり、実際の長さを記録して
-  completed になり、`next` が延長を示す。
-- metadata の `ns_per_day` から見積もりが `--time-limit` を超える場合、`submit_job` が
-  `production_exceeds_time_limit` で拒否する。
+- Running `run_production` with `SLURM_JOB_END_TIME` set to a near time, it stops before the limit, records the actual length,
+  becomes completed, and `next` points to an extension.
+- If the estimate from `ns_per_day` in metadata exceeds `--time-limit`, `submit_job`
+  refuses with `production_exceeds_time_limit`.
 
 ### skill
 
-`skills/md-production/` と `skills/hpc-run/` の説明を、「1本の時間制限を超える本計算は `--continue-from` で
-つないだ prod に分ける。MDClaw は制限の手前で止めて、延長の方法を返す」の1行に置き換える。
+Replace the explanation in `skills/md-production/` and `skills/hpc-run/` with one line: "split a production that exceeds a single job's time limit into prod nodes
+chained with `--continue-from`. MDClaw stops before the limit and returns how to extend."
 
-## 実装の順序
+## Implementation order
 
-1. **`create_node` の親の型の検査**（1 の修正1〜3）。既存の表を使う小さな変更で、3 件
-   （cli_sif の 2 件を含む）を防げる。
-2. **`run_production` の時間制限での停止、計算速度の記録、投入前の見積もり**（4）。時間切れでデータが
-   宙に浮くのを防ぐ。
-3. **`submit_job` の結果不明時の扱いと `begin_node` の二重実行の防止**（2）。二重実行は
-   「決して起きてはならないこと」に当たる。
-4. **`chain_ranges`、source の `next`、`prepare_complex` の `kept_residue_ranges`**（3）。
+1. **Parent-type check in `create_node`** (fixes 1 to 3 of section 1). A small change using the existing table that prevents 3 failures
+   (including 2 in cli_sif).
+2. **Stopping `run_production` at the time limit, recording computation speed, and the pre-submission estimate** (4). Prevents data
+   being left in limbo by a time-out.
+3. **Handling of unknown results in `submit_job` and prevention of double execution in `begin_node`** (2). Double execution falls under
+   "things that must never happen".
+4. **`chain_ranges`, the source `next`, and `prepare_complex`'s `kept_residue_ranges`** (3).
 
-変更後は `docs/developer/tool-reference.md` と、影響する skill の例を更新する（`CLAUDE.md`「Adding Or Changing Tools」）。
-検証として、この4タスク（004、010、015）と cli_sif で同じ型だった 027・028・036・039 を、
-cli_skill_sif と cli_sif で小さく流し直すとよい。
+After the changes, update `docs/developer/tool-reference.md` and the affected skill examples (`CLAUDE.md` "Adding Or Changing Tools").
+As verification, it would be good to rerun, at small scale under cli_skill_sif and cli_sif, these 4 tasks (004, 010, 015) and 027, 028, 036, and 039, which had the same pattern in cli_sif.
 
-## 証拠の場所
+## Where the evidence is
 
-- 試行のディレクトリ:
-  `/data1/rkp00079/rku00161/runs/glm-5.3-flash-3cond-full-v4/attempts/<task>/<condition>__pi__rikyu-glm-5.3-flash__rN/`
-  - `agent.stdout.jsonl`: pi の transcript（`tool_execution_start` / `tool_execution_end` の行にコマンドと出力）。
-  - `result.json`: 失敗コード、指標、採点の各項目（`artifacts.score`）。
-  - `events.jsonl`: エージェントの開始・終了、採点の投入。
-  - `workspace/.mddatabench/sbatch-events.jsonl`: シムが記録した sbatch の呼び出しと結果。
-  - `workspace/study/jobs/main/nodes/<node_id>/node.json`: MDClaw のノードの状態と metadata。
-- Slurm のジョブ: 004 r3 = 141574〜141576、010 r3 = 141977〜141980、015 r2 = 144250〜144252、
-  015 r3（合格、比較用）= 144255・144257・144259・144260。
-- transcript からツール呼び出しを一覧する例:
+- Attempt directories:
+  `/data1/$PROJECT/$USER/runs/glm-5.3-flash-3cond-full-v4/attempts/<task>/<condition>__pi__rikyu-glm-5.3-flash__rN/`
+  - `agent.stdout.jsonl`: the pi transcript (commands and outputs on the `tool_execution_start` / `tool_execution_end` lines).
+  - `result.json`: failure code, metrics, and each scoring item (`artifacts.score`).
+  - `events.jsonl`: agent start/end and scorer submission.
+  - `workspace/.mddatabench/sbatch-events.jsonl`: sbatch calls and results recorded by the shim.
+  - `workspace/study/jobs/main/nodes/<node_id>/node.json`: MDClaw node status and metadata.
+- Slurm jobs: 004 r3 = 141574 to 141576, 010 r3 = 141977 to 141980, 015 r2 = 144250 to 144252,
+  015 r3 (passed, for comparison) = 144255, 144257, 144259, 144260.
+- Example of listing tool calls from a transcript:
 
   ```python
   import json
@@ -327,33 +324,33 @@ cli_skill_sif と cli_sif で小さく流し直すとよい。
           print("OUT:", " ".join(out.split())[:300])
   ```
 
-## 実装状況（2026-09-29）
+## Implementation status (2026-09-29)
 
-4 節とも実装し、単体テストを追加した（`docs/memo.md` の同日の項に詳細）。計画との差分:
+All 4 sections were implemented, with unit tests added (details in the same day's entry in `docs/memo.md`). Differences from the plan:
 
-- §1: `create_node` の `parent_type_invalid` と `eq_parent_should_be_min` は計画どおり。study 文脈で
-  min のない topo の下に eq を作るのは拒否ではなく警告（`eq_parent_is_topo`）に留めた。`submit_job` /
-  `submit_array_job` / `submit_mps_job` の構造検査は `node_structure_preflight`（親の型・失敗した親・
-  ツールと段の対応。pending の親は通す。progress.json のない素のディレクトリは判定しない）。
-  同時に、`run_metadynamics` 追加以降 prod 段の推奨ツールが `run_metadynamics` になっていた
-  envelope のバグを直した（`_STAGE_PREFERENCE["prod"]`）。
-- §2: 印は `#SBATCH --comment=mdclaw:<intent>`。結果不明時は `find_marked_job` が squeue を最大 30 秒
-  （`MDCLAW_SLURM_CONFIRM_SECONDS`）探し、見つかれば採用、なければ `slurm_submit_uncertain` で予約を
-  残す。解決は `check_job --job-dir J --node-id N`（`settle_uncertain_submission`）。二重実行の防止は
-  rounds の owner record（`mdclaw/node/owner.py` に移動、旧パスは shim）を `begin_node` が使う。
-  Slurm の終了同期は、別の生きた実行者が持つ running ノードを失敗にしない。
-  配列 / MPS 投入には印を付けていない（単発投入のみ）。
-- §3: `inspect_molecules.chain_ranges`（`compact_numbering`）、source 完了時の `chain_ranges`
-  （metadata と結果、`next.inspect_command`）、`prepare_complex.kept_residue_ranges`
-  （`split_molecules.delivered_chain_ranges`）と範囲の警告。
-- §4: `DeadlineStepper`（`mdclaw/simulation/deadline.py`）で `run_production` を締め切りの手前で止め、
-  実際の長さで completed にし、`next` を延長にした。rounds のセグメントは対象外。eq に
-  `md_seconds` / `wall_seconds` / `ns_per_day`、min に `wall_seconds`。`submit_job` の見積もりは
-  `production_time_budget`（親の `ns_per_day` と同じプラットフォーム族のときだけ）。修正 4 の
-  `slurm_time_limit` への読み替えは、修正 1 で必要性が下がったので見送った。
+- §1: `parent_type_invalid` and `eq_parent_should_be_min` in `create_node` are as planned. Creating eq under a topo without min
+  in a study context is only a warning (`eq_parent_is_topo`), not a refusal. The structural check in `submit_job` /
+  `submit_array_job` / `submit_mps_job` is `node_structure_preflight` (parent type, failed parents,
+  tool vs. stage correspondence; pending parents pass; a bare directory without progress.json is not judged).
+  At the same time, an envelope bug was fixed in which the recommended tool for the prod stage had been `run_metadynamics` since
+  `run_metadynamics` was added (`_STAGE_PREFERENCE["prod"]`).
+- §2: The mark is `#SBATCH --comment=mdclaw:<intent>`. When the result is unknown, `find_marked_job` searches squeue for up to 30 seconds
+  (`MDCLAW_SLURM_CONFIRM_SECONDS`), adopts the job if found, and otherwise keeps the reservation with `slurm_submit_uncertain`.
+  Resolution is `check_job --job-dir J --node-id N` (`settle_uncertain_submission`). Double-run prevention has
+  `begin_node` use the rounds owner record (moved to `mdclaw/node/owner.py`; the old path is a shim).
+  Slurm end-of-job synchronization does not fail a running node held by another live executor.
+  Array / MPS submissions are not marked (single submissions only).
+- §3: `inspect_molecules.chain_ranges` (`compact_numbering`), `chain_ranges` on source completion
+  (metadata and result, `next.inspect_command`), `prepare_complex.kept_residue_ranges`
+  (`split_molecules.delivered_chain_ranges`), and the range warnings.
+- §4: `DeadlineStepper` (`mdclaw/simulation/deadline.py`) stops `run_production` before the deadline,
+  marks it completed with the actual length, and sets `next` to an extension. Rounds segments are excluded. eq records
+  `md_seconds` / `wall_seconds` / `ns_per_day`, and min records `wall_seconds`. The `submit_job` estimate is
+  `production_time_budget` (only when the parent's `ns_per_day` is from the same platform family). Fix 4's
+  reinterpretation as `slurm_time_limit` was deferred, since fix 1 reduced the need for it.
 
-## 対象外（参考）
+## Out of scope (for reference)
 
-- ハーネス側: 010 r3 の採点し直し（MD は COMPLETED なので合格する見込み）、採点ジョブ投入の再試行、
-  リセット時の旧ジョブの取り消しなど。キャンペーン全体の結果と sif_only の分析は、MDDataBench 側の memo の
-  案（未追記）にまとめてある。
+- Harness side: rescoring 010 r3 (the MD is COMPLETED, so it is expected to pass), retrying scorer-job submission,
+  canceling old jobs on reset, etc. The campaign-wide results and the sif_only analysis are summarized in a draft memo
+  on the MDDataBench side (not yet appended).

@@ -1,211 +1,211 @@
-# SMO報告を起点とする汎用的な化学状態・残基検査の修正計画
+# Fix plan for general chemical-state and residue checks, starting from the SMO report
 
-作成: 2026-09-08。実装前の計画。
-根拠: [調査記録](../research/smo-20260908-bug-investigation.md) / [再現結果](../research/smo-20260908-audit.json)。
+Written: 2026-09-08. A plan, before implementation.
+Evidence: [investigation record](../research/smo-20260908-bug-investigation.md) / [reproduction results](../research/smo-20260908-audit.json).
 
-## 目標と修正後の契約
+## Goals and the post-fix contract
 
-1. prepで確定した結合・プロトン化状態を、中和用Systemと最終Systemで共有する。
-2. 要求を解決できない場合は、化学状態を変えず、原因を特定できるエラーで停止する。
-3. 残基の存在、名前、配列長、選択結果、実際のSystemの化学状態を区別して報告する。
-4. 成功判定を結合の本数や名前だけに依存させず、要求した原子対と力場の状態で検証する。
-5. SMOの成功に加えて、下記の非SMO回帰行列を合格条件とし、既存の正常系を壊さない。
+1. The bond and protonation states fixed in prep are shared by the neutralization System and the final System.
+2. When a request cannot be resolved, stop without changing the chemical state, with an error that identifies the cause.
+3. Report residue presence, names, sequence length, selection results, and the chemical state of the actual System as distinct things.
+4. Do not make the success decision depend only on the number or names of bonds; verify against the requested atom pairs and the force-field state.
+5. In addition to SMO succeeding, make the non-SMO regression matrix below a pass condition, and do not break existing working cases.
 
-Pablo全廃、新しい脂質ビルダー、MDエンジン変更は今回の修正に必要ない。
-既存ユーザの終端ノードを上書きせず、調査で見つかった不整合を勝手に修復しない。
-未確認の「報告者が何を読んだか」を前提に実装しない。
+Removing Pablo entirely, a new lipid builder, or changing the MD engine is not needed for this fix.
+Do not overwrite existing users' terminal nodes, and do not unilaterally repair inconsistencies found in the investigation.
+Do not base the implementation on the unconfirmed question of "what the reporter read".
 
-## 1. 結合計画と実行を統一する（最優先）
+## 1. Unify bond planning and execution (top priority)
 
-主対象: `amber/topology_bonds.py`、`amber/build_system.py`、
-`amber/openmm_build.py`、`_topology_pablo.py`、既存の残基識別ヘルパー。
+Main targets: `amber/topology_bonds.py`, `amber/build_system.py`,
+`amber/openmm_build.py`, `_topology_pablo.py`, and the existing residue-identification helpers.
 
-- 入力形式の互換性を保った正規化・解決処理を一つにする。
-  chain/resnum/insertion codeだけでなく、必要なcomponent/chain identity情報を用い、
-  膜中の重複したchain/resnumを誤って同一視しない。
-- 「要求されたペア」「構造上で解決したペア」「既存/追加の結合」を別々に記録する。
-  結合追加関数は解決済みペアだけを受け、未加工の引数を再解釈しない。
-- HG付きCYSへのS–S要求、存在しない/曖昧な部位、競合する相手は、System生成前に失敗させる。
-  `skipped_cys_protonated` と表示しつつ実行する現状を廃止する。
-  topoで無断にHGを除去したり、ユーザの要求を黙ってスキップしたりしない。
-- 失敗には安定したcode、対象部位、観測された状態、prepの新規枝での修正案を返す。
-  code名は既存guardrail登録を確認して決め、CLI・trace_failure・skillで統一する。
-- None（未指定）と空リスト（明示的に結合なし）の意味を保持する。
-  PDBの既存結合と明示指定が衝突した場合も、無条件の距離再推定で解決しない。
-- 既存の正しい結合は重複追加せず、同じ計画に対して処理結果が安定するようにする。
+- Consolidate normalization and resolution into one routine while keeping input-format compatibility.
+  Use not only chain/resnum/insertion code but also the necessary component/chain identity information,
+  so that duplicated chain/resnum in a membrane are not mistakenly treated as the same.
+- Record "requested pairs", "pairs resolved on the structure", and "existing/added bonds" separately.
+  The bond-adding function accepts only resolved pairs and does not reinterpret raw arguments.
+- Fail S–S requests on CYS carrying HG, nonexistent/ambiguous sites, and conflicting partners before System creation.
+  Abolish the current behavior of reporting `skipped_cys_protonated` while still proceeding.
+  Do not silently strip HG in topo, and do not silently skip the user's request.
+- On failure, return a stable code, the target site, the observed state, and a suggested fix on a new prep branch.
+  Decide the code names after checking the existing guardrail registry, and keep them consistent across the CLI, trace_failure, and skills.
+- Preserve the distinction between None (unspecified) and an empty list (explicitly no bonds).
+  When existing bonds in the PDB conflict with an explicit specification, do not resolve it by unconditional distance re-estimation.
+- Do not add duplicates of existing correct bonds, and make the result stable for the same plan.
 
-完了条件: topo_004相当のHG付き入力は、指定ありなら説明可能な事前エラー、
-指定なしなら還元状態を維持して成功。正しいCYX入力は9本の要求をその相手のまま満たす。
+Done when: an HG-carrying input equivalent to topo_004 gives an explainable up-front error when bonds are specified,
+and succeeds while keeping the reduced state when they are not. A correct CYX input satisfies the 9 requested bonds with exactly those partners.
 
-## 2. 中和用Systemへの化学情報の引き継ぎを修正する
+## 2. Fix the handoff of chemical information to the neutralization System
 
-主対象: `node/inputs.py`、`solvation/membrane.py`、`solvation/patch_membrane.py`。
-1の共通処理を利用する。
+Main targets: `node/inputs.py`, `solvation/membrane.py`, `solvation/patch_membrane.py`.
+Use the shared routine from 1.
 
-- solvの入力解決で、選択したprepの結合計画と必要なidentity mappingを取得する。
-  ディレクトリ探索や別枝の「最新prep」から推測しない。
-- orientation/assembly後の残基に計画を明示的に対応付ける。
-  座標回転や水・脂質追加を経ても、同じタンパク質部位の計画であることを検証する。
-- `_compute_membrane_net_charge` に計画を渡し、本番ビルドと同じ結合検証を通す。
-  中和用の一時ビルドはsolv内の処理として扱い、ユーザDAGに偽のtopo完了を作らない。
-- standalone入口を保持する場合は結合指定を明示的に受けられるようにする。
-  CYXがあるのに結合を解決できない場合、距離だけで推測して中和を進めない。
-- 電荷は既存のNonbondedForce合計を使う。力場・水モデル・対応している化学情報を
-  中和と本番で一致させる。新しい残基名ヒューリスティックは追加しない。
-- NonbondedForceがない、非有限値、整数から許容誤差以上にずれるケースは失敗させる。
-  無条件の0初期値やroundで異常を隠さない。
-- 電荷の生値、計画の出所、ペア検証結果、配置イオン数、配置後の電荷収支を保存する。
-  本番topoの既存 `neutralization_charge_mismatch` 検証も維持する。
-  同じ巨大Systemの不要な再構築を増やさず、イオン置換直後は電荷収支、最終topoは
-  実Systemの電荷を使って検証する。
+- In solv input resolution, obtain the selected prep's bond plan and the necessary identity mapping.
+  Do not infer them by directory search or from the "latest prep" on another branch.
+- Explicitly map the plan onto the residues after orientation/assembly.
+  Verify that the plan still refers to the same protein sites after coordinate rotation and addition of water and lipids.
+- Pass the plan to `_compute_membrane_net_charge` and run it through the same bond validation as the production build.
+  Treat the temporary neutralization build as processing inside solv, and do not create a fake completed topo in the user's DAG.
+- If the standalone entry point is kept, let it accept a bond specification explicitly.
+  When CYX is present but the bonds cannot be resolved, do not proceed with neutralization by guessing from distance alone.
+- Use the existing NonbondedForce sum for charge. Make the force field, water model, and supported chemical information
+  identical between neutralization and production. Do not add new residue-name heuristics.
+- Fail when there is no NonbondedForce, when values are non-finite, or when the total deviates from an integer by more than the tolerance.
+  Do not hide anomalies with an unconditional initial value of 0 or with round.
+- Save the raw charge value, the plan's provenance, the pair-validation results, the number of ions placed, and the charge balance after placement.
+  Keep the existing `neutralization_charge_mismatch` check in production topo as well.
+  Do not add unnecessary rebuilds of the same huge System; verify with the charge balance right after ion replacement,
+  and with the actual System's charge in the final topo.
 
-完了条件: SMOの中和用ビルドが+2e・9本のS–Sを返し、Cl−Na=2のイオン配置になる。
-標準状態の別枝はその枝の正しい電荷を保ち、元の+2へ強制しない。
+Done when: the SMO neutralization build returns +2e and 9 S–S bonds, and ion placement gives Cl−Na=2.
+Another branch in the standard state keeps that branch's correct charge and is not forced to the original +2.
 
-## 3. 化学状態と入力保存性の検証を強化する
+## 3. Strengthen verification of chemical state and input preservation
 
-主対象: `amber/topology_validation.py`、System生成時のtemplate適用・検証箇所。
-1と同時に最小ガードを実装し、2の受け入れ条件にする。
+Main targets: `amber/topology_validation.py` and the template application / validation sites at System creation.
+Implement a minimal guard together with 1, and make it an acceptance condition for 2.
 
-- S–S検証を「観測本数が期待以上」から、解決した原子対の照合に変える。
-  TopologyとSystem双方で要求ペアを検証し、同じ本数で違う相手を結ぶケースを拒否する。
-  Systemの結合表現（力項/対応するconstraint）も扱う。
-- 明示計画の有無にかかわらず、各CYXに正しいSG–SG接続とHG不在を要求する。
-  HG付きCYSにS–Sがあるケースも拒否する。
-- CYXという表示名でCYM相当の電荷が割り当てられないよう、適用templateと化学状態を照合する。
-  必要に応じて既存residueTemplates機構で対応templateを固定する。
-  template名は力場・端末状態に依存するため、全CYXの電荷を単純に0と固定しない。
-  末端電荷を含む正しいtemplateとの一致を検証する。
-- HID/HIE/HIP、ASH/GLH、LYN/CYMも、必要なHパターン・識別子の検証を維持する。
-  insertion codeを最終検証まで一貫して使う。
-- 元入力との原子/残基保存性を、出力Topology/System/Stateの相互一致とは別に報告する。
-  virtual site追加等の許可された変換は個別に記録し、単なる総原子数一致で代用しない。
-- 実際のloader、fallback理由、入力/出力・計画の識別情報を構造化結果に残す。
-  既存フィールドの意味を変更せず、新しい検証フィールドとして追加する。
+- Change S–S validation from "observed count at least the expected count" to matching the resolved atom pairs.
+  Verify the requested pairs in both Topology and System, and reject cases that bond different partners with the same count.
+  Also handle the System's bond representation (force terms / corresponding constraints).
+- Whether or not an explicit plan exists, require a correct SG–SG connection and no HG for every CYX.
+  Also reject cases where a CYS carrying HG has an S–S bond.
+- Match the applied template against the chemical state so that CYM-like charges are not assigned under the display name CYX.
+  If needed, pin the corresponding template via the existing residueTemplates mechanism.
+  Template names depend on the force field and terminal state, so do not simply fix every CYX charge to 0.
+  Verify agreement with the correct template, including terminal charges.
+- For HID/HIE/HIP, ASH/GLH, and LYN/CYM as well, keep validation of the required H patterns and identifiers.
+  Use the insertion code consistently all the way through final validation.
+- Report atom/residue preservation relative to the original input separately from the mutual consistency of the output Topology/System/State.
+  Record permitted transformations such as adding virtual sites individually, and do not substitute a mere total-atom-count match.
+- Keep the actual loader, the fallback reason, and identifiers of the inputs/outputs and the plan in the structured result.
+  Do not change the meaning of existing fields; add them as new validation fields.
 
-完了条件: これまで「CYX、21/21 passed」となった負電荷の孤立SGが成功しない。
-同数の間違った結合、残基欠落、別のinsertion-code部位との取り違えを検出できる。
+Done when: a negatively charged isolated SG that used to give "CYX, 21/21 passed" no longer succeeds.
+The same number of wrong bonds, missing residues, and mix-ups with a different insertion-code site can be detected.
 
-## 4. 残基分類と配列生成を共通化する
+## 4. Share residue classification and sequence generation
 
-主対象: `chemistry_constants.py` と必要な共通ヘルパー、
-`research/inspection.py`、`structure/split.py`。
+Main targets: `chemistry_constants.py` and the necessary shared helpers,
+`research/inspection.py`, `structure/split.py`.
 
-- 公開inspectとprep/split内部で、同じ残基分類と一文字配列への変換を使う。
-  AMBER別名を標準アミノ酸の基底名に対応させ、配列長から落とさない。
-- 定義集合だけを差し替える局所修正で終わらせず、重複したAA_CODEや分類ロジックを整理する。
-  大きなinspect関数全体の統合は不要。意味がずれた共通部分を抽出する。
-- amino-acid sequence length、全残基数、cap数、未知/修飾残基の扱いを定義する。
-  ACE/NMEを含む場合まで「配列長=全残基数」と決めつけない。
-  対応外の修飾を黙って除外せず、既存のPTM・nucleic・glycan分類との整合を確認する。
-- 実構造の原子・残基名は表示の都合で変更しない。
-- 既存JSON構造をできるだけ維持し、誤っていた値を正す。
+- Use the same residue classification and conversion to a one-letter sequence in public inspect and inside prep/split.
+  Map AMBER aliases to the base names of the standard amino acids, and do not drop them from the sequence length.
+- Do not stop at a local fix that only swaps the definition sets; clean up the duplicated AA_CODE and classification logic.
+  Merging the whole of the large inspect function is not needed. Extract the shared parts whose meanings have diverged.
+- Define how amino-acid sequence length, total residue count, cap count, and unknown/modified residues are handled.
+  Do not assume "sequence length = total residue count" even when ACE/NME are present.
+  Do not silently exclude unsupported modifications, and check consistency with the existing PTM, nucleic, and glycan classifications.
+- Do not change atom or residue names of the actual structure for display purposes.
+- Keep the existing JSON structure as much as possible and correct the values that were wrong.
 
-完了条件: SMOの3入力すべてで公開inspect、splitの配列長、抽出PDBが476で一致。
-AMBER別名だけの短いタンパク質もligandと誤分類しない。
+Done when: for all 3 SMO inputs, public inspect, the split sequence length, and the extracted PDB agree at 476.
+A short protein made only of AMBER aliases is not misclassified as a ligand either.
 
-## 5. skillと診断結果の案内を更新する
+## 5. Update skills and the guidance in diagnostic results
 
-実装したcodeと検証フィールドが確定した後に実施。
-`skills/` を正本として編集し、mirrorの整合を検証する。
+Carry this out after the implemented codes and validation fields are finalized.
+Edit `skills/` as the canonical source and verify mirror consistency.
 
-- 共通の異常診断leafを一つ設け、md-prepare/md-analyze/md-reportから条件付きで参照する。
-  通常のspineを長いチェックリストにしない。
-- 「残基が消えた」「S–Sがない」「電荷が違う」と疑われた場合に、対象nodeとファイル、
-  実loader、入力対応、検証原子対/電荷、選択式、ツール結果を順に確認させる。
-- sequence_length、residue count、MDTraj/PyMOL selection、PDB別名の正規化は
-  別の概念であることを明示する。
-- explicit-waterのビルド説明にPDBFile fallbackと既存脂質template補完を記載する。
-  ソースを読んだ推測より、実行時の構造化loader情報を優先する。
-- 化学的要求を変えて成功させることを修正と呼ばない。
-  HG付きCYSの修正はprepの新しい枝で行い、通常のDAG手順を示す。
-- 手動介入がある履歴では現在のcompletedだけを根拠にせず、イベント、tool_result、
-  実Systemを照合する。矛盾した履歴を自動上書きする機能は今回追加しない。
-- 誤りを報告する際は、コマンド・対象ファイル・観測値・期待値・実行版を残し、
-  観測と原因推定を区別する。stdout JSONは保存し、grepの抜粋だけを根拠にしない。
+- Add one shared anomaly-diagnosis leaf, referenced conditionally from md-prepare/md-analyze/md-report.
+  Do not turn the normal spine into a long checklist.
+- When "residues disappeared", "S–S is missing", or "the charge is wrong" is suspected, have the agent check, in order, the target node and files,
+  the actual loader, the input mapping, the validated atom pairs/charges, the selection expression, and the tool results.
+- State explicitly that sequence_length, residue count, MDTraj/PyMOL selection, and normalization of PDB aliases
+  are distinct concepts.
+- Document the PDBFile fallback and the existing lipid template completion in the explicit-water build description.
+  Prefer structured loader information from the run over guesses made by reading the source.
+- Do not call it a fix when success is obtained by changing the chemical request.
+  Fix an HG-carrying CYS on a new prep branch, and show the normal DAG procedure.
+- For histories with manual intervention, do not rely only on the current completed status; cross-check events, tool_result,
+  and the actual System. No feature to automatically overwrite contradictory histories is added this time.
+- When reporting an error, keep the command, target files, observed values, expected values, and the version run,
+  and distinguish observations from inferred causes. Save the stdout JSON, and do not rely on grep excerpts alone as evidence.
 
-完了条件: 実際の新しいCLI出力を使った手順確認で、今回の3症状を正しいcode/証拠へ誘導できる。
-CLI引数変更がある場合、tool-reference、--list-json、CLI入力検証と例を同時に更新する。
+Done when: a walkthrough using actual new CLI output correctly leads the three symptoms seen this time to the right codes/evidence.
+If CLI arguments change, update tool-reference, --list-json, CLI input validation, and examples at the same time.
 
-## 検証とリリース順序
+## Verification and release order
 
-実装を4つのレビュー可能な単位に分ける。
+Split the implementation into 4 reviewable units.
 
-1. 結合計画の統一＋対応する化学検証（1、3の必須部分）。
-2. 中和への引き継ぎ＋最終電荷検証（2、3の残り）。
-3. 残基分類・配列生成の共通化（4）。
-4. skill・診断資料・リリース説明（5）。
+1. Unified bond planning + the corresponding chemical validation (the required parts of 1 and 3).
+2. Handoff to neutralization + final charge validation (2 and the rest of 3).
+3. Shared residue classification and sequence generation (4).
+4. Skills, diagnostic material, and release notes (5).
 
-各単位で既存テストを拡張し、新規テストは失敗した契約を検証する。
+Extend existing tests in each unit; new tests verify the contracts that failed.
 
-- 小さいローカルfixture: 長いSG間距離の明示ペア、HG付きCYS、孤立CYX、CYM、
-  insertion code、重複chain/resnum、同数で別相手の結合、空指定、HG不在の正しいCYX。
-- DAG結合試験: 正しいprep枝からsolv→中和用ビルド→topoへ計画とIDが保持されること。
-- 検査整合試験: 公開CLIと内部splitのAMBER別名、caps、PTM、nucleic/ligandの分類。
-- 既存disulfide/variant/topology、solvation、chain-selection、CLI/registry/guardrailテスト。
-  node入力解決を変えた場合は専用resolverテストを必須にする。
-- SIF-overlayで実依存関係を用いたsmoke/pipeline試験。OpenMM経路には--nvを付ける。
-- 最後にSMO実入力の新しい隔離studyで、元ファイルを変更せずprep由来計画を用いて
-  solv→topo→短いminを確認。476残基、9組の正しいS–S、主鎖切断0、全電荷0、有限エネルギー。
-  9/3のHG付き入力は事前エラーになることも確認する。
-  同一の巨大系を単体テストとして常時実行せず、合成fixtureと実ケース検証を分ける。
-- 既存pipelineで脂質の結合補完、標準状態/非膜系が退行していないことを確認する。
-  下記のユーザ指定による同一SMO系2.1 ns平衡化試験を、最終受け入れの必須条件とする。
-  それ以降のproductionは今回の試験に含めない。
+- Small local fixtures: an explicit pair with a long SG–SG distance, CYS carrying HG, an isolated CYX, CYM,
+  insertion codes, duplicated chain/resnum, the same number of bonds with different partners, an empty specification, and a correct CYX without HG.
+- DAG integration tests: the plan and IDs are preserved from the correct prep branch through solv → neutralization build → topo.
+- Inspection-consistency tests: classification of AMBER aliases, caps, PTMs, and nucleic/ligand in the public CLI and the internal split.
+- Existing disulfide/variant/topology, solvation, chain-selection, and CLI/registry/guardrail tests.
+  If node input resolution changes, a dedicated resolver test is required.
+- Smoke/pipeline tests with real dependencies via the SIF overlay. Add --nv for OpenMM paths.
+- Finally, in a new isolated study on the real SMO input, without modifying the original files and using the prep-derived plan,
+  check solv → topo → a short min. 476 residues, 9 correct S–S pairs, 0 backbone breaks, total charge 0, finite energy.
+  Also confirm that the 9/3 HG-carrying input gives an up-front error.
+  Do not run the same huge system routinely as a unit test; keep synthetic fixtures and real-case verification separate.
+- Confirm in the existing pipelines that lipid bond completion and standard-state/non-membrane systems have not regressed.
+  The user-specified 2.1 ns equilibration test of the same SMO system below is a required condition for final acceptance.
+  Production beyond that is not part of this test.
 
-Python/skillの開発中は既存SIFにcheckoutを重ねる。配布時はrelease/container手順で
-更新コードを含むSIFと版・manifestを整合させ、SIF単体のimport先と修正ファイルのhashを確認する。
-ユーザの既存runを自動置換せず、新規枝での再準備・再検証が必要な条件を案内する。
+During Python/skill development, overlay the checkout on the existing SIF. For distribution, follow the release/container procedure
+to align the SIF containing the updated code with the version and manifest, and check the SIF's own import targets and the hashes of the fixed files.
+Do not automatically replace users' existing runs; tell them under which conditions re-preparation and re-validation on a new branch are needed.
 
-## 必須実行試験: 報告と同じSMO系で修正完了を確認する
+## Required run test: confirm the fix on the same SMO system as the report
 
-ユーザの追加指示により、合成fixtureや短いminだけで修正完了としない。
-以下の固定入力による対照試験と、通常CLIでの膜構築から2.1 ns平衡化までを必須とする。
-これは実行計画であり、本計画の作成時点では新たな計算を開始しない。
+Per the user's additional instruction, do not call the fix complete based only on synthetic fixtures or a short min.
+A controlled test with the fixed inputs below, and a run with the normal CLI from membrane building through 2.1 ns equilibration, are required.
+This is an execution plan; no new computation is started at the time this plan is written.
 
-### 固定する入力と比較対象
+### Inputs to fix and comparison targets
 
-元データのルート:
-`/data1/rkp00079/rku00140/structures1/SMO_WT_active_6XBL/study/jobs/main/nodes/`
+Root of the original data:
+`/data1/$PROJECT/$MEMBER_A/structures1/SMO_WT_active_6XBL/study/jobs/main/nodes/`
 
-| 用途 | 固定するファイル/ノード |
+| Purpose | Files/nodes to fix |
 |---|---|
-| 同じ受容体座標・化学状態 | prep_008/artifacts/merge/merged.pdb |
-| 要求する9組のS–S | prep_008/artifacts/disulfide_bonds.json |
-| canonical component識別 | prep_008/artifacts/chain_identity_map.jsonと関連prep artifact |
-| 元の膜構築条件/配置 | solv_005のmembrane_metadata、patch metadata、box/geometry metadata |
-| 元の未修正膜 | solv_005/artifacts/membrane.pdb |
-| 正常な通常topoの参考値 | topo_005のSystem/Topology/State |
-| HG付きCYSの既知失敗 | topo_004/artifacts/system.prepared.pdbとamber_metadata内の9組 |
-| ユーザ迂回結果との比較 | topo_007、min_002、eq_001（読み取りのみ） |
+| Same receptor coordinates and chemical state | prep_008/artifacts/merge/merged.pdb |
+| The 9 requested S–S pairs | prep_008/artifacts/disulfide_bonds.json |
+| Canonical component identification | prep_008/artifacts/chain_identity_map.json and related prep artifacts |
+| Original membrane build conditions/placement | solv_005's membrane_metadata, patch metadata, box/geometry metadata |
+| Original unmodified membrane | solv_005/artifacts/membrane.pdb |
+| Reference values from the normal regular topo | topo_005's System/Topology/State |
+| Known failure with HG-carrying CYS | topo_004/artifacts/system.prepared.pdb and the 9 pairs in amber_metadata |
+| Comparison with the user's workaround results | topo_007, min_002, eq_001 (read-only) |
 
-開始時に全入力のSHA256、修正前/修正後commit、SIF、依存版、import先をmanifestへ記録する。
-同じPDB名だけで同じ入力とみなさない。実際にimportされた修正ファイルのhashも照合する。
+At the start, record in a manifest the SHA256 of every input, the pre-fix/post-fix commits, the SIF, dependency versions, and import targets.
+Do not treat inputs as identical just because the PDB names match. Also cross-check the hashes of the fixed files actually imported.
 
-独立したテストstudy/jobを作り、既存テストfixture方式で元の完了source/prepと必要な
-provenanceを読み取りコピーしたベースラインを用意する。コピー由来と元hashを明示し、
-prepを今回再実行したとは記録しない。これによりMODELLER等の再実行による座標差を避ける。
-新しいsolv/topo/min/eqのみ通常のnode API/CLIで作成する。
-コピー後の参照先とDAGをinspect/explainで検証し、ユーザ領域に書き戻す経路を禁止する。
-元のrun中のproduction、終端node、共有キャッシュは変更しない。
+Create an independent test study/job and, using the existing test-fixture approach, prepare a baseline that read-only copies the original completed source/prep and the necessary
+provenance. Make the copy origin and the original hashes explicit,
+and do not record that prep was rerun this time. This avoids coordinate differences from rerunning MODELLER etc.
+Create only the new solv/topo/min/eq through the normal node API/CLI.
+Verify the post-copy references and the DAG with inspect/explain, and forbid any path that writes back into the user's area.
+Do not modify the production running in the original run, terminal nodes, or shared caches.
 
-### 試験A: 固定構造の修正前後対照（化学状態の原因を切り分ける）
+### Test A: before/after control on a fixed structure (isolating the chemical-state cause)
 
-1. 同じsolv_005入力からイオンのみを除いたPDBを作り、変換記録を残す。
-   タンパク質・脂質・水の座標は変えない。
-2. 修正前コードの対照は、記録済みの「結合計画なし→8本・電荷0」と
-   「計画あり→9本・電荷+2」を使用し、manifestが一致しなければ再計測する。
-3. 修正後の中和用ビルドがprepの計画を受け取り、**9組の要求結合・電荷+2**になることを確認。
-4. 孤立CYXを残した計画欠落入力では、電荷0として成功せず、構造化エラーになることを確認。
-5. topo_004のHG付きCYS + 9組指定は、System生成前の新しいエラーで停止することを確認。
-   同じ入力の空指定は還元状態として成功し、正しいCYX + 9組は酸化状態として成功する。
-6. 同じ3つの保存PDBで公開inspectとsplitを実行し、配列長がすべて476、抽出PDBも476であることを確認。
+1. From the same solv_005 input, make a PDB with only the ions removed, and keep a record of the conversion.
+   Do not change protein, lipid, or water coordinates.
+2. As the pre-fix control, use the recorded "no bond plan → 8 bonds, charge 0" and
+   "with plan → 9 bonds, charge +2"; if the manifest does not match, remeasure.
+3. Confirm that the post-fix neutralization build receives the prep plan and gives **the 9 requested bonds and charge +2**.
+4. Confirm that an input missing the plan while leaving isolated CYX does not succeed as charge 0 but gives a structured error.
+5. Confirm that topo_004's HG-carrying CYS + 9 specified pairs stops with the new error before System creation.
+   An empty specification on the same input succeeds as the reduced state, and correct CYX + 9 pairs succeeds as the oxidized state.
+6. Run public inspect and split on the same 3 saved PDBs, and confirm that all sequence lengths are 476 and the extracted PDBs are also 476.
 
-合格条件: 原因ごとの正常・異常入力が期待した結果になり、単に最終successだけで判定しない。
+Pass condition: the normal and abnormal inputs for each cause give the expected results; do not judge by the final success alone.
 
-### 試験B: 通常の膜構築から最小化まで（必須）
+### Test B: from normal membrane building through minimization (required)
 
-テストjobの固定prepを親に、以下を実行する。
+With the test job's fixed prep as the parent, run the following.
 
 ```text
 create/explain solv → embed_in_membrane
@@ -213,164 +213,164 @@ create/explain topo → build_amber_system
 create/explain min  → run_minimization
 ```
 
-- 実入力はprep_008。受容体476残基、HID×8、CYX×18、ASH×1、GLH×2と9組のS–Sを固定。
-- 脂質POPC、ff19SB/OPC、NaCl 0.15 M、patch-tile。
-  元のpatch cache keyは `92fd031d235d13c1aa47f9a8b054212099d68d798d916eea475d6243d213a65a`。
-  可能なら同じパッチをテスト用キャッシュにコピーし、座標/構成のhashを照合する。
-- 元のorientation、dist/dist_wat、salt、box等の保存条件を実行前に表へ確定する。
-  不足している設定を「元と同じ」と推測しない。既存の向き付き中間構造を使う場合は
-  その範囲を明記し、結合計画のID受け渡しは通常のsolv経路で検証する。
-- 中和は修正版embed_in_membraneに実行させる。solv_006の手動イオン修正や
-  direct_openmm_testの迂回スクリプトは使わない。
-- ユーザの比較対象とそろえ、topoはhmr=False、minはsolute_heavy拘束、
-  拘束定数100（CLIの既定単位を署名・保存metadataで確認）、max_iterations=5000。
-  topo/minの状態ファイルを後段へ通常のDAG解決で渡す。
+- The actual input is prep_008. Fix the receptor's 476 residues, HID×8, CYX×18, ASH×1, GLH×2, and the 9 S–S pairs.
+- Lipid POPC, ff19SB/OPC, NaCl 0.15 M, patch-tile.
+  The original patch cache key is `92fd031d235d13c1aa47f9a8b054212099d68d798d916eea475d6243d213a65a`.
+  If possible, copy the same patch into a test cache and cross-check the coordinate/composition hashes.
+- Finalize the saved conditions such as the original orientation, dist/dist_wat, salt, and box in a table before running.
+  Do not assume that missing settings are "the same as the original". If an existing oriented intermediate structure is used,
+  state that scope explicitly, and verify the passing of bond-plan IDs through the normal solv path.
+- Let the fixed embed_in_membrane perform neutralization. Do not use solv_006's manual ion fix or
+  the direct_openmm_test workaround script.
+- To match the user's comparison target, use hmr=False for topo, and for min use solute_heavy restraints,
+  restraint constant 100 (confirm the CLI's default unit from the signature and saved metadata), and max_iterations=5000.
+  Pass the topo/min state files downstream through normal DAG resolution.
 
-段階ごとの必須検査:
+Required checks at each stage:
 
-| 段階 | 検査内容・合格条件 |
+| Stage | What is checked / pass condition |
 |---|---|
-| prep→solv | 476残基と入力重原子の対応が保持され、化学状態と9組の計画が不変 |
-| 中和用System | 正しい9組のS–S、電荷+2e（数値許容誤差1e-3e） |
-| イオン配置 | Cl数−Na数=2。水/イオン置換数と電荷収支が記録と一致 |
-| topo | Topology/System/Stateが整合、9組を原子対で照合、全電荷の絶対値<1e-3e、主鎖切断0 |
-| lipid | 元と同じ脂質構成。内部/外部結合、未接続の外部結合原子0を確認 |
-| min | エネルギー・座標が有限、要求構造と結合を維持。SG間距離と主鎖C–N距離を直接集計 |
+| prep→solv | The mapping of the 476 residues and the input heavy atoms is preserved; the chemical state and the 9-pair plan are unchanged |
+| Neutralization System | 9 correct S–S pairs, charge +2e (numerical tolerance 1e-3e) |
+| Ion placement | Cl count − Na count = 2. Water/ion replacement counts and the charge balance match the record |
+| topo | Topology/System/State are consistent, the 9 pairs match by atom pair, absolute total charge <1e-3e, 0 backbone breaks |
+| lipid | Same lipid composition as the original. Check internal/external bonds and 0 unconnected external-bond atoms |
+| min | Energy and coordinates are finite, and the requested structure and bonds are kept. Tally SG–SG distances and backbone C–N distances directly |
 
-元の構成・配置を完全固定できる試験Aでは原子数の一致を厳密に要求する。
-膜を再配置する試験Bでは水/イオン数が変わり得るため、157616という総数だけを成功条件にしない。
-タンパク質・脂質の対応と許可した水/イオン差分を必ず説明する。
+In Test A, where the original composition and placement can be fully fixed, require exact agreement of atom counts.
+In Test B, which re-places the membrane, water/ion counts can change, so do not use the total of 157616 alone as a success condition.
+Always explain the protein and lipid mapping and the permitted water/ion differences.
 
-### 試験C: 元の報告と同条件の平衡化（必須）
+### Test C: equilibration under the same conditions as the original report (required)
 
-試験Bのminが合格したら、そのまま通常の `run_equilibration` で進める。
-保存されたeq_001に合わせて、以下を固定する。
+Once Test B's min passes, continue directly with the normal `run_equilibration`.
+Fix the following to match the saved eq_001.
 
-- NVT: **0.1 ns / 50000 steps**。
-- NPT: **2.0 ns / 1000000 steps**。
-- **300 K、1 bar、2 fs、hmr=False**。
-- 膜用のsemi-isotropic設定をSystem/実行metadataで確認。
-- solute_heavy拘束と膜headgroup拘束は元の設定を確認して同じものを使う。
-  元の観測数はprotein heavy 3738、lipid headgroup 221。数だけでなく選択部位も比較する。
+- NVT: **0.1 ns / 50000 steps**.
+- NPT: **2.0 ns / 1000000 steps**.
+- **300 K, 1 bar, 2 fs, hmr=False**.
+- Confirm the semi-isotropic setting for membranes in the System/run metadata.
+- For the solute_heavy restraints and membrane headgroup restraints, check the original settings and use the same ones.
+  The original observed counts are protein heavy 3738 and lipid headgroup 221. Compare the selected sites, not only the counts.
 
-NVT終了時、NPT終了時、保存された軌道フレームで、残基/重原子対応、
-S–S原子対、PBCを考慮したSG–SG/C–N距離、有限性を独立に確認する。
-温度・体積・密度は時系列と末尾10%の統計を保存し、元のeq_001と並べる。
-乱数軌道、最終エネルギー、体積収縮率が以前の値と完全一致することは要求しない。
+At the end of NVT, at the end of NPT, and on saved trajectory frames, independently check the residue/heavy-atom mapping,
+S–S atom pairs, PBC-aware SG–SG/C–N distances, and finiteness.
+Save temperature, volume, and density time series and statistics over the last 10%, and put them side by side with the original eq_001.
+Exact agreement with previous values for the stochastic trajectory, final energy, and volume shrinkage ratio is not required.
 
-- 原子・結合の消失、主鎖切断、NaN/Inf、未完了の時間、実行条件の不一致は不合格。
-- 数値的に完走しても、温度・密度・膜構造に異常がある場合は保留として原因を調べる。
-- 温度・密度・結合距離の数値判定範囲は元のeq_001の実統計と既存検証規約から
-  **実行前に**試験仕様へ固定する。実行後に都合よく閾値を動かさない。
-- 最後に同じ視点の膜全体/上面画像を作り、明らかな配置事故がないか補助確認する。
-  画像を結合・電荷の検証の代用にはしない。
+- Loss of atoms or bonds, backbone breaks, NaN/Inf, incomplete simulated time, or mismatched run conditions are failures.
+- Even if the run completes numerically, if temperature, density, or membrane structure is abnormal, put it on hold and investigate the cause.
+- Fix the numerical acceptance ranges for temperature, density, and bond distances in the test specification **before running**, from the actual statistics of the original eq_001 and the existing validation conventions.
+  Do not move thresholds conveniently after the run.
+- Finally, make whole-membrane/top-view images from the same viewpoint as an auxiliary check for obvious placement accidents.
+  Do not use the images as a substitute for bond and charge validation.
 
-### 実行環境・成果物・完了条件
+### Execution environment, deliverables, and completion conditions
 
-- 本番に近いGPUノードを使用。実行時にhpc-runの手順で資源を確認してSlurmへ投入する。
-  ジョブスクリプト・stdout/stderr・実測時間・GPU利用を保存する。
-- 初回は再利用patchを前提に1 GPU、walltime 60分を見込む計画とし、投入前に
-  利用可能GPUと既存ログから妥当性を確認する。これは実行時間の保証ではない。
-  timeoutや資源不足は科学的合格と扱わず、通常の再開/新規枝の契約に従う。
-- 出力study_plan、node/event、manifest、構造化検査JSON、比較表、時系列図、
-  failure対照結果を一つの試験レポートにまとめる。
-- リリースSIFを更新した後、SIF単体のCLI・import/hashと固定構造の試験Aを再確認する。
-  overlayだけ通って配布版が古い、という状態では完了としない。
-- **A/B/Cがすべて合格し、通常CLIで中和→構築→min→2.1 ns eqまで成功した証拠が揃って初めて、
-  「同じSMO系で修正を確認した」と報告する。製品全体の修正完了・配布判定には、
-  下記の非SMO回帰試験の合格も必要とする。**
-- いずれかが未実行/失敗/条件不一致なら、その事実を明記し、修正完了とは宣言しない。
+- Use a GPU node close to production. At run time, check resources following the hpc-run procedure and submit to Slurm.
+  Save the job script, stdout/stderr, measured wall time, and GPU utilization.
+- For the first run, plan on 1 GPU and a 60-minute walltime assuming a reused patch, and before submission
+  check plausibility against the available GPUs and existing logs. This is not a guarantee of run time.
+  Do not treat a timeout or insufficient resources as a scientific pass; follow the normal restart/new-branch contract.
+- Combine the output study_plan, nodes/events, manifest, structured check JSON, comparison tables, time-series plots,
+  and failure-control results into one test report.
+- After updating the release SIF, recheck the SIF's own CLI, import/hash, and Test A on the fixed structure.
+  Do not consider it complete if only the overlay passes while the distributed build is stale.
+- **Only once A/B/C all pass and there is evidence that neutralization → build → min → 2.1 ns eq succeeded with the normal CLI,
+  report "the fix was confirmed on the same SMO system". Declaring the product-wide fix complete and deciding on distribution
+  additionally require passing the non-SMO regression tests below.**
+- If any of them is not run, fails, or has mismatched conditions, state that fact explicitly and do not declare the fix complete.
 
-## SMOへの過適合を防ぐ必須設計・試験条件
+## Required design and test conditions to prevent overfitting to SMO
 
-SMOは既知不具合の受け入れケースであり、仕様の定義元ではない。
-以降は各実装単位とリリースの必須条件とする。SMOが通っても、別の正常系を壊せば不合格。
+SMO is the acceptance case for a known defect, not the source of the specification.
+What follows are required conditions for each implementation unit and for the release. Even if SMO passes, breaking another working case is a failure.
 
-### 実装へ入れてはいけないSMO依存
+### SMO dependencies that must not go into the implementation
 
-- PDB ID、残基番号490/507、chain A、476残基、9本、+2e、POPC/OPC、特定のcache keyやパスを
-  判定・修復分岐に埋め込まない。これらはSMO fixtureの期待値に限定する。
-- 検出距離をSMOの長いSG間距離に合わせて広げない。
-  明示結合計画を優先し、金属配位の硫黄をS–Sへ誤変換しない。
-- CYMをCYXへ自動変換しない。正当な還元CYS、自由thiolate、金属配位CYMを保持する。
-- 「CYXは常に0e」「全系は常に中性」「protein選択は全残基を含む」を共通仕様にしない。
-  末端、caps、選択した力場、neutralization intent、金属/リガンド/核酸/荷電脂質を考慮する。
-- namesや部分電荷の手修正でSystemを合わせない。化学状態と適用templateの整合を確認する。
-- 新しい検証が扱えない系を、汎用エラーや黙った削除で通過させない。
-  既存の対応範囲を狭める変更が必要になった場合は、具体的な系・理由・移行経路をレビューに出す。
+- Do not embed the PDB ID, residue numbers 490/507, chain A, 476 residues, 9 bonds, +2e, POPC/OPC, or specific cache keys or paths
+  into decision or repair branches. Limit these to the expected values of the SMO fixture.
+- Do not widen the detection distance to fit SMO's long SG–SG distances.
+  Prefer the explicit bond plan, and do not misconvert metal-coordinating sulfurs into S–S.
+- Do not automatically convert CYM to CYX. Keep legitimately reduced CYS, free thiolate, and metal-coordinating CYM.
+- Do not make "CYX is always 0e", "the whole system is always neutral", or "a protein selection includes all residues" a shared specification.
+  Take termini, caps, the selected force field, neutralization intent, and metals/ligands/nucleic acids/charged lipids into account.
+- Do not make the System fit by hand-editing names or partial charges. Check consistency between the chemical state and the applied template.
+- Do not let systems the new validation cannot handle pass via a generic error or silent deletion.
+  If a change that narrows the existing supported scope becomes necessary, put the specific systems, reasons, and migration path up for review.
 
-### 共通の正しさを決める根拠
+### Grounds for shared correctness
 
-- 期待する結合は明示計画/既存の検証済み構造、電荷は選択した力場のtemplate・System、
-  残基の存在は入力のatom/residue inventoryに求める。
-- 期待値を修正対象の検査関数で生成しない。fixtureの独立した原子対一覧、
-  生PDBの列読み取り、System XMLの独立集計と比較する。
-- 既存の正常系では、旧版と新版を同じ入力・乱数・計算設定で比較する。
-  原子対応、結合相手、template/電荷、粒子数、box/force classを比較し、
-  同一状態のエネルギー/力も既存の数値許容誤差で確認する。
-  修正に伴う正当な差分は原因ごとに説明する。失敗を消すためだけのgolden更新は禁止する。
-- 旧版も誤っていたケースでは旧出力を正解にせず、独立の化学的期待値を用いる。
+- Take expected bonds from the explicit plan / existing validated structures, charges from the selected force field's templates and System,
+  and residue presence from the input's atom/residue inventory.
+- Do not generate expected values with the check functions being fixed. Compare against the fixture's independent list of atom pairs,
+  column reads of the raw PDB, and an independent tally of the System XML.
+- For existing working cases, compare the old and new versions with the same inputs, random numbers, and computation settings.
+  Compare atom mapping, bond partners, templates/charges, particle counts, and box/force classes,
+  and also check energies/forces of the same state against the existing numerical tolerances.
+  Explain each legitimate difference that comes with the fix by its cause. Updating goldens just to make failures disappear is forbidden.
+- For cases where the old version was also wrong, do not take the old output as correct; use an independent chemical expectation.
 
-### 必須の非SMO試験行列
+### Required non-SMO test matrix
 
-全組合せを巨大MDで実行せず、共通ヘルパーの小さい試験、実依存関係のSystem構築、
-代表系の短いDAG実行に分ける。膜+金属、膜+プロトン化変異、ID衝突など、
-今回変更した境界をまたぐ組合せは明示的に含める。
+Do not run every combination as a huge MD; split into small tests of the shared helpers, System builds with real dependencies,
+and short DAG runs on representative systems. Explicitly include combinations that cross the boundaries changed this time,
+such as membrane + metal, membrane + protonation variant, and ID collisions.
 
-| 分類 | 固定する代表ケース | 守る契約 | 必須の試験深度 |
+| Category | Fixed representative cases | Contract to keep | Required test depth |
 |---|---|---|---|
-| S–Sの正例 | tests/data/disulfide_bpti.pdb（BPTI） | SMOと異なる番号・3組の正しいS–S | 検出/計画/System構築＋非膜solv→topo→min→短いeq |
-| S–Sなし | 既存の小さいCYS含有・還元状態fixture、S–Sを持たない非SMO膜fixture | 自動的に結合を増やさず、CYS/HGを保持 | 正常系差分比較＋System構築 |
-| 金属配位 | metal_site_cys4.pdb、既存metal pipeline | 接近したSGでも金属配位を壊さず、CYMを保持 | 金属guard＋System/pipeline、膜へのhandoff小型試験 |
-| プロトン化 | HID/HIE/HIP、ASH/GLH、LYN、CYMを含む小型fixture | Hパターン・template・電荷・配列長 | variant別パラメータ試験＋実System |
-| 末端/caps | N/C末端CYS・CYX、ACE/NME、複数chain | 末端電荷とcapsを誤判定しない | template照合/分類/結合検証 |
-| 非SMO膜 | 既存2LOP膜pipeline | 別構造でも中和・lipid接続・DAGを維持 | embed→topo→min→短いeq |
-| 膜組成 | 対応済みPOPC、POPC/POPE/CHL1混合、catalogで対応確認した荷電脂質 | リピド構成と総電荷を正しく含める | 小型膜System＋イオン収支 |
-| 膜表現/経路 | lipid21 modular/full、patch-tile/既存packmol-memgen、Pablo成功/PDBFile fallback | loader/表現を変えても同じ化学契約 | 既存経路の実依存smoke＋境界試験 |
-| 力場/水 | 対応済みff19SB/OPC、ff14SB/TIP3P | ff19SB/OPC専用の修正にしない | 小型System/solvationの両ペア |
-| 非タンパク質 | 既存の標準DNA/RNA、GLYCAM糖タンパク、リン酸化、荷電ligand/標準ionのpipeline | 別名対応でligandやglycanをproteinと誤分類しない | 既存pipeline＋分類試験 |
-| 中和意図 | 正/負/0電荷、保持ionあり/なし、salt=0、neutralization無効、explicit/implicit/vacuum | 全系への強制中性化やイオン二重計上をしない | 条件表テスト＋代表実System |
-| ID・入力形式 | 複数chain、番号の重複、insertion code、PDB/mmCIF、未指定/空/重複/競合ペア | 相手を取り違えず、不明な要求は説明可能に失敗 | resolver/CLI/System試験 |
-| 実行設定 | HMRあり/なし、対応するconstraint設定 | 質量変更と結合検証を混同しない | System/短いrestart smoke |
+| S–S positive case | tests/data/disulfide_bpti.pdb (BPTI) | Numbering different from SMO, 3 correct S–S pairs | Detection/plan/System build + non-membrane solv→topo→min→short eq |
+| No S–S | Existing small CYS-containing reduced-state fixture, non-SMO membrane fixture without S–S | Do not add bonds automatically; keep CYS/HG | Working-case diff comparison + System build |
+| Metal coordination | metal_site_cys4.pdb, existing metal pipeline | Do not break metal coordination even with close SGs; keep CYM | Metal guard + System/pipeline, small handoff test to membrane |
+| Protonation | Small fixture containing HID/HIE/HIP, ASH/GLH, LYN, CYM | H pattern, template, charge, sequence length | Per-variant parameter tests + actual System |
+| Termini/caps | N/C-terminal CYS/CYX, ACE/NME, multiple chains | Do not misjudge terminal charges and caps | Template matching/classification/bond validation |
+| Non-SMO membrane | Existing 2LOP membrane pipeline | Keep neutralization, lipid connectivity, and the DAG for a different structure | embed→topo→min→short eq |
+| Membrane composition | Supported POPC, POPC/POPE/CHL1 mixture, charged lipids confirmed as supported in the catalog | Correctly include lipid composition and total charge | Small membrane System + ion balance |
+| Membrane representation/path | lipid21 modular/full, patch-tile/existing packmol-memgen, Pablo success/PDBFile fallback | Same chemical contract even when the loader/representation changes | Real-dependency smoke of existing paths + boundary tests |
+| Force field/water | Supported ff19SB/OPC, ff14SB/TIP3P | Do not make it an ff19SB/OPC-only fix | Small System/solvation for both pairs |
+| Non-protein | Existing pipelines for standard DNA/RNA, GLYCAM glycoproteins, phosphorylation, charged ligands/standard ions | Alias support does not misclassify ligands or glycans as protein | Existing pipelines + classification tests |
+| Neutralization intent | Positive/negative/zero charge, with/without retained ions, salt=0, neutralization disabled, explicit/implicit/vacuum | No forced neutralization of the whole system or double counting of ions | Condition-table tests + representative actual Systems |
+| IDs/input formats | Multiple chains, duplicated numbering, insertion codes, PDB/mmCIF, unspecified/empty/duplicate/conflicting pairs | Do not mix up partners; unknown requests fail explainably | Resolver/CLI/System tests |
+| Run settings | With/without HMR, the corresponding constraint settings | Do not confuse mass changes with bond validation | System/short restart smoke |
 
-既存の `test_pipeline_*`、`test_disulfide_metal_guard.py`、
-`test_disulfide_insertion_codes.py`、`test_amber_variant_restore.py`、
-`test_lipid21_xml_selection.py`、`test_solvation_server.py`、`test_chain_selection.py` を再利用・拡張する。
-表中の「対応済み」は現行catalog/既存試験で確認してfixture化し、今回の修正に合わせて
-新しい科学的対応範囲を増やすことはしない。
+Reuse and extend the existing `test_pipeline_*`, `test_disulfide_metal_guard.py`,
+`test_disulfide_insertion_codes.py`, `test_amber_variant_restore.py`,
+`test_lipid21_xml_selection.py`, `test_solvation_server.py`, and `test_chain_selection.py`.
+"Supported" in the table means confirmed with the current catalog/existing tests and turned into fixtures; do not extend
+the scientific scope of support to suit this fix.
 
-### IDや表現を変えても答えが変わらないことを検証する
+### Verify that answers do not change when IDs or representations change
 
-固定seedで変形したfixtureを作り、元との対応を使って以下を確かめる。
+Build deformed fixtures with a fixed seed and, using the mapping to the original, check the following.
 
-- chain名変更、residue番号のオフセット、atom/chainの並べ替えでも、結合相手と電荷が不変。
-- 同じ入力に脂質/水/ionを追加し、蛋白質とchain/resnumが衝突しても、対象を取り違えない。
-- 全体の適切な剛体回転・並進やorientation処理を経ても、計画の意味が不変。
-- 同じ化学状態の正当な別名/PDB round-tripでは、残基の存在と化学的意味が不変。
-  HIP↔HIDやCYX↔CYSのような実際の化学状態変更まで「同じ」とは扱わない。
-- 同じ計画の再適用で結合を重複追加しない。
-- ユーザの結合指定が部分指定か完全指定かを既存契約で区別し、
-  単純な「総本数=指定数」だけで正当な既存結合を拒否しない。
-  要求ペアの一致と、既存の追加ペアの正当性を別々に評価する。
+- Bond partners and charges are unchanged under chain renaming, residue-number offsets, and reordering of atoms/chains.
+- Adding lipid/water/ions to the same input does not mix up targets even when their chain/resnum collide with the protein's.
+- The meaning of the plan is unchanged after a proper global rigid-body rotation/translation or orientation processing.
+- Under legitimate aliases of the same chemical state or a PDB round-trip, residue presence and chemical meaning are unchanged.
+  Actual chemical-state changes such as HIP↔HID or CYX↔CYS are not treated as "the same".
+- Reapplying the same plan does not add duplicate bonds.
+- Distinguish whether the user's bond specification is partial or complete according to the existing contract,
+  and do not reject legitimate existing bonds merely by a simple "total count = specified count".
+  Evaluate the match of the requested pairs and the legitimacy of existing additional pairs separately.
 
-### 実行順とリリースゲート
+### Execution order and release gates
 
-1. **実装前**に既存正常系のbaselineと非SMOのfixture一覧・期待値・許容誤差を固定する。
-   代表例の選定理由は変更した境界の被覆とし、修正後に通った系だけを選ばない。
-2. 各実装単位で小型fixtureと既存テストを実行する。
-   変更対象と無関係な「期待値の書き換え」で退行を隠さない。
-3. 実依存環境で行列の構築/pipeline試験を実行する。
-   ネットワーク依存の構造は事前取得してhashを固定する。
-   依存不足によるskipは合格と数えず、必要な環境で実行してから次へ進む。
-4. BPTI系と非SMO膜系（既存2LOP fixture）の短いmin/eqを必須とする。
-   explicit系の短いeqは原則10 ps NVT＋20 ps NPTとし、対応するforce field、水、HMR、
-   restraint条件を実行前に固定する。短時間での密度収束は要求せず、
-   実行・restart・化学的保存性の確認に使う。
-5. 非SMOの必須検査が通った後に、固定SMOの2.1 ns平衡化試験を実行する。
-6. リリースSIF単体でも、SMOの固定対照に加え、非SMOのS–S正例・金属負例・
-   inspection CLI・別の力場/水のsmokeを実行し、overlayとの取り違えを排除する。
-7. **SMOだけ成功ならリリース不可**。全必須ケースのpass/fail/skip、baselineとの差分、
-   変更理由を表で公開する。新しい非SMO退行があれば原因修正まで完了扱いにしない。
+1. **Before implementation**, fix the baseline of existing working cases and the list of non-SMO fixtures, expected values, and tolerances.
+   Choose representative cases for coverage of the changed boundaries, and do not pick only systems that passed after the fix.
+2. Run small fixtures and existing tests for each implementation unit.
+   Do not hide regressions by "rewriting expected values" unrelated to what was changed.
+3. Run the matrix's build/pipeline tests in a real-dependency environment.
+   Fetch network-dependent structures in advance and pin their hashes.
+   Do not count skips due to missing dependencies as passes; run them in the required environment before moving on.
+4. Short min/eq for the BPTI system and the non-SMO membrane system (existing 2LOP fixture) are required.
+   A short eq for explicit systems is in principle 10 ps NVT + 20 ps NPT, with the corresponding force field, water, HMR, and
+   restraint conditions fixed before running. Density convergence in that short time is not required;
+   it is used to check execution, restart, and chemical preservation.
+5. After the required non-SMO checks pass, run the 2.1 ns equilibration test on the fixed SMO system.
+6. On the release SIF alone as well, in addition to the fixed SMO control, run the non-SMO S–S positive case, the metal negative case,
+   the inspection CLI, and smoke tests with another force field/water, to rule out confusion with the overlay.
+7. **If only SMO succeeds, the release is not allowed.** Publish a table of pass/fail/skip for every required case, the differences from the baseline,
+   and the reasons for changes. If there is any new non-SMO regression, do not treat the work as complete until the cause is fixed.
 
-SMOの2.1 ns試験の資源計画と、追加する非SMO試験の資源計画は別に積算する。
-すべての系で長時間MDを走らせるのではなく、変更の影響を検出できる試験深度を選ぶ。
+Estimate the resource plan for the SMO 2.1 ns test and the resource plan for the added non-SMO tests separately.
+Rather than running long MD on every system, choose test depths that can detect the effects of the change.

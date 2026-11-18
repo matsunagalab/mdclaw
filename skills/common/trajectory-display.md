@@ -90,7 +90,7 @@ PBC correction is unavailable rather than guessing a box or claiming success.
 For diffusion, transport, membrane motion, or unwrapped-path requests, preserve
 that requested coordinate convention instead of imposing an overview image.
 
-Only when the user asks to align/superpose/remove tumbling (「重ねて」「揃えて」),
+Only when the user asks to align/superpose/remove tumbling ("overlay them", "align them"),
 fit after PBC correction. Default to a least-squares fit of `protein and backbone`
 to an iteratively refined average; use a user-specified domain or reference when
 given. Validate the atom selection. Apply the same rigid transform to all retained

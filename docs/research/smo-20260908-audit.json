@@ -2,7 +2,7 @@
   "upstream_main": "fce3dbcd14d0e4ab5e6c84a8275b5801580a2213",
   "user_checkout_head": "1689f13079920480eb87c08258cc63a004565c55",
   "runtime": {
-    "sif": "/data1/rkp00079/mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-6f171d2f0fa5.sif",
+    "sif": "/data1/$PROJECT/mdclaw-rikyu-arm64-cuda130-cufft121-fusefix-6f171d2f0fa5.sif",
     "mdclaw_version": "0.6.8",
     "openff_pablo_version": "0.2.2",
     "python_files_compared": 141,

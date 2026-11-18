@@ -220,7 +220,7 @@ This repo's actual default is **ff19SB + OPC** and the guardrail
 rejects mixing them with the legacy water model. Trust the skill guidance,
 not your prior knowledge.
 
-**Common chain/ligand failure mode**: treating "chain A ligandあり" as
+**Common chain/ligand failure mode**: treating "chain A with its ligand" as
 `--select-chains A` only. Use `inspect_molecules.associated_ligand_candidates`
 or the `associated_ligands_require_selection` guardrail instead of inferring
 ligand label chains manually. When the requested ligand/cofactor is named by

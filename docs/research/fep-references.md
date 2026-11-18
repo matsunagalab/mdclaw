@@ -1,150 +1,150 @@
-# 1 点変異 ddG のための Hybrid-Topology FEP — 参考実装の調査と設計判断
+# Hybrid-Topology FEP for single-point-mutation ddG — survey of reference implementations and design decisions
 
-作成: 2026-09-18〜19（`mdclaw/fep/` 実装と同時に記録）
+Written: 2026-09-18 to 19 (recorded alongside the `mdclaw/fep/` implementation)
 
-MDClaw に「アミノ酸 1 点変異による折り畳み安定性 ddG」を alchemical FEP で求める
-機能を載せた。外部の FEP フレームワーク（Perses / OpenFE / pmx）には依存せず、
-OpenMM の標準 API だけで hybrid System を組む。本ページは参考にした実装・文献と、
-そこから取った／捨てた設計判断の記録。エージェント手順は `skills/md-fep/`、
-ツール契約は `docs/developer/tool-reference.md` の `fep/` 節。
+MDClaw gained a feature that computes the "folding-stability ddG of a single amino-acid point mutation" by alchemical FEP.
+It does not depend on external FEP frameworks (Perses / OpenFE / pmx);
+the hybrid System is assembled with the standard OpenMM API only. This page records the implementations and literature consulted,
+and the design decisions taken from or rejected from them. The agent procedure is in `skills/md-fep/`;
+the tool contract is in the `fep/` section of `docs/developer/tool-reference.md`.
 
-## 1. 参考にした実装
+## 1. Implementations consulted
 
-| 実装 | 何を参考にしたか | 取らなかった点 |
+| Implementation | What was taken from it | What was not adopted |
 |---|---|---|
-| **pmx** (Gapsys, Seeliger, de Groot; GROMACS 用 hybrid residue ライブラリ) | 単一残基 hybrid topology の考え方。ダミー原子の bonded 項は全 λ で full strength に保ち、folded / unfolded 両 leg で相殺させる。ダミー側鎖は事前モデル（ライブラリ）から置く。 | 非平衡スイッチング（Crooks / BAR）は v1 では採らず、平衡 λ 窓 + MBAR に限定。 |
-| **Perses** (Chodera lab; `HybridTopologyFactory`, `LambdaProtocol`) | 5 本の global parameter に分けた区分線形 λ プロトコル（電荷 off → 立体 swap → 電荷 on）。`NonbondedForce` の `addParticleParameterOffset` / `addExceptionParameterOffset` で core 原子の電荷・LJ・1-4 を線形補間。 | RJMC / 多重変異、`openmmtools` の `alchemy` 依存、REST 併用。Perses の core は MCS で広く取るが本実装は backbone + CB に限定（下記 §3）。 |
-| **OpenFE / feflow** | 端点検証（λ=0/1 で hybrid のエネルギーが元の System と一致することをテストで固定する）という品質基準。 | `gufe` オブジェクトモデル、Protocol/DAG 抽象。MDClaw の DAG がその役目を持つ。 |
-| **GROMACS free-energy code** (`sc-alpha`, `sc-power`, `couple-intramol`) | Beutler 型ソフトコア LJ。ダミー原子の非結合相互作用は off 端点で（ダミー同士も含めて）完全に消す、という GENESIS と共通の規約。 | `couple-intramol=no` 相当の「分子内ダミー–core 対を陽な排除に置き換える」処理は不要（電荷スケーリングと interaction group で自然に消える）。 |
-| **GENESIS** (`fep_topology = hybrid`, `single`/`dual` topology の説明) | ダミー原子と rest の LJ を soft-core、電荷を線形、ダミー–ダミー相互作用は off 端点で消す規約。λ の 5 成分（`lambljA/B`, `lambelA/B`, `lambbondA/B`）を独立に持つ発想。 | GENESIS は bonded 項も λ でスケールする（`lambbond`）。本実装はダミー bonded を全 λ で on にして相殺に任せる（pmx 流）。 |
-| **Beutler et al. 1994** (soft-core) | `U = λ·4ε(1/x² − 1/x), x = α(1−λ) + (r/σ)^6`（α=0.5）。 | — |
-| **pymbar 4** (Shirts & Chodera) | MBAR、`timeseries.detect_equilibration` / `subsample_correlated_data`、overlap 行列による窓間重なりの診断。 | — |
+| **pmx** (Gapsys, Seeliger, de Groot; hybrid residue library for GROMACS) | The idea of a single-residue hybrid topology. Dummy-atom bonded terms are kept at full strength at all λ and cancel between the folded / unfolded legs. Dummy side chains are placed from pre-built models (the library). | Nonequilibrium switching (Crooks / BAR) is not adopted in v1; limited to equilibrium λ windows + MBAR. |
+| **Perses** (Chodera lab; `HybridTopologyFactory`, `LambdaProtocol`) | A piecewise-linear λ protocol split into 5 global parameters (charges off → sterics swap → charges on). Linear interpolation of core-atom charges, LJ and 1-4 via `addParticleParameterOffset` / `addExceptionParameterOffset` of `NonbondedForce`. | RJMC / multiple mutations, the dependency on `openmmtools` `alchemy`, combination with REST. Perses takes a wide core by MCS, but this implementation restricts it to backbone + CB (§3 below). |
+| **OpenFE / feflow** | The quality criterion of endpoint validation (pinning down in tests that the hybrid energy at λ=0/1 matches the original System). | The `gufe` object model and the Protocol/DAG abstraction. MDClaw's DAG plays that role. |
+| **GROMACS free-energy code** (`sc-alpha`, `sc-power`, `couple-intramol`) | Beutler-type soft-core LJ. The convention, shared with GENESIS, that dummy-atom nonbonded interactions (including dummy–dummy) vanish completely at the off endpoint. | The equivalent of `couple-intramol=no`, "replace intramolecular dummy–core pairs with explicit exclusions", is unnecessary (they vanish naturally through charge scaling and interaction groups). |
+| **GENESIS** (`fep_topology = hybrid`, description of `single`/`dual` topology) | The convention that dummy-atom-to-rest LJ is soft-core, charges are linear, and dummy–dummy interactions vanish at the off endpoint. The idea of holding 5 independent λ components (`lambljA/B`, `lambelA/B`, `lambbondA/B`). | GENESIS also scales bonded terms with λ (`lambbond`). This implementation keeps dummy bonded terms on at all λ and relies on cancellation (the pmx way). |
+| **Beutler et al. 1994** (soft-core) | `U = λ·4ε(1/x² − 1/x), x = α(1−λ) + (r/σ)^6` (α=0.5). | — |
+| **pymbar 4** (Shirts & Chodera) | MBAR, `timeseries.detect_equilibration` / `subsample_correlated_data`, diagnosing inter-window overlap with the overlap matrix. | — |
 
-## 2. 全体設計（DAG）
+## 2. Overall design (DAG)
 
-新しいノード型は `fep` の 1 つだけ。hybrid topology 構築は `topo` ノードの一種
-(`build_hybrid_system`) として扱う。
+There is only one new node type, `fep`. Building the hybrid topology is treated as a kind of `topo` node
+(`build_hybrid_system`).
 
 ```
 source → prep_001 → solv → topo(build_hybrid_system) → min → eq → fep(×1..K) → analyze_001(analyze_fep) ─┐
            └→ prep_002(extract_tripeptide) → solv → topo(hybrid) → min → eq → fep → analyze_002 ───────────┴→ analyze_003(estimate_ddg)
-                                                                   ↑ fep → fep で延長
+                                                                   ↑ extended by fep → fep
 ```
 
-- `min` / `eq` は hybrid System をそのまま普通の topology として扱う。global
-  parameter の既定値が状態 A（wild type）なので、λ=0 で平衡化している。
-- `fep` ノードは窓ごとに eq 状態から短い局所平衡化 → サンプリングを行い、各
-  サンプルで **全窓** の reduced potential を評価して `u_kn` を残す（MBAR 直行）。
-- 折り畳み安定性 ddG の 2 leg は **1 つの job** に同居する。unfolded leg は
-  folded leg の `prep` から派生した `prep` 子ノード（`extract_tripeptide`、
-  `leg_role = unfolded`）で、source・前処理・プロトン化・`--mutation` を構造的に
-  共有する。ddG は 2 つの `analyze_fep` ノードを親に持つ `comparison` analyze
-  ノード（`estimate_ddg`）で、leg 間の設定一致（変異・λ プロトコル・力場・水・
-  HMR・T・P）を照合してから差を取る。job をまたぐ親参照は導入しない（2026-09-20
-  の設計判断: `read_node` の同 job 前提を崩さずに、既存の prep → prep 分岐と
-  comparison scope だけで表現できる）。
+- `min` / `eq` treat the hybrid System as an ordinary topology. The default values of the global
+  parameters are state A (wild type), so equilibration is at λ=0.
+- A `fep` node, for each window, runs a short local equilibration from the eq state → sampling, and at each
+  sample evaluates the reduced potential of **all windows**, keeping `u_kn` (straight into MBAR).
+- The 2 legs of a folding-stability ddG live together in **one job**. The unfolded leg is a
+  `prep` child node derived from the folded leg's `prep` (`extract_tripeptide`,
+  `leg_role = unfolded`), and structurally shares the source, preprocessing, protonation and `--mutation`.
+  The ddG is a `comparison` analyze node (`estimate_ddg`) whose parents are the 2 `analyze_fep` nodes;
+  it checks that the settings match between legs (mutation, λ protocol, force field, water,
+  HMR, T, P) before taking the difference. No cross-job parent references are introduced (design decision of 2026-09-20:
+  it can be expressed with only the existing prep → prep branching and the
+  comparison scope, without breaking `read_node`'s same-job assumption).
 
-比較した「pmx / Perses / GENESIS の典型フロー」はいずれも
-prep → hybrid 構築 → 溶媒和・力場 → 平衡化 → λ サンプリング → 推定 の一本道で、
-MDClaw の既存スパインに `fep` を挿すだけで表現できると判断した。
+The "typical flows of pmx / Perses / GENESIS" that were compared are all a single path,
+prep → hybrid construction → solvation and force field → equilibration → λ sampling → estimation, and we judged that
+they can be expressed by simply inserting `fep` into MDClaw's existing spine.
 
-## 3. Hybrid System の構築規則（`mdclaw/fep/hybrid.py`）
+## 3. Hybrid System construction rules (`mdclaw/fep/hybrid.py`)
 
-| 項目 | 規則 | 理由 |
+| Item | Rule | Reason |
 |---|---|---|
-| core 原子 | 変異残基の backbone (N, H, CA, HA, C, O) と CB、ならびに環境（残基外）の全原子 | MCS 的に側鎖を深く対応付けると sp3↔芳香環のような幾何の大変化を補間することになり収束が悪い。pmx も側鎖は原則ダミーで扱う。 |
-| ダミー配置 | unique_new 原子は変異残基の最後の A 原子の直後に挿入（A 原子の順序は保持） | `PDBFile` は残基の原子が連続していることを前提にする。`topology.pdb` と System の index を一致させる。 |
-| ダミー原子の PDB 名 | A 側と衝突しない名を `_unique_pdb_names` で付与 | LEU→PHE の CG など同名衝突の回避。真の対応は `hybrid_manifest.json`。 |
-| ダミー bonded | 全 λ で full strength（force group 1 / 2） | 両 leg で同一の項になり ddG で相殺。端点検証では group 0+3 と比較。 |
-| core bonded の差 | 同一なら 1 本、異なれば `Custom*Force` で `(1−fep_core)·E_A + fep_core·E_B` | `CustomCVForce` を全 bonded に使うと step ごとの inner-context コストが大きい。 |
-| CMAP (ff19SB) | 変異残基の CMAP のみ `CustomCVForce` で 2 つの `CMAPTorsionForce` を混合 | CMAP は残基型依存で per-term スケール不可。 |
-| 電荷 | ダミー: 基本電荷 0 + offset (`fep_elec_old`/`fep_elec_new` × q)。core: A→B を `fep_core` で線形。 | Perses と同じ。 |
-| LJ（ダミー） | `NonbondedForce` では ε=0、Beutler soft-core の `CustomNonbondedForce` を (ダミー × rest) interaction group で追加。old と new は互いに見えない。 | endpoint catastrophe 回避。 |
-| 1-4 exception | core–core: offset 補間。core–ダミー: 電荷は elec λ、ε は sterics λ でスケール。old–new: 0。 | 排除集合は全非結合 force で一致させる（CUDA の要件）。 |
-| 非対称 core exception | 片側の状態でのみ excluded / 1-4 な core 対は、直接 Coulomb の exception で通常対相互作用へ補間する（`asymmetric_core_exceptions` として警告） | この exception には PME の reciprocal 項が無いので、端点は erf 分だけ元 System とずれる。backbone+CB core では実質発生しない経路。 |
-| 分散補正 | 端点検証時は全 System で無効化。**既知の近似**: ダミーは `NonbondedForce` で ε=0、soft-core force は long-range correction 無しなので、変異側鎖分の LJ tail は全 λ で欠落する（ΔG から tail_B − tail_A が抜ける） | 側鎖数原子分で小さく、両 leg で同じ項なので ddG では相殺する。 |
-| `topology.pdb` の CONECT | hybrid 残基は WT の残基名を保つため、`PDBFile.writeFile` は追加原子の結合を CONECT に書かない（標準残基名は結合をテンプレートから推定する規約） | 物理は `system.xml` にあり影響はイメージング・可視化側のみ。既知の制限として `hybrid_topology` docstring に記載。 |
-| `topology.pdb` の残基名 | 端状態の `topology.pdb` を `PDBFile` で読むと HIE/CYX/ASH/GLH/LYN/WAT が HIS/CYS/ASP/GLU/LYS/HOH に正規化されるので、hybrid Topology を派生する前に `restore_topology_resnames_from_pdb`（原子順で名前を戻す）を両端状態にかける | 溶媒和済み `topology.pdb` では水が蛋白質と同じ chain・残基番号を使うため、残基キーによる復元（`restore_resnames_by_residue_key`）は全キーが曖昧で拒否される。原子順は `PDBFile` が保つので正確。 |
-| 窓の開始配置 | eq（λ=0）状態から始める窓は、その窓の λ で `LocalEnergyMinimizer` を短く（200 反復）かけてから平衡化する（`run_fep`） | eq 中 appearing 原子はゴーストで溶媒がその体積に入り込むため、λ≥0.75 の hard LJ で始めると重なりから non-finite になる。fep 親から継続する窓は不要。NaN は timestep 半減で 1 回再試行（`nan_retry`）。 |
-| ダミー緩和 | 構築後、appearing 原子だけを状態 B で最小化（他は質量 0、制約は剛い調和結合に置換） | HPacker/PDBFixer 由来の側鎖はそのままでは歪んでいることがある（GLY→PRO で 8×10⁴ kJ/mol）。 |
-| 電荷変化変異 | 変異体端状態の System で、変異部位から最も遠いバルク水 1 分子（|Δq| 個、最大 2）の O をイオンの (q, σ, ε) に、H（4 点水なら EP も）を電荷 0 に書き換えてから hybrid を組む（`fep/coion.py`, Chen et al. JCTC 2018 の co-alchemical ion）。環境原子の差分は `fep_core` の offset で線形補間、分子は構築時座標に調和拘束（k = 1000 kJ/mol/nm²、force group 4）。イオンのパラメータは系内の同符号 1 価イオンからコピー | PME の一様背景電荷による有限サイズ誤差は箱の大きさと中身（水の数密度、溶質の低誘電体積）に依存し、folded と unfolded の箱で違うので ddG で相殺しない。両端状態の箱電荷を同じにすれば誤差源そのものが無くなる。Rocklin 補正は APBS 依存と代表構造・誘電率の判断点が増えるので採らない。水 → イオンの自由エネルギーは両 leg で同じバルク環境なので相殺。端点検証は書き換え後の変異体 System と比べるのでイオン端もそのまま検証される。中間 λ では箱電荷は 0 でない（イオンは core 相、新側鎖の電荷は第 3 相）が、自由エネルギーは端状態だけで決まる。塩が無い・箱が小さい場合は未補正に落とさず拒否。 |
-| 端点検証 | λ=0 / λ=1 で hybrid（group 0+ダミー bonded+3）と元 System の差 ≤ 1 kJ/mol | OpenFE の品質基準。CUDA 単精度で 0.1 kJ/mol 程度の差は正常。 |
+| core atoms | The backbone (N, H, CA, HA, C, O) and CB of the mutated residue, plus all atoms of the environment (outside the residue) | Mapping side chains deeply, MCS-style, means interpolating large geometric changes such as sp3↔aromatic ring, and convergence is poor. pmx also treats side chains as dummies in principle. |
+| Dummy placement | unique_new atoms are inserted right after the last A atom of the mutated residue (the order of A atoms is preserved) | `PDBFile` assumes a residue's atoms are contiguous. Keeps the indices of `topology.pdb` and the System consistent. |
+| PDB names of dummy atoms | Names that do not collide with the A side are assigned by `_unique_pdb_names` | Avoids same-name collisions such as CG in LEU→PHE. The true mapping is in `hybrid_manifest.json`. |
+| Dummy bonded | Full strength at all λ (force groups 1 / 2) | They are identical terms in both legs and cancel in ddG. Endpoint validation compares against groups 0+3. |
+| core bonded differences | One term if identical; if different, `(1−fep_core)·E_A + fep_core·E_B` via `Custom*Force` | Using `CustomCVForce` for all bonded terms makes the per-step inner-context cost large. |
+| CMAP (ff19SB) | Only the mutated residue's CMAP mixes 2 `CMAPTorsionForce`s via `CustomCVForce` | CMAP depends on residue type and cannot be scaled per term. |
+| Charges | Dummies: base charge 0 + offset (`fep_elec_old`/`fep_elec_new` × q). core: A→B linear in `fep_core`. | Same as Perses. |
+| LJ (dummies) | ε=0 in `NonbondedForce`; a Beutler soft-core `CustomNonbondedForce` is added with a (dummy × rest) interaction group. old and new do not see each other. | Avoids the endpoint catastrophe. |
+| 1-4 exceptions | core–core: offset interpolation. core–dummy: charge scaled by elec λ, ε by sterics λ. old–new: 0. | The exclusion sets are made identical across all nonbonded forces (a CUDA requirement). |
+| Asymmetric core exceptions | A core pair that is excluded / 1-4 in only one state is interpolated to the ordinary pair interaction via a direct-Coulomb exception (warned as `asymmetric_core_exceptions`) | This exception has no PME reciprocal term, so the endpoint deviates from the original System by the erf part. A path that practically never occurs with a backbone+CB core. |
+| Dispersion correction | Disabled in all Systems during endpoint validation. **Known approximation**: dummies have ε=0 in `NonbondedForce`, and the soft-core force has no long-range correction, so the LJ tail of the mutated side chain is missing at all λ (tail_B − tail_A drops out of ΔG) | Small, being a few side-chain atoms, and the same term in both legs, so it cancels in ddG. |
+| CONECT in `topology.pdb` | The hybrid residue keeps the WT residue name, so `PDBFile.writeFile` does not write CONECT records for bonds of the added atoms (by the convention that bonds of standard residue names are inferred from templates) | The physics is in `system.xml`; only imaging and visualization are affected. Documented as a known limitation in the `hybrid_topology` docstring. |
+| Residue names in `topology.pdb` | Reading an endpoint `topology.pdb` with `PDBFile` normalizes HIE/CYX/ASH/GLH/LYN/WAT to HIS/CYS/ASP/GLU/LYS/HOH, so `restore_topology_resnames_from_pdb` (restores names by atom order) is applied to both endpoint states before deriving the hybrid Topology | In a solvated `topology.pdb`, water uses the same chain and residue numbers as the protein, so restoration by residue key (`restore_resnames_by_residue_key`) is refused because every key is ambiguous. `PDBFile` preserves atom order, so this is exact. |
+| Window starting configuration | A window starting from the eq (λ=0) state runs a short `LocalEnergyMinimizer` (200 iterations) at that window's λ before equilibration (`run_fep`) | During eq, appearing atoms are ghosts and solvent moves into their volume, so starting with hard LJ at λ≥0.75 goes non-finite from overlaps. Not needed for windows continuing from a fep parent. On NaN, one retry with the timestep halved (`nan_retry`). |
+| Dummy relaxation | After construction, only appearing atoms are minimized in state B (others have mass 0; constraints are replaced by stiff harmonic bonds) | Side chains from HPacker/PDBFixer can be distorted as-is (8×10⁴ kJ/mol for GLY→PRO). |
+| Charge-changing mutations | In the mutant endpoint System, the O of the bulk water molecule(s) farthest from the mutation site (|Δq| of them, at most 2) is rewritten to the ion's (q, σ, ε), and the H (and EP for 4-point water) to charge 0, before the hybrid is assembled (`fep/coion.py`, the co-alchemical ion of Chen et al. JCTC 2018). Differences in environment atoms are interpolated linearly by the `fep_core` offset, and the molecule is harmonically restrained to its construction-time coordinates (k = 1000 kJ/mol/nm², force group 4). The ion parameters are copied from a same-sign monovalent ion in the system | The finite-size error from PME's uniform background charge depends on the box size and contents (water number density, low-dielectric solute volume), which differ between the folded and unfolded boxes, so it does not cancel in ddG. Making the box charge the same in both endpoint states removes the error source itself. The Rocklin correction is not adopted because it adds an APBS dependency and judgment points for the representative structure and dielectric constant. The water → ion free energy cancels because both legs have the same bulk environment. Endpoint validation compares against the rewritten mutant System, so the ion end is validated as is. At intermediate λ the box charge is not 0 (the ion is in the core phase, the new side-chain charges in the third phase), but the free energy is determined by the endpoint states alone. If there is no salt or the box is too small, it is refused rather than falling back to uncorrected. |
+| Endpoint validation | At λ=0 / λ=1, the difference between the hybrid (group 0 + dummy bonded + 3) and the original System ≤ 1 kJ/mol | OpenFE's quality criterion. Differences around 0.1 kJ/mol in CUDA single precision are normal. |
 
-## 4. λ プロトコル（`mdclaw/fep/protocol.py`）
+## 4. λ protocol (`mdclaw/fep/protocol.py`)
 
-スカラー λ∈[0,1] を 5 成分に区分線形で写す。境界は既定で λ=0.25 / 0.75
-（`build_hybrid_system --phase-bounds p1,p2` で変更可。`fep_protocol.json` の
-`phase_bounds` に記録され、`analyze_fep` の位相分解と `protocols_equivalent` は
-その値を読む。電荷変化変異では decharge 相を長く取る用途）。
+A scalar λ∈[0,1] is mapped piecewise-linearly onto 5 components. The boundaries default to λ=0.25 / 0.75
+(changeable with `build_hybrid_system --phase-bounds p1,p2`; recorded in `phase_bounds` of `fep_protocol.json`,
+and the phase decomposition of `analyze_fep` and `protocols_equivalent` read that value.
+Used to lengthen the decharge phase for charge-changing mutations).
 
-| 区間 | 動く成分 |
+| Interval | Components that move |
 |---|---|
-| 0 → 0.25 | `fep_elec_old`: 1 → 0（旧側鎖の電荷 off） |
+| 0 → 0.25 | `fep_elec_old`: 1 → 0 (old side-chain charges off) |
 | 0.25 → 0.75 | `fep_sterics_old`: 1 → 0, `fep_sterics_new`: 0 → 1, `fep_core`: 0 → 1 |
-| 0.75 → 1 | `fep_elec_new`: 0 → 1（新側鎖の電荷 on） |
+| 0.75 → 1 | `fep_elec_new`: 0 → 1 (new side-chain charges on) |
 
-既定は等間隔 21 窓。`--lambda-schedule` は 0 から 1 への厳密増加なスカラー λ 列のみ（CSV / JSON）。
-成分 dict 列は受け付けない: 隣接 overlap と位相分解が「index 順 = λ 順」を前提にするため、
-非単調・非スカラーな窓は `fep_protocol_invalid` で拒否する。
-中間窓で系の総電荷が非整数になりうる点は PME の中和背景に任せ、有限サイズ補正は
-行わない（`build_hybrid_system` が警告を出す）。
+The default is 21 evenly spaced windows. `--lambda-schedule` accepts only a strictly increasing sequence of scalar λ from 0 to 1 (CSV / JSON).
+Sequences of component dicts are not accepted: adjacent overlap and phase decomposition assume "index order = λ order",
+so non-monotonic or non-scalar windows are refused with `fep_protocol_invalid`.
+That the system's total charge can be non-integer in intermediate windows is left to PME's neutralizing background; no finite-size correction
+is applied (`build_hybrid_system` emits a warning).
 
-## 5. 変異体側鎖のモデリング（`mdclaw/fep/mutant.py`）
+## 5. Mutant side-chain modeling (`mdclaw/fep/mutant.py`)
 
-HPacker（既存 `sidechain_packer.py` 経由）を既定、PDBFixer `applyMutations` を
-フォールバックとする。変異残基だけを取り出して WT PDB のコピーに **テキストで**
-splice し、他の原子は byte-identical に保つ（serial 再採番、CONECT 再マップ）。
-これにより WT / MUT の `build_amber_system` 出力が変異残基以外で一致し、
-`map_mutation` の環境一致チェックが通る。
+HPacker (via the existing `sidechain_packer.py`) is the default, with PDBFixer `applyMutations` as the
+fallback. Only the mutated residue is extracted and spliced **as text** into a copy of the WT PDB,
+keeping all other atoms byte-identical (serials renumbered, CONECT remapped).
+This makes the WT / MUT `build_amber_system` outputs identical outside the mutated residue,
+so the environment-match check of `map_mutation` passes.
 
-## 6. 未折り畳み状態モデル（`mdclaw/fep/tripeptide.py`）
+## 6. Unfolded-state model (`mdclaw/fep/tripeptide.py`)
 
-pmx の折り畳み安定性プロトコルに倣い、capped tripeptide (ACE-X(i−1)-X(i)-X(i+1)-NME)
-を folded leg の prep ノードの `merged_pdb` から切り出す `prep` ステージツール。
-chain ID と残基番号を保つので同じ `--mutation` 文字列がそのまま使える（`merge_structures`
-は chain を A から振り直すので使わず、1 成分の `chain_identity_map` を自前で書く）。
-キャップ付与とキャップ水素の補完は `clean_protein`（`cap_termini`、
-`preserve_input_protonation=True`、既定 `protonation_method="no-prediction"`）に
-任せ、親 prep のプロトン化変異名（ASH / GLH / HID …）を両 leg で共有する。
+Following pmx's folding-stability protocol, a `prep`-stage tool that cuts a capped tripeptide (ACE-X(i−1)-X(i)-X(i+1)-NME)
+out of the `merged_pdb` of the folded leg's prep node.
+It preserves chain IDs and residue numbers, so the same `--mutation` string works as is (`merge_structures`
+reassigns chains starting from A, so it is not used; a 1-component `chain_identity_map` is written directly).
+Capping and completing cap hydrogens are left to `clean_protein` (`cap_termini`,
+`preserve_input_protonation=True`, default `protonation_method="no-prediction"`),
+and the parent prep's protonation variant names (ASH / GLH / HID …) are shared by both legs.
 
-## 7. 解析（`mdclaw/fep/analysis.py`）
+## 7. Analysis (`mdclaw/fep/analysis.py`)
 
-- 各窓の segment（`fep → fep` 延長）を連結し、segment ごとに先頭 10 % を捨てる。
-- 各窓自身の reduced potential 系列で `detect_equilibration` → 統計非効率で
-  subsample。
-- MBAR で `Δf`、overlap 行列。隣接 overlap < 0.03 を警告。
-- 位相ごとの寄与（decharge / sterics swap / recharge）を報告。
+- Concatenate each window's segments (`fep → fep` extensions), discarding the first 10 % of each segment.
+- `detect_equilibration` on each window's own reduced-potential series → subsample by the statistical
+  inefficiency.
+- `Δf` and the overlap matrix by MBAR. Warn on adjacent overlap < 0.03.
+- Report the per-phase contributions (decharge / sterics swap / recharge).
 
-## 8. v1 の範囲外（意図的に外したもの）
+## 8. Out of scope for v1 (intentionally excluded)
 
-- 非平衡スイッチング（pmx 流 Crooks/BAR）。
-- Replica exchange / REST 併用（Perses）。
-- 多重変異、挿入・欠失、非標準残基、リガンドの変換。
-- 電荷変化変異の Rocklin 型有限サイズ補正（PB 計算を伴う事後補正）。代わりに
-  co-alchemical ion を入れた（§3 の表、2026-09-20）。
-- 結合親和性 ddG の skill 化。`estimate_ddg --cycle binding`（complex / apo、
-  `analysis_subjects` で leg を指名）は 2026-09-20 に入ったが、apo leg を派生させる
-  prep ツール（リガンド除去 + `leg_role = apo`）と手順書はまだ無い。
-- 位置拘束付きサンプリングは `run_fep --restraint-atoms`（2026-09-20）で可能に
-  なった: leg 内の全窓で同一の調和拘束（eq 座標基準）で、λ 差の reduced potential
-  からは相殺するがアンサンブルは変える。折り畳み側だけに掛ける運用を skill に記載。
-- 端状態ビルダーは `--endstate-builder openmm --forcefield-xml …` で
-  `build_openmm_system` も選べる（2026-09-20）。真空 ACE-X-NME で端点検証を確認。
-  溶媒和系（CRYST1 を書いて渡す経路）は co-alchemical ion の検証で初めて実走し、
-  `build_openmm_system` が溶媒の int の chain id で `PDBFile.writeFile` に落ちる
-  不具合を直した（同日）。
+- Nonequilibrium switching (pmx-style Crooks/BAR).
+- Replica exchange / combination with REST (Perses).
+- Multiple mutations, insertions/deletions, nonstandard residues, ligand transformations.
+- Rocklin-type finite-size correction for charge-changing mutations (a post-hoc correction involving a PB calculation). Instead,
+  a co-alchemical ion was introduced (the §3 table, 2026-09-20).
+- A skill for binding-affinity ddG. `estimate_ddg --cycle binding` (complex / apo,
+  legs named via `analysis_subjects`) landed on 2026-09-20, but there is not yet a prep tool that derives the apo leg
+  (ligand removal + `leg_role = apo`) nor a procedure.
+- Sampling with positional restraints became possible with `run_fep --restraint-atoms` (2026-09-20):
+  the same harmonic restraint (referenced to eq coordinates) in all windows within a leg; it cancels out of the λ-difference
+  reduced potentials but does change the ensemble. The practice of applying it only to the folded side is described in the skill.
+- The endpoint builder can also select `build_openmm_system` with `--endstate-builder openmm --forcefield-xml …`
+  (2026-09-20). Endpoint validation confirmed on vacuum ACE-X-NME.
+  The solvated-system path (writing CRYST1 and passing it) was first actually run during the co-alchemical ion validation,
+  which fixed a bug where `build_openmm_system` crashed in `PDBFile.writeFile` on the solvent's int chain id
+  (same day).
 
-## 9. 検証状況
+## 9. Validation status
 
-- ACE-X-NME（真空, amber14, Reference platform）で LEU→ALA, GLY→PRO, LEU→PHE
-  ほか: 端点差 < 1e-3 kJ/mol（`tests/test_fep.py::TestHybridVacuum`）。
-- 20 残基ペプチド A:W6A、ff19SB/OPC、8.5k 原子: 端点差 0.12 kJ/mol（CUDA）、
-  両 leg 21 窓 × 0.2–0.25 ns で ddG = +4.67 ± 0.49 kcal/mol（`docs/memo.md`）。
-  W6A は large→small で appearing 原子が HB1 一個のため、窓開始配置の問題は
-  この系では顕在化しない。
-- 真空 ACE-LEU-NME → ALA の 3 窓で `run_fep` → `fep_windows.json` → `analyze_fep`
-  を直接モードで通す end-to-end（相対パス、部分索引からの回復、segment 連結、
-  ディレクトリ移動後の再解析; `tests/test_fep.py::TestVacuumPipeline`）。
-- 調和振動子トイ問題で MBAR が解析解を再現（`tests/test_fep.py::TestAnalysis`）。
-- small→large（A:A6W、溶媒和 tripeptide）の smoke は `docs/memo.md` の該当日の
-  エントリを参照。
+- ACE-X-NME (vacuum, amber14, Reference platform), LEU→ALA, GLY→PRO, LEU→PHE
+  and others: endpoint difference < 1e-3 kJ/mol (`tests/test_fep.py::TestHybridVacuum`).
+- 20-residue peptide A:W6A, ff19SB/OPC, 8.5k atoms: endpoint difference 0.12 kJ/mol (CUDA);
+  both legs 21 windows × 0.2–0.25 ns give ddG = +4.67 ± 0.49 kcal/mol (`docs/memo.md`).
+  W6A is large→small and its only appearing atom is HB1, so the window-starting-configuration problem
+  does not surface in this system.
+- End-to-end in direct mode through `run_fep` → `fep_windows.json` → `analyze_fep` with 3 windows of vacuum ACE-LEU-NME → ALA
+  (relative paths, recovery from a partial index, segment concatenation,
+  re-analysis after moving the directory; `tests/test_fep.py::TestVacuumPipeline`).
+- MBAR reproduces the analytical solution on a harmonic-oscillator toy problem (`tests/test_fep.py::TestAnalysis`).
+- For the small→large smoke (A:A6W, solvated tripeptide), see the entry for that date in
+  `docs/memo.md`.

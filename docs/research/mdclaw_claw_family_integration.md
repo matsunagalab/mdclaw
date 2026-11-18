@@ -1,106 +1,106 @@
-# MDClaw × ScienceClaw × OpenClaw 連携可能性
+# MDClaw × ScienceClaw × OpenClaw integration possibilities
 
-作成日: 2026-05-14
+Date written: 2026-05-14
 
-この doc は、MDClaw を「Claw 系列のエージェント群」の中でどう位置付けるか、そして具体的にどの境界で連携できるかを 3 つに絞って記録する。ScienceClaw 単独との詳細な連携計画は既存の
-[`mdclaw_scienceclaw_integration_plan.md`](./mdclaw_scienceclaw_integration_plan.md) にあり、本 doc はその拡張として OpenClaw を含めた三者連携を扱う。
+This doc records how MDClaw is positioned within the "Claw family of agents", and, narrowed to three, the concrete boundaries at which they can integrate. The detailed integration plan with ScienceClaw alone is in the existing
+[`mdclaw_scienceclaw_integration_plan.md`](./mdclaw_scienceclaw_integration_plan.md); this doc extends it to cover three-way integration including OpenClaw.
 
-## 前提と用語
+## Assumptions and terminology
 
-各エージェントの想定スコープを次のように固定して議論する。MDClaw 以外は本リポジトリ外で開発されている前提で、スコープが確定したら本 doc を更新する。
+The discussion fixes each agent's assumed scope as follows. Everything other than MDClaw is assumed to be developed outside this repository; this doc will be updated once the scopes are settled.
 
-| エージェント | 想定スコープ |
+| Agent | Assumed scope |
 |---|---|
-| **MDClaw** | 原子レベル MD の study / execution / evidence。本リポジトリで管理。 |
-| **ScienceClaw** | 細胞・経路スケールの推論、仮説生成、cell/pathway model の更新。MDClaw を atomistic evidence provider として呼ぶ側。 |
-| **OpenClaw** | 公的データベース・実験データの統合エージェント。PDB / UniProt / AlphaFold DB / ChEMBL / cryo-EM EMDB / HDX-MS / NMR / オミクスといった外部リソースを橋渡しする層。 |
+| **MDClaw** | Study / execution / evidence for atomic-level MD. Managed in this repository. |
+| **ScienceClaw** | Cell- and pathway-scale reasoning, hypothesis generation, updating cell/pathway models. The side that calls MDClaw as an atomistic evidence provider. |
+| **OpenClaw** | An agent that integrates public databases and experimental data. A layer that bridges external resources such as PDB / UniProt / AlphaFold DB / ChEMBL / cryo-EM EMDB / HDX-MS / NMR / omics. |
 
-共通方針として、各エージェントの内部 DAG / 実装詳細は外に出さない。境界に置くのは次の 4 種の contract のみ:
+As a common policy, no agent exposes its internal DAG / implementation details. Only the following 4 kinds of contract sit at the boundary:
 
-- request（何を問うか）
-- evidence report（何が分かったか、型付き metrics + 自然言語 summary + confidence + limitations）
-- artifact reference（再利用可能な成果物のポインタ）
-- provenance（どこから来たか）
+- request (what is being asked)
+- evidence report (what was learned; typed metrics + natural-language summary + confidence + limitations)
+- artifact reference (pointer to a reusable product)
+- provenance (where it came from)
 
-これは既存 ScienceClaw 連携 doc と同じ原則を Claw 系列全体に拡張したもの。
+This extends the same principle as the existing ScienceClaw integration doc to the whole Claw family.
 
-## 連携可能性 3 つ
+## Three integration possibilities
 
-### 1. Claw 共通の request / evidence schema
+### 1. A Claw-wide request / evidence schema
 
-**何**: MDClaw が外部に出している `evidence_type` + `summary` + `effect` + `metrics` + `confidence` + `limitations` + `provenance` の contract を、ScienceClaw / OpenClaw と共有する一段抽象化したスキーマに昇格させる。
+**What**: Promote the `evidence_type` + `summary` + `effect` + `metrics` + `confidence` + `limitations` + `provenance` contract that MDClaw exposes into a schema, one level more abstract, shared with ScienceClaw / OpenClaw.
 
-**なぜ**: ScienceClaw が MDClaw と OpenClaw の両方から evidence を受け取り、cell/pathway model のパラメータ更新に使うとき、両者の出力が同じ形をしていれば ranking / threshold 判定 / 仮説更新ロジックを一本化できる。逆に MDClaw 専用の schema のままだと、ScienceClaw 側に MDClaw 専用 adapter を増殖させることになる。
+**Why**: When ScienceClaw receives evidence from both MDClaw and OpenClaw and uses it to update cell/pathway model parameters, if both outputs have the same shape, the ranking / threshold / hypothesis-update logic can be unified. Conversely, if the schema stays MDClaw-specific, MDClaw-specific adapters will proliferate on the ScienceClaw side.
 
-**境界の設計**:
+**Boundary design**:
 
-- 共通 envelope: `evidence_type`, `target`, `question`, `summary`, `effect`, `confidence`, `metrics`, `limitations`, `provenance`
-- payload 部 (`metrics`, `effect`, `model_parameter_hints`) は evidence_type ごとにバリエーション
-- evidence_type は `md_*` / `experimental_*` / `database_lookup_*` 等の prefix で source を識別
+- Common envelope: `evidence_type`, `target`, `question`, `summary`, `effect`, `confidence`, `metrics`, `limitations`, `provenance`
+- The payload part (`metrics`, `effect`, `model_parameter_hints`) varies per evidence_type
+- evidence_type identifies the source by a prefix such as `md_*` / `experimental_*` / `database_lookup_*`
 
-**最初の一歩**: 既存 `mdclaw/evidence_schema.py`（提案中）を `evidence_type` prefix を持つ形に切り、`evidence_type: "md_mutation_stability"` のような命名に揃える。ScienceClaw / OpenClaw 側がそれを read-only で参照できる JSON Schema ファイルを `docs/research/schemas/` に export する。
+**First step**: Cut the existing `mdclaw/evidence_schema.py` (proposed) into a form with an `evidence_type` prefix, aligning names like `evidence_type: "md_mutation_stability"`. Export a JSON Schema file to `docs/research/schemas/` that the ScienceClaw / OpenClaw side can reference read-only.
 
-**MDClaw に閉じない設計判断**: schema の version 管理ポリシー（破壊的変更時の migration ルール）を Claw 系列で共有する。MDClaw だけで決めない。
+**Design decision that is not MDClaw's alone**: Share the schema versioning policy (migration rules for breaking changes) across the Claw family. Do not decide it within MDClaw alone.
 
-### 2. OpenClaw → MDClaw の構造ソースバイパス
+### 2. OpenClaw → MDClaw structure-source bypass
 
-**何**: OpenClaw が外部リソース（PDB、AlphaFold DB、UniProt、Boltz-2 等の生成モデル、cryo-EM map、homology model）から候補構造を集めてきて、MDClaw の `source` node が受け取る *source bundle* の形に直接渡す。
+**What**: OpenClaw gathers candidate structures from external resources (PDB, AlphaFold DB, UniProt, generative models such as Boltz-2, cryo-EM maps, homology models) and passes them directly in the shape of the *source bundle* that MDClaw's `source` node accepts.
 
-**なぜ**: MDClaw の source node は既に「複数の候補構造を `candidates/candidate_*` に正規化し、`source_bundle.json` に rank / provenance / confidence を記録する」設計（schema v3）になっており、OpenClaw が集めた構造をここに流し込むのが最も自然な接続点。MDClaw 側で個別データソースを直接 fetch するロジックを増やさずに済む。
+**Why**: MDClaw's source node is already designed (schema v3) to "normalize multiple candidate structures into `candidates/candidate_*` and record rank / provenance / confidence in `source_bundle.json`", so pouring the structures OpenClaw gathered into it is the most natural connection point. It avoids adding logic on the MDClaw side to fetch individual data sources directly.
 
-**境界の設計**:
+**Boundary design**:
 
-- OpenClaw は MDClaw に `source_bundle.json` 相当の JSON + 候補構造ファイル群を渡す
-- 必須フィールド: `candidates[*].source_type` (`pdb` / `alphafold` / `boltz2` / `cryoem` / `homology` 等), `candidates[*].rank`, `candidates[*].confidence_metric`, `candidates[*].provenance`
-- 任意フィールド: `candidates[*].experimental_constraints`（cryo-EM map ファイルへの参照、HDX-MS protection factor、NMR chemical shift 等）
-- MDClaw 側はそれをそのまま `source` node の artifact として書き込み、以降の prep 以降が同じ contract で動く
+- OpenClaw passes MDClaw a JSON equivalent to `source_bundle.json` + a set of candidate structure files
+- Required fields: `candidates[*].source_type` (`pdb` / `alphafold` / `boltz2` / `cryoem` / `homology` etc.), `candidates[*].rank`, `candidates[*].confidence_metric`, `candidates[*].provenance`
+- Optional fields: `candidates[*].experimental_constraints` (references to cryo-EM map files, HDX-MS protection factors, NMR chemical shifts, etc.)
+- The MDClaw side writes it as is as the `source` node's artifact, and prep and everything after it run on the same contract
 
-**最初の一歩**: `list_source_candidates` の出力 schema をそのまま「input contract」として確定し、`docs/research/schemas/source_bundle.schema.json` を公開する。OpenClaw 側が write してくれれば MDClaw は何も変えずに受け取れる、という関係にする。
+**First step**: Settle the output schema of `list_source_candidates` as is as the "input contract", and publish `docs/research/schemas/source_bundle.schema.json`. Make the relationship such that if the OpenClaw side writes it, MDClaw can receive it without changing anything.
 
-**副次的な利点**: 実験データを `experimental_constraints` 経由で流し込めるので、flexible fitting や restrained MD への自然な拡張点になる（既存 `flexible_fit/` の知見が活きる）。
+**Side benefit**: Experimental data can be fed in via `experimental_constraints`, so this becomes a natural extension point toward flexible fitting and restrained MD (the knowledge in the existing `flexible_fit/` pays off).
 
-### 3. 三者クローズドループ: 仮説 → 原子論 → 実験突き合わせ
+### 3. Three-way closed loop: hypothesis → atomistic → experimental cross-check
 
-**何**: ScienceClaw が仮説を出し、MDClaw が原子論シミュレーションで evidence を作り、OpenClaw が公的データベース・実験データで突き合わせる、というクローズドループを 1 回 / 数回まわす運用パターン。
+**What**: An operating pattern that runs a closed loop once / a few times: ScienceClaw proposes a hypothesis, MDClaw produces evidence by atomistic simulation, and OpenClaw cross-checks it against public databases and experimental data.
 
-**なぜ**: MD は強力だが原理的に limitations が多い（サンプリング、力場、絶対値スケール）。OpenClaw 経由で「同じ系について既知の実験事実（変異の臨床効果、結合親和性、HDX-MS protection、cryo-EM 局所分解能）」を引き戻すと、MDClaw の confidence が `low_to_medium` レベルでも、ScienceClaw 側で「実験事実と矛盾しないか」のスクリーニングが入ることで意思決定の質が上がる。
+**Why**: MD is powerful but has many limitations in principle (sampling, force fields, absolute-value scale). If known experimental facts about the same system (clinical effects of mutations, binding affinities, HDX-MS protection, cryo-EM local resolution) are pulled back via OpenClaw, then even when MDClaw's confidence is at the `low_to_medium` level, ScienceClaw can screen for "is this consistent with experimental facts?", raising the quality of decisions.
 
-**ループ例**:
+**Loop example**:
 
 ```text
 ScienceClaw:
-  「変異 V148A は pathway P で活性を下げると予測。MDClaw に安定性確認、
-    OpenClaw に既存実験データ確認を依頼」
+  "Predict that mutation V148A lowers activity in pathway P. Ask MDClaw to check stability,
+    and OpenClaw to check existing experimental data"
        ↓
 MDClaw:
-  WT vs V148A の short replicate MD → evidence_type: md_mutation_stability
+  short replicate MD of WT vs V148A → evidence_type: md_mutation_stability
     effect: destabilizing, confidence: medium
        ↓
 OpenClaw:
-  ClinVar / UniProt variant DB / 文献抽出 → evidence_type: db_variant_effect
+  ClinVar / UniProt variant DB / literature extraction → evidence_type: db_variant_effect
     effect: pathogenic (literature), confidence: high
        ↓
 ScienceClaw:
-  両者一致 → pathway P の rate parameter を down-regulate に更新
-  (両者不一致 → flag として上げて人間に escalate)
+  Both agree → update pathway P's rate parameter to down-regulate
+  (Both disagree → raise a flag and escalate to a human)
 ```
 
-**境界の設計**:
+**Boundary design**:
 
-- ScienceClaw が両者に送る request は `target` + `question` を共通化（同じ UniProt ID + 変異座標、同じ「stability_effect」質問など）
-- 両者の evidence_type は異なるが、共通 envelope (`effect.direction`, `effect.magnitude`, `confidence`) で比較可能
-- ScienceClaw 側に「両 evidence が一致したときに自動更新、不一致なら escalate」というポリシーを置く
+- The requests ScienceClaw sends to both share `target` + `question` (the same UniProt ID + mutation coordinates, the same "stability_effect" question, etc.)
+- The two evidence_types differ, but they are comparable through the common envelope (`effect.direction`, `effect.magnitude`, `confidence`)
+- ScienceClaw holds the policy "update automatically when both pieces of evidence agree; escalate when they disagree"
 
-**最初の一歩**: 「mutation stability effect」という 1 つの question type を pilot として 3 者で実装する。MDClaw 側は既存 study type `wt_vs_mutant_comparison` で対応可能。ScienceClaw / OpenClaw 側で同じ `target` を投げて同じ envelope の evidence を返す部分が、最小実装。
+**First step**: Implement one question type, "mutation stability effect", across the 3 as a pilot. The MDClaw side can handle it with the existing study type `wt_vs_mutant_comparison`. The minimal implementation is the part where the ScienceClaw / OpenClaw side sends the same `target` and returns evidence in the same envelope.
 
-**MDClaw に閉じない設計判断**: 不一致時のエスカレーション先（人間 / 別エージェント）と、その時に MDClaw 側に求められる追加情報（より長い MD、より多い replicate、強化サンプリング）の契約を ScienceClaw 側と擦り合わせる。
+**Design decision that is not MDClaw's alone**: Agree with the ScienceClaw side on the escalation target on disagreement (human / another agent), and on the contract for the additional information then requested of the MDClaw side (longer MD, more replicates, enhanced sampling).
 
-## まとめ: MDClaw 側に必要な準備
+## Summary: preparation needed on the MDClaw side
 
-連携を本格化させる前に MDClaw 側で固めておくべきものは、3 つの提案を通じてほぼ共通している。
+What the MDClaw side should firm up before integration gets serious is largely common across the three proposals.
 
-1. **Evidence schema の export**: `evidence_type` prefix と共通 envelope を確定し、JSON Schema として外部公開できる場所（`docs/research/schemas/`）に置く。
-2. **Source bundle schema の input contract 化**: 既存の `source_bundle.json` を「外部が write し、MDClaw が read する」前提でも使える形に schema 化する。
-3. **Confidence / limitations を必ず返す運用の徹底**: クローズドループでの不一致検知の前提条件。`confidence: low/medium/high` を caller が threshold 判定できる粒度で出す。
+1. **Export the evidence schema**: Settle the `evidence_type` prefix and the common envelope, and place them as JSON Schema somewhere that can be published externally (`docs/research/schemas/`).
+2. **Make the source bundle schema an input contract**: Turn the existing `source_bundle.json` into a schema that also works on the premise that "the outside writes it and MDClaw reads it".
+3. **Enforce the practice of always returning confidence / limitations**: A precondition for detecting disagreement in the closed loop. Emit `confidence: low/medium/high` at a granularity the caller can judge against a threshold.
 
-これらは ScienceClaw 単独連携でも必要だったもので、OpenClaw を加えた三者連携で初めて発生する新規要件は無い。つまり既存 ScienceClaw 連携計画を素直に進めることが、Claw 系列全体の連携基盤になる。
+These were already needed for integration with ScienceClaw alone; there are no new requirements that first arise in the three-way integration with OpenClaw. In other words, simply pushing ahead with the existing ScienceClaw integration plan becomes the integration foundation for the whole Claw family.

@@ -1,204 +1,202 @@
-# prep 段階の 4 欠陥（ジスルフィド検証・CLI 型・多残基リガンド・ループ補完）の修正計画
+# Fix Plan for Four Defects in the prep Stage (Disulfide Validation, CLI Types, Multi-Residue Ligands, Loop Completion)
 
-作成: 2026-09-10、checkout `a4ad51c`。同日 `6168c15`（7 コミット追加）で再確認: 4 件に関わる
-`genesis/modeller.py` / `structure/*` / `guardrail_codes.py` に変更なし、`_cli.py` は受領票（C9）の
-追加のみで例外経路と型判定は同じ。実装前の計画。
+Created: 2026-09-10, checkout `a4ad51c`. Rechecked the same day at `6168c15` (7 more commits): no changes to
+`genesis/modeller.py` / `structure/*` / `guardrail_codes.py`, which are involved in the four issues; `_cli.py` only gained the receipt (C9),
+and its exception path and type checks are unchanged. A pre-implementation plan.
 
-**状態（2026-09-10 夜）: 5 項目すべて実装済み。** 単体テスト追加、golden 再生成、実 3 系を deposit から
-作り直して `studies/wang/check_hum_builds.py` が PASS（詳細は `docs/memo.md` の同日エントリ）。
-実装中に見つかった追加の欠陥 1 件（テンプレート内のリガンド塊で exact-site 番号復元が
-全放棄する）も `_restore_template_frame` で修正済み。
-根拠: Wang 2025 の human/mouse 甘味受容体 ECD 3 状態（9OPW / 9OPZ / 9OQ1）を
-`studies/hum-ecd-*` として構築した際の記録
-（[hum-systems.md](../research/t1r_ecd_campaign/hum-systems.md)）。
-行番号は `6168c15` 時点。
+**Status (2026-09-10 night): all five items implemented.** Unit tests added, golden files regenerated, and the three real systems rebuilt from the deposit
+with `studies/wang/check_hum_builds.py` passing (details in the same-day entry of `docs/memo.md`).
+One additional defect found during implementation (exact-site number restoration gives up entirely when there is a ligand block
+in the template) has also been fixed in `_restore_template_frame`.
+Basis: the record of building the three states of the Wang 2025 human/mouse sweet-taste receptor ECD (9OPW / 9OPZ / 9OQ1) as
+`studies/hum-ecd-*`
+([hum-systems.md](../research/t1r_ecd_campaign/hum-systems.md)).
+Line numbers are as of `6168c15`.
 
-## 判定の整理
+## Summary of Findings
 
-| # | 現象 | 原因 | 評価 |
+| # | Symptom | Cause | Assessment |
 |---|---|---|---|
-| 1 | 明示したジスルフィドが deposit の S–S 1.30 Å で拒否される。自動検出なら同じ対が採用される | 検証窓 1.8–2.3 Å は明示対のみに適用。自動検出は下限なし | 一貫性の欠陥 |
-| 2 | `modeller_from_alignment --disulfide-patches` が落ち、ノードが running のまま残る | 素の `list` 型が文字列扱い。例外が `begin_node` の後・`try` の前で発生し、CLI も非 node 必須ツールを失敗にしない | 欠陥。失敗後の封印は仕様 |
-| 3 | MODELLER 出力 PDB を source にすると sucralose が 2 残基に分かれ prep が失敗 | リガンド単位が gemmi subchain。PDB は hetero 残基ごとに subchain が自動生成される | 欠陥（PDB 経由の多残基リガンド全般） |
-| 4 | 欠損ループがリガンド不在で構築され、9OPZ で sucralose と 0.25 Å 衝突。警告なし | 修復前に非ポリマー鎖をテンプレートから削除 | 既知の制限（`docs/memo.md` 2026-09 の 9UTC 記述）。自動検査の欠如が改善点 |
+| 1 | An explicitly declared disulfide is refused at the deposit's S–S of 1.30 Å. With auto-detection the same pair is accepted | The 1.8–2.3 Å validation window applies only to explicit pairs. Auto-detection has no lower bound | Consistency defect |
+| 2 | `modeller_from_alignment --disulfide-patches` crashes and the node is left running | A bare `list` type is treated as a string. The exception occurs after `begin_node` and before the `try`, and the CLI does not fail tools that do not require a node | Defect. Sealing after failure is by design |
+| 3 | Using a MODELLER output PDB as the source splits sucralose into 2 residues and prep fails | The ligand unit is the gemmi subchain. For PDB, a subchain is auto-generated per hetero residue | Defect (multi-residue ligands via PDB in general) |
+| 4 | The missing loop is built without the ligand present and clashes with sucralose at 0.25 Å in 9OPZ. No warning | Non-polymer chains are deleted from the template before repair | Known limitation (the 9UTC note in `docs/memo.md` 2026-09). The lack of an automatic check is the point to improve |
 
-## 前提と影響範囲
+## Assumptions and Scope of Impact
 
-- ログイン側 CLI は `bin/mdclaw` が checkout を `PYTHONPATH` で重ねて実行する
-  （`bin/mdclaw:154`）。4 件はすべて prep 段階なので、修正は SIF を再構築せずに検証できる。
-- 計算ノード側（min/eq/prod）は `.mdclaw_cluster.json` の `source_mode=image` で
-  SIF 内蔵パッケージを使う。4 件とも計算ノード側には関係しない。
-- closed campaign の実行中 24 job（旧 SIF）には触れない。
-- 既存の終端ノードや過去の prep 結果は書き換えない。
+- The login-side CLI runs through `bin/mdclaw`, which overlays the checkout with `PYTHONPATH`
+  (`bin/mdclaw:154`). All four issues are in the prep stage, so the fixes can be verified without rebuilding the SIF.
+- The compute-node side (min/eq/prod) uses the packages built into the SIF via `source_mode=image` in
+  `.mdclaw_cluster.json`. None of the four issues concern the compute-node side.
+- Do not touch the 24 jobs running in the closed campaign (old SIF).
+- Do not rewrite existing terminal nodes or past prep results.
 
-## 1. ジスルフィド検証の対称化
+## 1. Making Disulfide Validation Symmetric
 
-主対象: `mdclaw/structure/clean_protein.py`（`DISULFIDE_BOND_MIN/MAX_ANGSTROM` 1259–1260 行、
-`_validate_declared_disulfides` 1263–1316 行、呼び出し 1965 行）、
-`mdclaw/structure/prepare_complex.py`（2444 行、`_merge_disulfide_pairs` 1450–1459 行、
-`sa_disulfide_pairs` 1776 行）、`mdclaw/structure/disulfide.py`
-（`_detect_disulfide_candidates` 326 行以降、high 判定 400 行）。
+Main targets: `mdclaw/structure/clean_protein.py` (`DISULFIDE_BOND_MIN/MAX_ANGSTROM` lines 1259–1260,
+`_validate_declared_disulfides` lines 1263–1316, call at line 1965),
+`mdclaw/structure/prepare_complex.py` (line 2444, `_merge_disulfide_pairs` lines 1450–1459,
+`sa_disulfide_pairs` line 1776), `mdclaw/structure/disulfide.py`
+(`_detect_disulfide_candidates` from line 326, high classification at line 400).
 
-- 検証結果を「結合が形成されていない（長すぎる）」と「原子が重なっている（短すぎる）」に分ける。
-  長すぎる: 現行どおり error、`modeller_disulfide_not_formed`。
-  短すぎる: warning、新 code `disulfide_sg_overlap`。`distances` に距離と
-  `geometry: "overlap"` を記録し、`confirmation_needed.disulfide_bonds` にも載せる。
-  理由: ループ再構築は観測残基を固定するので、deposit 由来の重なりは MODELLER では直らず、
-  最小化で解消する種類の欠陥である。
-- 自動検出側にも同じ分類を入れる。`_detect_disulfide_candidates` で 1.8 Å 未満の候補に
-  `geometry: "overlap"` を付け、prep の warnings に同文で出す。`confidence` /
-  `recommendation` は変えない（採用自体は正しい）。
-- 明示・自動どちらでも、MODELLER 修復の前に入力構造上で対を測り、deposit 側の値を
-  `declared_disulfide_validation.input_distances` として残す。修復後の値と並べれば、
-  「MODELLER が壊した」のか「最初から短い」のかを結果 JSON だけで区別できる。
-- 受領票（`mdclaw/_receipt.py:_facts_prep` 154–216 行、6168c15 で追加）の `disulfides` に
-  重なり対を `A59-A102 (overlap 1.30 A)` の形で出す。
-- `mdclaw/guardrail_codes.py` に `disulfide_sg_overlap` を登録し、対処文に
-  「最小化で解消される。SG を置き直したい場合は…」を書く。
-  `tests/test_guardrail_code_registry.py` の golden を更新する。
-- 自動検出モードでは MODELLER に DISU パッチが渡らない（`sa_disulfide_pairs=None`）。
-  これは skill 文書の記述どおりの仕様なので今回は変えないが、結果 JSON の
-  `disulfide_source` の隣に `modeller_patches: 0` を出して見えるようにする。
+- Split the validation result into "bond not formed (too long)" and "atoms overlapping (too short)".
+  Too long: error as now, `modeller_disulfide_not_formed`.
+  Too short: warning, new code `disulfide_sg_overlap`. Record the distance and
+  `geometry: "overlap"` in `distances`, and also list it in `confirmation_needed.disulfide_bonds`.
+  Reason: loop rebuilding keeps observed residues fixed, so an overlap coming from the deposit is not fixed by MODELLER;
+  it is the kind of defect that minimization resolves.
+- Apply the same classification on the auto-detection side. In `_detect_disulfide_candidates`, tag candidates under 1.8 Å with
+  `geometry: "overlap"` and emit the same text in prep's warnings. Do not change `confidence` /
+  `recommendation` (accepting the pair is itself correct).
+- For both explicit and automatic modes, measure the pairs on the input structure before MODELLER repair and keep the deposit-side values as
+  `declared_disulfide_validation.input_distances`. Placed alongside the post-repair values, the result JSON alone
+  distinguishes "MODELLER broke it" from "it was short from the start".
+- In `disulfides` of the receipt (`mdclaw/_receipt.py:_facts_prep` lines 154–216, added in 6168c15), show
+  overlapping pairs in the form `A59-A102 (overlap 1.30 A)`.
+- Register `disulfide_sg_overlap` in `mdclaw/guardrail_codes.py`, with the remedy text
+  "Resolved by minimization. To reposition SG, …".
+  Update the golden file of `tests/test_guardrail_code_registry.py`.
+- In auto-detection mode, no DISU patches are passed to MODELLER (`sa_disulfide_pairs=None`).
+  This is by design as described in the skill docs, so it is not changed now, but make it visible by emitting
+  `modeller_patches: 0` next to `disulfide_source` in the result JSON.
 
-テスト: `tests/test_disulfide_contract.py` に、合成 PDB で SG–SG 1.30 / 2.05 / 3.53 Å の
-3 ケース（warning / ok / error）。`tests/test_complex_missing_residue_repair.py` の
-monkeypatch 方式で、修復結果に 1.30 Å の明示対が含まれても `overall_status=success` かつ
-warning が付くこと。`tests/test_disulfide_schema_handoff.py` で新フィールドが additive で
-あること。
+Tests: in `tests/test_disulfide_contract.py`, three cases with a synthetic PDB at SG–SG 1.30 / 2.05 / 3.53 Å
+(warning / ok / error). Using the monkeypatch approach of `tests/test_complex_missing_residue_repair.py`, check that
+`overall_status=success` with a warning attached even when the repair result contains an explicit pair at 1.30 Å. In
+`tests/test_disulfide_schema_handoff.py`, check that the new fields are additive.
 
-完了条件: 9OQ1 deposit に 17 対を明示して prep が成功し、A59–A102 / B236–B522 が
-`disulfide_sg_overlap` の warning として報告される。自動検出でも同じ 2 対に同じ warning が出る。
+Done when: with 17 pairs declared explicitly on the 9OQ1 deposit, prep succeeds and A59–A102 / B236–B522 are
+reported as `disulfide_sg_overlap` warnings. Auto-detection gives the same warning on the same two pairs.
 
-## 2. CLI の素の `list` 型と、未処理例外で running のまま残るノード
+## 2. Bare `list` Types in the CLI, and Nodes Left Running After an Unhandled Exception
 
-主対象: `mdclaw/genesis/modeller.py`（シグネチャ 724–725 行、`begin_node` 934 行、
-config 生成 940–964 行、`try` 965 行、`fail_node` 1005 行）、`mdclaw/_cli.py`
-（`_takes_json` 439 行、else 分岐 690 行、`unhandled_exception` 1728 行以降、
-`_record_cli_node_failure` 733 行）、`tests/data/cli_contract.json`。
+Main targets: `mdclaw/genesis/modeller.py` (signature lines 724–725, `begin_node` line 934,
+config generation lines 940–964, `try` line 965, `fail_node` line 1005), `mdclaw/_cli.py`
+(`_takes_json` line 439, else branch line 690, `unhandled_exception` from line 1728,
+`_record_cli_node_failure` line 733), `tests/data/cli_contract.json`.
 
-2a. 型の修正
-- `disulfide_patches: Optional[list[list[int]]]`、`target_residue_sites: Optional[list[dict]]`
-  に変える。`--list-json` 全走査で素の `list` はこの 2 引数だけ（2026-09-10 監査）。
-- `_tool_param_specs` で素の `list` / `List` / `dict` なし添字の引数を検出したら
-  起動時に `TypeError` にする（黙って `str` に落とさない）。
-  `tests/test_cli_contract.py` に「素の list 注釈を持つツール引数はない」検査を追加。
-- golden `tests/data/cli_contract.json` はファイル冒頭の手順で再生成する。
+2a. Type fixes
+- Change to `disulfide_patches: Optional[list[list[int]]]`, `target_residue_sites: Optional[list[dict]]`.
+  A full scan of `--list-json` shows these two are the only arguments with a bare `list` (audit of 2026-09-10).
+- When `_tool_param_specs` detects an argument annotated with a bare `list` / `List` / unsubscripted `dict`,
+  raise a `TypeError` at startup (do not silently fall back to `str`).
+  Add a check "no tool argument has a bare list annotation" to `tests/test_cli_contract.py`.
+- Regenerate the golden `tests/data/cli_contract.json` following the procedure at the top of the file.
 
-2b. ノード状態
-- `modeller_from_alignment`: 引数検証と config 生成（960 行の unpack を含む）を
-  `begin_node` より前に移す。`begin_node` 以降は一つの `try/except Exception` で包み、
-  `fail_node(job_dir, node_id, errors=[...])` を必ず呼ぶ。現在の `except` は
-  `subprocess` 実行部だけを覆っている。
-- `_cli.py` の例外経路: `requires_node` に関わらず、`effective_job_dir` /
-  `effective_node_id`（1504–1509 行で非 node 必須ツールでも解決済み）が揃い、
-  かつ `read_node(...).status == "running"` なら `fail_node` を呼んでから
-  `_record_cli_node_failure` を呼ぶ。後者は証跡を保存するだけで状態を変えない
-  （733–775 行）。
-- 「失敗ノードは終端で不変」は仕様として維持する。封印されたノードに再実行を
-  かけたときの `NodeSealedError` は、`create_node --parent-node-ids` で新ノードを作る
-  案内文つきの構造化エラーにする（現状は `unhandled_exception`）。
+2b. Node status
+- `modeller_from_alignment`: move argument validation and config generation (including the unpack at line 960) to
+  before `begin_node`. Wrap everything after `begin_node` in a single `try/except Exception` and always call
+  `fail_node(job_dir, node_id, errors=[...])`. The current `except` covers only the
+  `subprocess` execution part.
+- Exception path in `_cli.py`: regardless of `requires_node`, if `effective_job_dir` /
+  `effective_node_id` (resolved at lines 1504–1509 even for tools that do not require a node) are both present
+  and `read_node(...).status == "running"`, call `fail_node` and then
+  `_record_cli_node_failure`. The latter only saves evidence and does not change the status
+  (lines 733–775).
+- Keep "failed nodes are terminal and immutable" as the specification. Turn the `NodeSealedError` raised when re-running
+  a sealed node into a structured error with guidance to create a new node with `create_node --parent-node-ids`
+  (currently `unhandled_exception`).
 
-テスト: `tests/test_modeller_runner_contract.py` に CLI 経由で
-`--disulfide-patches '[[3,40]]'` が config に整数対として届くこと。
-`tests/test_failure_trace.py` に、`begin_node` 後に例外を投げる偽ツールを CLI から呼び、
-終了後に `status=failed` と `tool_failed` イベントが残ること。
+Tests: in `tests/test_modeller_runner_contract.py`, check that via the CLI
+`--disulfide-patches '[[3,40]]'` reaches the config as integer pairs.
+In `tests/test_failure_trace.py`, call from the CLI a fake tool that raises an exception after `begin_node`, and check that
+`status=failed` and a `tool_failed` event remain after it exits.
 
-完了条件: 2026-09-10 の 1 回目の失敗と同じ引数で再実行すると、素の文字列ではなく整数対が
-渡り、実行が失敗した場合もノードは `failed` になる。
+Done when: re-running with the same arguments as the first failure on 2026-09-10 passes integer pairs rather than a raw string,
+and the node becomes `failed` even if execution fails.
 
-## 3. PDB 経由の多残基リガンド
+## 3. Multi-Residue Ligands via PDB
 
-主対象: `mdclaw/structure/split.py`（subchain 走査 338 行・1668 行、自動 subchain の説明
-1295 行、出力名 1926–1930 行）、`mdclaw/structure/clean_ligand.py`（多残基統合 393 行以降）、
-`mdclaw/genesis/modeller.py`（`_stage_template_as_pdb` 328 行、`_restore_template_frame` 189 行）。
+Main targets: `mdclaw/structure/split.py` (subchain traversal at lines 338 and 1668, description of auto subchains
+at line 1295, output names lines 1926–1930), `mdclaw/structure/clean_ligand.py` (multi-residue merging from line 393),
+`mdclaw/genesis/modeller.py` (`_stage_template_as_pdb` line 328, `_restore_template_frame` line 189).
 
-3-i. split 側で共有結合単位にまとめる（主修正）
-- subchain 分類の後に、ligand 種の単位どうしを次の順で連結成分にまとめる:
-  (a) `structure.connections` の Covale（mmCIF `struct_conn`、PDB `LINK`）、
-  (b) 記録がなければ、同じ author chain 内で重原子間距離 1.9 Å 以下の対。
-  イオン・水・glycan 種は対象外。author chain をまたぐ結合、タンパク質との共有結合は
-  まとめずに `covalent_partner_outside_unit` として報告する。
-- まとまった単位は 1 ファイルに書き、`unique_id` は先頭残基のもの、`residue_names` に
-  全残基名、split メタデータに `merged_from` を残す。`include_ligand_resnames` は
-  いずれかの残基名が一致すれば単位全体を選ぶ。
-- `clean_ligand` の統合処理はそのまま使える（deposit mmCIF では既にこの経路で 23 原子の
-  sucralose になっている）。
+3-i. Group into covalent units on the split side (main fix)
+- After subchain classification, group ligand-type units into connected components in the following order:
+  (a) Covale records in `structure.connections` (mmCIF `struct_conn`, PDB `LINK`),
+  (b) if there are no records, pairs within the same author chain with a heavy-atom distance of 1.9 Å or less.
+  Ion, water and glycan types are excluded. Bonds across author chains and covalent bonds to the protein are
+  not grouped but reported as `covalent_partner_outside_unit`.
+- Write a grouped unit to one file, with the `unique_id` of the first residue, all residue names in `residue_names`,
+  and `merged_from` kept in the split metadata. `include_ligand_resnames` selects the whole unit
+  if any of its residue names matches.
+- The merging in `clean_ligand` can be used as is (for a deposit mmCIF this path already produces a 23-atom
+  sucralose).
 
-3-ii. MODELLER ツール側（任意）
-- `hetatm=True` でテンプレートが mmCIF のとき、`struct_conn` の Covale と entity 種別を
-  保持し、`template_frame` 適用後のモデルを `<model>.cif` としても書く。
-  3-i があれば必須ではない。
+3-ii. MODELLER tool side (optional)
+- With `hetatm=True` and an mmCIF template, keep the Covale records of `struct_conn` and the entity types,
+  and also write the model after applying `template_frame` as `<model>.cif`.
+  Not required if 3-i is in place.
 
-テスト: `tests/test_ligand_pathway.py` に、9OQ1 の sucralose 2 残基だけを PDB にした小さな
-fixture（`tests/data/sucralose_rry_rrj.pdb`、タンパク質不要）で単位が 1 つ・23 原子になる
-こと、`LINK` 行を消しても距離で同じ結果になること、結合していない 2 リガンドが同じ chain に
-あっても分かれたままであること。mmCIF の branched entity の既存経路が変わらないこと。
+Tests: in `tests/test_ligand_pathway.py`, with a small fixture of just the two sucralose residues of 9OQ1 as PDB
+(`tests/data/sucralose_rry_rrj.pdb`, no protein needed), check that there is one unit with 23 atoms,
+that removing the `LINK` lines gives the same result by distance, and that two unbonded ligands in the same chain
+stay separate. Check that the existing path for mmCIF branched entities is unchanged.
 
-完了条件: `studies/wang/models/9OPZ` の MODELLER 出力 PDB を source にした prep が、
-完全 SMILES 指定で成功し、`ligand_chemistry` が 23 重原子の 1 分子になる。
+Done when: prep using the MODELLER output PDB of `studies/wang/models/9OPZ` as the source
+succeeds with the full SMILES specified, and `ligand_chemistry` is one molecule of 23 heavy atoms.
 
-## 4. ループ補完のリガンド不在
+## 4. Ligand Absent During Loop Completion
 
-主対象: `mdclaw/structure/clean_protein.py`
-（`_repair_missing_residues_with_modeller` 1561 行、非ポリマー削除 1655–1685 行、
-`_write_repair_alignment` 805 行、再結合 1976 行以降、`segments`/`sites` 1868 行・2017 行）、
-`mdclaw/guardrail_codes.py`。
+Main targets: `mdclaw/structure/clean_protein.py`
+(`_repair_missing_residues_with_modeller` line 1561, non-polymer deletion lines 1655–1685,
+`_write_repair_alignment` line 805, recombination from line 1976, `segments`/`sites` lines 1868 and 2017),
+`mdclaw/guardrail_codes.py`.
 
-4a. 距離検査（先に入れる、小）
-- 修復モデルの検証（1965 行）の後、再構築した各セグメントの重原子と
-  `nonpolymer_context`（リガンド・イオン）の重原子との最短距離を測り、
-  `complex_missing_residue_repair.segments[i].min_distance_to_nonpolymer_angstrom` と
-  最近接の残基・原子を記録する。
-- 2.2 Å 未満: `success=False`、新 code `modeller_loop_nonpolymer_clash`、対処文は
-  「4b の `--repair-nonpolymer-context` で再実行するか、`modeller_from_alignment --hetatm`
-  でテンプレートにリガンドを含めて source を作り直す」。
-  2.2–3.0 Å: warning。
-- 閾値は定数として置き、結果 JSON に出す。受領票の prep `facts` に
-  `rebuilt_segments: [{chain, range, min_distance_to_nonpolymer}]` を加える。
+4a. Distance check (do first, small)
+- After validating the repaired model (line 1965), measure the minimum distance between the heavy atoms of each rebuilt segment and the
+  heavy atoms of `nonpolymer_context` (ligands, ions), and record it as
+  `complex_missing_residue_repair.segments[i].min_distance_to_nonpolymer_angstrom` together with
+  the nearest residue and atom.
+- Under 2.2 Å: `success=False`, new code `modeller_loop_nonpolymer_clash`, with the remedy text
+  "Re-run with 4b's `--repair-nonpolymer-context`, or rebuild the source with `modeller_from_alignment --hetatm`
+  so that the template includes the ligand."
+  2.2–3.0 Å: warning.
+- Put the thresholds in constants and emit them in the result JSON. Add
+  `rebuilt_segments: [{chain, range, min_distance_to_nonpolymer}]` to the prep `facts` of the receipt.
 
-4b. リガンドを障害物としてテンプレートに残す（根本修正、中）
-- 非ポリマー残基（水以外）を `polymer_template` から削除せず、ポリマー鎖の後ろに
-  HETATM として残す。
-- `_write_repair_alignment`: テンプレート行・ターゲット行の末尾に `/` と hetero 残基数ぶんの
-  `.` を付け、ヘッダの `LAST:` を hetero 鎖にする。runner の `hetatm` は既に True。
-- `_validate_modeller_repair_model`、`_restore_template_frame`、番号付け直しは hetero 残基を
-  読み飛ばす。2026-09-10 の手動実行（`studies/wang/models`）では `template_frame=True` で
-  hetero を含むモデルの CA 対応が問題なく取れている。
-- MODELLER が書き戻した hetero 座標は捨て、従来どおり `nonpolymer_context` の元座標を
-  再結合する（BLK は固定扱いだが、元座標を使えば下流の挙動が変わらない）。
-- フラグ `--repair-nonpolymer-context`（既定 on）。BLK を含む MODELLER 実行が失敗した場合は
-  従来経路に戻して warning を出す。4a の検査は経路に関係なく常に走らせる。
+4b. Keep the ligand in the template as an obstacle (root fix, medium)
+- Do not delete non-polymer residues (other than water) from `polymer_template`; keep them after the polymer chains as
+  HETATM.
+- `_write_repair_alignment`: append `/` and one `.` per hetero residue to the end of the template and target lines,
+  and set `LAST:` in the header to the hetero chain. The runner's `hetatm` is already True.
+- `_validate_modeller_repair_model`, `_restore_template_frame` and renumbering skip hetero residues.
+  In the manual run on 2026-09-10 (`studies/wang/models`), with `template_frame=True`, CA correspondence for models
+  containing hetero residues was obtained without problems.
+- Discard the hetero coordinates MODELLER writes back and, as before, recombine the original coordinates of `nonpolymer_context`
+  (BLK is treated as fixed, but using the original coordinates keeps downstream behaviour unchanged).
+- Flag `--repair-nonpolymer-context` (default on). If a MODELLER run including BLK fails,
+  fall back to the old path with a warning. The 4a check always runs regardless of the path.
 
-テスト: 4a は `_nonpolymer_clearance(model_path, context, segments)` を関数に切り出し、
-合成モデルとリガンド座標で 1.0 / 2.5 / 5.0 Å の 3 ケース。4b は
-`tests/test_modeller_runner_contract.py` にアラインメントの `.` ブロック数と `LAST:` の検査、
-`KEY_MODELLER` がある環境だけで走る smoke（`tests/test_gap_local_modeller_smoke.py` の
-skipif 方式）を 1 本。
+Tests: for 4a, extract `_nonpolymer_clearance(model_path, context, segments)` into a function and test three cases,
+1.0 / 2.5 / 5.0 Å, with a synthetic model and ligand coordinates. For 4b, in
+`tests/test_modeller_runner_contract.py`, check the number of `.` blocks and the `LAST:` of the alignment, plus one smoke test that runs only
+in environments with `KEY_MODELLER` (the skipif approach of `tests/test_gap_local_modeller_smoke.py`).
 
-完了条件: 9OPZ deposit を `--missing-residue-method modeller` で prep すると、4a のみの段階では
-`modeller_loop_nonpolymer_clash` で止まり、4b 適用後は loop 45–57 が sucralose から 3 Å 以上
-離れて成功する。9OQ1（loop 45–57 が観測済み）と 9OPW（リガンドなし）は結果が変わらない。
+Done when: prepping the 9OPZ deposit with `--missing-residue-method modeller` stops with
+`modeller_loop_nonpolymer_clash` at the 4a-only stage, and after 4b is applied it succeeds with loop 45–57 at least 3 Å
+away from sucralose. Results for 9OQ1 (loop 45–57 observed) and 9OPW (no ligand) do not change.
 
-## 実施順と目安
+## Order of Work and Estimates
 
-1. 4a 距離検査（0.5 日）: 壊れた構造が黙って通る唯一の経路を先に塞ぐ。
-2. 2a + 2b（0.5 日）: 小さく、他の作業の再実行を安全にする。
-3. 1（0.5 日）。
-4. 3-i（1 日）。
-5. 4b（1–2 日）。3-ii は 3-i の後に必要なら。
+1. 4a distance check (0.5 day): first close the only path by which a broken structure passes silently.
+2. 2a + 2b (0.5 day): small, and makes re-running other work safe.
+3. 1 (0.5 day).
+4. 3-i (1 day).
+5. 4b (1–2 days). 3-ii after 3-i if needed.
 
-各段階で `conda run -n mdclaw ruff check mdclaw/` と
+At each stage, run `conda run -n mdclaw ruff check mdclaw/` and
 `pytest tests/test_registry.py tests/test_cli.py tests/test_guardrails.py
 tests/test_guardrail_code_registry.py tests/test_slurm_server.py tests/test_cli_contract.py
 tests/test_disulfide_contract.py tests/test_complex_missing_residue_repair.py
-tests/test_modeller_runner_contract.py tests/test_ligand_pathway.py`。
-実データでの確認は `studies/_attempts/` と同じ手順を scratch の study で再現する
-（deposit 9OPZ / 9OQ1 の mmCIF、`studies/wang/disulfides_hum.json`、完全 SMILES）。
+tests/test_modeller_runner_contract.py tests/test_ligand_pathway.py`.
+For confirmation on real data, reproduce the same procedure as `studies/_attempts/` in a scratch study
+(the mmCIF of deposits 9OPZ / 9OQ1, `studies/wang/disulfides_hum.json`, full SMILES).
 
-## やらないこと
+## Out of Scope
 
-- 自動検出モードで MODELLER に DISU パッチを渡す仕様変更（別件として記録のみ）。
-- deposit の SG 座標を自動で置き直す処理（`studies/wang/build_hum_templates.py` の chi1 探索は
-  研究側の手順として残す）。
-- 終端ノードの不変性の緩和。
-- SIF の再構築（リリース時にまとめる）。
+- Changing the specification to pass DISU patches to MODELLER in auto-detection mode (only recorded as a separate issue).
+- Automatically repositioning the deposit's SG coordinates (the chi1 search in `studies/wang/build_hum_templates.py` stays
+  as a research-side procedure).
+- Relaxing the immutability of terminal nodes.
+- Rebuilding the SIF (bundled at release time).

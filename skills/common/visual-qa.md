@@ -17,10 +17,10 @@ display transformation may need derived artifacts as described below.
 
 | User intent | Action |
 |---|---|
-| Play a trajectory, rotate/zoom interactively, or use Molstar (「再生して」「回して見たい」「Molstarで」) | Check the interactive routes below, then use Molstar. |
-| Prepared full-system view (「準備後の全系を見せて」「水や膜の入り方を見たい」), without an explicit still-image request | Use Molstar when available; preserve the assembled system and apply the preparation row below. |
-| Progress of a running job, or results by stage (「途中経過を見せて」「今どこまで進んだ？」「成果物を見たい」) | Follow [Show work in progress](#show-work-in-progress). |
-| A still image, PNG, or PyMOL image (「静止画」「PNGにして」) | Use the PyMOL preview below, even if Molstar is available. |
+| Play a trajectory, rotate/zoom interactively, or use Molstar ("play it", "I want to rotate it", "in Molstar") | Check the interactive routes below, then use Molstar. |
+| Prepared full-system view ("show the whole prepared system", "I want to see how the water and membrane sit"), without an explicit still-image request | Use Molstar when available; preserve the assembled system and apply the preparation row below. |
+| Progress of a running job, or results by stage ("show me the progress so far", "how far has it got?", "I want to see the outputs") | Follow [Show work in progress](#show-work-in-progress). |
+| A still image, PNG, or PyMOL image ("a still image", "make it a PNG") | Use the PyMOL preview below, even if Molstar is available. |
 | Simply show a structure, with no interactive request | Use a PyMOL preview. |
 | Both interactive viewing and a still image | Deliver both through their respective routes. |
 | No display request | Leave visualization off, except for the geometry diagnostic described below. |
@@ -30,7 +30,7 @@ display transformation may need derived artifacts as described below.
 Use the producing node and the user's purpose, not the filename or the viewer
 chosen. An `analyze` artifact inherits the stage of its source trajectory.
 An explicit request to inspect water, ions, or a binding site overrides the
-defaults below. For 「prep直後の全系」 with water, resolve the completed solvated/assembled
+defaults below. For "the whole system right after prep" with water, resolve the completed solvated/assembled
 structure (solv/topo), even if the protein-only DAG node is called prep. Use the
 existing prepared snapshot rather than a production frame or a protein-only
 analysis export. For an external file, use the stated purpose; if none is given,
@@ -67,8 +67,8 @@ selection is unsuitable for a membrane/complex display.
 
 Viewing never touches the job: it reads the files and creates no node.
 
-1. Find the node with `inspect_job --job-dir <job_dir>`. For 「今どこまで」 take the
-   frontier node; for 「成果物」 take the node the user names, or the latest
+1. Find the node with `inspect_job --job-dir <job_dir>`. For "how far has it got" take the
+   frontier node; for "the outputs" take the node the user names, or the latest
    completed one.
 2. Open it with route 1 (Codex) or route 2 (Claude Code).
    - A **running production** shows the frames written so far (`in_progress:
